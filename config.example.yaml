@@ -1,0 +1,11 @@
+# Copy to config.yaml and fill in real IDs. Never commit config.yaml itself
+# if it contains real guild/channel/role IDs you consider sensitive.
+log_level: info
+guilds:
+  "123456789012345678": # your guild ID
+    guild_id: "123456789012345678"
+    mod_role_ids:
+      - "234567890123456789"
+    admin_user_ids: []
+    audit_log_channel_id: "345678901234567890"
+    status_channel_id: "456789012345678901"
