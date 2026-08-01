@@ -41,6 +41,11 @@ func (l *Loader) reload() error {
 	if err := validator.New().Struct(&next); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
+	for id, gc := range next.Guilds {
+		if err := validateGuildRotation(id, gc, next.StickyTemplates); err != nil {
+			return fmt.Errorf("validate config: %w", err)
+		}
+	}
 
 	// Secrets are env-only and re-applied on every reload — never read from
 	// YAML, so a hot-reloaded config file can never leak or override them.

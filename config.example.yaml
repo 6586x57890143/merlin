@@ -9,3 +9,32 @@ guilds:
     admin_user_ids: []
     audit_log_channel_id: "345678901234567890"
     status_channel_id: "456789012345678901"
+
+    # Optional: periodic "Refresh" channel rotation (spec.MD §6) — rotates
+    # on interval_hours automatically, or immediately via
+    # /admin run-now job:rotation:<channel_id>. Omit rotating_channels
+    # entirely if you don't want any channel rotating.
+    rotating_channels:
+      - channel_id: "567890123456789012" # the live channel to rotate, e.g. #general-chat
+        interval_hours: 24 # how often it rotates
+        archive_category_id: "678901234567890123" # a hidden "Archives" category
+        archive_visibility: mod_only # mod_only | whitelist
+        # Only used when archive_visibility is "whitelist" — additional
+        # roles/users granted access to the archive beyond the guild's mod
+        # roles (which always retain access either way).
+        # archive_whitelist_role_ids: ["789012345678901234"]
+        # archive_whitelist_user_ids: ["890123456789012345"]
+        # Minimum time an archived channel is kept before permanent
+        # deletion. OMIT this key entirely to keep archives forever (never
+        # swept) — do not set it to 0, which is rejected outright.
+        retention_days: 7
+        sticky:
+          enabled: false # set true to repost + pin a template's messages in the fresh channel
+          template: welcome_general # must exist under sticky_templates below
+
+# Named, reusable message sets referenced by rotating_channels[].sticky.template.
+# Each message is posted (in order) and pinned in the freshly-rotated channel.
+sticky_templates:
+  welcome_general:
+    messages:
+      - "🐦 Fresh nest, same flock — welcome back! Please read the rules before posting."

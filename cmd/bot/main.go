@@ -13,9 +13,11 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/6586x57890143/merlin/internal/audit"
 	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
+	"github.com/6586x57890143/merlin/internal/plugins/rotation"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/storage"
 )
@@ -72,12 +74,14 @@ func run(log *slog.Logger) error {
 	bus := core.NewEventBus(log)
 	perms := core.NewPermissions(session, cfgLoader)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), log)
+	auditWriter := audit.New(db.Pool, session, cfgLoader)
 
 	deps := core.Deps{
 		Session:   session,
 		Bus:       bus,
 		Config:    cfgLoader,
 		Perms:     perms,
+		Audit:     auditWriter,
 		Logger:    log,
 		DB:        db,
 		Scheduler: sched,
@@ -86,6 +90,7 @@ func run(log *slog.Logger) error {
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New())
+	registry.Register(rotation.New())
 
 	if err := registry.InitAll(); err != nil {
 		return err

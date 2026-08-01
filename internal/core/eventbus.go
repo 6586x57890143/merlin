@@ -16,7 +16,21 @@ type EventType string
 const (
 	EventReady         EventType = "core.ready"
 	EventConfigChanged EventType = "config.changed"
+
+	// EventChannelRotated is published after a channel rotation completes
+	// successfully. Payload is ChannelRotatedPayload. Anything hardcoded to
+	// the old channel ID (external webhooks, other bots' configs) will keep
+	// posting into what is now the hidden archive — this event exists so
+	// in-process subscribers can react, and to document that this is a
+	// known, accepted limitation of rotation (spec.MD §6).
+	EventChannelRotated EventType = "channel.rotated"
 )
+
+// ChannelRotatedPayload is the Event.Payload for EventChannelRotated.
+type ChannelRotatedPayload struct {
+	OldChannelID string
+	NewChannelID string
+}
 
 // Event is the envelope delivered to every subscriber of its Type. Payload's
 // concrete type is documented per EventType by whichever plugin defines it.

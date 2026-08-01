@@ -245,11 +245,11 @@ Key requirements:
 
 
 
-\## 6. Plugin 2 — Channel Rotation ("Fresh Start")
+\## 6. Plugin 2 — Channel Rotation ("Refresh")
 
 
 
-This is the priority feature: rotate `#general-chat` (or any configured channel) on an interval, giving members a clean history while preserving a moderation trail.
+This is the priority feature: rotate `#general-chat` (or any configured channel) immediately or on an interval, giving members a clean history while preserving a moderation trail.
 
 
 
@@ -263,11 +263,11 @@ interval\_hours: 24
 
 archive\_category\_id: "234567890123456789"   # a hidden "Archives" category
 
-archive\_visibility: mod\_only                 # mod\_only | export\_then\_delete (future)
+archive\_visibility: mod\_only                 # mod\_only | whitelist | export\_then\_delete (future)
 
-retention\_days: 7                            # minimum before permanent deletion — do not default to 0
+retention\_days: 7                            # minimum before permanent deletion — do not default to 0, but can be set to never
 
-sticky\_message\_template: "welcome\_general"   # re-posted pins come from a config template, not copied history
+sticky\_message\_template: "welcome\_general"   # re-post pins from archived channel, can be turned on and defaults to off
 
 ```
 
@@ -283,11 +283,11 @@ sticky\_message\_template: "welcome\_general"   # re-posted pins come from a con
 
 4\. \*\*Move\*\* it into the hidden Archives category with a permission overwrite granting view access only to the configured mod role(s) — nobody else can see it once rotated.
 
-5\. \*\*Create\*\* a new channel named `general-chat`, replicating position/category/topic/slowmode/permission overwrites captured in step 2, so it's indistinguishable from the original to members.
+5\. \*\*Create\*\* a new channel named `general-chat`, replicating position/category/topic/slowmode/permission overwrites captured in step 2, so it's indistinguishable from the original to members. You can clone channels in Discord to achieve this with appropriate perms
 
-6\. Re-post any "sticky" messages (rules, pinned info) from the configured template — \*\*not\*\* copied from the old channel's history — and pin them.
+6\. Re-post any "sticky" messages (rules, pinned info, memes) and give it a birdlike flavor, can be set to a template instead or turned off completely. Defaults to off.
 
-7\. Post a short system embed in the new channel, e.g.: \*"This channel resets every {N} hours as part of the server's data-retention policy. Anything posted here isn't kept past that window, except where an open moderation report requires it."\* This is genuinely useful transparency for members and also documents your retention policy if it's ever questioned.
+7\. Post a short system embed in the new channel, e.g.: \*"This channel resets every {N} hours as part of the server's data-retention policy. Anything posted here isn't kept past that window, except where an open moderation report requires it."\* This is genuinely useful transparency for members and also documents your retention policy if it's ever questioned. Make sure this is also communicated in a birdlike way without missing any of the information as Merlin is a bird, like the species of Bird (Merlin)
 
 8\. Write to the audit log and `#bot-audit-log`: old channel ID, new channel ID, timestamp, triggering job.
 
