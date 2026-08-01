@@ -24,7 +24,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.12.2
 
       - name: go test (race + cover)
         run: go test ./... -race -cover -covermode=atomic

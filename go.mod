@@ -1,6 +1,6 @@
 module github.com/6586x57890143/merlin
 
-go 1.26.5
+go 1.25.0
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
