@@ -5,16 +5,26 @@
 // through for a retroactive mass-report campaign, while preserving a
 // moderation trail and staying transparent to members about the retention
 // policy.
+//
+// Configuration is entirely DB-backed (internal/settings) and mutated via
+// this plugin's own /rotation configure commands (spec.MD §4a) — never
+// config.yaml. Because a guild's set of rotating channels can change at
+// runtime, Scheduler job registration isn't a one-time Init-time loop: it's
+// reconciled against current settings every time a guild becomes known
+// (SyncGuild, called by cmd/bot/main.go on GuildCreate) and every time
+// settings change (subscribed via core.EventConfigChanged).
 package rotation
 
 import (
 	"context"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
-	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/scheduler"
+	"github.com/6586x57890143/merlin/internal/settings"
 )
 
 // sweepInterval is how often each guild's archive-deletion sweep runs.
@@ -23,57 +33,135 @@ import (
 // an exact-to-the-second promise.
 const sweepInterval = time.Hour
 
-// Plugin implements core.Plugin. It registers, at Init time, one recurring
-// Scheduler job per configured rotating channel plus one archive-sweep job
-// per guild that has any rotating channels — see internal/scheduler for the
-// job-registration contract this relies on. No slash commands of its own:
-// /admin run-now (internal/scheduler) already covers manual triggering by
-// job key.
+// SettingsProvider is the narrow slice of internal/settings.Store this
+// plugin depends on, so unit tests can use an in-memory fake instead of a
+// live Postgres — mirrors the DiscordChannelOps/ArchiveStore seams already
+// used in this package.
+type SettingsProvider interface {
+	ModRoleIDs(guildID string) []string
+	RotationChannels(guildID string) []settings.RotationChannel
+	RotationChannel(guildID, channelID string) (settings.RotationChannel, bool)
+	UpsertRotationChannel(ctx context.Context, rc settings.RotationChannel) error
+	RemoveRotationChannel(ctx context.Context, guildID, channelID string) error
+}
+
+// Plugin implements core.Plugin. It registers slash commands through
+// core.CommandRouter and reconciles Scheduler jobs against
+// internal/settings' current state — see the package doc for why job
+// registration isn't a static Init-time loop.
 type Plugin struct {
 	ops      DiscordChannelOps
 	archives ArchiveStore
-	cfg      *config.Loader
+	settings SettingsProvider
 	audit    core.AuditWriter
 	bus      *core.EventBus
 	log      *slog.Logger
 	sched    core.Scheduler
+	commands *core.CommandRouter
 	now      func() time.Time
+
+	mu              sync.Mutex
+	sweepRegistered map[string]bool          // guild ID -> sweep job registered
+	registeredJobs  map[string]time.Duration // rotation job key -> interval it was registered with
 }
 
-func New() *Plugin {
-	return &Plugin{now: func() time.Time { return time.Now().UTC() }}
+// New constructs Plugin. settingsStore is passed directly rather than
+// through core.Deps — it's a cross-cutting dependency only a couple of
+// plugins need (rotation, adminconfig), unlike Deps' fields which every
+// plugin gets, mirroring how internal/scheduler and internal/audit already
+// take their own narrow settings-derived interfaces as constructor params.
+func New(settingsStore SettingsProvider) *Plugin {
+	return &Plugin{
+		settings:        settingsStore,
+		now:             func() time.Time { return time.Now().UTC() },
+		sweepRegistered: make(map[string]bool),
+		registeredJobs:  make(map[string]time.Duration),
+	}
 }
 
 func (p *Plugin) Name() string { return "rotation" }
 
 func (p *Plugin) Init(deps core.Deps) error {
 	p.ops = deps.Session
-	p.cfg = deps.Config
 	p.audit = deps.Audit
 	p.bus = deps.Bus
 	p.log = deps.Logger
 	p.sched = deps.Scheduler
+	p.commands = deps.Commands
 	p.archives = NewPostgresArchiveStore(deps.DB.Pool)
 
-	global := deps.Config.Global()
-	for guildID, gc := range global.Guilds {
-		for _, rc := range gc.RotatingChannels {
-			jobKey := scheduler.JobKey(guildID, "rotation:"+rc.ChannelID)
-			spec := core.CronSpec{Interval: time.Duration(rc.IntervalHours) * time.Hour}
-			if err := p.sched.Register(jobKey, spec, p.makeRotationJob(guildID, rc)); err != nil {
-				return err
-			}
-		}
-		if len(gc.RotatingChannels) > 0 {
-			sweepKey := scheduler.JobKey(guildID, "rotation-sweep")
-			if err := p.sched.Register(sweepKey, core.CronSpec{Interval: sweepInterval}, p.makeSweepJob(guildID)); err != nil {
-				return err
-			}
-		}
-	}
+	p.registerCommands()
+
+	deps.Bus.Subscribe(core.EventConfigChanged, p.Name(), func(ctx context.Context, ev core.Event) {
+		p.reconcile(ev.GuildID)
+	})
 	return nil
 }
 
 func (p *Plugin) Start(ctx context.Context) error { return nil }
 
 func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
+
+// SyncGuild reconciles guildID's Scheduler jobs against its current
+// settings. Call once per guild right after internal/settings.Store.Refresh
+// — at startup for every guild the bot is already in, and again whenever
+// the bot joins a new one (both driven by discordgo's GuildCreate event; see
+// cmd/bot/main.go).
+func (p *Plugin) SyncGuild(guildID string) {
+	p.reconcile(guildID)
+}
+
+// reconcile registers a Scheduler job for every currently-configured
+// rotating channel that doesn't have one yet (or whose interval changed —
+// Unregister+Register, since the Scheduler has no in-place spec update),
+// unregisters jobs for channels no longer configured, and ensures exactly
+// one archive-sweep job per guild.
+func (p *Plugin) reconcile(guildID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	sweepKey := scheduler.JobKey(guildID, "rotation-sweep")
+	if !p.sweepRegistered[guildID] {
+		if err := p.sched.Register(sweepKey, core.CronSpec{Interval: sweepInterval}, p.makeSweepJob(guildID)); err != nil {
+			p.log.Error("rotation: register sweep job", "guild", guildID, "err", err)
+		} else {
+			p.sweepRegistered[guildID] = true
+		}
+	}
+
+	guildPrefix := scheduler.JobKey(guildID, "rotation:")
+	current := make(map[string]bool)
+	for _, rc := range p.settings.RotationChannels(guildID) {
+		jobKey := scheduler.JobKey(guildID, "rotation:"+rc.ChannelID)
+		interval := time.Duration(rc.IntervalHours) * time.Hour
+		current[jobKey] = true
+
+		if existingInterval, ok := p.registeredJobs[jobKey]; ok {
+			if existingInterval == interval {
+				continue
+			}
+			// Interval changed since registration — the Scheduler has no
+			// in-place spec update, so drop and re-add.
+			if err := p.sched.Unregister(jobKey); err != nil {
+				p.log.Error("rotation: unregister job for interval change", "job", jobKey, "err", err)
+			}
+			delete(p.registeredJobs, jobKey)
+		}
+
+		channelID := rc.ChannelID
+		if err := p.sched.Register(jobKey, core.CronSpec{Interval: interval}, p.makeRotationJob(guildID, channelID)); err != nil {
+			p.log.Error("rotation: register job", "job", jobKey, "err", err)
+			continue
+		}
+		p.registeredJobs[jobKey] = interval
+	}
+
+	for jobKey := range p.registeredJobs {
+		if strings.HasPrefix(jobKey, guildPrefix) && !current[jobKey] {
+			if err := p.sched.Unregister(jobKey); err != nil {
+				p.log.Error("rotation: unregister removed channel's job", "job", jobKey, "err", err)
+			}
+			delete(p.registeredJobs, jobKey)
+		}
+	}
+}

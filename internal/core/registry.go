@@ -38,6 +38,12 @@ type Scheduler interface {
 	// Register adds a job under jobKey (by convention "guildID:name" for
 	// per-guild jobs). Returns an error if jobKey is already registered.
 	Register(jobKey string, spec CronSpec, fn func(ctx context.Context) error) error
+	// Unregister removes jobKey so it never fires again. A no-op if jobKey
+	// isn't registered. Exists so plugins whose set of jobs can change at
+	// runtime (rotation channels added/removed via /rotation configure, not
+	// just at startup) can keep the Scheduler in sync with current settings
+	// instead of leaving stale jobs behind.
+	Unregister(jobKey string) error
 	// RunNow executes the named job immediately, bypassing its normal
 	// schedule, and updates its persisted state as a normal run would.
 	RunNow(ctx context.Context, jobKey string) error
@@ -76,6 +82,7 @@ type Deps struct {
 	Bus       *EventBus
 	Config    *config.Loader
 	Perms     *Permissions
+	Commands  *CommandRouter
 	Audit     AuditWriter
 	Logger    *slog.Logger
 	DB        *storage.Store

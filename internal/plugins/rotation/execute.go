@@ -8,8 +8,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/settings"
 )
 
 const (
@@ -21,9 +21,18 @@ const (
 )
 
 // makeRotationJob returns the Scheduler job function for one guild's one
-// configured rotating channel.
-func (p *Plugin) makeRotationJob(guildID string, rc config.RotationConfig) func(ctx context.Context) error {
+// configured rotating channel. It re-fetches the channel's current settings
+// at execution time (not at registration time) so edits made via
+// /rotation configure take effect on the very next run without needing a
+// job re-register — only IntervalHours needs that (see reconcile in
+// rotation.go), since it drives the Scheduler's own due-check.
+func (p *Plugin) makeRotationJob(guildID, channelID string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
+		rc, ok := p.settings.RotationChannel(guildID, channelID)
+		if !ok {
+			p.log.Info("rotation: job fired for a channel no longer configured, skipping", "channel", channelID)
+			return nil
+		}
 		return p.rotate(ctx, guildID, rc)
 	}
 }
@@ -39,7 +48,7 @@ func (p *Plugin) makeRotationJob(guildID string, rc config.RotationConfig) func(
 // channel is touched at all, then both are flipped new-first. This
 // eliminates any window where the guild has zero live channel matching the
 // configured name — see the Milestone 3 plan for the full rationale.
-func (p *Plugin) rotate(ctx context.Context, guildID string, rc config.RotationConfig) error {
+func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.RotationChannel) error {
 	// 1. Preflight: re-fetch old channel, confirm guild ownership
 	// (confused-deputy check, spec.MD §4) rather than trusting rc.ChannelID
 	// blindly.
@@ -109,11 +118,8 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc config.RotationC
 	// so no separate "already archived" check is needed.
 	now := p.now()
 	archiveName := archiveChannelName(oldChannel.Name, now)
-	gc, err := p.cfg.Guild(guildID)
-	if err != nil {
-		return fmt.Errorf("rotation: guild config: %w", err)
-	}
-	if err := p.archiveOldChannel(oldChannel.ID, archiveName, rc.ArchiveCategoryID, guildID, gc.ModRoleIDs, rc); err != nil {
+	modRoleIDs := p.settings.ModRoleIDs(guildID)
+	if err := p.archiveOldChannel(oldChannel.ID, archiveName, rc.ArchiveCategoryID, guildID, modRoleIDs, rc); err != nil {
 		return fmt.Errorf("rotation: archive old channel: %w", err)
 	}
 
@@ -179,7 +185,7 @@ func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Chann
 // only happens on a retry after a prior run got this far, and reposting
 // would duplicate content in what will shortly become a very-visible
 // channel.
-func (p *Plugin) populateIfNeeded(channelID string, rc config.RotationConfig) error {
+func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel) error {
 	existing, err := p.ops.ChannelMessages(channelID, 1, "", "", "")
 	if err != nil {
 		return fmt.Errorf("check existing messages: %w", err)
@@ -188,7 +194,7 @@ func (p *Plugin) populateIfNeeded(channelID string, rc config.RotationConfig) er
 		return nil
 	}
 
-	for _, msg := range resolveSticky(rc, p.cfg.Global()) {
+	for _, msg := range resolveSticky(rc) {
 		sent, err := p.ops.ChannelMessageSend(channelID, msg)
 		if err != nil {
 			return fmt.Errorf("post sticky message: %w", err)
@@ -214,7 +220,7 @@ func (p *Plugin) revealNewChannel(channelID, finalName string, originalOverwrite
 	return err
 }
 
-func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, guildID string, modRoleIDs []string, rc config.RotationConfig) error {
+func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, guildID string, modRoleIDs []string, rc settings.RotationChannel) error {
 	_, err := p.ops.ChannelEditComplex(channelID, &discordgo.ChannelEdit{
 		Name:                 archiveName,
 		ParentID:             archiveCategoryID,
@@ -254,7 +260,7 @@ func denyEveryone(src []*discordgo.PermissionOverwrite, guildID string) []*disco
 // rc.ArchiveVisibility is "whitelist" — additionally allowing
 // rc.ArchiveWhitelistRoleIDs/ArchiveWhitelistUserIDs (spec.MD §6's
 // "archive_visibility: mod_only | whitelist").
-func archiveOverwrites(guildID string, modRoleIDs []string, rc config.RotationConfig) []*discordgo.PermissionOverwrite {
+func archiveOverwrites(guildID string, modRoleIDs []string, rc settings.RotationChannel) []*discordgo.PermissionOverwrite {
 	out := []*discordgo.PermissionOverwrite{
 		{ID: guildID, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
 	}

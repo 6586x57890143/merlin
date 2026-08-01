@@ -49,6 +49,13 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{states: make(map[string]JobState)}
 }
 
+// fakeSettings is a no-op statusChannelResolver — none of the scheduler unit
+// tests exercise alert routing via a real channel (TestThresholdFailuresAlertOnce
+// injects s.alertFunc directly instead), so an always-empty resolver is fine.
+type fakeSettings struct{}
+
+func (fakeSettings) StatusChannelID(guildID string) string { return "" }
+
 func (f *fakeStore) Get(ctx context.Context, jobKey string) (JobState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -87,7 +94,7 @@ func waitForCount(t *testing.T, counter *int32, want int32) {
 func TestTickRunsJobOnlyWhenDue(t *testing.T) {
 	store := newFakeStore()
 	clock := newTestClock()
-	s := New(store, testLogger())
+	s := New(store, fakeSettings{}, testLogger())
 	s.now = clock.Now
 
 	jobKey := JobKey("g1", "test")
@@ -132,7 +139,7 @@ func TestPersistedLastRunSurvivesRestart(t *testing.T) {
 	clock := newTestClock()
 	jobKey := JobKey("g1", "restart-test")
 
-	s1 := New(store, testLogger())
+	s1 := New(store, fakeSettings{}, testLogger())
 	s1.now = clock.Now
 	if err := s1.Register(jobKey, CronSpec{Interval: time.Hour}, func(ctx context.Context) error { return nil }); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -143,7 +150,7 @@ func TestPersistedLastRunSurvivesRestart(t *testing.T) {
 
 	// Simulate a process restart: a fresh Scheduler instance sharing the
 	// same backing store must not treat the job as never-attempted.
-	s2 := New(store, testLogger())
+	s2 := New(store, fakeSettings{}, testLogger())
 	s2.now = clock.Now
 	if err := s2.Register(jobKey, CronSpec{Interval: time.Hour}, func(ctx context.Context) error { return nil }); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -175,7 +182,7 @@ func TestBackoffForGrowsAndCaps(t *testing.T) {
 func TestThresholdFailuresAlertOnce(t *testing.T) {
 	store := newFakeStore()
 	clock := newTestClock()
-	s := New(store, testLogger())
+	s := New(store, fakeSettings{}, testLogger())
 	s.now = clock.Now
 
 	var alerts []string
@@ -203,7 +210,7 @@ func TestThresholdFailuresAlertOnce(t *testing.T) {
 
 func TestPerJobLockPreventsConcurrentDoubleRun(t *testing.T) {
 	store := newFakeStore()
-	s := New(store, testLogger())
+	s := New(store, fakeSettings{}, testLogger())
 
 	jobKey := JobKey("g1", "slow")
 	started := make(chan struct{})
@@ -250,7 +257,7 @@ func TestJitterDeterministicPerJobKey(t *testing.T) {
 func TestRunNowIgnoresScheduleAndUpdatesLastRun(t *testing.T) {
 	store := newFakeStore()
 	clock := newTestClock()
-	s := New(store, testLogger())
+	s := New(store, fakeSettings{}, testLogger())
 	s.now = clock.Now
 
 	jobKey := JobKey("g1", "manual")
@@ -297,7 +304,7 @@ func TestRegisterValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := New(newFakeStore(), testLogger())
+			s := New(newFakeStore(), fakeSettings{}, testLogger())
 			err := s.Register(tt.jobKey, tt.spec, tt.fn)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Register(%q): err=%v, wantErr=%v", tt.jobKey, err, tt.wantErr)
@@ -307,7 +314,7 @@ func TestRegisterValidation(t *testing.T) {
 }
 
 func TestRegisterDuplicateJobKeyFails(t *testing.T) {
-	s := New(newFakeStore(), testLogger())
+	s := New(newFakeStore(), fakeSettings{}, testLogger())
 	noop := func(ctx context.Context) error { return nil }
 	if err := s.Register("g1:job", CronSpec{Interval: time.Hour}, noop); err != nil {
 		t.Fatalf("first Register: %v", err)
@@ -318,7 +325,7 @@ func TestRegisterDuplicateJobKeyFails(t *testing.T) {
 }
 
 func TestRunNowUnknownJobFails(t *testing.T) {
-	s := New(newFakeStore(), testLogger())
+	s := New(newFakeStore(), fakeSettings{}, testLogger())
 	if err := s.RunNow(context.Background(), "g1:nope"); err == nil {
 		t.Fatal("expected RunNow on an unregistered job to fail")
 	}

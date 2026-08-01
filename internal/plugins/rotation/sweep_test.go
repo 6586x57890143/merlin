@@ -12,11 +12,14 @@ func timePtr(t time.Time) *time.Time { return &t }
 
 func setupSweep(t *testing.T) (*fakeOps, *fakeArchiveStore, *fakeAudit, *Plugin) {
 	t.Helper()
-	cfg := newTestLoader(t, guildYAMLFiniteRetention)
+	fs := newFakeSettings()
+	fs.modRoles["g1"] = []string{"modrole1"}
+	_ = fs.UpsertRotationChannel(context.Background(), finiteRetentionRC())
+
 	ops := newFakeOps()
 	archives := newFakeArchiveStore()
 	audit := &fakeAudit{}
-	p := newTestPlugin(ops, archives, audit, cfg, fixedNow)
+	p := newTestPlugin(ops, archives, audit, fs, fixedNow)
 	return ops, archives, audit, p
 }
 

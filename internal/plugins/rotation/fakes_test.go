@@ -5,16 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/settings"
 )
 
 func testLogger() *slog.Logger {
@@ -257,27 +254,69 @@ func (f *fakeAudit) Record(ctx context.Context, guildID, actorID, action, oldVal
 	return nil
 }
 
-func newTestLoader(t *testing.T, yamlContents string) *config.Loader {
-	t.Helper()
-	t.Setenv("DISCORD_BOT_TOKEN", "tok")
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte(yamlContents), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	l, err := config.NewLoader(path, testLogger())
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	return l
+// fakeSettings is an in-memory SettingsProvider for tests — mirrors
+// fakeArchiveStore's role, standing in for internal/settings.Store without
+// a live Postgres.
+type fakeSettings struct {
+	mu        sync.Mutex
+	modRoles  map[string][]string
+	rotations map[string]map[string]settings.RotationChannel // guildID -> channelID -> config
 }
 
-func newTestPlugin(ops *fakeOps, archives ArchiveStore, audit *fakeAudit, cfg *config.Loader, at time.Time) *Plugin {
+func newFakeSettings() *fakeSettings {
+	return &fakeSettings{
+		modRoles:  make(map[string][]string),
+		rotations: make(map[string]map[string]settings.RotationChannel),
+	}
+}
+
+func (f *fakeSettings) ModRoleIDs(guildID string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.modRoles[guildID]
+}
+
+func (f *fakeSettings) RotationChannels(guildID string) []settings.RotationChannel {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]settings.RotationChannel, 0, len(f.rotations[guildID]))
+	for _, rc := range f.rotations[guildID] {
+		out = append(out, rc)
+	}
+	return out
+}
+
+func (f *fakeSettings) RotationChannel(guildID, channelID string) (settings.RotationChannel, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rc, ok := f.rotations[guildID][channelID]
+	return rc, ok
+}
+
+func (f *fakeSettings) UpsertRotationChannel(ctx context.Context, rc settings.RotationChannel) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rotations[rc.GuildID] == nil {
+		f.rotations[rc.GuildID] = make(map[string]settings.RotationChannel)
+	}
+	f.rotations[rc.GuildID][rc.ChannelID] = rc
+	return nil
+}
+
+func (f *fakeSettings) RemoveRotationChannel(ctx context.Context, guildID, channelID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.rotations[guildID], channelID)
+	return nil
+}
+
+func newTestPlugin(ops *fakeOps, archives ArchiveStore, audit *fakeAudit, fs *fakeSettings, at time.Time) *Plugin {
 	// core.NewEventBus wants a logger; the bus itself isn't asserted on in
 	// these tests, just exercised so Publish doesn't panic.
 	return &Plugin{
 		ops:      ops,
 		archives: archives,
-		cfg:      cfg,
+		settings: fs,
 		audit:    audit,
 		bus:      core.NewEventBus(testLogger()),
 		log:      testLogger(),

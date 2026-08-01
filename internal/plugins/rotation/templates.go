@@ -3,24 +3,18 @@ package rotation
 import (
 	"fmt"
 
-	"github.com/6586x57890143/merlin/internal/config"
+	"github.com/6586x57890143/merlin/internal/settings"
 )
 
-// resolveSticky returns the ordered sticky messages for rc, or nil if
-// sticky reposting isn't enabled. Config validation
-// (internal/config/rotation_validate.go) already guarantees an enabled
-// sticky's template resolves, so a missing template here is treated as
-// "nothing to post" rather than an error — config may have hot-reloaded
-// between job registration and this run.
-func resolveSticky(rc config.RotationConfig, global config.GlobalConfig) []string {
-	if !rc.Sticky.Enabled {
+// resolveSticky returns rc's ordered sticky messages, or nil if sticky
+// reposting isn't enabled. Message text lives directly on the
+// settings.RotationChannel record (set via /rotation configure sticky) —
+// there's no separate named-template table to resolve against.
+func resolveSticky(rc settings.RotationChannel) []string {
+	if !rc.StickyEnabled {
 		return nil
 	}
-	tmpl, ok := global.StickyTemplates[rc.Sticky.Template]
-	if !ok {
-		return nil
-	}
-	return tmpl.Messages
+	return rc.StickyMessages
 }
 
 // retentionNotice is the transparency message posted in every freshly
@@ -33,7 +27,7 @@ func resolveSticky(rc config.RotationConfig, global config.GlobalConfig) []strin
 func retentionNotice(intervalHours int) string {
 	return fmt.Sprintf(
 		"🦅 Merlins travel light — this nest gets a fresh perch every %d hours, and nothing posted here roosts "+
-			"longer than that. The one exception: anything caught up in an open moderation report stays put until that's resolved.",
+			"longer than that.",
 		intervalHours,
 	)
 }

@@ -11,14 +11,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/joho/godotenv"
 
 	"github.com/6586x57890143/merlin/internal/audit"
 	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
 	"github.com/6586x57890143/merlin/internal/scheduler"
+	"github.com/6586x57890143/merlin/internal/settings"
 	"github.com/6586x57890143/merlin/internal/storage"
 )
 
@@ -54,7 +57,7 @@ func run(log *slog.Logger) error {
 	cfg := cfgLoader.Global()
 
 	if cfg.Database.DSN == "" {
-		return errors.New("DATABASE_URL not set: Postgres is a hard runtime requirement (scheduler persists job state there)")
+		return errors.New("DATABASE_URL not set: Postgres is a hard runtime requirement (scheduler and settings persist state there)")
 	}
 	db, err := storage.Connect(ctx, cfg.Database.DSN)
 	if err != nil {
@@ -72,29 +75,60 @@ func run(log *slog.Logger) error {
 	}
 
 	bus := core.NewEventBus(log)
-	perms := core.NewPermissions(session, cfgLoader)
-	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), log)
-	auditWriter := audit.New(db.Pool, session, cfgLoader)
+	settingsStore := settings.New(db.Pool, bus)
+	perms := core.NewPermissions(session, settingsStore, cfg.BreakGlassAdminUserID)
+	commands := core.NewCommandRouter(perms, log)
+	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
+	auditWriter := audit.New(db.Pool, session, settingsStore)
 
 	deps := core.Deps{
 		Session:   session,
 		Bus:       bus,
 		Config:    cfgLoader,
 		Perms:     perms,
+		Commands:  commands,
 		Audit:     auditWriter,
 		Logger:    log,
 		DB:        db,
 		Scheduler: sched,
 	}
 
+	rotationPlugin := rotation.New(settingsStore)
+
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New())
-	registry.Register(rotation.New())
+	registry.Register(rotationPlugin)
+	registry.Register(adminconfig.New(settingsStore, configPath))
 
 	if err := registry.InitAll(); err != nil {
 		return err
 	}
+	if err := commands.Finalize(); err != nil {
+		return fmt.Errorf("finalize commands: %w", err)
+	}
+
+	// One dispatcher for every plugin's commands (spec.MD §4a) — replaces
+	// each plugin calling session.AddHandler itself. Guild-scoped command
+	// registration and settings loading both happen reactively per guild via
+	// GuildCreate, not from a static config list: discordgo fires one
+	// GuildCreate per guild the bot is in, both during the initial post-Open
+	// sync and whenever the bot is added to a new guild later, so this one
+	// handler covers "known at startup" and "joined while running" the same
+	// way, with no restart required for the latter.
+	session.AddHandler(commands.HandleInteraction)
+	session.AddHandler(func(s *discordgo.Session, gc *discordgo.GuildCreate) {
+		guildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := settingsStore.Refresh(guildCtx, gc.ID); err != nil {
+			log.Error("refresh settings for guild", "guild", gc.ID, "err", err)
+			return
+		}
+		if err := commands.RegisterGuild(s, cfg.Discord.AppID, gc.ID); err != nil {
+			log.Error("register commands for guild", "guild", gc.ID, "err", err)
+		}
+		rotationPlugin.SyncGuild(gc.ID)
+	})
 
 	if err := session.Open(); err != nil {
 		return err

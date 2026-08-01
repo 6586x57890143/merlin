@@ -173,13 +173,13 @@ merlin/
 
 Every privileged command/action checks, in order:
 
-1\. Discord permission of the invoking user (native Discord perms).
+1\. Tiered authorization (`core.PermTier`: Public / Mod / Admin) evaluated centrally by `core.CommandRouter` before any handler runs — Mod passes for a configured mod role or an admin; Admin passes for a configured admin (or the break-glass bootstrap admin, §4a). A command's `PermSpec.Tier` is mandatory at registration (the zero value is invalid and fails startup), so "forgot to gate this command" fails loud, not silent.
 
-2\. An internal, config-driven allow-list of admin/mod role IDs (independent of Discord perms — a compromised or misconfigured Discord role doesn't automatically grant bot-admin).
+2\. An additive, per-action whitelist (`PermSpec.Action`, e.g. `"rotation.configure"`) independent of tier — lets a specific role/user be granted exactly one command's access without becoming a full mod or admin. Granting/revoking a whitelist entry is itself Admin-tier only, so a mod can never escalate their own or anyone else's access.
 
 3\. Role-hierarchy sanity: the bot can never assign/remove a role positioned above its own top role (Discord enforces this API-side too, but check and fail cleanly rather than surface a raw API error).
 
-4\. Slash commands registered with `default\_member\_permissions` set (not left open to `@everyone`), as a second layer beyond in-code checks.
+4\. Discord's own `default\_member\_permissions` is deliberately \*\*not\*\* used as a mirror of the tier/whitelist model above (see §4a for why) — it's left unset on Mod/Admin-tier commands so a whitelisted non-mod user, or a mod role with no matching Discord permission bit, is never blocked by Discord before layer 1-2 even run. Guild admins retain Discord's own separate per-command visibility overrides (Integrations settings) as an orthogonal, optional extra layer.
 
 
 
@@ -196,6 +196,60 @@ Every privileged command/action checks, in order:
 \- \*\*Minimal logging of content\*\*: log IDs, not message bodies, by default. This matters doubly here since the whole point of the rotation feature is \*not\* retaining chat content longer than necessary — your own logs shouldn't quietly become the retention you're trying to avoid.
 
 \- \*\*Dependency hygiene\*\*: `govulncheck` in CI, Dependabot auto-PRs, pinned versions in `go.mod`/`go.sum`.
+
+
+
+\---
+
+
+
+\## 4a. Command \& Permission Framework (Milestone 4)
+
+
+
+Milestones 0-3 grew commands ad hoc: each plugin called `session.AddHandler` and `discordgo.ApplicationCommand{Create,BulkOverwrite}` itself, and the Scheduler's `/admin run-now \<job\>` took a raw string with no way for a mod to discover what job names existed. Milestone 4 replaces this with one small framework every future plugin follows, so commands and permissions stay self-documenting without a central "admin" command dumping ground.
+
+
+
+\### Command ownership: one top-level command per plugin
+
+
+
+Commands are centered on plugins, not a central suite: each plugin registers its own top-level slash command (`/rotation`, `/scheduler`, `/config`, ...) with subcommands/subcommand-groups for its own actions, instead of everything living under one `/admin` tree. The only cross-cutting exception is `/config` (mod roles, admins, permission whitelists — concepts that don't belong to any single feature plugin).
+
+
+
+\### Central router, not per-plugin handlers
+
+
+
+A single `core.CommandRouter` (`internal/core/commands.go`) is the sole owner of registration and dispatch:
+
+
+
+\- Plugins call `Commands.Register`/`Handle`/`Autocomplete` during `Init`; nothing calls `session.AddHandler` or `ApplicationCommand\*` directly. This closes a real bug window from Milestones 0-3: two plugins independently calling `ApplicationCommandBulkOverwrite` would silently wipe out each other's commands, since bulk-overwrite replaces the whole scope, not just the caller's own commands. One writer, one bulk-overwrite per guild, after every plugin has registered.
+
+\- Commands are registered \*\*per guild\*\*, not globally — driven reactively by discordgo's `GuildCreate` event (fired for every guild the bot is in, both at startup and whenever it joins a new one), not a static config list. Guild-scoped commands appear instantly; global commands can take up to an hour to propagate, which is exactly the "why isn't my new command showing up" confusion global registration caused before.
+
+\- Every dispatch (command and autocomplete) runs under `recover()`. `discordgo`'s own event dispatch has no panic recovery of its own — this closes a gap that existed for every plugin's command handler before Milestone 4, not just new ones.
+
+\- `PermSpec` (Tier + Action, see §4) is mandatory per registered command/subcommand and validated at startup (`Finalize`), not left to convention.
+
+
+
+\### Discoverability: autocomplete and explicit list commands
+
+
+
+No command should require out-of-band knowledge (reading source, checking a config file) to use. Any option whose valid values come from bot state — the Scheduler's registered job keys, `/config permissions`'s known action names — uses Discord's native autocomplete instead of a raw string, and the owning plugin also exposes a plain `list` subcommand (`/scheduler list`, `/rotation list`, `/config permissions list`) so the same information is browsable without typing anything. Any option whose value is a channel/role/user ID uses Discord's native `Channel`/`Role`/`User` option types (an in-client searchable picker) instead of a raw string — there is no remaining command where a human needs to hand-copy a Discord snowflake ID.
+
+
+
+\### Self-serve configuration: DB-backed, not `config.yaml`
+
+
+
+Guild-scoped configuration (mod roles, admins, permission whitelists, rotation settings) is no longer file-based. `internal/settings` persists it in Postgres, cached per-guild in memory and refreshed on every mutation; every plugin that has configurable state exposes its own commands to change it (`/rotation configure`, `/config admins|mod-roles|permissions`) instead of requiring `.env`/`config.yaml` file access on the host. `config.yaml` is reduced to process bootstrap only: Discord token/App ID, DB DSN, log level, and one \*\*break-glass admin user ID\*\* (env-sourced, never DB-backed) that always satisfies Admin tier in every guild — the one thing that still needs host access, existing solely so a wiped or misconfigured guild's settings can never permanently lock the operator out. `/config setup` automates first-time bootstrap further by creating `#bot-audit-log`, `#bot-status`, and a mod role if a guild has none configured yet. A one-time `/config import` command seeds a guild's settings from a legacy `config.yaml`, for migrating an existing deployment or disaster recovery — never run automatically.
 
 
 
@@ -235,7 +289,7 @@ Key requirements:
 
 \- Per-job locking (in-process mutex now; a DB/Redis advisory lock later if you ever run multiple replicas) so a job can't double-run.
 
-\- A `/admin run-now <job>` command for testing without waiting for the interval, restricted to the internal mod allow-list.
+\- A `/scheduler run-now` command (Mod tier) for testing without waiting for the interval — the `job` option uses Discord autocomplete over the invoking guild's currently-registered job keys, and a companion `/scheduler list` subcommand shows every registered job plus last-run/next-due/failure-count with no typing required, so a mod never has to guess a job's name (see §4a).
 
 \- All timestamps stored and compared in UTC.
 
@@ -255,6 +309,20 @@ This is the priority feature: rotate `#general-chat` (or any configured channel)
 
 \### Per-channel config
 
+As of Milestone 4 (§4a), per-channel rotation config is DB-backed (`internal/settings`), not YAML — configured entirely through `/rotation configure` (Admin tier), using Discord's native `Channel`/`Role` option types instead of hand-copied snowflake IDs:
+
+
+
+\- `/rotation configure add <channel> <interval-hours> <archive-category> [retention-days] [visibility]` — registers a new rotation, `retention\_days` defaults to 7 (never 0; can be set to "never"), `visibility` defaults to `mod\_only` (`mod\_only` \| `whitelist` \| `export\_then\_delete` (future)).
+
+\- `/rotation configure edit` / `remove` — change or drop an existing rotation; `/rotation list` shows every configured rotation for the guild (channel, interval, next-due, retention, sticky status) with no typing required.
+
+\- `/rotation configure sticky <channel> <on\|off> [text]` — the re-posted sticky message shown in \#6 step 6; off by default.
+
+
+
+Conceptually this is the same shape as the old YAML sample it replaces:
+
 ```yaml
 
 channel\_id: "123456789012345678"
@@ -270,6 +338,8 @@ retention\_days: 7                            # minimum before permanent deletio
 sticky\_message\_template: "welcome\_general"   # re-post pins from archived channel, can be turned on and defaults to off
 
 ```
+
+— it's just DB rows configured via Discord commands now, not a file requiring host access to edit.
 
 
 
@@ -353,17 +423,19 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 
 | 1 | Core | Plugin registry, event bus, config loader, permission layer, unit tests |
 
-| 2 | Scheduler | Cron core with persisted last-run state, `/admin run-now` |
+| 2 | Scheduler | Cron core with persisted last-run state, `/scheduler run-now`/`list` |
 
 | 3 | Rotation | End-to-end `#general-chat` rotation in a test guild, audit log wired up |
 
-| 4 | Factions | Join-time faction picker, DB-backed membership |
+| 4 | Command Framework \& Self-Serve Config | `core.CommandRouter` (single registrar/dispatcher, per-guild registration), tiered+whitelist `PermSpec` authorization, `internal/settings` DB-backed guild config, `/config` (admins/mod-roles/permissions/setup/import), `/rotation configure`, autocomplete + `list` discoverability everywhere (see §4a) |
 
-| 5 | Audit/Admin | `#bot-audit-log` embeds, admin dashboard commands |
+| 5 | Factions | Join-time faction picker, DB-backed membership |
 
-| 6 | Reporting | Human-triage report routing |
+| 6 | Audit/Admin | Whatever isn't already covered by `/config` (§4a) — e.g. a richer `/config status`/health-check dashboard command, historical audit-log search/export |
 
-| 7 | Export (future) | Archived channel export to JSON/HTML before deletion, if still wanted |
+| 7 | Reporting | Human-triage report routing |
+
+| 8 | Export (future) | Archived channel export to JSON/HTML before deletion, if still wanted |
 
 
 

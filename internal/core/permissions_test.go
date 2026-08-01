@@ -1,124 +1,117 @@
 package core
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
-
-	"github.com/6586x57890143/merlin/internal/config"
 )
 
-func newTestLoader(t *testing.T, yaml string) *config.Loader {
-	t.Helper()
-	t.Setenv("DISCORD_BOT_TOKEN", "test-token")
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	l, err := config.NewLoader(path, testLogger())
-	if err != nil {
-		t.Fatalf("NewLoader: %v", err)
-	}
-	return l
+// fakeAuthData is an in-memory GuildAuthData for tests.
+type fakeAuthData struct {
+	modRoles  map[string][]string
+	admins    map[string][]string
+	overrides map[string]map[string]struct{ roleIDs, userIDs []string }
 }
 
-const testGuildYAML = `
-guilds:
-  "g1":
-    guild_id: "g1"
-    mod_role_ids: ["modrole"]
-    admin_user_ids: ["adminuser"]
-    audit_log_channel_id: "audit"
-    status_channel_id: "status"
-`
-
-func TestAuthorizeLayer1MissingDiscordPermission(t *testing.T) {
-	loader := newTestLoader(t, testGuildYAML)
-	perms := NewPermissions(nil, loader)
-
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		GuildID: "g1",
-		Member: &discordgo.Member{
-			Permissions: 0,
-			Roles:       []string{"modrole"},
-			User:        &discordgo.User{ID: "u1"},
-		},
-	}}
-
-	err := perms.Authorize(i, PermCheck{Required: discordgo.PermissionManageChannels, Action: "test"})
-	if err == nil {
-		t.Fatal("expected layer 1 denial")
+func newFakeAuthData() *fakeAuthData {
+	return &fakeAuthData{
+		modRoles:  make(map[string][]string),
+		admins:    make(map[string][]string),
+		overrides: make(map[string]map[string]struct{ roleIDs, userIDs []string }),
 	}
 }
 
-func TestAuthorizeLayer2NotOnAllowList(t *testing.T) {
-	loader := newTestLoader(t, testGuildYAML)
-	perms := NewPermissions(nil, loader)
+func (f *fakeAuthData) ModRoleIDs(guildID string) []string   { return f.modRoles[guildID] }
+func (f *fakeAuthData) AdminUserIDs(guildID string) []string { return f.admins[guildID] }
+func (f *fakeAuthData) ActionOverride(guildID, action string) (roleIDs, userIDs []string) {
+	byAction, ok := f.overrides[guildID]
+	if !ok {
+		return nil, nil
+	}
+	o, ok := byAction[action]
+	if !ok {
+		return nil, nil
+	}
+	return o.roleIDs, o.userIDs
+}
 
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		GuildID: "g1",
-		Member: &discordgo.Member{
-			Permissions: discordgo.PermissionManageChannels,
-			Roles:       []string{"someotherrole"},
-			User:        &discordgo.User{ID: "u1"},
-		},
+func memberInteraction(guildID, userID string, roles []string) *discordgo.InteractionCreate {
+	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		GuildID: guildID,
+		Member:  &discordgo.Member{Roles: roles, User: &discordgo.User{ID: userID}},
 	}}
+}
 
-	err := perms.Authorize(i, PermCheck{Required: discordgo.PermissionManageChannels, Action: "test"})
-	if err == nil {
-		t.Fatal("expected layer 2 denial: not on allow-list")
+func TestAuthorizePublicTierAlwaysPasses(t *testing.T) {
+	perms := NewPermissions(nil, newFakeAuthData(), "")
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{}}
+	if err := perms.Authorize(i, PermSpec{Tier: TierPublic}); err != nil {
+		t.Fatalf("expected TierPublic to always pass, got %v", err)
 	}
 }
 
-func TestAuthorizeSuccessViaModRole(t *testing.T) {
-	loader := newTestLoader(t, testGuildYAML)
-	perms := NewPermissions(nil, loader)
+func TestAuthorizeModTierRequiresModRoleOrAdmin(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.modRoles["g1"] = []string{"modrole"}
+	perms := NewPermissions(nil, auth, "")
 
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		GuildID: "g1",
-		Member: &discordgo.Member{
-			Permissions: discordgo.PermissionManageChannels,
-			Roles:       []string{"modrole"},
-			User:        &discordgo.User{ID: "u1"},
-		},
-	}}
-
-	if err := perms.Authorize(i, PermCheck{Required: discordgo.PermissionManageChannels, Action: "test"}); err != nil {
-		t.Fatalf("expected authorize to succeed via mod role, got %v", err)
+	if err := perms.Authorize(memberInteraction("g1", "u1", []string{"modrole"}), PermSpec{Tier: TierMod, Action: "test"}); err != nil {
+		t.Fatalf("expected mod role to pass TierMod, got %v", err)
+	}
+	if err := perms.Authorize(memberInteraction("g1", "u1", []string{"otherrole"}), PermSpec{Tier: TierMod, Action: "test"}); err == nil {
+		t.Fatal("expected a non-mod, non-whitelisted member to fail TierMod")
 	}
 }
 
-func TestAuthorizeSuccessViaAdminUserID(t *testing.T) {
-	loader := newTestLoader(t, testGuildYAML)
-	perms := NewPermissions(nil, loader)
+func TestAuthorizeAdminSatisfiesModTier(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.admins["g1"] = []string{"adminuser"}
+	perms := NewPermissions(nil, auth, "")
 
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		GuildID: "g1",
-		Member: &discordgo.Member{
-			Permissions: discordgo.PermissionManageChannels,
-			Roles:       []string{},
-			User:        &discordgo.User{ID: "adminuser"},
-		},
-	}}
-
-	if err := perms.Authorize(i, PermCheck{Required: discordgo.PermissionManageChannels, Action: "test"}); err != nil {
-		t.Fatalf("expected authorize to succeed via admin allow-list, got %v", err)
+	if err := perms.Authorize(memberInteraction("g1", "adminuser", nil), PermSpec{Tier: TierMod, Action: "test"}); err != nil {
+		t.Fatalf("expected admin to satisfy TierMod, got %v", err)
 	}
 }
 
-func TestAuthorizeUnknownGuild(t *testing.T) {
-	loader := newTestLoader(t, testGuildYAML)
-	perms := NewPermissions(nil, loader)
+func TestAuthorizeAdminTierRejectsMod(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.modRoles["g1"] = []string{"modrole"}
+	perms := NewPermissions(nil, auth, "")
 
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		GuildID: "unknown-guild",
-		Member:  &discordgo.Member{User: &discordgo.User{ID: "u1"}},
-	}}
+	if err := perms.Authorize(memberInteraction("g1", "u1", []string{"modrole"}), PermSpec{Tier: TierAdmin, Action: "test"}); err == nil {
+		t.Fatal("expected a mod (non-admin) to fail TierAdmin")
+	}
+}
 
-	if err := perms.Authorize(i, PermCheck{Action: "test"}); err == nil {
-		t.Fatal("expected error for unconfigured guild")
+func TestAuthorizeBreakGlassAdminAlwaysSatisfiesAdminTier(t *testing.T) {
+	perms := NewPermissions(nil, newFakeAuthData(), "breakglass-user")
+	if err := perms.Authorize(memberInteraction("unconfigured-guild", "breakglass-user", nil), PermSpec{Tier: TierAdmin, Action: "test"}); err != nil {
+		t.Fatalf("expected break-glass admin to satisfy TierAdmin even in an unconfigured guild, got %v", err)
+	}
+}
+
+func TestAuthorizeWhitelistGrantsAccessIndependentOfTier(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.overrides["g1"] = map[string]struct{ roleIDs, userIDs []string }{
+		"rotation.configure": {userIDs: []string{"whitelisted-user"}},
+	}
+	perms := NewPermissions(nil, auth, "")
+
+	// Not a mod, not an admin, but explicitly whitelisted for this action.
+	if err := perms.Authorize(memberInteraction("g1", "whitelisted-user", nil), PermSpec{Tier: TierAdmin, Action: "rotation.configure"}); err != nil {
+		t.Fatalf("expected whitelisted user to pass even TierAdmin for their granted action, got %v", err)
+	}
+	// The same user has no grant for a different action.
+	if err := perms.Authorize(memberInteraction("g1", "whitelisted-user", nil), PermSpec{Tier: TierAdmin, Action: "other.action"}); err == nil {
+		t.Fatal("expected the whitelist grant to be scoped to its own action only")
+	}
+}
+
+func TestAuthorizeNoMemberContextFails(t *testing.T) {
+	perms := NewPermissions(nil, newFakeAuthData(), "")
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{GuildID: "g1"}}
+	if err := perms.Authorize(i, PermSpec{Tier: TierMod, Action: "test"}); err == nil {
+		t.Fatal("expected a missing Member to fail authorization")
 	}
 }
 
@@ -148,7 +141,7 @@ func TestCanManageRoleHierarchy(t *testing.T) {
 		t.Fatalf("MemberAdd: %v", err)
 	}
 
-	perms := NewPermissions(session, nil)
+	perms := NewPermissions(session, newFakeAuthData(), "")
 
 	if err := perms.CanManageRole("g1", "low"); err != nil {
 		t.Fatalf("expected bot to manage role below it, got %v", err)
@@ -158,17 +151,5 @@ func TestCanManageRoleHierarchy(t *testing.T) {
 	}
 	if err := perms.CanManageRole("g1", "bot-role"); err == nil {
 		t.Fatal("expected denial for role at same position as bot's top role")
-	}
-}
-
-func TestRegisterCommandsFailsClosedWithoutDefaultPermissions(t *testing.T) {
-	cmds := []*discordgo.ApplicationCommand{
-		{Name: "dangerous"}, // no DefaultMemberPermissions set
-	}
-	// No network call should happen: validation fails before the session
-	// is ever used, so a nil session here is safe for this test.
-	err := RegisterCommands(nil, "app", "guild", cmds)
-	if err == nil {
-		t.Fatal("expected RegisterCommands to fail closed on missing DefaultMemberPermissions")
 	}
 }

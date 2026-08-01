@@ -1,6 +1,6 @@
-// Package ping is the reference plugin for Milestone 0: a trivial command
-// wired through the real Plugin lifecycle, so it's the concrete shape a
-// future plugin (scheduler, rotation, ...) drops into.
+// Package ping is the reference plugin: a trivial command wired through the
+// real Plugin lifecycle and the shared CommandRouter (spec.MD §4a), so it's
+// the concrete shape a future plugin drops into.
 package ping
 
 import (
@@ -11,40 +11,30 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
-type Plugin struct {
-	session *discordgo.Session
-}
+type Plugin struct{}
 
 func New() *Plugin { return &Plugin{} }
 
 func (p *Plugin) Name() string { return "ping" }
 
 func (p *Plugin) Init(deps core.Deps) error {
-	p.session = deps.Session
-	deps.Session.AddHandler(p.handleInteraction)
+	deps.Commands.RegisterCommand(&discordgo.ApplicationCommand{
+		Name:        "ping",
+		Description: "Health check - replies pong",
+	})
+	// /ping is intentionally public — TierPublic, the only tier that never
+	// requires an Action, unlike every other command (spec.MD §4a).
+	deps.Commands.Handle("ping", "", core.PermSpec{Tier: core.TierPublic}, handlePing)
 	return nil
 }
 
-func (p *Plugin) Start(ctx context.Context) error {
-	// /ping is intentionally public — no DefaultMemberPermissions is set,
-	// unlike every other command which must go through core.RegisterCommands
-	// and fail closed (spec.MD §4 layer 4).
-	cmd := &discordgo.ApplicationCommand{
-		Name:        "ping",
-		Description: "Health check - replies pong",
-	}
-	_, err := p.session.ApplicationCommandCreate(p.session.State.User.ID, "", cmd)
-	return err
-}
+func (p *Plugin) Start(ctx context.Context) error { return nil }
 
 func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 
-func (p *Plugin) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type != discordgo.InteractionApplicationCommand || i.ApplicationCommandData().Name != "ping" {
-		return
-	}
+func handlePing(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: "pong"},
+		Data: &discordgo.InteractionResponseData{Content: "kik-ong!"},
 	})
 }

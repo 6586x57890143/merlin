@@ -48,16 +48,9 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 		return p.archives.Delete(ctx, rec.ChannelID)
 	}
 
-	gc, err := p.cfg.Guild(guildID)
-	if err != nil {
-		return fmt.Errorf("guild config: %w", err)
-	}
 	expectedCategory := ""
-	for _, rc := range gc.RotatingChannels {
-		if rc.ChannelID == rec.SourceChannelID {
-			expectedCategory = rc.ArchiveCategoryID
-			break
-		}
+	if rc, ok := p.settings.RotationChannel(guildID, rec.SourceChannelID); ok {
+		expectedCategory = rc.ArchiveCategoryID
 	}
 	if expectedCategory == "" || ch.ParentID != expectedCategory {
 		// Rescue hatch: a mod moved this archived channel out of the

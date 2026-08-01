@@ -4,7 +4,9 @@ A production-grade, modular Discord bot for "The Melting Pot." See
 [`spec.MD`](./spec.MD) for the full design doc. This README covers what's
 built so far: Milestone 0 (scaffold, CI, Docker, `/ping`), Milestone 1
 (core plugin registry, event bus, permissions layer, config loader),
-Milestone 2 (scheduler / cron core), and Milestone 3 (channel rotation).
+Milestone 2 (scheduler / cron core), Milestone 3 (channel rotation), and
+Milestone 4 (command framework, tiered permissions, self-serve DB-backed
+config — spec.MD §4a).
 
 ## Bot permissions & intents
 
@@ -16,26 +18,34 @@ Milestone 2 (scheduler / cron core), and Milestone 3 (channel rotation).
   remove/re-add the bot):
   - `Manage Channels` (bit `16`) — create/rename/move/delete channels and
     edit permission overwrites, needed for channel rotation (Milestone 3).
+  - `Manage Roles` (bit `268435456`) — needed for `/config setup`
+    (Milestone 4) to create a default "Merlin Mod" role when a guild has
+    none configured yet; also required for any future faction-role
+    assignment (Milestone 5).
   - Least-privilege, per spec.MD §4: never `Administrator`; this list only
     grows when a landed milestone genuinely needs a new bit, and this
     section (plus the invite link below) is updated in the same PR.
 
-  **Current invite link** (scopes + the bits above):
+  **Current invite link** (scopes + the bits above, `16 | 268435456 = 268435472`):
   ```
-  https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=16
+  https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=268435472
   ```
   Have a server admin click this link and re-authorize whenever the
   permission bits change — it updates the bot's existing role rather than
   creating a duplicate.
 
 - **Command-level gates** (separate from the bot's own permissions above —
-  these govern which *members* can invoke a command): `/admin run-now`
-  requires `Manage Server` as its Discord-side gate
-  (`DefaultMemberPermissions`, layer 1/4 of spec.MD §4's authorization
-  model); the internal mod/admin allow-list (layer 2) is still checked
-  in-code before anything runs. Future milestones will add `Manage Roles`,
-  `Manage Messages`, and `View Audit Log` bot-role bits as the
-  factions/reporting plugins land — see `spec.MD` §4.
+  these govern which *members* can invoke a command): as of Milestone 4
+  (spec.MD §4a), every command declares a mandatory `core.PermSpec{Tier,
+  Action}` — `Public`, `Mod`, or `Admin` — checked centrally by
+  `core.CommandRouter` before any handler runs, plus an optional additive
+  per-action whitelist (`/config permissions grant`) for giving a specific
+  role/user exactly one command's access without making them a full mod.
+  Discord's own `DefaultMemberPermissions` is deliberately left unset on
+  Mod/Admin commands (see spec.MD §4a for why) — the internal tier/whitelist
+  check is the sole real gate. Who counts as "mod" or "admin" is itself
+  DB-backed and configured via `/config mod-roles`/`/config admins` — see
+  "First-time setup" below.
 - **Gateway intents**: `GUILDS` only. `GUILD_MEMBERS` and `MESSAGE_CONTENT`
   are privileged intents requiring Discord approval at scale, and neither is
   requested until a specific plugin genuinely needs it.
@@ -43,10 +53,16 @@ Milestone 2 (scheduler / cron core), and Milestone 3 (channel rotation).
 ## Local development
 
 ```sh
-cp .env.example .env            # fill in DISCORD_BOT_TOKEN, DISCORD_APP_ID
-cp config.example.yaml config.yaml   # fill in your guild/role/channel IDs
+cp .env.example .env            # fill in DISCORD_BOT_TOKEN, DISCORD_APP_ID,
+                                 # and MERLIN_BREAK_GLASS_ADMIN_USER_ID (your
+                                 # own Discord user ID)
+cp config.example.yaml config.yaml   # bootstrap-only as of Milestone 4 — just log_level
 docker compose up --build
 ```
+
+Guild/role/channel config no longer lives in `config.yaml` (Milestone 4,
+spec.MD §4a) — it's configured entirely through Discord commands once the
+bot is running. See "First-time setup" below.
 
 Or run natively (Postgres is a hard runtime requirement — the scheduler
 persists per-job last-run state there, and the bot exits at startup if
@@ -88,8 +104,8 @@ secrets/guild config and must be created there once by hand:
 
 ```sh
 # one-time setup on the VPS, in /home/deploy/merlin
-cp .env.example .env                  # fill in real values
-cp config.example.yaml config.yaml    # fill in real guild/role/channel IDs
+cp .env.example .env                  # fill in real values, incl. MERLIN_BREAK_GLASS_ADMIN_USER_ID
+cp config.example.yaml config.yaml    # bootstrap-only (log_level) — see "First-time setup"
 ```
 
 The `deploy` SSH user must be able to run `docker`/`docker compose` without an
@@ -106,9 +122,12 @@ past 5 consecutive failures, the scheduler posts an alert to the guild's
 configured `status_channel_id` and falls back to the job's normal interval
 rather than retrying forever.
 
-A mod/admin-only `/admin run-now <job>` command (layered authorization: an
-explicit `DefaultMemberPermissions` bit plus the internal allow-list check)
-triggers any registered job immediately, for testing.
+`/scheduler run-now` (Mod tier) triggers any registered job immediately,
+for testing — the `job` option autocompletes over the invoking guild's
+currently-registered job keys, so there's nothing to memorize or look up
+in code. `/scheduler list` shows every registered job for the guild
+(last-run, next-due, consecutive failures) as a plain, no-typing-required
+alternative to autocomplete.
 
 ## Channel rotation
 
@@ -116,8 +135,10 @@ triggers any registered job immediately, for testing.
 channel (e.g. `#general-chat`) is periodically given a clean history while
 preserving a moderation trail, specifically to reduce the window of
 retained content a bad-faith actor can trawl through for a retroactive
-mass-report campaign. Configure it per guild under `rotating_channels` in
-`config.yaml` (see `config.example.yaml`).
+mass-report campaign. As of Milestone 4, it's configured per guild entirely
+through `/rotation configure add|edit|remove|sticky` (Admin tier, using
+Discord's native channel/role pickers instead of raw IDs) — `/rotation
+list` shows every configured rotation for the guild. See spec.MD §6.
 
 Each rotation cycle: creates a fully-configured replacement channel
 **hidden** from members, populates it (sticky messages + a birdlike
@@ -148,15 +169,23 @@ If a mod manually moves an archived channel out of its configured archive
 category before the sweep runs, that's treated as an implicit "keep this
 one" and it's never deleted.
 
-No new slash commands: `/admin run-now job:rotation:<channelID>` (or
-`job:rotation-sweep`) already covers manually triggering either job.
+`/scheduler run-now` (with autocomplete over registered job keys) already
+covers manually triggering either the per-channel rotation job or the
+`rotation-sweep` job — rotation itself adds no separate manual-trigger
+command, just its own `/rotation configure`/`list` for settings.
 
 ## Architecture
 
-- `internal/core` — plugin registry/lifecycle, event bus, permissions,
-  shared Discord session.
-- `internal/config` — per-guild YAML config + env-sourced secrets, with
-  SIGHUP hot-reload for non-secret values on Linux.
+- `internal/core` — plugin registry/lifecycle, event bus, tiered+whitelist
+  permissions (`permissions.go`), the single command router/dispatcher
+  (`commands.go`, spec.MD §4a), shared Discord session.
+- `internal/config` — process-bootstrap-only config as of Milestone 4: log
+  level, Discord token/App ID, DB DSN, and the break-glass admin user ID.
+  No guild/role/channel config here anymore.
+- `internal/settings` — DB-backed, per-guild config (mod roles, admins,
+  permission whitelists, rotation settings), in-memory cached and
+  invalidated on every mutation via `core.EventConfigChanged`; the thing
+  `/config` and `/rotation configure` actually read/write.
 - `internal/storage` — Postgres connection pool, migration runner
   (`storage.Migrate`, applied automatically at startup), and SQL migrations.
 - `internal/scheduler` — cron core (see above); itself a `core.Plugin` and
@@ -165,7 +194,35 @@ No new slash commands: `/admin run-now job:rotation:<channelID>` (or
   embed, behind `Deps.Audit`.
 - `internal/plugins/ping` — reference plugin exercising the full lifecycle.
 - `internal/plugins/rotation` — channel rotation (see above).
+- `internal/plugins/adminconfig` — the cross-cutting `/config` command tree
+  (admins/mod-roles/permissions/setup/import) — the one exception to "one
+  top-level command per plugin," since these concepts don't belong to any
+  single feature plugin (spec.MD §4a).
 
 Every plugin implements the `core.Plugin` interface and is registered at
 startup in `cmd/bot/main.go` — no dynamic/hot-loading, per `spec.MD`
 Design Principle 1.
+
+## First-time setup
+
+Once the bot is invited (see the invite link above) and running:
+
+1. **Invite the bot** to your guild via the link above (a server admin must
+   do this).
+2. **Run `/config setup`** as the break-glass admin (the Discord user whose
+   ID you set as `MERLIN_BREAK_GLASS_ADMIN_USER_ID` — they always pass
+   Admin tier regardless of DB state, so this works on a guild with zero
+   configured admins). This auto-creates `#bot-audit-log`, `#bot-status`,
+   and a "Merlin Mod" role for whatever isn't already configured.
+3. **Run `/config admins add`** to add real admins beyond the break-glass
+   account, and `/config mod-roles add` to designate mod role(s) — both
+   Admin tier.
+4. **Configure rotation** with `/rotation configure add` (Admin tier) for
+   any channel you want periodically refreshed.
+5. Optionally, **`/config permissions grant <action> <role-or-user>`** to
+   give a specific non-mod user or role access to one narrow action (e.g.
+   `rotation.configure`) without making them a full mod.
+
+`/config import` exists only for migrating a pre-Milestone-4 deployment's
+`config.yaml` guild settings into the DB once — new deployments never need
+it.

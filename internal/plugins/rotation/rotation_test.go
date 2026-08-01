@@ -8,71 +8,43 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/6586x57890143/merlin/internal/config"
+	"github.com/6586x57890143/merlin/internal/settings"
 )
 
-const guildYAMLFiniteRetention = `
-guilds:
-  "g1":
-    guild_id: "g1"
-    mod_role_ids: ["modrole1"]
-    audit_log_channel_id: "audit"
-    status_channel_id: "status"
-    rotating_channels:
-      - channel_id: "old1"
-        interval_hours: 24
-        archive_category_id: "archivecat"
-        archive_visibility: mod_only
-        retention_days: 7
-        sticky:
-          enabled: true
-          template: welcome
-sticky_templates:
-  welcome:
-    messages: ["hello!"]
-`
+func retentionDaysPtr(d int) *int { return &d }
 
-const guildYAMLWhitelistVisibility = `
-guilds:
-  "g1":
-    guild_id: "g1"
-    mod_role_ids: ["modrole1"]
-    audit_log_channel_id: "audit"
-    status_channel_id: "status"
-    rotating_channels:
-      - channel_id: "old1"
-        interval_hours: 24
-        archive_category_id: "archivecat"
-        archive_visibility: whitelist
-        archive_whitelist_role_ids: ["vip-role"]
-        archive_whitelist_user_ids: ["vip-user"]
-        retention_days: 7
-`
+func finiteRetentionRC() settings.RotationChannel {
+	return settings.RotationChannel{
+		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
+		RetentionDays: retentionDaysPtr(7),
+		StickyEnabled: true, StickyMessages: []string{"hello!"},
+	}
+}
 
-const guildYAMLForeverRetention = `
-guilds:
-  "g1":
-    guild_id: "g1"
-    mod_role_ids: ["modrole1"]
-    audit_log_channel_id: "audit"
-    status_channel_id: "status"
-    rotating_channels:
-      - channel_id: "old1"
-        interval_hours: 24
-        archive_category_id: "archivecat"
-        archive_visibility: mod_only
-`
+func whitelistVisibilityRC() settings.RotationChannel {
+	return settings.RotationChannel{
+		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		ArchiveCategoryID: "archivecat", ArchiveVisibility: "whitelist",
+		ArchiveWhitelistRoleIDs: []string{"vip-role"}, ArchiveWhitelistUserIDs: []string{"vip-user"},
+		RetentionDays: retentionDaysPtr(7),
+	}
+}
+
+func foreverRetentionRC() settings.RotationChannel {
+	return settings.RotationChannel{
+		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
+	}
+}
 
 var fixedNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-func setupRotation(t *testing.T, yamlContents string) (*fakeOps, *fakeArchiveStore, *fakeAudit, *Plugin, config.RotationConfig) {
+func setupRotation(t *testing.T, rc settings.RotationChannel) (*fakeOps, *fakeArchiveStore, *fakeAudit, *Plugin, settings.RotationChannel) {
 	t.Helper()
-	cfg := newTestLoader(t, yamlContents)
-	gc, err := cfg.Guild("g1")
-	if err != nil {
-		t.Fatalf("Guild: %v", err)
-	}
-	rc := gc.RotatingChannels[0]
+	fs := newFakeSettings()
+	fs.modRoles["g1"] = []string{"modrole1"}
+	_ = fs.UpsertRotationChannel(context.Background(), rc)
 
 	ops := newFakeOps()
 	ops.addChannel(&discordgo.Channel{
@@ -89,12 +61,12 @@ func setupRotation(t *testing.T, yamlContents string) (*fakeOps, *fakeArchiveSto
 
 	archives := newFakeArchiveStore()
 	audit := &fakeAudit{}
-	p := newTestPlugin(ops, archives, audit, cfg, fixedNow)
+	p := newTestPlugin(ops, archives, audit, fs, fixedNow)
 	return ops, archives, audit, p, rc
 }
 
 func TestRotateFullCycle(t *testing.T) {
-	ops, archives, audit, p, rc := setupRotation(t, guildYAMLFiniteRetention)
+	ops, archives, audit, p, rc := setupRotation(t, finiteRetentionRC())
 
 	if err := p.rotate(context.Background(), "g1", rc); err != nil {
 		t.Fatalf("rotate: %v", err)
@@ -160,7 +132,7 @@ func TestRotateFullCycle(t *testing.T) {
 }
 
 func TestRotateWhitelistVisibilityGrantsExtraAccess(t *testing.T) {
-	ops, _, _, p, rc := setupRotation(t, guildYAMLWhitelistVisibility)
+	ops, _, _, p, rc := setupRotation(t, whitelistVisibilityRC())
 
 	if err := p.rotate(context.Background(), "g1", rc); err != nil {
 		t.Fatalf("rotate: %v", err)
@@ -199,7 +171,7 @@ func TestRotateWhitelistVisibilityGrantsExtraAccess(t *testing.T) {
 }
 
 func TestRotateForeverRetentionNeverDue(t *testing.T) {
-	_, archives, _, p, rc := setupRotation(t, guildYAMLForeverRetention)
+	_, archives, _, p, rc := setupRotation(t, foreverRetentionRC())
 
 	if err := p.rotate(context.Background(), "g1", rc); err != nil {
 		t.Fatalf("rotate: %v", err)
@@ -229,7 +201,7 @@ func TestRotateFailureLeavesNoLaterStepApplied(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ops, archives, audit, p, rc := setupRotation(t, guildYAMLFiniteRetention)
+			ops, archives, audit, p, rc := setupRotation(t, finiteRetentionRC())
 			ops.failOnCall[tt.failMethod] = tt.failOnCall
 
 			err := p.rotate(context.Background(), "g1", rc)
@@ -255,7 +227,7 @@ func TestRotateFailureLeavesNoLaterStepApplied(t *testing.T) {
 }
 
 func TestRotateFailureArchivingOldLeavesDualVisibleWindow(t *testing.T) {
-	ops, archives, audit, p, rc := setupRotation(t, guildYAMLFiniteRetention)
+	ops, archives, audit, p, rc := setupRotation(t, finiteRetentionRC())
 	// The 2nd ChannelEditComplex call is the "archive old" step (the 1st is
 	// "reveal new"). This is the accepted trade-off from the Milestone 3
 	// design: a brief window where both channels are visible under the
@@ -293,7 +265,7 @@ func TestRotateFailureArchivingOldLeavesDualVisibleWindow(t *testing.T) {
 }
 
 func TestRotateRetryAfterArchiveFailureIsIdempotent(t *testing.T) {
-	ops, archives, audit, p, rc := setupRotation(t, guildYAMLFiniteRetention)
+	ops, archives, audit, p, rc := setupRotation(t, finiteRetentionRC())
 	ops.failOnCall["ChannelEditComplex"] = 2 // fail archiving old on the first attempt only
 
 	if err := p.rotate(context.Background(), "g1", rc); err == nil {
@@ -349,7 +321,7 @@ func TestRotateRetryAfterArchiveFailureIsIdempotent(t *testing.T) {
 }
 
 func TestRotateChannelCapPreflightBlocksRotation(t *testing.T) {
-	ops, _, _, p, rc := setupRotation(t, guildYAMLFiniteRetention)
+	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
 	for i := range maxChannelsPerGuild {
 		ops.addChannel(&discordgo.Channel{ID: intToID(i), GuildID: "g1", Name: intToID(i)})
 	}

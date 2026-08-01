@@ -21,8 +21,18 @@ golangci-lint run   # if installed locally; otherwise CI will run it
   and is registered in `cmd/bot/main.go` — no other wiring.
 - Plugins communicate only through `core.EventBus`, never by importing each
   other's packages.
-- Any privileged command handler must call `core.Permissions.Authorize`
-  before acting, and register commands via `core.RegisterCommands` (which
-  fails closed on missing `DefaultMemberPermissions`) unless the command is
-  deliberately public.
+- One top-level slash command per plugin (`/rotation`, `/scheduler`, ...),
+  registered via `core.CommandRouter.RegisterCommand`/`Handle` during
+  `Init` — never call `session.AddHandler` or `discordgo.ApplicationCommand*`
+  directly from a plugin (see `spec.MD` §4a). Every leaf handler requires an
+  explicit `core.PermSpec{Tier, Action}`; `Finalize()` fails startup if any
+  registered subcommand is missing one, so an ungated command is a build-time
+  failure, not a runtime surprise.
+- Any option whose valid values come from bot state (job keys, action
+  names, ...) gets Discord autocomplete plus a plain `list` subcommand; any
+  option that's a channel/role/user ID uses the native
+  `Channel`/`Role`/`User` option type, never a raw string (`spec.MD` §4a).
+- Guild-scoped config lives in `internal/settings` (Postgres-backed), not
+  `config.yaml` — expose new configurable state through your plugin's own
+  commands, not a file admins need host access to edit.
 - Log IDs, not message content, by default (see `spec.MD` §4).

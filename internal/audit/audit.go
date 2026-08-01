@@ -11,19 +11,23 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/6586x57890143/merlin/internal/config"
 )
+
+// channelResolver is the narrow view of guild settings Writer needs,
+// implemented by internal/settings.Store.
+type channelResolver interface {
+	AuditLogChannelID(guildID string) string
+}
 
 // Writer implements core.AuditWriter.
 type Writer struct {
-	pool    *pgxpool.Pool
-	session *discordgo.Session
-	cfg     *config.Loader
+	pool     *pgxpool.Pool
+	session  *discordgo.Session
+	settings channelResolver
 }
 
-func New(pool *pgxpool.Pool, session *discordgo.Session, cfg *config.Loader) *Writer {
-	return &Writer{pool: pool, session: session, cfg: cfg}
+func New(pool *pgxpool.Pool, session *discordgo.Session, settings channelResolver) *Writer {
+	return &Writer{pool: pool, session: session, settings: settings}
 }
 
 // Record inserts an append-only audit_log row and posts a matching embed to
@@ -42,9 +46,9 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 		return fmt.Errorf("audit: record: %w", err)
 	}
 
-	gc, err := w.cfg.Guild(guildID)
-	if err != nil {
-		return fmt.Errorf("audit: resolve guild config: %w", err)
+	channelID := w.settings.AuditLogChannelID(guildID)
+	if channelID == "" {
+		return fmt.Errorf("audit: guild %s has no audit log channel configured", guildID)
 	}
 
 	embed := &discordgo.MessageEmbed{
@@ -61,7 +65,7 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "New", Value: newValue, Inline: true})
 	}
 
-	if _, err := w.session.ChannelMessageSendEmbed(gc.AuditLogChannelID, embed); err != nil {
+	if _, err := w.session.ChannelMessageSendEmbed(channelID, embed); err != nil {
 		return fmt.Errorf("audit: post embed: %w", err)
 	}
 	return nil

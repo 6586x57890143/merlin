@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/robfig/cron/v3"
 
-	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -30,6 +30,12 @@ type CronSpec = core.CronSpec
 // retry/backoff and, past the failure threshold, a status-channel alert.
 type JobFunc func(ctx context.Context) error
 
+// statusChannelResolver is the narrow view of guild settings Scheduler needs
+// for failure alerting, implemented by internal/settings.Store.
+type statusChannelResolver interface {
+	StatusChannelID(guildID string) string
+}
+
 const (
 	tickInterval           = 30 * time.Second
 	maxConsecutiveFailures = 5
@@ -41,7 +47,7 @@ const (
 // JobKey namespaces a job name to a guild, matching the "guild + job name"
 // key spec.MD §5 describes for persisted last-run state. Every per-guild job
 // (rotation, etc.) should use this convention so alerting (which recovers
-// the guild ID from the key) and /admin run-now work correctly.
+// the guild ID from the key) and /scheduler run-now work correctly.
 func JobKey(guildID, name string) string {
 	return guildID + ":" + name
 }
@@ -77,12 +83,12 @@ func (j *registeredJob) unlock() {
 // it via Deps.Scheduler). Construct with New, wire into Deps.Scheduler, and
 // register it with the Registry like any other plugin.
 type Scheduler struct {
-	store JobStateStore
-	log   *slog.Logger
+	store    JobStateStore
+	log      *slog.Logger
+	settings statusChannelResolver
 
-	session *discordgo.Session
-	cfg     *config.Loader
-	perms   *core.Permissions
+	session  *discordgo.Session
+	commands *core.CommandRouter
 
 	cron *cron.Cron
 	now  func() time.Time
@@ -97,13 +103,14 @@ type Scheduler struct {
 	alertFunc func(ctx context.Context, jobKey, message string) error
 }
 
-func New(store JobStateStore, log *slog.Logger) *Scheduler {
+func New(store JobStateStore, settings statusChannelResolver, log *slog.Logger) *Scheduler {
 	return &Scheduler{
-		store: store,
-		log:   log,
-		jobs:  make(map[string]*registeredJob),
-		cron:  cron.New(),
-		now:   func() time.Time { return time.Now().UTC() },
+		store:    store,
+		settings: settings,
+		log:      log,
+		jobs:     make(map[string]*registeredJob),
+		cron:     cron.New(),
+		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -111,38 +118,41 @@ func (s *Scheduler) Name() string { return "scheduler" }
 
 func (s *Scheduler) Init(deps core.Deps) error {
 	s.session = deps.Session
-	s.perms = deps.Perms
-	s.cfg = deps.Config
-	deps.Session.AddHandler(s.handleInteraction)
-	return nil
-}
+	s.commands = deps.Commands
 
-func (s *Scheduler) Start(ctx context.Context) error {
 	cmd := &discordgo.ApplicationCommand{
-		Name:                     "admin",
-		Description:              "Admin operations",
-		DefaultMemberPermissions: permPtr(discordgo.PermissionManageGuild),
+		Name:        "scheduler",
+		Description: "Inspect and manually trigger registered background jobs",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "list",
+				Description: "List every background job registered for this server, with its status",
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "run-now",
-				Description: "Immediately run a scheduled job, bypassing its normal interval",
+				Description: "Immediately run a job, bypassing its normal interval",
 				Options: []*discordgo.ApplicationCommandOption{
 					{
-						Type:        discordgo.ApplicationCommandOptionString,
-						Name:        "job",
-						Description: "Job name, as registered (without the guild prefix)",
-						Required:    true,
+						Type:         discordgo.ApplicationCommandOptionString,
+						Name:         "job",
+						Description:  "Which job to run",
+						Required:     true,
+						Autocomplete: true,
 					},
 				},
 			},
 		},
 	}
-	appID := s.cfg.Global().Discord.AppID
-	if err := core.RegisterCommands(s.session, appID, "", []*discordgo.ApplicationCommand{cmd}); err != nil {
-		return fmt.Errorf("scheduler: register admin commands: %w", err)
-	}
+	s.commands.RegisterCommand(cmd)
+	s.commands.Handle("scheduler", "list", core.PermSpec{Tier: core.TierMod, Action: "scheduler.list"}, s.handleList)
+	s.commands.Handle("scheduler", "run-now", core.PermSpec{Tier: core.TierMod, Action: "scheduler.run_now"}, s.handleRunNow)
+	s.commands.Autocomplete("scheduler", "run-now", s.autocompleteJob)
+	return nil
+}
 
+func (s *Scheduler) Start(ctx context.Context) error {
 	if _, err := s.cron.AddFunc("@every "+tickInterval.String(), func() { s.tick(context.Background()) }); err != nil {
 		return fmt.Errorf("scheduler: schedule tick: %w", err)
 	}
@@ -193,6 +203,17 @@ func (s *Scheduler) Register(jobKey string, spec CronSpec, fn func(ctx context.C
 		fn:     fn,
 		jitter: jitterFor(jobKey, spec.Interval),
 	}
+	return nil
+}
+
+// Unregister removes jobKey so it never fires again. A no-op if jobKey
+// isn't registered; safe to call even while the job is mid-run (its
+// in-flight execution finishes normally, it just won't be picked up by any
+// later tick).
+func (s *Scheduler) Unregister(jobKey string) error {
+	s.mu.Lock()
+	delete(s.jobs, jobKey)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -250,20 +271,39 @@ func (s *Scheduler) isDue(ctx context.Context, j *registeredJob) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	now := s.now()
+	return jobIsDue(st, j.spec.Interval, j.jitter, s.now()), nil
+}
 
+func jobIsDue(st JobState, interval, jitter time.Duration, now time.Time) bool {
 	switch {
 	case st.ConsecutiveFailures == 0 && !st.HasLastRun:
-		return true, nil
+		return true
 	case st.ConsecutiveFailures > 0 && st.ConsecutiveFailures < maxConsecutiveFailures:
-		return !now.Before(st.LastAttempt.Add(backoffFor(st.ConsecutiveFailures))), nil
+		return !now.Before(st.LastAttempt.Add(backoffFor(st.ConsecutiveFailures)))
 	default:
 		anchor := st.LastAttempt
 		if st.HasLastRun {
 			anchor = st.LastRun
 		}
-		return !now.Before(anchor.Add(j.spec.Interval).Add(j.jitter)), nil
+		return !now.Before(anchor.Add(interval).Add(jitter))
 	}
+}
+
+// nextDue estimates when j will next become due, for /scheduler list's
+// benefit — an estimate, not a promise: a currently-failing job's real next
+// attempt depends on backoff, which resets on the next success.
+func nextDue(st JobState, interval, jitter time.Duration) (time.Time, bool) {
+	if st.ConsecutiveFailures == 0 && !st.HasLastRun {
+		return time.Time{}, false // due now
+	}
+	if st.ConsecutiveFailures > 0 && st.ConsecutiveFailures < maxConsecutiveFailures {
+		return st.LastAttempt.Add(backoffFor(st.ConsecutiveFailures)), true
+	}
+	anchor := st.LastAttempt
+	if st.HasLastRun {
+		anchor = st.LastRun
+	}
+	return anchor.Add(interval).Add(jitter), true
 }
 
 func (s *Scheduler) execute(ctx context.Context, j *registeredJob) error {
@@ -298,45 +338,88 @@ func (s *Scheduler) alert(ctx context.Context, jobKey, msg string) {
 		s.log.Error("scheduler: alert: job key has no guild prefix, cannot route alert", "job", jobKey)
 		return
 	}
-	gc, err := s.cfg.Guild(guildID)
-	if err != nil {
-		s.log.Error("scheduler: alert: no guild config", "job", jobKey, "err", err)
+	channelID := s.settings.StatusChannelID(guildID)
+	if channelID == "" {
+		s.log.Error("scheduler: alert: no status channel configured", "job", jobKey)
 		return
 	}
-	if _, err := s.session.ChannelMessageSend(gc.StatusChannelID, msg); err != nil {
+	if _, err := s.session.ChannelMessageSend(channelID, msg); err != nil {
 		s.log.Error("scheduler: alert: send failed", "job", jobKey, "err", err)
 	}
 }
 
-func (s *Scheduler) handleInteraction(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type != discordgo.InteractionApplicationCommand {
-		return
-	}
-	data := i.ApplicationCommandData()
-	if data.Name != "admin" || len(data.Options) == 0 || data.Options[0].Name != "run-now" {
-		return
-	}
-
-	var jobName string
-	for _, opt := range data.Options[0].Options {
-		if opt.Name == "job" {
-			jobName = opt.StringValue()
+// jobsForGuild returns guildID's registered jobs (bare name, guild prefix
+// stripped), sorted for stable output.
+func (s *Scheduler) jobsForGuild(guildID string) []*registeredJob {
+	prefix := guildID + ":"
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*registeredJob
+	for key, j := range s.jobs {
+		if strings.HasPrefix(key, prefix) {
+			out = append(out, j)
 		}
 	}
+	sort.Slice(out, func(i, k int) bool { return out[i].key < out[k].key })
+	return out
+}
 
-	if err := s.perms.Authorize(i, core.PermCheck{Required: discordgo.PermissionManageGuild, Action: "admin.run_now"}); err != nil {
-		respond(sess, i, "You are not allowed to run this command.")
+func (s *Scheduler) handleList(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	jobs := s.jobsForGuild(i.GuildID)
+	if len(jobs) == 0 {
+		respond(sess, i, "No background jobs are registered for this server.")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	prefix := i.GuildID + ":"
+	var b strings.Builder
+	b.WriteString("**Registered jobs**\n")
+	for _, j := range jobs {
+		name := strings.TrimPrefix(j.key, prefix)
+		st, err := s.store.Get(ctx, j.key)
+		if err != nil {
+			fmt.Fprintf(&b, "- `%s` — error reading state: %v\n", name, err)
+			continue
+		}
+		last := "never"
+		if st.HasLastRun {
+			last = st.LastRun.Format(time.RFC3339)
+		}
+		next := "due now"
+		if due, ok := nextDue(st, j.spec.Interval, j.jitter); ok {
+			next = due.Format(time.RFC3339)
+		}
+		fmt.Fprintf(&b, "- `%s` — last run: %s, next due: %s, consecutive failures: %d\n", name, last, next, st.ConsecutiveFailures)
+	}
+	respond(sess, i, b.String())
+}
+
+func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	var jobName string
+	if opt, ok := core.LeafArgs(i)["job"]; ok {
+		jobName = opt.StringValue()
+	}
+
+	runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	jobKey := JobKey(i.GuildID, jobName)
-	if err := s.RunNow(ctx, jobKey); err != nil {
+	if err := s.RunNow(runCtx, jobKey); err != nil {
 		respond(sess, i, fmt.Sprintf("Failed to run %q: %v", jobName, err))
 		return
 	}
 	respond(sess, i, fmt.Sprintf("Ran %q.", jobName))
+}
+
+func (s *Scheduler) autocompleteJob(ctx context.Context, i *discordgo.InteractionCreate, focusedOption, focusedValue string) []*discordgo.ApplicationCommandOptionChoice {
+	var choices []*discordgo.ApplicationCommandOptionChoice
+	for _, j := range s.jobsForGuild(i.GuildID) {
+		name := strings.TrimPrefix(j.key, i.GuildID+":")
+		if focusedValue != "" && !strings.Contains(name, focusedValue) {
+			continue
+		}
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: name, Value: name})
+	}
+	return choices
 }
 
 func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
@@ -378,5 +461,3 @@ func backoffFor(consecutiveFailures int) time.Duration {
 	}
 	return d
 }
-
-func permPtr(p int64) *int64 { return &p }

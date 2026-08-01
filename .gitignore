@@ -3,3 +3,4 @@ config.yaml
 *.log
 /bin/
 /dist/
+AI_CODE_REVIEW.md

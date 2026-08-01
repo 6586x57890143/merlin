@@ -41,37 +41,25 @@ func (l *Loader) reload() error {
 	if err := validator.New().Struct(&next); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
-	for id, gc := range next.Guilds {
-		if err := validateGuildRotation(id, gc, next.StickyTemplates); err != nil {
-			return fmt.Errorf("validate config: %w", err)
-		}
-	}
 
-	// Secrets are env-only and re-applied on every reload — never read from
-	// YAML, so a hot-reloaded config file can never leak or override them.
+	// Secrets/identifiers are env-only and re-applied on every reload — never
+	// read from YAML, so a hot-reloaded config file can never leak or
+	// override them.
 	next.Discord.Token = os.Getenv("DISCORD_BOT_TOKEN")
 	next.Discord.AppID = os.Getenv("DISCORD_APP_ID")
 	next.Database.DSN = os.Getenv("DATABASE_URL")
+	next.BreakGlassAdminUserID = os.Getenv("MERLIN_BREAK_GLASS_ADMIN_USER_ID")
 	if next.Discord.Token == "" {
 		return errors.New("DISCORD_BOT_TOKEN not set")
+	}
+	if next.BreakGlassAdminUserID == "" {
+		return errors.New("MERLIN_BREAK_GLASS_ADMIN_USER_ID not set: without it, a guild with no settings configured yet has no way to run /config at all")
 	}
 
 	l.mu.Lock()
 	l.cur = &next
 	l.mu.Unlock()
 	return nil
-}
-
-// Guild returns the config for a specific guild, or an error if the guild
-// isn't configured.
-func (l *Loader) Guild(id string) (GuildConfig, error) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	gc, ok := l.cur.Guilds[id]
-	if !ok {
-		return GuildConfig{}, fmt.Errorf("no config for guild %s", id)
-	}
-	return gc, nil
 }
 
 // Global returns a snapshot of the full current configuration.
