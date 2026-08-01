@@ -17,6 +17,7 @@ package rotation
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -63,6 +64,9 @@ type Plugin struct {
 	mu              sync.Mutex
 	sweepRegistered map[string]bool          // guild ID -> sweep job registered
 	registeredJobs  map[string]time.Duration // rotation job key -> interval it was registered with
+
+	botUserIDMu sync.Mutex
+	botUserID   string // cached result of getBotUserID, fetched at most once
 }
 
 // New constructs Plugin. settingsStore is passed directly rather than
@@ -101,6 +105,27 @@ func (p *Plugin) Init(deps core.Deps) error {
 func (p *Plugin) Start(ctx context.Context) error { return nil }
 
 func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
+
+// getBotUserID resolves the bot's own user ID, fetched once via the REST
+// "@me" endpoint and cached for the process lifetime (it can't change while
+// running). Not resolved at Init time — the session isn't open yet then
+// (spec.MD's Plugin lifecycle: no gateway/REST calls in Init) — deferred
+// until the first rotation actually needs it, well after Open() succeeds.
+// A failed attempt is retried on the next call rather than cached, in case
+// of a transient API error.
+func (p *Plugin) getBotUserID() (string, error) {
+	p.botUserIDMu.Lock()
+	defer p.botUserIDMu.Unlock()
+	if p.botUserID != "" {
+		return p.botUserID, nil
+	}
+	me, err := p.ops.User("@me")
+	if err != nil {
+		return "", fmt.Errorf("rotation: resolve bot user ID: %w", err)
+	}
+	p.botUserID = me.ID
+	return p.botUserID, nil
+}
 
 // SyncGuild reconciles guildID's Scheduler jobs against its current
 // settings. Call once per guild right after internal/settings.Store.Refresh

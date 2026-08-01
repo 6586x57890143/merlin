@@ -19,4 +19,12 @@ type DiscordChannelOps interface {
 	ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
+	// User, called with "@me", resolves the bot's own user ID — needed so
+	// newly-created channels that deny @everyone VIEW_CHANNEL (the hidden
+	// staging channel, the archived channel) can also explicitly grant the
+	// bot itself access; without it the bot would lock itself out of a
+	// channel it just created, since its own role deliberately carries no
+	// guild-wide Administrator bit to bypass a channel-level deny (least
+	// privilege, spec.MD §4).
+	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
 }

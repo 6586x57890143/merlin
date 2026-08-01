@@ -176,13 +176,17 @@ func (p *Plugin) captureThreadNames(channelID string) []string {
 }
 
 func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Channel, tempName string) (*discordgo.Channel, error) {
+	botUserID, err := p.getBotUserID()
+	if err != nil {
+		return nil, err
+	}
 	return p.ops.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
 		Name:                 tempName,
 		Type:                 oldChannel.Type,
 		Topic:                oldChannel.Topic,
 		RateLimitPerUser:     oldChannel.RateLimitPerUser,
 		Position:             oldChannel.Position,
-		PermissionOverwrites: denyEveryone(oldChannel.PermissionOverwrites, guildID),
+		PermissionOverwrites: denyEveryone(oldChannel.PermissionOverwrites, guildID, botUserID),
 		ParentID:             oldChannel.ParentID,
 		NSFW:                 oldChannel.NSFW,
 	})
@@ -229,48 +233,77 @@ func (p *Plugin) revealNewChannel(channelID, finalName string, originalOverwrite
 }
 
 func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, guildID string, modRoleIDs []string, rc settings.RotationChannel) error {
-	_, err := p.ops.ChannelEditComplex(channelID, &discordgo.ChannelEdit{
+	botUserID, err := p.getBotUserID()
+	if err != nil {
+		return err
+	}
+	_, err = p.ops.ChannelEditComplex(channelID, &discordgo.ChannelEdit{
 		Name:                 archiveName,
 		ParentID:             archiveCategoryID,
-		PermissionOverwrites: archiveOverwrites(guildID, modRoleIDs, rc),
+		PermissionOverwrites: archiveOverwrites(guildID, botUserID, modRoleIDs, rc),
 	})
 	return err
 }
 
+// botOverwriteAllow is what the bot itself needs on a channel whose
+// @everyone VIEW_CHANNEL is denied: enough to read/post/pin in the hidden
+// staging channel, and to later inspect/delete the archived one. Without an
+// explicit grant here the bot would lock itself out of a channel it just
+// created — its own role deliberately carries no guild-wide Administrator
+// bit to bypass a channel-level deny (least privilege, spec.MD §4); this bit
+// combination is the fix for exactly that class of bug.
+const botOverwriteAllow = discordgo.PermissionViewChannel | discordgo.PermissionSendMessages | discordgo.PermissionManageMessages
+
 // denyEveryone clones src, ensuring @everyone (whose overwrite ID is always
 // the guild ID) has VIEW_CHANNEL explicitly denied — Discord's permission
 // resolution means a channel-level deny wins over any category-level
-// access, reliably hiding the staging channel from ordinary members.
-func denyEveryone(src []*discordgo.PermissionOverwrite, guildID string) []*discordgo.PermissionOverwrite {
-	out := make([]*discordgo.PermissionOverwrite, 0, len(src)+1)
-	found := false
+// access, reliably hiding the staging channel from ordinary members — and
+// that the bot itself retains access (merging into any existing overwrite
+// for botUserID rather than appending a duplicate).
+func denyEveryone(src []*discordgo.PermissionOverwrite, guildID, botUserID string) []*discordgo.PermissionOverwrite {
+	out := make([]*discordgo.PermissionOverwrite, 0, len(src)+2)
+	foundEveryone, foundBot := false, false
 	for _, ow := range src {
 		clone := *ow
 		if ow.Type == discordgo.PermissionOverwriteTypeRole && ow.ID == guildID {
 			clone.Deny |= discordgo.PermissionViewChannel
 			clone.Allow &^= discordgo.PermissionViewChannel
-			found = true
+			foundEveryone = true
+		}
+		if ow.Type == discordgo.PermissionOverwriteTypeMember && ow.ID == botUserID {
+			clone.Allow |= botOverwriteAllow
+			clone.Deny &^= botOverwriteAllow
+			foundBot = true
 		}
 		out = append(out, &clone)
 	}
-	if !found {
+	if !foundEveryone {
 		out = append(out, &discordgo.PermissionOverwrite{
 			ID:   guildID,
 			Type: discordgo.PermissionOverwriteTypeRole,
 			Deny: discordgo.PermissionViewChannel,
 		})
 	}
+	if !foundBot {
+		out = append(out, &discordgo.PermissionOverwrite{
+			ID:    botUserID,
+			Type:  discordgo.PermissionOverwriteTypeMember,
+			Allow: botOverwriteAllow,
+		})
+	}
 	return out
 }
 
 // archiveOverwrites builds a permission-overwrite set denying @everyone,
-// always allowing the guild's configured mod roles, and — when
-// rc.ArchiveVisibility is "whitelist" — additionally allowing
-// rc.ArchiveWhitelistRoleIDs/ArchiveWhitelistUserIDs (spec.MD §6's
-// "archive_visibility: mod_only | whitelist").
-func archiveOverwrites(guildID string, modRoleIDs []string, rc settings.RotationChannel) []*discordgo.PermissionOverwrite {
+// keeping the bot itself able to read it (needed later by sweep.go's
+// rescue-hatch check and eventual delete), always allowing the guild's
+// configured mod roles, and — when rc.ArchiveVisibility is "whitelist" —
+// additionally allowing rc.ArchiveWhitelistRoleIDs/ArchiveWhitelistUserIDs
+// (spec.MD §6's "archive_visibility: mod_only | whitelist").
+func archiveOverwrites(guildID, botUserID string, modRoleIDs []string, rc settings.RotationChannel) []*discordgo.PermissionOverwrite {
 	out := []*discordgo.PermissionOverwrite{
 		{ID: guildID, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+		{ID: botUserID, Type: discordgo.PermissionOverwriteTypeMember, Allow: discordgo.PermissionViewChannel},
 	}
 	for _, roleID := range modRoleIDs {
 		out = append(out, &discordgo.PermissionOverwrite{

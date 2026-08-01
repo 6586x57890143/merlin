@@ -193,6 +193,13 @@ func (f *fakeOps) ChannelMessagePin(channelID, messageID string, _ ...discordgo.
 	return f.shouldFail("ChannelMessagePin")
 }
 
+func (f *fakeOps) User(userID string, _ ...discordgo.RequestOption) (*discordgo.User, error) {
+	if err := f.shouldFail("User"); err != nil {
+		return nil, err
+	}
+	return &discordgo.User{ID: "bot-user-id"}, nil
+}
+
 // fakeArchiveStore is an in-memory ArchiveStore for tests.
 type fakeArchiveStore struct {
 	mu        sync.Mutex
