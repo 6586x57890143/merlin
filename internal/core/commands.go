@@ -40,21 +40,47 @@ type registeredLeaf struct {
 // every dispatch here runs under recover().
 type CommandRouter struct {
 	perms *Permissions
+	gate  PluginGate
 	log   *slog.Logger
 
-	topLevel []*discordgo.ApplicationCommand
-	leaves   map[string]*registeredLeaf
+	topLevel       []*discordgo.ApplicationCommand
+	topLevelPlugin map[string]string // top-level command name -> owning plugin name
+	leaves         map[string]*registeredLeaf
 }
 
-func NewCommandRouter(perms *Permissions, log *slog.Logger) *CommandRouter {
-	return &CommandRouter{perms: perms, log: log, leaves: make(map[string]*registeredLeaf)}
+func NewCommandRouter(perms *Permissions, gate PluginGate, log *slog.Logger) *CommandRouter {
+	return &CommandRouter{
+		perms:          perms,
+		gate:           gate,
+		log:            log,
+		leaves:         make(map[string]*registeredLeaf),
+		topLevelPlugin: make(map[string]string),
+	}
 }
 
-// RegisterCommand adds one top-level command. cmd's Options may nest
-// subcommands/subcommand groups arbitrarily (as discordgo itself requires);
-// call Handle for every invocable leaf path underneath it before Finalize.
-func (r *CommandRouter) RegisterCommand(cmd *discordgo.ApplicationCommand) {
+// RegisterCommand adds one top-level command, owned by pluginName (used for
+// the per-guild plugin enable/disable gate — see PluginGate). cmd's Options
+// may nest subcommands/subcommand groups arbitrarily (as discordgo itself
+// requires); call Handle for every invocable leaf path underneath it before
+// Finalize.
+func (r *CommandRouter) RegisterCommand(pluginName string, cmd *discordgo.ApplicationCommand) {
 	r.topLevel = append(r.topLevel, cmd)
+	r.topLevelPlugin[cmd.Name] = pluginName
+}
+
+// Plugins returns every distinct plugin name that has registered a top-level
+// command — used by /config plugins enable/disable's autocomplete.
+func (r *CommandRouter) Plugins() []string {
+	seen := make(map[string]bool, len(r.topLevelPlugin))
+	var out []string
+	for _, name := range r.topLevelPlugin {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // Handle registers the handler and required PermSpec for one leaf path.
@@ -207,6 +233,11 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 		return
 	}
 
+	if !r.gate.PluginEnabled(i.GuildID, r.topLevelPlugin[data.Name]) {
+		respondEphemeral(s, i, "This feature is disabled in this server.")
+		return
+	}
+
 	if err := r.perms.Authorize(i, leaf.spec); err != nil {
 		respondEphemeral(s, i, "You are not allowed to run this command.")
 		return
@@ -229,6 +260,13 @@ func (r *CommandRouter) dispatchAutocomplete(s *discordgo.Session, i *discordgo.
 	key := leafKey(data.Name, path)
 	leaf, ok := r.leaves[key]
 	if !ok || leaf.autocomplete == nil {
+		return
+	}
+
+	if !r.gate.PluginEnabled(i.GuildID, r.topLevelPlugin[data.Name]) {
+		return
+	}
+	if err := r.perms.Authorize(i, leaf.spec); err != nil {
 		return
 	}
 

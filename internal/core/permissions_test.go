@@ -8,31 +8,27 @@ import (
 
 // fakeAuthData is an in-memory GuildAuthData for tests.
 type fakeAuthData struct {
-	modRoles  map[string][]string
-	admins    map[string][]string
-	overrides map[string]map[string]struct{ roleIDs, userIDs []string }
+	modRoles map[string][]string
+	admins   map[string][]string
+	policies map[string]map[string]ActionPolicy
 }
 
 func newFakeAuthData() *fakeAuthData {
 	return &fakeAuthData{
-		modRoles:  make(map[string][]string),
-		admins:    make(map[string][]string),
-		overrides: make(map[string]map[string]struct{ roleIDs, userIDs []string }),
+		modRoles: make(map[string][]string),
+		admins:   make(map[string][]string),
+		policies: make(map[string]map[string]ActionPolicy),
 	}
 }
 
 func (f *fakeAuthData) ModRoleIDs(guildID string) []string   { return f.modRoles[guildID] }
 func (f *fakeAuthData) AdminUserIDs(guildID string) []string { return f.admins[guildID] }
-func (f *fakeAuthData) ActionOverride(guildID, action string) (roleIDs, userIDs []string) {
-	byAction, ok := f.overrides[guildID]
+func (f *fakeAuthData) ActionPolicy(guildID, action string) ActionPolicy {
+	byAction, ok := f.policies[guildID]
 	if !ok {
-		return nil, nil
+		return ActionPolicy{}
 	}
-	o, ok := byAction[action]
-	if !ok {
-		return nil, nil
-	}
-	return o.roleIDs, o.userIDs
+	return byAction[action]
 }
 
 func memberInteraction(guildID, userID string, roles []string) *discordgo.InteractionCreate {
@@ -40,6 +36,16 @@ func memberInteraction(guildID, userID string, roles []string) *discordgo.Intera
 		GuildID: guildID,
 		Member:  &discordgo.Member{Roles: roles, User: &discordgo.User{ID: userID}},
 	}}
+}
+
+// memberInteractionWithPerms is memberInteraction plus a Discord permission
+// bitmask, mirroring what Discord itself attaches to Member.Permissions on
+// every real interaction — used to test the Administrator-bit path to
+// TierAdmin independent of the DB-listed admin/mod-role paths.
+func memberInteractionWithPerms(guildID, userID string, roles []string, perms int64) *discordgo.InteractionCreate {
+	i := memberInteraction(guildID, userID, roles)
+	i.Member.Permissions = perms
+	return i
 }
 
 func TestAuthorizePublicTierAlwaysPasses(t *testing.T) {
@@ -92,8 +98,8 @@ func TestAuthorizeBreakGlassAdminAlwaysSatisfiesAdminTier(t *testing.T) {
 
 func TestAuthorizeWhitelistGrantsAccessIndependentOfTier(t *testing.T) {
 	auth := newFakeAuthData()
-	auth.overrides["g1"] = map[string]struct{ roleIDs, userIDs []string }{
-		"rotation.configure": {userIDs: []string{"whitelisted-user"}},
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"rotation.configure": {AllowUserIDs: []string{"whitelisted-user"}},
 	}
 	perms := NewPermissions(nil, auth, "")
 
@@ -104,6 +110,86 @@ func TestAuthorizeWhitelistGrantsAccessIndependentOfTier(t *testing.T) {
 	// The same user has no grant for a different action.
 	if err := perms.Authorize(memberInteraction("g1", "whitelisted-user", nil), PermSpec{Tier: TierAdmin, Action: "other.action"}); err == nil {
 		t.Fatal("expected the whitelist grant to be scoped to its own action only")
+	}
+}
+
+func TestAuthorizeDiscordAdministratorSatisfiesAdminTier(t *testing.T) {
+	perms := NewPermissions(nil, newFakeAuthData(), "")
+	i := memberInteractionWithPerms("g1", "u1", nil, discordgo.PermissionAdministrator)
+	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "test"}); err != nil {
+		t.Fatalf("expected a Discord Administrator to satisfy TierAdmin with no DB admin entry, got %v", err)
+	}
+}
+
+func TestAuthorizeModRoleWithoutAdministratorBitStillFailsAdminTier(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.modRoles["g1"] = []string{"modrole"}
+	perms := NewPermissions(nil, auth, "")
+
+	// Holding a lesser Discord permission (not Administrator) must not widen
+	// the mod path into satisfying TierAdmin.
+	i := memberInteractionWithPerms("g1", "u1", []string{"modrole"}, discordgo.PermissionManageGuild)
+	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "test"}); err == nil {
+		t.Fatal("expected a mod role holder without the Administrator bit to fail TierAdmin")
+	}
+}
+
+func TestAuthorizeDenyWinsOverAllowAndAdministratorBit(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"rotation.configure": {AllowUserIDs: []string{"u1"}, DenyUserIDs: []string{"u1"}},
+	}
+	perms := NewPermissions(nil, auth, "")
+
+	// u1 is both allow-granted and Discord Administrator, but explicitly
+	// denied for this specific action — deny must still win.
+	i := memberInteractionWithPerms("g1", "u1", nil, discordgo.PermissionAdministrator)
+	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "rotation.configure"}); err == nil {
+		t.Fatal("expected an explicit deny to override both the allow-grant and the Administrator bit")
+	}
+}
+
+func TestAuthorizeDenyNeverAppliesToBreakGlassAdmin(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"config.mutate": {DenyUserIDs: []string{"breakglass-user"}},
+	}
+	perms := NewPermissions(nil, auth, "breakglass-user")
+
+	if err := perms.Authorize(memberInteraction("g1", "breakglass-user", nil), PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err != nil {
+		t.Fatalf("expected the break-glass admin to be immune to deny-listing, got %v", err)
+	}
+}
+
+func TestAuthorizeTierOverrideTightensModToAdmin(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.modRoles["g1"] = []string{"modrole"}
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"rotation.configure": {RequiredTier: TierAdmin},
+	}
+	perms := NewPermissions(nil, auth, "")
+
+	// The command's own PermSpec says TierMod, but the guild has overridden
+	// this action to TierAdmin — a plain mod role must no longer be enough.
+	i := memberInteraction("g1", "u1", []string{"modrole"})
+	if err := perms.Authorize(i, PermSpec{Tier: TierMod, Action: "rotation.configure"}); err == nil {
+		t.Fatal("expected the guild's Admin-only override to reject a mod-role holder")
+	}
+}
+
+func TestAuthorizeTierOverrideLoosensAdminToMod(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.modRoles["g1"] = []string{"modrole"}
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"rotation.configure_structural": {RequiredTier: TierMod},
+	}
+	perms := NewPermissions(nil, auth, "")
+
+	// The command's own PermSpec says TierAdmin, but the guild has loosened
+	// this action to TierMod — a plain mod role should now be enough.
+	i := memberInteraction("g1", "u1", []string{"modrole"})
+	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "rotation.configure_structural"}); err != nil {
+		t.Fatalf("expected the guild's Mod-allowed override to accept a mod-role holder, got %v", err)
 	}
 }
 

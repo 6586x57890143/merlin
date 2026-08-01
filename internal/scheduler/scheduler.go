@@ -145,7 +145,7 @@ func (s *Scheduler) Init(deps core.Deps) error {
 			},
 		},
 	}
-	s.commands.RegisterCommand(cmd)
+	s.commands.RegisterCommand(s.Name(), cmd)
 	s.commands.Handle("scheduler", "list", core.PermSpec{Tier: core.TierMod, Action: "scheduler.list"}, s.handleList)
 	s.commands.Handle("scheduler", "run-now", core.PermSpec{Tier: core.TierMod, Action: "scheduler.run_now"}, s.handleRunNow)
 	s.commands.Autocomplete("scheduler", "run-now", s.autocompleteJob)
@@ -367,13 +367,12 @@ func (s *Scheduler) jobsForGuild(guildID string) []*registeredJob {
 func (s *Scheduler) handleList(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {
 	jobs := s.jobsForGuild(i.GuildID)
 	if len(jobs) == 0 {
-		respond(sess, i, "No background jobs are registered for this server.")
+		core.RespondInfo(sess, i, "Registered jobs", "No background jobs are registered for this server.")
 		return
 	}
 
 	prefix := i.GuildID + ":"
 	var b strings.Builder
-	b.WriteString("**Registered jobs**\n")
 	for _, j := range jobs {
 		name := strings.TrimPrefix(j.key, prefix)
 		st, err := s.store.Get(ctx, j.key)
@@ -391,7 +390,7 @@ func (s *Scheduler) handleList(ctx context.Context, sess *discordgo.Session, i *
 		}
 		fmt.Fprintf(&b, "- `%s` — last run: %s, next due: %s, consecutive failures: %d\n", name, last, next, st.ConsecutiveFailures)
 	}
-	respond(sess, i, b.String())
+	core.RespondInfo(sess, i, "Registered jobs", b.String())
 }
 
 func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -404,10 +403,10 @@ func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i
 	defer cancel()
 	jobKey := JobKey(i.GuildID, jobName)
 	if err := s.RunNow(runCtx, jobKey); err != nil {
-		respond(sess, i, fmt.Sprintf("Failed to run %q: %v", jobName, err))
+		core.RespondErr(sess, i, fmt.Sprintf("Failed to run %q", jobName), err)
 		return
 	}
-	respond(sess, i, fmt.Sprintf("Ran %q.", jobName))
+	core.RespondOK(sess, i, "Job run", fmt.Sprintf("Ran `%s`.", jobName))
 }
 
 func (s *Scheduler) autocompleteJob(ctx context.Context, i *discordgo.InteractionCreate, focusedOption, focusedValue string) []*discordgo.ApplicationCommandOptionChoice {
@@ -420,16 +419,6 @@ func (s *Scheduler) autocompleteJob(ctx context.Context, i *discordgo.Interactio
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: name, Value: name})
 	}
 	return choices
-}
-
-func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: msg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	})
 }
 
 func safeRun(ctx context.Context, fn JobFunc) (err error) {

@@ -77,7 +77,7 @@ func run(log *slog.Logger) error {
 	bus := core.NewEventBus(log)
 	settingsStore := settings.New(db.Pool, bus)
 	perms := core.NewPermissions(session, settingsStore, cfg.BreakGlassAdminUserID)
-	commands := core.NewCommandRouter(perms, log)
+	commands := core.NewCommandRouter(perms, settingsStore, log)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	auditWriter := audit.New(db.Pool, session, settingsStore)
 
@@ -99,7 +99,8 @@ func run(log *slog.Logger) error {
 	registry.Register(sched)
 	registry.Register(ping.New())
 	registry.Register(rotationPlugin)
-	registry.Register(adminconfig.New(settingsStore, configPath))
+	adminconfigPlugin := adminconfig.New(settingsStore, configPath)
+	registry.Register(adminconfigPlugin)
 
 	if err := registry.InitAll(); err != nil {
 		return err
@@ -124,10 +125,20 @@ func run(log *slog.Logger) error {
 			log.Error("refresh settings for guild", "guild", gc.ID, "err", err)
 			return
 		}
+		commandsRegistered := true
 		if err := commands.RegisterGuild(s, cfg.Discord.AppID, gc.ID); err != nil {
 			log.Error("register commands for guild", "guild", gc.ID, "err", err)
+			commandsRegistered = false
 		}
 		rotationPlugin.SyncGuild(gc.ID)
+		if commandsRegistered {
+			// Only nudge toward /config setup if it was actually registered
+			// here — otherwise the nudge would point at a command that
+			// doesn't exist yet, and (if the DM itself succeeds) burn the
+			// one-time nudge for nothing instead of retrying once
+			// registration succeeds on a later restart.
+			adminconfigPlugin.NudgeIfUnconfigured(guildCtx, gc)
+		}
 	})
 
 	if err := session.Open(); err != nil {

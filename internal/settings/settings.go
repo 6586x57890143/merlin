@@ -10,7 +10,9 @@ package settings
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,19 +22,33 @@ import (
 
 // GuildSettings is a guild's core bot-wide settings.
 type GuildSettings struct {
-	GuildID           string
-	ModRoleIDs        []string
-	AdminUserIDs      []string
-	AuditLogChannelID string
-	StatusChannelID   string
+	GuildID               string
+	ModRoleIDs            []string
+	AdminUserIDs          []string
+	AuditLogChannelID     string
+	StatusChannelID       string
+	OnboardingNudgeSentAt *time.Time // nil until adminconfig's one-time "run /config setup" nudge has actually been posted
+	DisabledPlugins       []string   // plugin Name()s disabled in this guild — see core.PluginGate
 }
 
-// ActionOverride is a per-action whitelist grant, independent of mod/admin
-// tier (see core.PermSpec/core.Permissions.Authorize).
+// IsConfigured reports whether a guild has begun any real configuration —
+// used to decide whether the onboarding nudge (adminconfig.NudgeIfUnconfigured)
+// still needs to fire, and to drive /config setup's own "what's still
+// missing" guidance.
+func (g GuildSettings) IsConfigured() bool {
+	return g.AuditLogChannelID != "" || g.StatusChannelID != "" || len(g.ModRoleIDs) > 0 || len(g.AdminUserIDs) > 0
+}
+
+// ActionOverride is a guild's customization of one Action: an optional tier
+// override plus allow/deny lists, independent of the command's compiled-in
+// PermSpec.Tier (see core.PermSpec/core.ActionPolicy/core.Permissions.Authorize).
 type ActionOverride struct {
-	Action  string
-	RoleIDs []string
-	UserIDs []string
+	Action       string
+	RequiredTier core.PermTier // zero value (tierUnset) = no override, use the command's own PermSpec.Tier
+	RoleIDs      []string      // allow
+	UserIDs      []string      // allow
+	DenyRoleIDs  []string
+	DenyUserIDs  []string
 }
 
 // RotationChannel is one guild's configured rotating channel (spec.MD §6),
@@ -85,23 +101,28 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID); err {
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins); err {
 	case nil, pgx.ErrNoRows:
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
 	}
 
-	rows, err := s.pool.Query(ctx, `SELECT action, role_ids, user_ids FROM settings_permission_overrides WHERE guild_id = $1`, guildID)
+	rows, err := s.pool.Query(ctx, `SELECT action, role_ids, user_ids, required_tier, deny_role_ids, deny_user_ids
+		FROM settings_permission_overrides WHERE guild_id = $1`, guildID)
 	if err != nil {
 		return fmt.Errorf("settings: load overrides for %s: %w", guildID, err)
 	}
 	for rows.Next() {
 		var o ActionOverride
-		if err := rows.Scan(&o.Action, &o.RoleIDs, &o.UserIDs); err != nil {
+		var requiredTier *int16
+		if err := rows.Scan(&o.Action, &o.RoleIDs, &o.UserIDs, &requiredTier, &o.DenyRoleIDs, &o.DenyUserIDs); err != nil {
 			rows.Close()
 			return fmt.Errorf("settings: scan override for %s: %w", guildID, err)
+		}
+		if requiredTier != nil {
+			o.RequiredTier = core.PermTier(*requiredTier)
 		}
 		gc.overrides[o.Action] = o
 	}
@@ -150,16 +171,32 @@ func (s *Store) guild(guildID string) *guildCache {
 func (s *Store) ModRoleIDs(guildID string) []string   { return s.guild(guildID).settings.ModRoleIDs }
 func (s *Store) AdminUserIDs(guildID string) []string { return s.guild(guildID).settings.AdminUserIDs }
 
-func (s *Store) ActionOverride(guildID, action string) (roleIDs, userIDs []string) {
+// ActionPolicy satisfies core.GuildAuthData: guildID's customization of
+// action (tier override, allow-list, deny-list), or the zero value if the
+// guild hasn't customized this action at all.
+func (s *Store) ActionPolicy(guildID, action string) core.ActionPolicy {
 	gc := s.guild(guildID)
-	if gc.overrides == nil {
-		return nil, nil
-	}
 	o, ok := gc.overrides[action]
 	if !ok {
-		return nil, nil
+		return core.ActionPolicy{}
 	}
-	return o.RoleIDs, o.UserIDs
+	return core.ActionPolicy{
+		RequiredTier: o.RequiredTier,
+		AllowRoleIDs: o.RoleIDs,
+		AllowUserIDs: o.UserIDs,
+		DenyRoleIDs:  o.DenyRoleIDs,
+		DenyUserIDs:  o.DenyUserIDs,
+	}
+}
+
+// DisabledPlugins returns the plugin Name()s disabled in guildID.
+func (s *Store) DisabledPlugins(guildID string) []string {
+	return s.guild(guildID).settings.DisabledPlugins
+}
+
+// PluginEnabled satisfies core.PluginGate.
+func (s *Store) PluginEnabled(guildID, pluginName string) bool {
+	return !slices.Contains(s.DisabledPlugins(guildID), pluginName)
 }
 
 // --- read accessors beyond GuildAuthData ---
@@ -302,6 +339,25 @@ func (s *Store) SetStatusChannel(ctx context.Context, guildID, channelID string)
 	return nil
 }
 
+// MarkOnboardingNudgeSent records that adminconfig's one-time "run /config
+// setup" nudge has actually been posted for guildID, so NudgeIfUnconfigured
+// never re-sends it. Callers should only call this after a successful
+// channel post — leaving it unmarked on failure lets a transient permission
+// issue self-heal on the bot's next restart instead of silently giving up.
+func (s *Store) MarkOnboardingNudgeSent(ctx context.Context, guildID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, onboarding_nudge_sent_at, updated_at) VALUES ($1, now(), now())
+		ON CONFLICT (guild_id) DO UPDATE SET onboarding_nudge_sent_at = now(), updated_at = now()`,
+		guildID); err != nil {
+		return fmt.Errorf("settings: mark onboarding nudge sent: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
 // GrantOverride adds roleID and/or userID (either may be empty) to action's
 // whitelist. TierAdmin-only at the command layer — see
 // internal/plugins/adminconfig.
@@ -337,6 +393,121 @@ func (s *Store) RevokeOverride(ctx context.Context, guildID, action, roleID, use
 		WHERE guild_id = $1 AND action = $2`,
 		guildID, action, roleID, userID); err != nil {
 		return fmt.Errorf("settings: revoke override: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// SetActionTier sets a per-guild override of action's required tier,
+// replacing the command's own compiled-in PermSpec.Tier for that action in
+// this guild only (core.Permissions.Authorize applies it). tier must be
+// core.TierMod or core.TierAdmin — TierAdmin-only at the command layer, see
+// internal/plugins/adminconfig.
+func (s *Store) SetActionTier(ctx context.Context, guildID, action string, tier core.PermTier) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_permission_overrides (guild_id, action, required_tier, updated_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (guild_id, action) DO UPDATE SET required_tier = $3, updated_at = now()`,
+		guildID, action, int16(tier)); err != nil {
+		return fmt.Errorf("settings: set action tier: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// ClearActionTier resets action back to its command's compiled-in
+// PermSpec.Tier, undoing a prior SetActionTier for this guild.
+func (s *Store) ClearActionTier(ctx context.Context, guildID, action string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_permission_overrides SET required_tier = NULL, updated_at = now()
+		WHERE guild_id = $1 AND action = $2`,
+		guildID, action); err != nil {
+		return fmt.Errorf("settings: clear action tier: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// DenyOverride adds roleID and/or userID (either may be empty) to action's
+// deny-list — see core.Permissions.Authorize for why deny always wins over
+// tier/Administrator-bit/allow. TierAdmin-only at the command layer.
+func (s *Store) DenyOverride(ctx context.Context, guildID, action, roleID, userID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_permission_overrides (guild_id, action, deny_role_ids, deny_user_ids, updated_at)
+		VALUES ($1, $2,
+			CASE WHEN $3 = '' THEN '{}'::TEXT[] ELSE ARRAY[$3] END,
+			CASE WHEN $4 = '' THEN '{}'::TEXT[] ELSE ARRAY[$4] END,
+			now())
+		ON CONFLICT (guild_id, action) DO UPDATE SET
+			deny_role_ids = CASE WHEN $3 = '' THEN settings_permission_overrides.deny_role_ids
+				ELSE (SELECT array_agg(DISTINCT r) FROM unnest(settings_permission_overrides.deny_role_ids || $3) AS r) END,
+			deny_user_ids = CASE WHEN $4 = '' THEN settings_permission_overrides.deny_user_ids
+				ELSE (SELECT array_agg(DISTINCT r) FROM unnest(settings_permission_overrides.deny_user_ids || $4) AS r) END,
+			updated_at = now()`,
+		guildID, action, roleID, userID); err != nil {
+		return fmt.Errorf("settings: deny override: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+func (s *Store) UndenyOverride(ctx context.Context, guildID, action, roleID, userID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_permission_overrides SET
+			deny_role_ids = CASE WHEN $3 = '' THEN deny_role_ids ELSE array_remove(deny_role_ids, $3) END,
+			deny_user_ids = CASE WHEN $4 = '' THEN deny_user_ids ELSE array_remove(deny_user_ids, $4) END,
+			updated_at = now()
+		WHERE guild_id = $1 AND action = $2`,
+		guildID, action, roleID, userID); err != nil {
+		return fmt.Errorf("settings: undeny override: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// DisablePlugin/EnablePlugin toggle a whole plugin off/on for guildID (see
+// core.PluginGate) — coarser than any per-action policy, checked by
+// core.CommandRouter before a disabled plugin's commands are even
+// authorized. internal/plugins/adminconfig itself must never be passed here
+// (enforced at the command layer, not here) — disabling it would
+// permanently lock a guild out of ever re-enabling anything.
+func (s *Store) DisablePlugin(ctx context.Context, guildID, pluginName string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, disabled_plugins, updated_at) VALUES ($1, ARRAY[$2], now())
+		ON CONFLICT (guild_id) DO UPDATE SET
+			disabled_plugins = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.disabled_plugins || $2) AS r),
+			updated_at = now()`,
+		guildID, pluginName); err != nil {
+		return fmt.Errorf("settings: disable plugin: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+func (s *Store) EnablePlugin(ctx context.Context, guildID, pluginName string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_guild SET disabled_plugins = array_remove(disabled_plugins, $2), updated_at = now()
+		WHERE guild_id = $1`,
+		guildID, pluginName); err != nil {
+		return fmt.Errorf("settings: enable plugin: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		return err

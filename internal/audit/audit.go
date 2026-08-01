@@ -11,6 +11,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // channelResolver is the narrow view of guild settings Writer needs,
@@ -55,6 +57,7 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 
 	embed := &discordgo.MessageEmbed{
 		Title:     action,
+		Color:     core.ColorSuccess,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Fields: []*discordgo.MessageEmbedField{
 			{Name: "Actor", Value: actorID, Inline: true},

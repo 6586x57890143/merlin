@@ -14,10 +14,12 @@ import (
 // Action namespaces for whitelist grants (core.PermSpec.Action). Adding or
 // removing a rotating channel is structural and stays Admin-tier; adjusting
 // an already-configured channel's interval/retention/visibility/sticky
-// content is Mod-tier — kept as two separate actions (not one shared
-// "rotation.configure") so an admin can whitelist a trusted non-mod for
-// day-to-day adjustments without also handing them the ability to add or
-// remove rotating channels entirely.
+// content is a separate action (not folded into "rotation.configure_structural")
+// so an admin can independently loosen just adjustment (via
+// /config permissions set-tier rotation.configure mod) without also handing
+// out the ability to add or remove rotating channels entirely. Both default
+// to Admin-only: mods get no configure access out of the box, only via an
+// explicit per-guild tier override or whitelist grant.
 const (
 	actionStructural = "rotation.configure_structural"
 	actionAdjust     = "rotation.configure"
@@ -27,10 +29,11 @@ const (
 func (p *Plugin) registerCommands() {
 	channelOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{
-			Type:        discordgo.ApplicationCommandOptionChannel,
-			Name:        name,
-			Description: desc,
-			Required:    true,
+			Type:         discordgo.ApplicationCommandOptionChannel,
+			Name:         name,
+			Description:  desc,
+			Required:     true,
+			ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText},
 		}
 	}
 
@@ -149,22 +152,21 @@ func (p *Plugin) registerCommands() {
 		},
 	}
 
-	p.commands.RegisterCommand(cmd)
+	p.commands.RegisterCommand(p.Name(), cmd)
 	p.commands.Handle("rotation", "list", core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleList)
 	p.commands.Handle("rotation", "configure/add", core.PermSpec{Tier: core.TierAdmin, Action: actionStructural}, p.handleAdd)
 	p.commands.Handle("rotation", "configure/remove", core.PermSpec{Tier: core.TierAdmin, Action: actionStructural}, p.handleRemove)
-	p.commands.Handle("rotation", "configure/edit", core.PermSpec{Tier: core.TierMod, Action: actionAdjust}, p.handleEdit)
-	p.commands.Handle("rotation", "configure/sticky", core.PermSpec{Tier: core.TierMod, Action: actionAdjust}, p.handleSticky)
+	p.commands.Handle("rotation", "configure/edit", core.PermSpec{Tier: core.TierAdmin, Action: actionAdjust}, p.handleEdit)
+	p.commands.Handle("rotation", "configure/sticky", core.PermSpec{Tier: core.TierAdmin, Action: actionAdjust}, p.handleSticky)
 }
 
 func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	channels := p.settings.RotationChannels(i.GuildID)
 	if len(channels) == 0 {
-		respond(s, i, "No channels are configured to rotate in this server. Use `/rotation configure add` to start.")
+		core.RespondInfo(s, i, "Rotating channels", "No channels are configured to rotate in this server. Use `/rotation configure add` to start.")
 		return
 	}
 	var b strings.Builder
-	b.WriteString("**Rotating channels**\n")
 	for _, rc := range channels {
 		retention := "forever"
 		if rc.RetentionDays != nil {
@@ -173,7 +175,7 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 		fmt.Fprintf(&b, "- <#%s> — every %dh, archive: <#%s> (%s), retention: %s, sticky: %v\n",
 			rc.ChannelID, rc.IntervalHours, rc.ArchiveCategoryID, rc.ArchiveVisibility, retention, rc.StickyEnabled)
 	}
-	respond(s, i, b.String())
+	core.RespondInfo(s, i, "Rotating channels", b.String())
 }
 
 func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -181,7 +183,7 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 
 	channelID, ok := opts["channel"]
 	if !ok {
-		respond(s, i, "Missing channel.")
+		core.RespondErr(s, i, "Missing channel", fmt.Errorf("the channel option is required"))
 		return
 	}
 	rc := settings.RotationChannel{
@@ -200,16 +202,16 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 	}
 
 	if err := validateRotationChannel(rc); err != nil {
-		respond(s, i, "Invalid configuration: "+err.Error())
+		core.RespondErr(s, i, "Invalid configuration", err)
 		return
 	}
 	if _, exists := p.settings.RotationChannel(i.GuildID, rc.ChannelID); exists {
-		respond(s, i, "That channel is already configured to rotate — use `/rotation configure edit` instead.")
+		core.RespondErr(s, i, "Already rotating", fmt.Errorf("that channel is already configured to rotate — use `/rotation configure edit` instead"))
 		return
 	}
 
 	if err := p.settings.UpsertRotationChannel(ctx, rc); err != nil {
-		respond(s, i, fmt.Sprintf("Failed to save: %v", err))
+		core.RespondErr(s, i, "Failed to save", err)
 		return
 	}
 	// No explicit SyncGuild call needed: UpsertRotationChannel already
@@ -217,7 +219,7 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 	// subscribed to (rotation.go's Init) — calling SyncGuild here too would
 	// just re-run the identical, already-current reconcile a second time.
 	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> interval=%dh", rc.ChannelID, rc.IntervalHours))
-	respond(s, i, fmt.Sprintf("<#%s> will now rotate every %d hours.", rc.ChannelID, rc.IntervalHours))
+	core.RespondOK(s, i, "Rotation configured", fmt.Sprintf("<#%s> will now rotate every %d hours.", rc.ChannelID, rc.IntervalHours))
 }
 
 func (p *Plugin) handleRemove(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -225,17 +227,17 @@ func (p *Plugin) handleRemove(ctx context.Context, s *discordgo.Session, i *disc
 	channelID := opts["channel"].Value.(string)
 
 	if _, exists := p.settings.RotationChannel(i.GuildID, channelID); !exists {
-		respond(s, i, "That channel isn't configured to rotate.")
+		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate"))
 		return
 	}
 	if err := p.settings.RemoveRotationChannel(ctx, i.GuildID, channelID); err != nil {
-		respond(s, i, fmt.Sprintf("Failed to remove: %v", err))
+		core.RespondErr(s, i, "Failed to remove", err)
 		return
 	}
 	// RemoveRotationChannel already triggered reconcile via
 	// core.EventConfigChanged — see the comment in handleAdd above.
 	p.auditConfigChange(ctx, i, "rotation.remove", fmt.Sprintf("channel=<#%s>", channelID), "")
-	respond(s, i, fmt.Sprintf("<#%s> will no longer rotate. Any existing archive is untouched.", channelID))
+	core.RespondOK(s, i, "Rotation removed", fmt.Sprintf("<#%s> will no longer rotate. Any existing archive is untouched.", channelID))
 }
 
 func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -244,7 +246,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 
 	rc, exists := p.settings.RotationChannel(i.GuildID, channelID)
 	if !exists {
-		respond(s, i, "That channel isn't configured to rotate — use `/rotation configure add` first.")
+		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate — use `/rotation configure add` first"))
 		return
 	}
 	before := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionDays, rc.ArchiveVisibility)
@@ -263,18 +265,18 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 	}
 
 	if err := validateRotationChannel(rc); err != nil {
-		respond(s, i, "Invalid configuration: "+err.Error())
+		core.RespondErr(s, i, "Invalid configuration", err)
 		return
 	}
 	if err := p.settings.UpsertRotationChannel(ctx, rc); err != nil {
-		respond(s, i, fmt.Sprintf("Failed to save: %v", err))
+		core.RespondErr(s, i, "Failed to save", err)
 		return
 	}
 	// UpsertRotationChannel already triggered reconcile via
 	// core.EventConfigChanged — see the comment in handleAdd above.
 	after := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionDays, rc.ArchiveVisibility)
 	p.auditConfigChange(ctx, i, "rotation.edit", before, after)
-	respond(s, i, fmt.Sprintf("Updated <#%s>.", channelID))
+	core.RespondOK(s, i, "Rotation updated", fmt.Sprintf("Updated <#%s>.", channelID))
 }
 
 func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -283,7 +285,7 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 
 	rc, exists := p.settings.RotationChannel(i.GuildID, channelID)
 	if !exists {
-		respond(s, i, "That channel isn't configured to rotate — use `/rotation configure add` first.")
+		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate — use `/rotation configure add` first"))
 		return
 	}
 
@@ -298,16 +300,16 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 		rc.StickyMessages = msgs
 	}
 	if rc.StickyEnabled && len(rc.StickyMessages) == 0 {
-		respond(s, i, "Sticky is enabled but there are no messages set — pass `messages` at least once.")
+		core.RespondErr(s, i, "Nothing to stick", fmt.Errorf("sticky is enabled but there are no messages set — pass `messages` at least once"))
 		return
 	}
 
 	if err := p.settings.UpsertRotationChannel(ctx, rc); err != nil {
-		respond(s, i, fmt.Sprintf("Failed to save: %v", err))
+		core.RespondErr(s, i, "Failed to save", err)
 		return
 	}
 	p.auditConfigChange(ctx, i, "rotation.sticky", "", fmt.Sprintf("channel=<#%s> enabled=%v messages=%d", channelID, rc.StickyEnabled, len(rc.StickyMessages)))
-	respond(s, i, fmt.Sprintf("Sticky settings for <#%s> updated.", channelID))
+	core.RespondOK(s, i, "Sticky updated", fmt.Sprintf("Sticky settings for <#%s> updated.", channelID))
 }
 
 func (p *Plugin) auditConfigChange(ctx context.Context, i *discordgo.InteractionCreate, action, oldValue, newValue string) {
@@ -339,13 +341,3 @@ func validateRotationChannel(rc settings.RotationChannel) error {
 }
 
 func float64Ptr(f float64) *float64 { return &f }
-
-func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: msg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	})
-}

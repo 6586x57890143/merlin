@@ -18,7 +18,7 @@ func New() *Plugin { return &Plugin{} }
 func (p *Plugin) Name() string { return "ping" }
 
 func (p *Plugin) Init(deps core.Deps) error {
-	deps.Commands.RegisterCommand(&discordgo.ApplicationCommand{
+	deps.Commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
 		Name:        "ping",
 		Description: "Health check - replies pong",
 	})
