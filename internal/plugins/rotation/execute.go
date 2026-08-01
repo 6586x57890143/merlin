@@ -108,7 +108,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 
 		// 6. Flip — new first: reveal it under the final name. Past this
 		// point there is a live channel matching the configured name.
-		if err := p.revealNewChannel(newChannel.ID, oldChannel.Name, oldChannel.PermissionOverwrites); err != nil {
+		if err := p.revealNewChannel(newChannel.ID, oldChannel.Name, guildID, oldChannel.PermissionOverwrites); err != nil {
 			return fmt.Errorf("rotation: reveal new channel: %w", err)
 		}
 	}
@@ -137,6 +137,17 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		DeleteAfter:     deleteAfter,
 	}); err != nil {
 		return fmt.Errorf("rotation: record archive: %w", err)
+	}
+
+	// 8a. Retarget the rotation config itself onto the new channel. Without
+	// this, rc.ChannelID keeps pointing at what is now an archived channel —
+	// the next scheduled fire would refetch it by that stale ID and try to
+	// "rotate" the archive (wrong name, wrong parent category) instead of
+	// the live replacement. RetargetRotationChannel publishes
+	// core.EventConfigChanged, which reconcile (subscribed in Init) picks up
+	// to re-key the Scheduler job from the old channel ID to the new one.
+	if err := p.settings.RetargetRotationChannel(ctx, guildID, oldChannel.ID, newChannel.ID); err != nil {
+		return fmt.Errorf("rotation: retarget rotation config to new channel: %w", err)
 	}
 
 	// 9. Audit + event.
@@ -238,10 +249,34 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 	return nil
 }
 
-func (p *Plugin) revealNewChannel(channelID, finalName string, originalOverwrites []*discordgo.PermissionOverwrite) error {
+// revealNewChannel restores the old channel's original permission overwrites
+// onto the new one — the "copy permissions exactly, swap only the visibility"
+// contract this whole feature promises.
+//
+// If the old channel had zero explicit overwrites (the common case for a
+// fully public channel like general chat: @everyone sees it purely via
+// guild-level role permissions, no channel-specific entry needed), that's an
+// empty slice here — but discordgo's ChannelEdit.PermissionOverwrites is
+// `json:"...,omitempty"`, so an empty/nil slice is dropped from the outgoing
+// PATCH entirely rather than sent as `[]`. Discord then leaves the channel's
+// existing overwrites untouched, which at this point are still
+// createHiddenChannel's staging ones (@everyone denied, only the bot
+// allowed) — permanently locking everyone but the bot out of what's meant to
+// become the fully public replacement. An explicit no-op @everyone overwrite
+// (zero Allow/Deny) is functionally identical to no overwrite at all, but as
+// a non-empty slice it actually reaches the API and replaces the staging
+// overwrites instead of being silently skipped.
+func (p *Plugin) revealNewChannel(channelID, finalName, guildID string, originalOverwrites []*discordgo.PermissionOverwrite) error {
+	overwrites := originalOverwrites
+	if len(overwrites) == 0 {
+		overwrites = []*discordgo.PermissionOverwrite{{
+			ID:   guildID,
+			Type: discordgo.PermissionOverwriteTypeRole,
+		}}
+	}
 	_, err := p.ops.ChannelEditComplex(channelID, &discordgo.ChannelEdit{
 		Name:                 finalName,
-		PermissionOverwrites: originalOverwrites,
+		PermissionOverwrites: overwrites,
 	})
 	return err
 }

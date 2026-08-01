@@ -142,6 +142,86 @@ func TestRotateFullCycle(t *testing.T) {
 	}
 }
 
+// TestRotateRevealRestoresAccessWhenOldChannelHadNoExplicitOverwrites is a
+// regression test for the bug the user hit in production: a fully public
+// channel like general chat typically has zero explicit permission
+// overwrites (everyone sees it purely via @everyone's guild-level role
+// permissions, no channel-specific entry needed). revealNewChannel used to
+// pass that empty/nil slice straight through to ChannelEditComplex, which
+// discordgo marshals with `omitempty` — Discord then left the staging
+// channel's "deny @everyone, allow only the bot" overwrites in place
+// forever on what was supposed to become the fully public replacement, so
+// nobody but the bot could ever see the rotated channel again.
+func TestRotateRevealRestoresAccessWhenOldChannelHadNoExplicitOverwrites(t *testing.T) {
+	fs := newFakeSettings()
+	rc := finiteRetentionRC()
+	_ = fs.UpsertRotationChannel(context.Background(), rc)
+
+	ops := newFakeOps()
+	ops.addChannel(&discordgo.Channel{
+		ID:      "old1",
+		GuildID: "g1",
+		Name:    "general-chat",
+		// Deliberately no PermissionOverwrites — the common case for a
+		// fully public channel relying only on @everyone's base role perms.
+	})
+
+	p := newTestPlugin(ops, newFakeArchiveStore(), &fakeAudit{}, fs, fixedNow)
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	channels, err := ops.GuildChannels("g1")
+	if err != nil {
+		t.Fatalf("GuildChannels: %v", err)
+	}
+	newCh := findOtherChannelByName(channels, "general-chat", "old1")
+	if newCh == nil {
+		t.Fatal("expected a new channel named general-chat")
+	}
+	for _, ow := range newCh.PermissionOverwrites {
+		if ow.ID == "g1" && ow.Deny&discordgo.PermissionViewChannel != 0 {
+			t.Fatalf("expected @everyone NOT denied on the revealed channel, got overwrites %+v", newCh.PermissionOverwrites)
+		}
+	}
+}
+
+// TestRotateRetargetsRotationConfigToNewChannel is a regression test for the
+// bug where the rotation config kept tracking the OLD (now-archived) channel
+// ID forever after a successful rotation: the next scheduled fire would
+// refetch by that stale ID and try to "rotate" the archive instead of the
+// live replacement.
+func TestRotateRetargetsRotationConfigToNewChannel(t *testing.T) {
+	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
+	fs := p.settings.(*fakeSettings)
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	if _, ok := fs.RotationChannel("g1", "old1"); ok {
+		t.Fatal("expected the rotation config no longer tracked under the archived channel's ID")
+	}
+
+	channels, err := ops.GuildChannels("g1")
+	if err != nil {
+		t.Fatalf("GuildChannels: %v", err)
+	}
+	newCh := findOtherChannelByName(channels, "general-chat", "old1")
+	if newCh == nil {
+		t.Fatal("expected a new channel named general-chat")
+	}
+
+	updated, ok := fs.RotationChannel("g1", newCh.ID)
+	if !ok {
+		t.Fatal("expected the rotation config retargeted to the new channel's ID")
+	}
+	if updated.IntervalHours != rc.IntervalHours || updated.ArchiveCategoryID != rc.ArchiveCategoryID {
+		t.Fatalf("expected the retargeted config to preserve its other settings, got %+v", updated)
+	}
+}
+
 // TestRotateSucceedsDespiteAuditFailure guards against a real bug fixed
 // alongside this test: rotation's own steps (rename, archive, new channel,
 // stickies, archive record) had already fully succeeded by the time audit

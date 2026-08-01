@@ -133,7 +133,14 @@ func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEd
 	if data.ParentID != "" {
 		ch.ParentID = data.ParentID
 	}
-	if data.PermissionOverwrites != nil {
+	if len(data.PermissionOverwrites) > 0 {
+		// Mirrors discordgo's real wire behavior: ChannelEdit.PermissionOverwrites
+		// is `json:"...,omitempty"`, so a nil OR empty slice is dropped from the
+		// outgoing PATCH entirely — Discord then leaves existing overwrites
+		// untouched. A `!= nil` check here (an empty-but-non-nil slice) would
+		// let a test believe an explicit-clear succeeded when the real API
+		// would silently no-op it — exactly the bug that shipped in
+		// revealNewChannel because this fake didn't reproduce it.
 		ch.PermissionOverwrites = data.PermissionOverwrites
 	}
 	return ch, nil
@@ -314,6 +321,19 @@ func (f *fakeSettings) RemoveRotationChannel(ctx context.Context, guildID, chann
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.rotations[guildID], channelID)
+	return nil
+}
+
+func (f *fakeSettings) RetargetRotationChannel(ctx context.Context, guildID, oldChannelID, newChannelID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rc, ok := f.rotations[guildID][oldChannelID]
+	if !ok {
+		return nil
+	}
+	rc.ChannelID = newChannelID
+	delete(f.rotations[guildID], oldChannelID)
+	f.rotations[guildID][newChannelID] = rc
 	return nil
 }
 

@@ -571,3 +571,24 @@ func (s *Store) RemoveRotationChannel(ctx context.Context, guildID, channelID st
 	s.publishChanged(ctx, guildID)
 	return nil
 }
+
+// RetargetRotationChannel repoints a rotation config from oldChannelID to
+// newChannelID in place, preserving every other column (interval, archive
+// settings, sticky messages, ...) — used by rotation.rotate immediately
+// after a successful swap, since oldChannelID has just become an archived
+// channel and must never be looked up again as a live rotation target.
+// (guild_id, channel_id) is the row's key, so this is a plain UPDATE rather
+// than the delete+upsert dance a naive read-modify-write would need.
+func (s *Store) RetargetRotationChannel(ctx context.Context, guildID, oldChannelID, newChannelID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_rotation_channels SET channel_id = $3, updated_at = now()
+		WHERE guild_id = $1 AND channel_id = $2`,
+		guildID, oldChannelID, newChannelID); err != nil {
+		return fmt.Errorf("settings: retarget rotation channel: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}

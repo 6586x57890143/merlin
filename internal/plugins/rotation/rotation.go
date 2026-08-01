@@ -44,6 +44,7 @@ type SettingsProvider interface {
 	RotationChannel(guildID, channelID string) (settings.RotationChannel, bool)
 	UpsertRotationChannel(ctx context.Context, rc settings.RotationChannel) error
 	RemoveRotationChannel(ctx context.Context, guildID, channelID string) error
+	RetargetRotationChannel(ctx context.Context, guildID, oldChannelID, newChannelID string) error
 }
 
 // Plugin implements core.Plugin. It registers slash commands through
