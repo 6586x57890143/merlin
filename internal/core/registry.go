@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -18,6 +19,28 @@ import (
 // without a hard package dependency.
 type AuditWriter interface {
 	Record(ctx context.Context, guildID, actorID, action, oldValue, newValue string) error
+}
+
+// CronSpec describes a recurring job's schedule. Interval-based, not a cron
+// expression: restart-safety comes from persisting last-run state and
+// computing next-due = last-run + interval ourselves, which a bare cron
+// expression can't do on its own (spec.MD §5).
+type CronSpec struct {
+	Interval time.Duration
+}
+
+// Scheduler is the narrow interface plugins depend on to register recurring
+// jobs. The concrete implementation lives in internal/scheduler, which is
+// itself a Plugin — it's referenced here only as an interface so this
+// package (which internal/scheduler must import for Plugin/Deps) never
+// imports internal/scheduler back, avoiding a cycle.
+type Scheduler interface {
+	// Register adds a job under jobKey (by convention "guildID:name" for
+	// per-guild jobs). Returns an error if jobKey is already registered.
+	Register(jobKey string, spec CronSpec, fn func(ctx context.Context) error) error
+	// RunNow executes the named job immediately, bypassing its normal
+	// schedule, and updates its persisted state as a normal run would.
+	RunNow(ctx context.Context, jobKey string) error
 }
 
 // Plugin is the interface every feature module implements. Plugins are
@@ -49,13 +72,14 @@ type Plugin interface {
 // at Init time, so plugins reach for nothing global and never call each
 // other directly — they only publish/subscribe on Bus.
 type Deps struct {
-	Session *discordgo.Session
-	Bus     *EventBus
-	Config  *config.Loader
-	Perms   *Permissions
-	Audit   AuditWriter
-	Logger  *slog.Logger
-	DB      *storage.Store
+	Session   *discordgo.Session
+	Bus       *EventBus
+	Config    *config.Loader
+	Perms     *Permissions
+	Audit     AuditWriter
+	Logger    *slog.Logger
+	DB        *storage.Store
+	Scheduler Scheduler
 }
 
 // Registry owns plugin lifecycle: Init, Start, and reverse-order Shutdown.

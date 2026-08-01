@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,6 +16,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
+	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/storage"
 )
 
@@ -48,13 +51,17 @@ func run(log *slog.Logger) error {
 
 	cfg := cfgLoader.Global()
 
-	var db *storage.Store
-	if cfg.Database.DSN != "" {
-		db, err = storage.Connect(ctx, cfg.Database.DSN)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+	if cfg.Database.DSN == "" {
+		return errors.New("DATABASE_URL not set: Postgres is a hard runtime requirement (scheduler persists job state there)")
+	}
+	db, err := storage.Connect(ctx, cfg.Database.DSN)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if err := storage.Migrate(ctx, db.Pool); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
 	}
 
 	session, err := core.NewSession(cfg.Discord.Token)
@@ -64,17 +71,20 @@ func run(log *slog.Logger) error {
 
 	bus := core.NewEventBus(log)
 	perms := core.NewPermissions(session, cfgLoader)
+	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), log)
 
 	deps := core.Deps{
-		Session: session,
-		Bus:     bus,
-		Config:  cfgLoader,
-		Perms:   perms,
-		Logger:  log,
-		DB:      db,
+		Session:   session,
+		Bus:       bus,
+		Config:    cfgLoader,
+		Perms:     perms,
+		Logger:    log,
+		DB:        db,
+		Scheduler: sched,
 	}
 
 	registry := core.NewRegistry(deps, log)
+	registry.Register(sched)
 	registry.Register(ping.New())
 
 	if err := registry.InitAll(); err != nil {
