@@ -522,6 +522,23 @@ func (s *Store) EnablePlugin(ctx context.Context, guildID, pluginName string) er
 // full-replace pattern already used by internal/plugins/rotation's other
 // state, not a field-by-field setter for every option).
 func (s *Store) UpsertRotationChannel(ctx context.Context, rc RotationChannel) error {
+	// A nil Go slice binds as SQL NULL via pgx, which every array column here
+	// rejects (NOT NULL DEFAULT '{}') — the DEFAULT only applies when a
+	// column is omitted entirely, not when NULL is explicitly passed, and
+	// this INSERT always lists every column. Callers building a
+	// RotationChannel from scratch (e.g. rotation's /rotation configure add,
+	// which only sets the fields its own options cover) leave these nil by
+	// default, so normalize here once rather than requiring every caller to
+	// remember.
+	if rc.ArchiveWhitelistRoleIDs == nil {
+		rc.ArchiveWhitelistRoleIDs = []string{}
+	}
+	if rc.ArchiveWhitelistUserIDs == nil {
+		rc.ArchiveWhitelistUserIDs = []string{}
+	}
+	if rc.StickyMessages == nil {
+		rc.StickyMessages = []string{}
+	}
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO settings_rotation_channels (guild_id, channel_id, interval_hours, archive_category_id,
 			archive_visibility, archive_whitelist_role_ids, archive_whitelist_user_ids, retention_days,

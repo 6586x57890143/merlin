@@ -492,6 +492,7 @@ func (p *Plugin) handleSetup(ctx context.Context, s *discordgo.Session, i *disco
 			Name: "bot-audit-log",
 			PermissionOverwrites: []*discordgo.PermissionOverwrite{
 				{ID: i.GuildID, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+				p.botOverwrite(),
 			},
 		})
 		if err != nil {
@@ -511,6 +512,7 @@ func (p *Plugin) handleSetup(ctx context.Context, s *discordgo.Session, i *disco
 			Name: "bot-status",
 			PermissionOverwrites: []*discordgo.PermissionOverwrite{
 				{ID: i.GuildID, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+				p.botOverwrite(),
 			},
 		})
 		if err != nil {
@@ -563,6 +565,23 @@ func (p *Plugin) handleSetup(ctx context.Context, s *discordgo.Session, i *disco
 	}
 	if err := core.RespondEmbed(s, i, core.NewEmbed(core.ColorSuccess, "Server setup", desc, fields...)); err != nil {
 		p.log.Error("adminconfig: setup response failed", "err", err)
+	}
+}
+
+// botOverwrite is a member-scoped ALLOW overwrite granting the bot itself
+// view/post access on a channel it's creating. Without this, a channel that
+// denies @everyone VIEW_CHANNEL (like #bot-audit-log/#bot-status) would
+// deny the bot too, since the bot's own role is deliberately not granted
+// guild-wide Administrator (least privilege, spec.MD §4) and so has no
+// permission bit that bypasses channel overwrites — it needs an explicit
+// grant like anyone else. A member-type overwrite (rather than looking up
+// the bot's managed role) always wins regardless of which roles the bot
+// holds, and needs no role lookup.
+func (p *Plugin) botOverwrite() *discordgo.PermissionOverwrite {
+	return &discordgo.PermissionOverwrite{
+		ID:    p.session.State.User.ID,
+		Type:  discordgo.PermissionOverwriteTypeMember,
+		Allow: discordgo.PermissionViewChannel | discordgo.PermissionSendMessages | discordgo.PermissionEmbedLinks,
 	}
 }
 
