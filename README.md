@@ -8,19 +8,34 @@ Milestone 2 (scheduler / cron core), and Milestone 3 (channel rotation).
 
 ## Bot permissions & intents
 
-This build requests the minimum needed for `/ping` and the core skeleton —
-nothing destructive yet:
-
 - **OAuth2 scopes**: `bot`, `applications.commands`.
-- **Permission bits**: `/admin run-now` requires `Manage Server` as its
-  Discord-side gate (layer 1/4 of spec.MD §4's authorization model); the
-  internal mod/admin allow-list (layer 2) is still checked in-code before
-  anything runs. The bot's own role now also needs **`Manage Channels`**
-  (create/rename/move/delete channels, edit permission overwrites) for
-  channel rotation to function — grant it when inviting the bot. Future
-  milestones will add `Manage Roles`, `Manage Messages`, and
-  `View Audit Log` as the factions/reporting plugins land — see `spec.MD`
-  §4.
+- **Bot role permission bits** — what the bot's own Discord role can do,
+  requested via the invite URL's `permissions` parameter (Discord creates/
+  updates a managed role for the bot matching this bitmask — re-authorizing
+  the same invite link later updates that role in place, no need to
+  remove/re-add the bot):
+  - `Manage Channels` (bit `16`) — create/rename/move/delete channels and
+    edit permission overwrites, needed for channel rotation (Milestone 3).
+  - Least-privilege, per spec.MD §4: never `Administrator`; this list only
+    grows when a landed milestone genuinely needs a new bit, and this
+    section (plus the invite link below) is updated in the same PR.
+
+  **Current invite link** (scopes + the bits above):
+  ```
+  https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=16
+  ```
+  Have a server admin click this link and re-authorize whenever the
+  permission bits change — it updates the bot's existing role rather than
+  creating a duplicate.
+
+- **Command-level gates** (separate from the bot's own permissions above —
+  these govern which *members* can invoke a command): `/admin run-now`
+  requires `Manage Server` as its Discord-side gate
+  (`DefaultMemberPermissions`, layer 1/4 of spec.MD §4's authorization
+  model); the internal mod/admin allow-list (layer 2) is still checked
+  in-code before anything runs. Future milestones will add `Manage Roles`,
+  `Manage Messages`, and `View Audit Log` bot-role bits as the
+  factions/reporting plugins land — see `spec.MD` §4.
 - **Gateway intents**: `GUILDS` only. `GUILD_MEMBERS` and `MESSAGE_CONTENT`
   are privileged intents requiring Discord approval at scale, and neither is
   requested until a specific plugin genuinely needs it.
