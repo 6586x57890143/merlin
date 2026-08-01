@@ -44,6 +44,34 @@ go test ./... -race -cover
 
 See [`SECURITY.md`](./SECURITY.md) for the token-compromise runbook.
 
+## Deployment
+
+Every push to `main` that passes CI (`lint-test`, `secret-scan`, `docker-build`)
+triggers two more CI jobs:
+
+1. `push-image` builds the Docker image and pushes it to GHCR as
+   `ghcr.io/6586x57890143/merlin:latest` and `:<commit-sha>`, using the
+   workflow's own `GITHUB_TOKEN` — no separate registry secret.
+2. `deploy` copies `docker-compose.prod.yml` to the VPS and runs
+   `docker compose -f docker-compose.prod.yml pull && up -d` over SSH
+   (`VPS_HOST`/`VPS_SSH_KEY` repo secrets), logging into GHCR with the same
+   short-lived `GITHUB_TOKEN` so no long-lived registry credential is ever
+   stored on the VPS.
+
+`docker-compose.prod.yml` differs from the local `docker-compose.yml` only in
+that `bot` pulls the prebuilt GHCR image instead of building from source.
+Deploys never touch `.env` or `config.yaml` on the VPS — those hold real
+secrets/guild config and must be created there once by hand:
+
+```sh
+# one-time setup on the VPS, in /apps/merlin
+cp .env.example .env                  # fill in real values
+cp config.example.yaml config.yaml    # fill in real guild/role/channel IDs
+```
+
+The `deploy` SSH user must be able to run `docker`/`docker compose` without an
+interactive sudo prompt (e.g. a member of the `docker` group).
+
 ## Architecture
 
 - `internal/core` — plugin registry/lifecycle, event bus, permissions,
