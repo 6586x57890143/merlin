@@ -84,7 +84,11 @@ func run(log *slog.Logger) error {
 	if err := session.Open(); err != nil {
 		return err
 	}
-	defer session.Close()
+	defer func() {
+		if err := session.Close(); err != nil {
+			log.Error("closing discord session", "err", err)
+		}
+	}()
 
 	if err := registry.StartAll(ctx); err != nil {
 		return err
