@@ -290,8 +290,28 @@ func (p *Plugin) handleModRolesAdd(ctx context.Context, s *discordgo.Session, i 
 		core.RespondErr(s, i, "Failed to add mod role", err)
 		return
 	}
+	p.grantModRoleChannelAccess(s, i.GuildID, roleID)
 	p.audit(ctx, i, "config.mod_role_added", "", roleID)
 	core.RespondOK(s, i, "Mod role added", fmt.Sprintf("<@&%s> now counts as a mod role.", roleID))
+}
+
+// grantModRoleChannelAccess gives roleID VIEW_CHANNEL on whichever of the
+// guild's audit-log/status channels are currently configured. Called
+// whenever a role becomes (or already is) a mod role — from here and from
+// handleSetup — so mods can actually see the moderation trail they're
+// meant to have access to; the channels themselves only deny @everyone by
+// default (see botOverwrite), they don't proactively grant mod roles,
+// since a mod role may not exist yet at channel-creation time.
+func (p *Plugin) grantModRoleChannelAccess(s *discordgo.Session, guildID, roleID string) {
+	gs := p.settings.GuildSettings(guildID)
+	for _, channelID := range []string{gs.AuditLogChannelID, gs.StatusChannelID} {
+		if channelID == "" {
+			continue
+		}
+		if err := s.ChannelPermissionSet(channelID, roleID, discordgo.PermissionOverwriteTypeRole, discordgo.PermissionViewChannel, 0); err != nil {
+			p.log.Error("adminconfig: grant mod role channel access failed", "guild", guildID, "channel", channelID, "role", roleID, "err", err)
+		}
+	}
 }
 
 func (p *Plugin) handleModRolesRemove(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -540,6 +560,15 @@ func (p *Plugin) handleSetup(ctx context.Context, s *discordgo.Session, i *disco
 		}
 		gs.ModRoleIDs = append(gs.ModRoleIDs, role.ID)
 		created = append(created, "<@&"+role.ID+"> (mod role — assign it to your moderators)")
+	}
+
+	// Re-grant on every run, not just when something was just created: a
+	// mod role added before the audit/status channels existed (or vice
+	// versa) would otherwise never get access once the other half shows up.
+	// ChannelPermissionSet is a plain overwrite PUT, so repeating it for an
+	// already-granted role is a harmless no-op.
+	for _, roleID := range gs.ModRoleIDs {
+		p.grantModRoleChannelAccess(s, i.GuildID, roleID)
 	}
 
 	p.audit(ctx, i, "config.setup", "", strings.Join(created, ", "))

@@ -1,12 +1,10 @@
 # merlin
 
-A production-grade, modular Discord bot for "The Melting Pot." See
-[`spec.MD`](./spec.MD) for the full design doc. This README covers what's
-built so far: Milestone 0 (scaffold, CI, Docker, `/ping`), Milestone 1
-(core plugin registry, event bus, permissions layer, config loader),
-Milestone 2 (scheduler / cron core), Milestone 3 (channel rotation), and
-Milestone 4 (command framework, tiered permissions, self-serve DB-backed
-config — spec.MD §4a).
+A production-grade, modular Discord bot for "The Melting Pot." This README
+covers running, deploying, and navigating the codebase. For architecture,
+security model, and the reasoning behind any design choice, see
+[`spec.MD`](./spec.MD) — that's the one place rationale lives; this file
+just links to it rather than repeating it.
 
 ## Bot permissions & intents
 
@@ -35,26 +33,13 @@ config — spec.MD §4a).
   creating a duplicate.
 
 - **Command-level gates** (separate from the bot's own permissions above —
-  these govern which *members* can invoke a command): as of Milestone 4
-  (spec.MD §4a) every command declares a mandatory `core.PermSpec{Tier,
-  Action}` — `Public`, `Mod`, or `Admin` — checked centrally by
-  `core.CommandRouter` before any handler runs. `Admin` passes for a
-  DB-listed admin, the break-glass identity, *or* anyone holding Discord's
-  own Administrator permission in that guild (spec.MD §4c) — most notably
-  the guild owner, who always has it, so they can self-serve `/config setup`
-  with zero prior bot configuration. A guild can further customize any
-  action per `/config permissions set-tier|grant|revoke|block|unblock`
-  (spec.MD §4c): override its effective tier, additively grant a specific
-  role/user access without making them a full mod, or explicitly block one
-  — blocks win over everything else except the break-glass identity, which
-  nothing can block. A whole plugin can also be toggled off per guild via
-  `/config plugins disable` (checked before any of the above). Discord's own
-  `DefaultMemberPermissions` is deliberately left unset on Mod/Admin
-  commands (see spec.MD §4a for why) — the internal checks above are the
-  sole real gate. Who counts as "mod" (still purely DB-driven, no
-  permission-bit shortcut — mods are a tool, not a way to reconfigure the
-  bot) or "admin" beyond the paths above is configured via
-  `/config mod-roles`/`/config admins` — see "First-time setup" below.
+  these govern which *members* can invoke a command): every command
+  declares a `Public`/`Mod`/`Admin` tier, checked centrally before any
+  handler runs, plus a per-guild-configurable policy layer (tier overrides,
+  per-person grants/blocks, plugin on/off) — see spec.MD §4/§4a for the full
+  model and `/config`'s subcommands. Who counts as "mod"/"admin" is
+  configured via `/config mod-roles`/`/config admins` — see "First-time
+  setup" below.
 - **Gateway intents**: `GUILDS` only. `GUILD_MEMBERS` and `MESSAGE_CONTENT`
   are privileged intents requiring Discord approval at scale, and neither is
   requested until a specific plugin genuinely needs it.
@@ -122,66 +107,20 @@ interactive sudo prompt (e.g. a member of the `docker` group).
 
 ## Scheduler
 
-`internal/scheduler` is the generic cron core other time-based plugins
-(Rotation, next) register recurring jobs with (spec.MD §5). Job state
-(last-run timestamp, consecutive failures) is persisted per job key
-(`guildID:name`) in Postgres, so "every N hours" survives a restart instead
-of resetting its clock. Failing jobs retry with capped exponential backoff;
-past 5 consecutive failures, the scheduler posts an alert to the guild's
-configured `status_channel_id` and falls back to the job's normal interval
-rather than retrying forever.
-
-`/scheduler run-now` (Mod tier) triggers any registered job immediately,
-for testing — the `job` option autocompletes over the invoking guild's
-currently-registered job keys, so there's nothing to memorize or look up
-in code. `/scheduler list` shows every registered job for the guild
-(last-run, next-due, consecutive failures) as a plain, no-typing-required
-alternative to autocomplete.
+`internal/scheduler` is the generic cron core other plugins register
+recurring jobs with — persisted last-run state, retry with backoff, and a
+status-channel alert past repeated failures (spec.MD §5). `/scheduler
+run-now` (autocomplete over registered job keys) and `/scheduler list`
+cover manual triggering and inspection for every registered job, including
+rotation's.
 
 ## Channel rotation
 
 `internal/plugins/rotation` implements spec.MD §6's "Refresh": a configured
-channel (e.g. `#general-chat`) is periodically given a clean history while
-preserving a moderation trail, specifically to reduce the window of
-retained content a bad-faith actor can trawl through for a retroactive
-mass-report campaign. As of Milestone 4, it's configured per guild entirely
-through `/rotation configure add|edit|remove|sticky` (Admin tier, using
-Discord's native channel/role pickers instead of raw IDs) — `/rotation
-list` shows every configured rotation for the guild. See spec.MD §6.
-
-Each rotation cycle: creates a fully-configured replacement channel
-**hidden** from members, populates it (sticky messages + a birdlike
-transparency notice about the retention policy), then flips visibility
-**new channel first** — only after the replacement is live does the old
-channel get renamed into the hidden archive category. This deliberately
-trades spec's literal step order for a stronger safety property: the worst
-failure case is a brief moment where both channels are visible under the
-same name, never a window where the guild has no live channel at all. Every
-step re-derives "is this already done?" from live Discord/Postgres state,
-so a crash mid-rotation self-heals on the next scheduled retry (via the
-existing Scheduler backoff, unchanged) without creating duplicate channels
-or reposting stickies.
-
-`archive_visibility` is `mod_only` (only the guild's configured mod roles
-can see the archive) or `whitelist` (mod roles plus extra
-`archive_whitelist_role_ids`/`archive_whitelist_user_ids`) — mod roles
-always retain access either way.
-
-Archived channels are permanently deleted by a per-guild hourly sweep job
-(`rotation-sweep`, registered like any other Scheduler job) once past their
-`retention_days` — a small `rotation_archives` table tracks pending
-deletions rather than teaching the Scheduler about one-shot jobs. Omit
-`retention_days` entirely to keep an archive forever (never swept); this is
-an intentional, unbounded escape hatch with no automatic cap, so treat it
-as an ongoing manual responsibility, not something the bot protects against.
-If a mod manually moves an archived channel out of its configured archive
-category before the sweep runs, that's treated as an implicit "keep this
-one" and it's never deleted.
-
-`/scheduler run-now` (with autocomplete over registered job keys) already
-covers manually triggering either the per-channel rotation job or the
-`rotation-sweep` job — rotation itself adds no separate manual-trigger
-command, just its own `/rotation configure`/`list` for settings.
+channel is periodically given a clean history while preserving a moderation
+trail. Configured per guild via `/rotation configure add|edit|remove|sticky`
+and inspected with `/rotation list` — see spec.MD §6 for the full rotation
+process, visibility/retention semantics, and archive sweep behavior.
 
 ## Architecture
 
@@ -216,40 +155,16 @@ Design Principle 1.
 
 Once the bot is invited (see the invite link above) and running:
 
-1. **Invite the bot** to your guild via the link above (a server admin must
-   do this). If nothing is configured yet, the bot DMs the guild **owner**
-   once, pointing at `/config setup` (spec.MD §4c) — Discord has no API for
-   "who actually invited the bot," so the owner is the best available,
-   always-present proxy, and they always implicitly hold Discord's
-   Administrator permission, so they can act on it immediately.
-2. **Run `/config setup`** as the guild owner, anyone else with Discord's
-   Administrator permission, or the break-glass admin (the Discord user
-   whose ID you set as `MERLIN_BREAK_GLASS_ADMIN_USER_ID` — a fallback that
-   always passes Admin tier regardless of DB state, mainly useful if no
-   Administrator is available or as a recovery path). This auto-creates
-   `#bot-audit-log`, `#bot-status`, and a "Merlin Mod" role for whatever
-   isn't already configured, and always responds with a full status summary
-   and next steps — it's safe and useful to re-run any time as a "how's my
-   setup" check, not just once.
-3. **Run `/config admins add`** to add specific bot-admins beyond whoever
-   already qualifies via Discord's Administrator permission, and
-   `/config mod-roles add` to designate mod role(s) — both Admin tier. Mods
-   never get command-configuration access automatically (see step 5).
-4. **Configure rotation** with `/rotation configure add` (Admin tier) for
-   any channel you want periodically refreshed.
-5. Optionally, fine-tune who can use a specific action beyond the defaults:
-   **`/config permissions set-tier <action> mod`** lets mods use it too
-   (rotation's configure actions are Admin-only out of the box);
-   **`/config permissions grant <action> <role-or-user>`** additively grants
-   one specific non-mod role/user access without making them a full mod;
-   **`/config permissions block <action> <role-or-user>`** excludes one
-   specific role/user even if their tier would otherwise allow it. A whole
-   plugin can be turned off for the server with `/config plugins disable`.
-
-Every command response is a color-coded, ephemeral embed (from Merlin's
-brand palette — see `internal/core/embeds.go` and spec.MD §4b) visible only
-to whoever ran the command.
-
-`/config import` exists only for migrating a pre-Milestone-4 deployment's
-`config.yaml` guild settings into the DB once — new deployments never need
-it.
+1. **Invite the bot** (a server admin must do this). If nothing is
+   configured yet, it DMs the guild owner once pointing at `/config setup`
+   — see spec.MD §4a for why the owner, specifically.
+2. **Run `/config setup`** as the owner, any other Administrator, or the
+   break-glass admin. Creates `#bot-audit-log`, `#bot-status`, and a mod
+   role for whatever's missing; safe to re-run any time as a status check.
+3. **`/config admins add`** / **`/config mod-roles add`** to bring in
+   others beyond the Administrator/break-glass paths.
+4. **`/rotation configure add`** for any channel you want periodically
+   refreshed.
+5. Optionally fine-tune access per action with `/config permissions
+   set-tier|grant|block` or turn a whole plugin off with `/config plugins
+   disable` — see spec.MD §4a for the full model.

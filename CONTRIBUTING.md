@@ -36,3 +36,25 @@ golangci-lint run   # if installed locally; otherwise CI will run it
   `config.yaml` — expose new configurable state through your plugin's own
   commands, not a file admins need host access to edit.
 - Log IDs, not message content, by default (see `spec.MD` §4).
+
+## Docs: one owner per fact, no append-only sprawl
+
+Three docs, three distinct jobs — don't blur them:
+
+- `spec.MD` is the only place design rationale lives (architecture, security
+  model, why a decision was made). When a design changes, **edit the
+  relevant section in place** — don't append a new dated/milestone-numbered
+  subsection describing the diff (the `§4a`/`§4b`/`§4c` sprawl this
+  guardrail replaces). `spec.MD` describes the current state of the design;
+  historical narrative belongs in commit messages and PR descriptions.
+- `README.md` is orientation and operation only: what this is, how to
+  run/test/deploy it, a short per-plugin pointer into `spec.MD` for depth.
+  If an explanation needs more than 2-3 sentences, it's a `spec.MD` section
+  — link to it, don't duplicate it inline.
+- Code comments carry the local WHY for a specific piece of code (per the
+  general comment policy — only when genuinely non-obvious). They shouldn't
+  re-explain something already covered in `spec.MD`; link there instead if
+  the reasoning is more than a line.
+
+Before adding a new doc section, check whether an existing one can just be
+updated instead. Prefer trimming over appending.

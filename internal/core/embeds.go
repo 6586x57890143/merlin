@@ -2,7 +2,7 @@ package core
 
 import "github.com/bwmarrin/discordgo"
 
-// Merlin's brand palette (spec.MD §4b), shared across every plugin's command
+// Merlin's brand palette (spec.MD §4a), shared across every plugin's command
 // responses so the bot's replies read consistently instead of each plugin
 // picking its own colors. ColorSuccess/ColorError/ColorInfo/ColorWarning are
 // the four RespondXxx-mapped semantic colors below; Primary/Accent/Light/

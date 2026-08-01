@@ -171,17 +171,21 @@ merlin/
 
 \### Authorization — layered, not single-point
 
-Every privileged command/action checks, in order:
+Every privileged command/action checks, in order, before its handler ever runs:
 
-0\. Is the owning plugin even enabled in this guild (`/config plugins enable\|disable`, §4c)? Checked before anything below — a disabled plugin's commands are unusable by anyone, including admins, until re-enabled.
+0\. \*\*Plugin enabled?\*\* (`/config plugins enable\|disable`) — checked first; a disabled plugin's commands are unusable by anyone, including admins, until re-enabled.
 
-1\. Tiered authorization (`core.PermTier`: Public / Mod / Admin) evaluated centrally by `core.CommandRouter` before any handler runs — Mod passes for a configured mod role or an admin; Admin passes for a configured admin, the break-glass bootstrap admin (§4a), or Discord's own Administrator permission bit (§4c). A guild may override an action's effective tier per `/config permissions set-tier` (§4c) — the command's own `PermSpec.Tier` is otherwise mandatory at registration (the zero value is invalid and fails startup), so "forgot to gate this command" fails loud, not silent.
+1\. \*\*Deny\*\* (`/config permissions block\|unblock`): has this specific person/role been explicitly blocked from this action? Wins over every layer below, including Administrator — except the break-glass admin, which nothing can deny.
 
-2\. An additive, per-action whitelist (`PermSpec.Action`, e.g. `"rotation.configure"`) independent of tier — lets a specific role/user be granted exactly one command's access without becoming a full mod or admin. Granting/revoking a whitelist entry is itself Admin-tier only, so a mod can never escalate their own or anyone else's access. A matching per-action deny-list (`/config permissions block`, §4c) wins over this and over tier/Administrator, for the same person/role — except the break-glass admin, which nothing can deny.
+2\. \*\*Tier\*\*: Public always passes. Mod/Admin check the action's effective tier — a per-guild override (`/config permissions set-tier\|clear-tier`) if one is set, else the command's own compiled-in default (mandatory at registration; `core.CommandRouter.Finalize()` refuses to start the bot if any command is missing one). Admin passes for a DB-listed admin, the break-glass bootstrap identity, or anyone holding Discord's own Administrator permission (read directly off the interaction, no extra API call) — deliberately \*not\* extended to Mod, so holding an elevated Discord permission never grants bot-reconfiguration rights on its own. Mod passes for a DB-listed mod role or an admin.
 
-3\. Role-hierarchy sanity: the bot can never assign/remove a role positioned above its own top role (Discord enforces this API-side too, but check and fail cleanly rather than surface a raw API error).
+3\. \*\*Allow\*\* (`/config permissions grant\|revoke`): an additive per-action whitelist lets a specific role/user past regardless of tier, without becoming a full mod or admin.
 
-4\. Discord's own `default\_member\_permissions` is deliberately \*\*not\*\* used as a mirror of the tier/whitelist model above (see §4a for why) — it's left unset on Mod/Admin-tier commands so a whitelisted non-mod user, or a mod role with no matching Discord permission bit, is never blocked by Discord before layer 1-2 even run. Guild admins retain Discord's own separate per-command visibility overrides (Integrations settings) as an orthogonal, optional extra layer.
+4\. Role-hierarchy sanity: the bot can never assign/remove a role positioned above its own top role (Discord enforces this API-side too, but check and fail cleanly rather than surface a raw API error).
+
+5\. Discord's own `default\_member\_permissions` is deliberately \*\*not\*\* used to mirror the model above — left unset on Mod/Admin commands so a whitelisted non-mod user, or a mod role with no matching Discord bit, is never blocked by Discord before the checks above run. Guild admins retain Discord's own separate per-command visibility overrides (Integrations settings) as an orthogonal, optional extra layer.
+
+Mutating any of the above (admin list, mod roles, tier overrides, allow/deny, plugin toggle) is itself Admin-tier only, so a mod can never escalate their own or anyone else's access. See §4a for the mechanics.
 
 
 
@@ -191,7 +195,7 @@ Every privileged command/action checks, in order:
 
 \- \*\*Panic isolation\*\*: every plugin's event handlers run under `recover()`; a panic in one plugin logs and alerts, it never takes down the process or other plugins.
 
-\- \*\*Config-change audit trail\*\*: every change to rotation intervals, faction definitions, or the mod allow-list is written to an append-only log \*and\* posted as an embed to a locked-down `#bot-audit-log` channel (who, what changed, old value, new value, timestamp).
+\- \*\*Config-change audit trail\*\*: every change to rotation intervals, faction definitions, or the mod allow-list is written to an append-only log \*and\* posted as an embed to a locked-down `#bot-audit-log` channel (who, what changed, old value, new value, timestamp) — visible to the bot and, once a guild has any mod roles configured, to those roles too (granted automatically whenever a role becomes a mod role, whether via `/config setup` or `/config mod-roles add`); \*\*not\*\* to `@everyone`.
 
 \- \*\*Confused-deputy checks\*\*: before acting on any channel/role ID pulled from an event or scheduled job, re-verify it still belongs to the configured guild and matches the expected config entry — don't trust a cached ID blindly.
 
@@ -205,181 +209,39 @@ Every privileged command/action checks, in order:
 
 
 
-\## 4a. Command \& Permission Framework (Milestone 4)
+\## 4a. Command \& Permission Framework
 
 
 
-Milestones 0-3 grew commands ad hoc: each plugin called `session.AddHandler` and `discordgo.ApplicationCommand{Create,BulkOverwrite}` itself, and the Scheduler's `/admin run-now \<job\>` took a raw string with no way for a mod to discover what job names existed. Milestone 4 replaces this with one small framework every future plugin follows, so commands and permissions stay self-documenting without a central "admin" command dumping ground.
+Every plugin registers its own top-level slash command (`/rotation`, `/scheduler`, `/config`, ...) with its own subcommands — no central `/admin` catch-all. The only cross-cutting exception is `/config` (mod roles, admins, permission policy, plugin toggles — concepts that don't belong to any single feature plugin).
 
 
 
-\### Command ownership: one top-level command per plugin
+\*\*`core.CommandRouter`\*\* (`internal/core/commands.go`) is the sole owner of registration and dispatch: plugins call `Commands.RegisterCommand`/`Handle`/`Autocomplete` during `Init`, never `session.AddHandler` or `discordgo.ApplicationCommand\*` directly, so there's exactly one writer performing the per-guild bulk-overwrite (guild-scoped, not global, so commands appear instantly instead of waiting on Discord's up-to-an-hour global-propagation delay). Every dispatch — command and autocomplete — runs under `recover()` (`discordgo`'s own event dispatch has none of its own), and every leaf's `PermSpec{Tier, Action}` is mandatory and validated at startup (`Finalize`).
 
 
 
-Commands are centered on plugins, not a central suite: each plugin registers its own top-level slash command (`/rotation`, `/scheduler`, `/config`, ...) with subcommands/subcommand-groups for its own actions, instead of everything living under one `/admin` tree. The only cross-cutting exception is `/config` (mod roles, admins, permission whitelists — concepts that don't belong to any single feature plugin).
+\*\*Discoverability\*\*: any option whose valid values come from bot state (job keys, action names, plugin names) uses Discord autocomplete plus a plain `list` subcommand as a no-typing fallback; any channel/role/user-valued option uses Discord's native picker type, never a raw ID string. Every command response is a color-coded, ephemeral embed (`internal/core/embeds.go`'s `RespondOK`/`RespondErr`/`RespondInfo`/`RespondWarn`, from Merlin's brand palette) — the standing convention for every plugin's responses.
 
 
 
-\### Central router, not per-plugin handlers
+\*\*Self-serve configuration\*\*: guild-scoped settings (mod roles, admins, permission policy, rotation config) live in Postgres via `internal/settings`, mutated only through Discord commands. `config.yaml`/`.env` hold nothing but process bootstrap — Discord token/App ID, DB DSN, log level, and one \*\*break-glass admin user ID\*\* that always satisfies Admin tier everywhere, so a wiped or misconfigured guild's settings can never permanently lock the operator out. `/config import` seeds a guild's settings from a legacy `config.yaml` once, for migrating a pre-this-model deployment — never run automatically.
 
 
 
-A single `core.CommandRouter` (`internal/core/commands.go`) is the sole owner of registration and dispatch:
+\*\*Permission policy is per-guild-configurable\*\*, not fixed at registration, in three composable layers (coarsest first, matching §4's Authorization order): a whole plugin can be switched off (`/config plugins enable\|disable` — except `/config` itself, which can never be disabled, or a guild could never re-enable anything); any action's effective tier can be overridden (`/config permissions set-tier\|clear-tier`) independent of its compiled-in default — rotation, for instance, splits structural changes (add/remove a rotating channel) from adjustment (interval/retention/visibility/sticky) into two separate actions specifically so one can be loosened without the other; and specific people/roles can be granted or explicitly blocked (`/config permissions grant\|revoke\|block\|unblock`) regardless of tier — a block always wins except against the break-glass identity.
 
 
 
-\- Plugins call `Commands.Register`/`Handle`/`Autocomplete` during `Init`; nothing calls `session.AddHandler` or `ApplicationCommand\*` directly. This closes a real bug window from Milestones 0-3: two plugins independently calling `ApplicationCommandBulkOverwrite` would silently wipe out each other's commands, since bulk-overwrite replaces the whole scope, not just the caller's own commands. One writer, one bulk-overwrite per guild, after every plugin has registered.
+\*\*First-time setup\*\*, concretely:
 
-\- Commands are registered \*\*per guild\*\*, not globally — driven reactively by discordgo's `GuildCreate` event (fired for every guild the bot is in, both at startup and whenever it joins a new one), not a static config list. Guild-scoped commands appear instantly; global commands can take up to an hour to propagate, which is exactly the "why isn't my new command showing up" confusion global registration caused before.
+1\. Before first run, an operator sets `MERLIN\_BREAK\_GLASS\_ADMIN\_USER\_ID` to their own Discord ID.
 
-\- Every dispatch (command and autocomplete) runs under `recover()`. `discordgo`'s own event dispatch has no panic recovery of its own — this closes a gap that existed for every plugin's command handler before Milestone 4, not just new ones.
+2\. On joining a guild with nothing configured yet, the bot DMs the guild owner once, pointing at `/config setup` — Discord has no API for "who invited the bot," so the owner (who always implicitly holds Administrator) is the best available proxy. No public fallback if the DM fails; it just retries on the bot's next restart.
 
-\- `PermSpec` (Tier + Action, see §4) is mandatory per registered command/subcommand and validated at startup (`Finalize`), not left to convention.
+3\. The owner (via the Administrator bit) or the break-glass identity runs `/config setup`, which creates `#bot-audit-log`, `#bot-status`, and a mod role for whatever's missing, and is safe to re-run any time as a status check.
 
-
-
-\### Discoverability: autocomplete and explicit list commands
-
-
-
-No command should require out-of-band knowledge (reading source, checking a config file) to use. Any option whose valid values come from bot state — the Scheduler's registered job keys, `/config permissions`'s known action names — uses Discord's native autocomplete instead of a raw string, and the owning plugin also exposes a plain `list` subcommand (`/scheduler list`, `/rotation list`, `/config permissions list`) so the same information is browsable without typing anything. Any option whose value is a channel/role/user ID uses Discord's native `Channel`/`Role`/`User` option types (an in-client searchable picker) instead of a raw string — there is no remaining command where a human needs to hand-copy a Discord snowflake ID. Every command response is a color-coded embed (`internal/core/embeds.go`'s `RespondOK`/`RespondErr`/`RespondInfo`/`RespondWarn`, from Merlin's brand palette), always ephemeral so only the invoker sees it — see §4b.
-
-
-
-\### Self-serve configuration: DB-backed, not `config.yaml`
-
-
-
-Guild-scoped configuration (mod roles, admins, permission whitelists, rotation settings) is no longer file-based. `internal/settings` persists it in Postgres, cached per-guild in memory and refreshed on every mutation; every plugin that has configurable state exposes its own commands to change it (`/rotation configure`, `/config admins|mod-roles|permissions`) instead of requiring `.env`/`config.yaml` file access on the host. `config.yaml` is reduced to process bootstrap only: Discord token/App ID, DB DSN, log level, and one \*\*break-glass admin user ID\*\* (env-sourced, never DB-backed) that always satisfies Admin tier in every guild — the one thing that still needs host access, existing solely so a wiped or misconfigured guild's settings can never permanently lock the operator out. `/config setup` automates first-time bootstrap further by creating `#bot-audit-log`, `#bot-status`, and a mod role if a guild has none configured yet. A one-time `/config import` command seeds a guild's settings from a legacy `config.yaml`, for migrating an existing deployment or disaster recovery — never run automatically.
-
-
-
-\---
-
-
-
-\## 4b. UX \& Onboarding Polish Pass
-
-
-
-Before building Milestone 5 (Factions), a review pass against Milestone 4 checked whether the framework it introduced was actually sane to build on, not just present. Findings, and what changed as a result:
-
-
-
-\### Deny-by-default, confirmed
-
-
-
-`core.Permissions.Authorize` (§4) has exactly one branch that returns success without a tier/whitelist check: `TierPublic`. Every other tier requires an explicit match; there is no fallthrough "allow" path. `CommandRouter.Finalize()` independently refuses to start the bot if any registered command has an unset tier or a subcommand with no handler. Nothing in this pass changed that logic — it was reviewed and confirmed sound, not patched.
-
-
-
-\### The bootstrap flow, spelled out
-
-
-
-Milestone 4 shipped the mechanism (break-glass admin, `/config setup`, `/config admins|mod-roles`) but never wrote down the sequence a brand-new guild actually follows. It is, concretely:
-
-
-
-1\. Before first run, an operator sets `MERLIN\_BREAK\_GLASS\_ADMIN\_USER\_ID` to their own Discord user ID.
-
-2\. That identity always satisfies `TierAdmin` in every guild, regardless of what's in `internal/settings` — including a guild with zero rows.
-
-3\. They run `/config setup`, which creates `#bot-audit-log`, `#bot-status`, and a "Merlin Mod" role for whatever the guild doesn't already have, and is safe to re-run any time as a status check (see below).
-
-4\. They run `/config admins add`/`/config mod-roles add` to bring in real admins/mods beyond the break-glass identity.
-
-5\. `/config permissions grant` optionally whitelists a specific non-mod role/user for one narrow action.
-
-
-
-\### Onboarding nudge: DM the owner, not a public post
-
-
-
-A fresh guild has no bot-configured channel yet to post a "run /config setup" reminder into — a genuine chicken-and-egg problem, since asking admins to first run a command to pick a notification channel defeats the point of a proactive nudge, and posting publicly means the whole server sees implementation details of the bot's bootstrap mechanism. Discord's API has no way to find out who actually invited the bot, so `internal/plugins/adminconfig`'s `NudgeIfUnconfigured` uses the best available, always-present proxy instead: it DMs `guild.OwnerID` once, the first time a guild is seen with nothing configured yet, pointing at `/config setup`. The owner always implicitly holds Discord's Administrator permission, so — combined with the Administrator-bit authorization path below — they can act on the DM immediately with no prior bot-admin setup at all; the message doesn't need to explain break-glass or any other bootstrap mechanism. If the DM fails (owner has DMs closed, or blocks the bot), this logs and retries on the bot's next restart — there is deliberately no public fallback, since a private nudge was the whole point. Once a DM actually sends successfully, it's marked sent (`settings\_guild.onboarding\_nudge\_sent\_at`) and never repeats. Other bots in this space (Carl-bot, Dyno, MEE6) solve first-run discovery via an external OAuth web dashboard where the admin explicitly picks their server; that model is deliberately not used here, since host/dashboard-free, Discord-only configuration is this project's whole point (§4a).
-
-
-
-\### Embeds, not plain text, for every command response
-
-
-
-Every command response across `adminconfig`, `rotation`, and `scheduler` was plain ephemeral text before this pass. `internal/core/embeds.go` now provides `RespondOK`/`RespondErr`/`RespondInfo`/`RespondWarn` (via `NewEmbed`/`RespondEmbed`) as the one shared implementation every plugin calls, colored from Merlin's brand palette:
-
-
-
-| Constant | Hex | Use |
-
-|---|---|---|
-
-| `ColorPrimary` | `\#4B4C73` | brand-colored embeds with no success/error/info connotation |
-
-| `ColorInfo` | `\#7A7DB8` | `RespondInfo` — lists, status |
-
-| `ColorAccent` | `\#8B5E34` | brand accent |
-
-| `ColorLight` | `\#ECD9AE` | brand accent |
-
-| `ColorDark` | `\#3D2817` | brand accent |
-
-| `ColorBlack` | `\#201812` | brand accent |
-
-| `ColorSuccess` | `\#7C8B5A` | `RespondOK` — the action succeeded |
-
-| `ColorWarning` | `\#D9A62E` | `RespondWarn` — succeeded, but worth a second look |
-
-| `ColorError` | `\#A85234` | `RespondErr` — the action failed or was rejected |
-
-
-
-`internal/audit`'s embeds use `ColorSuccess` too, for the same visual consistency. Response styling is a UI concern, not plugin business logic, so it lives entirely in `core` rather than being copy-pasted per plugin — the same rationale as `core.LeafArgs`, §4a — and all four `RespondXxx` helpers are ephemeral, matching the existing "only the invoker sees a command's result" convention. This is now the standing convention for every future plugin's command responses. `/config setup`'s response in particular became a guided, re-runnable wizard: it always shows current status (audit/status channel, mod role and admin counts) alongside whatever it just created and a concrete "next steps" list, rather than a one-shot "done" message — safe to run repeatedly as a status check, not just once at first install.
-
-
-
-\---
-
-
-
-\## 4c. Fine-Grained Permission Policy \& Plugin Toggle
-
-
-
-A guided walkthrough of the command/permission flow (tracing the actual code path a real deployment hits) found three bugs, fixed here: the onboarding nudge could fire even when guild command registration had failed (now gated on registration actually succeeding, in `cmd/bot/main.go`); rotation's `channel` option accepted any channel type via Discord's own picker, with the mismatch only surfacing later as a raw API error deep in a rotation job (now restricted to `ChannelTypeGuildText`, matching `archive\_category`'s existing restriction); and `CommandRouter.dispatchAutocomplete` never called `Authorize` at all, letting any user — regardless of permissions — see registered job keys and internal action names via autocomplete (now gated identically to `dispatchCommand`).
-
-
-
-Alongside the bug fixes, the same review led to generalizing Milestone 4's fixed-at-registration `PermSpec.Tier` + additive-whitelist model into a fully per-guild-configurable permission policy, composed of three layers, coarsest to finest:
-
-
-
-\### Layer 1 — Administrator bit and the plugin on/off switch
-
-
-
-`core.Permissions.Authorize` gained a third path to `TierAdmin`, alongside the break-glass admin and DB-listed `/config admins`: Discord's own Administrator permission bit, read directly from `member.Permissions` (already computed and attached to every interaction by Discord — no extra API call). This exists so a guild's own trusted admins — most immediately the guild owner, who always implicitly holds it — can self-serve `/config setup` and everything else without first needing an existing bot-admin to add them, removing a bootstrap bottleneck that served no real security purpose. It is deliberately \*\*not\*\* extended to `TierMod`: mods stay purely `/config mod-roles`-driven, with no permission-bit shortcut, so holding an elevated Discord permission never grants bot-reconfiguration rights on its own — mods remain a tool, not a way to reconfigure the bot. One resulting asymmetry, by design: `/config admins remove` only ever revokes the DB-listed path — a Discord Administrator keeps access via that path regardless, until a fellow Administrator changes their Discord role, since Discord's own role system is authoritative for that path, not ours.
-
-
-
-Coarser still, `/config plugins enable\|disable\|list` toggles a whole plugin on or off per guild (`settings\_guild.disabled\_plugins`), checked by `core.CommandRouter` before any per-action policy or `Authorize` call runs at all — a disabled plugin's commands are unusable by anyone in that guild, including admins, until re-enabled. `adminconfig` (the plugin owning `/config` itself) can never be disabled — rejected explicitly in `handlePluginsDisable` before it ever reaches `internal/settings` — since disabling it would permanently lock a guild out of ever re-enabling anything, including itself.
-
-
-
-\### Layer 2 — per-action tier override
-
-
-
-Every `PermSpec.Action` can have its effective tier overridden per guild via `/config permissions set-tier <action> <mod\|admin>` (and reset via `clear-tier`) — independent of the command's own compiled-in `PermSpec.Tier`. This is deliberately per-action, not per-plugin: rotation, for instance, already splits "structural" changes (add/remove a rotating channel) from "adjustment" (interval/retention/visibility/sticky) into two separate actions specifically so one can be loosened without the other. Both rotation configure actions default to Admin-only out of the box — mods get no configure access unless a guild explicitly loosens it via `set-tier ... mod`. `internal/settings\_permission\_overrides.required\_tier` is nullable: `NULL` means "no override, use the compiled-in default."
-
-
-
-\### Layer 3 — per-person allow/deny
-
-
-
-The existing additive whitelist (`/config permissions grant\|revoke`, unchanged) grants a specific role/user access to one action without becoming a full mod or admin. New alongside it: `/config permissions block\|unblock`, an explicit deny-list per action that wins over everything above it — tier, the Administrator bit, and any allow-grant — for the same person/role, so an admin can exclude one specific individual from one specific action even though their tier would otherwise allow it. The one exception: nothing can deny the break-glass admin, preserving the "never permanently lock the operator out" guarantee from Milestone 4. `core.Permissions.Authorize` checks deny first, then tier (with any override applied), then allow — see the doc comment on `Authorize` for the exact order. `/config permissions list` shows all three layers per action: tier override (or "default"), allow roles/users, and block roles/users.
+4\. `/config admins add`/`/config mod-roles add` bring in others; `/config permissions`/`/config plugins` fine-tune access from there.
 
 
 
@@ -439,7 +301,7 @@ This is the priority feature: rotate `#general-chat` (or any configured channel)
 
 \### Per-channel config
 
-As of Milestone 4 (§4a), per-channel rotation config is DB-backed (`internal/settings`), not YAML — configured entirely through `/rotation configure` (Admin tier), using Discord's native `Channel`/`Role` option types instead of hand-copied snowflake IDs:
+Per-channel rotation config is DB-backed (`internal/settings`), configured entirely through `/rotation configure` (Admin tier by default, per-guild-adjustable per §4a), using Discord's native `Channel`/`Role` option types instead of hand-copied snowflake IDs:
 
 
 
@@ -448,28 +310,6 @@ As of Milestone 4 (§4a), per-channel rotation config is DB-backed (`internal/se
 \- `/rotation configure edit` / `remove` — change or drop an existing rotation; `/rotation list` shows every configured rotation for the guild (channel, interval, next-due, retention, sticky status) with no typing required.
 
 \- `/rotation configure sticky <channel> <on\|off> [text]` — the re-posted sticky message shown in \#6 step 6; off by default.
-
-
-
-Conceptually this is the same shape as the old YAML sample it replaces:
-
-```yaml
-
-channel\_id: "123456789012345678"
-
-interval\_hours: 24
-
-archive\_category\_id: "234567890123456789"   # a hidden "Archives" category
-
-archive\_visibility: mod\_only                 # mod\_only | whitelist | export\_then\_delete (future)
-
-retention\_days: 7                            # minimum before permanent deletion — do not default to 0, but can be set to never
-
-sticky\_message\_template: "welcome\_general"   # re-post pins from archived channel, can be turned on and defaults to off
-
-```
-
-— it's just DB rows configured via Discord commands now, not a file requiring host access to edit.
 
 
 
