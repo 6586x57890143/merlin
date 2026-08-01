@@ -6,6 +6,8 @@ services:
       - ALL
     env_file:
       - .env
+    volumes:
+      - ./config.yaml:/config.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy
