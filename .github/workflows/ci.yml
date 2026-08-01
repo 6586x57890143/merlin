@@ -91,7 +91,7 @@ jobs:
           username: deploy
           key: ${{ secrets.VPS_SSH_KEY }}
           source: "docker-compose.prod.yml"
-          target: "/apps/merlin"
+          target: "/home/deploy/merlin"
       - name: Pull image and restart on VPS
         uses: appleboy/ssh-action@v1
         with:
@@ -101,7 +101,7 @@ jobs:
           envs: GHCR_TOKEN,GHCR_USER
           script: |
             set -e
-            cd /apps/merlin
+            cd /home/deploy/merlin
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d --remove-orphans

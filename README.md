@@ -64,7 +64,7 @@ Deploys never touch `.env` or `config.yaml` on the VPS — those hold real
 secrets/guild config and must be created there once by hand:
 
 ```sh
-# one-time setup on the VPS, in /apps/merlin
+# one-time setup on the VPS, in /home/deploy/merlin
 cp .env.example .env                  # fill in real values
 cp config.example.yaml config.yaml    # fill in real guild/role/channel IDs
 ```
