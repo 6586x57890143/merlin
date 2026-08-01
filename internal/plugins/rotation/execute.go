@@ -130,11 +130,12 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		deleteAfter = &t
 	}
 	if err := p.archives.Insert(ctx, ArchiveRecord{
-		ChannelID:       oldChannel.ID,
-		GuildID:         guildID,
-		SourceChannelID: rc.ChannelID,
-		ArchivedAt:      now,
-		DeleteAfter:     deleteAfter,
+		ChannelID:         oldChannel.ID,
+		GuildID:           guildID,
+		SourceChannelID:   rc.ChannelID,
+		ArchiveCategoryID: rc.ArchiveCategoryID,
+		ArchivedAt:        now,
+		DeleteAfter:       deleteAfter,
 	}); err != nil {
 		return fmt.Errorf("rotation: record archive: %w", err)
 	}

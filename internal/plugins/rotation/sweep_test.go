@@ -27,7 +27,7 @@ func TestSweepDeletesDueArchive(t *testing.T) {
 	ops, archives, audit, p := setupSweep(t)
 	ops.addChannel(&discordgo.Channel{ID: "arch1", GuildID: "g1", Name: "general-chat-archive-x", ParentID: "archivecat"})
 	archives.records["arch1"] = ArchiveRecord{
-		ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1",
+		ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1", ArchiveCategoryID: "archivecat",
 		ArchivedAt: fixedNow.AddDate(0, 0, -8), DeleteAfter: timePtr(fixedNow.AddDate(0, 0, -1)),
 	}
 
@@ -50,7 +50,7 @@ func TestSweepSkipsNotYetDueArchive(t *testing.T) {
 	ops, archives, _, p := setupSweep(t)
 	ops.addChannel(&discordgo.Channel{ID: "arch1", GuildID: "g1", Name: "general-chat-archive-x", ParentID: "archivecat"})
 	archives.records["arch1"] = ArchiveRecord{
-		ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1",
+		ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1", ArchiveCategoryID: "archivecat",
 		ArchivedAt: fixedNow, DeleteAfter: timePtr(fixedNow.AddDate(0, 0, 30)),
 	}
 
@@ -72,7 +72,7 @@ func TestSweepRescuesChannelMovedOutOfArchiveCategory(t *testing.T) {
 	// treated as an implicit "keep it," not deleted.
 	ops.addChannel(&discordgo.Channel{ID: "arch1", GuildID: "g1", Name: "general-chat-archive-x", ParentID: "some-other-category"})
 	archives.records["arch1"] = ArchiveRecord{
-		ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1",
+		ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1", ArchiveCategoryID: "archivecat",
 		ArchivedAt: fixedNow.AddDate(0, 0, -8), DeleteAfter: timePtr(fixedNow.AddDate(0, 0, -1)),
 	}
 
@@ -104,12 +104,47 @@ func TestSweepHandlesAlreadyDeletedChannel(t *testing.T) {
 	}
 }
 
+// TestSweepDeletesArchiveAfterRotationRetargetedConfig is a regression test
+// for a bug introduced by rotation.rotate's retarget fix: sweepOne used to
+// re-derive the archive's expected category by looking up
+// settings.RotationChannel(guildID, rec.SourceChannelID) — but rotate now
+// retargets that row's ChannelID onto the new live channel immediately after
+// archiving, so the lookup by the OLD (archived) channel's ID stops finding
+// anything on every single rotation, making every archive look
+// "unconfigured" and therefore permanently rescued from deletion. Denormalizing
+// ArchiveCategoryID onto the archive record itself (migration 0008) fixes
+// this by making the check independent of the live, mutable settings row.
+func TestSweepDeletesArchiveAfterRotationRetargetedConfig(t *testing.T) {
+	ops, archives, _, p, rc := setupRotation(t, finiteRetentionRC())
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	due, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.AddDate(0, 0, 8))
+	if err != nil {
+		t.Fatalf("DueForDeletion: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected exactly 1 due archive 8 days after a 7-day retention rotation, got %d", len(due))
+	}
+
+	p.now = func() time.Time { return fixedNow.AddDate(0, 0, 8) }
+	if err := p.sweep(context.Background(), "g1"); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if _, err := ops.Channel(due[0].ChannelID); err == nil {
+		t.Fatal("expected the due archived channel to actually be deleted, not rescued because its rotation config moved on")
+	}
+}
+
 func TestSweepContinuesAfterPerRowFailure(t *testing.T) {
 	ops, archives, _, p := setupSweep(t)
 	ops.addChannel(&discordgo.Channel{ID: "arch1", GuildID: "g1", Name: "archive-1", ParentID: "archivecat"})
 	ops.addChannel(&discordgo.Channel{ID: "arch2", GuildID: "g1", Name: "archive-2", ParentID: "archivecat"})
-	archives.records["arch1"] = ArchiveRecord{ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1", ArchivedAt: fixedNow, DeleteAfter: timePtr(fixedNow.AddDate(0, 0, -1))}
-	archives.records["arch2"] = ArchiveRecord{ChannelID: "arch2", GuildID: "g1", SourceChannelID: "old1", ArchivedAt: fixedNow, DeleteAfter: timePtr(fixedNow.AddDate(0, 0, -1))}
+	archives.records["arch1"] = ArchiveRecord{ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1", ArchiveCategoryID: "archivecat", ArchivedAt: fixedNow, DeleteAfter: timePtr(fixedNow.AddDate(0, 0, -1))}
+	archives.records["arch2"] = ArchiveRecord{ChannelID: "arch2", GuildID: "g1", SourceChannelID: "old1", ArchiveCategoryID: "archivecat", ArchivedAt: fixedNow, DeleteAfter: timePtr(fixedNow.AddDate(0, 0, -1))}
 
 	ops.failOnCall["ChannelDelete"] = 1 // fail the first delete call, whichever row it lands on
 

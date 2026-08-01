@@ -48,14 +48,18 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 		return p.archives.Delete(ctx, rec.ChannelID)
 	}
 
-	expectedCategory := ""
-	if rc, ok := p.settings.RotationChannel(guildID, rec.SourceChannelID); ok {
-		expectedCategory = rc.ArchiveCategoryID
-	}
-	if expectedCategory == "" || ch.ParentID != expectedCategory {
-		// Rescue hatch: a mod moved this archived channel out of the
-		// archive category (or its rotation config was removed) — treat
-		// that as an implicit "keep it," stop tracking it, don't delete.
+	// rec.ArchiveCategoryID is recorded at archive time (not re-derived from
+	// the live settings.RotationChannel row), since that row's ChannelID gets
+	// retargeted onto the new live channel after every successful rotation
+	// (see execute.go's rotate) — looking it up by rec.SourceChannelID here
+	// would stop finding it after the very first rotation, making every
+	// archive look permanently "rescued." Empty means a pre-migration row
+	// whose real category was never recorded — treat that the same as an
+	// actual mismatch: don't guess, don't delete.
+	if rec.ArchiveCategoryID == "" || ch.ParentID != rec.ArchiveCategoryID {
+		// Rescue hatch: a mod moved this archived channel out of its archive
+		// category — treat that as an implicit "keep it," stop tracking it,
+		// don't delete.
 		p.log.Info("rotation sweep: archived channel rescued, skipping deletion", "channel", rec.ChannelID)
 		return p.archives.Delete(ctx, rec.ChannelID)
 	}

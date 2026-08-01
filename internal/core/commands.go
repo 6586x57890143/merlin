@@ -172,6 +172,33 @@ func (r *CommandRouter) RegisterGuild(s *discordgo.Session, appID, guildID strin
 	return nil
 }
 
+// PurgeGlobalCommands removes every application command currently registered
+// in Discord's global scope. This bot registers exclusively per-guild
+// (RegisterGuild) — nothing in this codebase should ever create a global
+// command — but pre-Milestone-4 code once did (a global "/admin" from the
+// original Scheduler plugin, a global "/ping" from the original ping plugin,
+// both via session.ApplicationCommandCreate(..., "", cmd) with an empty
+// guildID). Global commands are a completely separate scope from any guild's
+// commands, so RegisterGuild's per-guild BulkOverwrite never touched them —
+// they've sat there as duplicate/orphaned entries in every guild's command
+// list ever since, one of them ("/admin") pointing at a handler that no
+// longer exists.
+//
+// Pass an explicit empty (non-nil) slice, not nil: discordgo marshals a nil
+// slice as JSON `null`, which is not the same request as an empty array `[]`
+// and may not clear anything — the exact class of bug already fixed once in
+// this codebase for channel permission overwrites (see core.channels.go).
+//
+// Call once at startup, before opening the session. Bulk-overwriting an
+// already-empty global scope is a harmless no-op, so this needs no
+// one-time-only guard — every boot just re-confirms the invariant.
+func (r *CommandRouter) PurgeGlobalCommands(s *discordgo.Session, appID string) error {
+	if _, err := s.ApplicationCommandBulkOverwrite(appID, "", []*discordgo.ApplicationCommand{}); err != nil {
+		return fmt.Errorf("purge global commands: %w", err)
+	}
+	return nil
+}
+
 // leafPaths walks cmd's Options tree and returns every invocable leaf path
 // beneath it (mirroring resolveLeaf's own walk, so registration-time
 // validation and dispatch-time resolution can never disagree).

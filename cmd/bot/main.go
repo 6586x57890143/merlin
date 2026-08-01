@@ -108,6 +108,13 @@ func run(log *slog.Logger) error {
 	if err := commands.Finalize(); err != nil {
 		return fmt.Errorf("finalize commands: %w", err)
 	}
+	// This bot registers commands exclusively per-guild (RegisterGuild below,
+	// on every GuildCreate) — nothing here should ever leave a global command
+	// behind. Clears any that pre-Milestone-4 code left registered (a REST
+	// call, doesn't need session.Open() first).
+	if err := commands.PurgeGlobalCommands(session, cfg.Discord.AppID); err != nil {
+		log.Error("purge global commands", "err", err)
+	}
 
 	// One dispatcher for every plugin's commands (spec.MD §4a) — replaces
 	// each plugin calling session.AddHandler itself. Guild-scoped command
