@@ -21,16 +21,18 @@ const (
 )
 
 // makeRotationJob returns the Scheduler job function for one guild's one
-// configured rotating channel. It re-fetches the channel's current settings
-// at execution time (not at registration time) so edits made via
-// /rotation configure take effect on the very next run without needing a
-// job re-register — only IntervalHours needs that (see reconcile in
-// rotation.go), since it drives the Scheduler's own due-check.
-func (p *Plugin) makeRotationJob(guildID, channelID string) func(ctx context.Context) error {
+// configured rotation slot, identified by rotationID (settings.RotationChannel.ID
+// — stable across retargets, unlike ChannelID; see rotation.go's reconcile).
+// It re-fetches the slot's current settings at execution time (not at
+// registration time) so edits made via /rotation configure take effect on
+// the very next run without needing a job re-register — only IntervalHours
+// needs that (see reconcile in rotation.go), since it drives the Scheduler's
+// own due-check.
+func (p *Plugin) makeRotationJob(guildID string, rotationID int64) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		rc, ok := p.settings.RotationChannel(guildID, channelID)
+		rc, ok := p.settings.RotationChannelByID(guildID, rotationID)
 		if !ok {
-			p.log.Info("rotation: job fired for a channel no longer configured, skipping", "channel", channelID)
+			p.log.Info("rotation: job fired for a rotation slot no longer configured, skipping", "guild", guildID, "rotation_id", rotationID)
 			return nil
 		}
 		return p.rotate(ctx, guildID, rc)

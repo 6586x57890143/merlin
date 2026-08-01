@@ -1,0 +1,16 @@
+-- rotation.reconcile keyed each Scheduler job as "rotation:<channel_id>", and
+-- the Scheduler persists each job's last-run/interval state under that exact
+-- key string (internal/scheduler's JobStateStore). Once rotate() started
+-- retargeting a row's channel_id onto the new live channel after every
+-- successful rotation (so the config stops describing an archived channel),
+-- every single rotation also changed the job's key - which reset its
+-- persisted "last run" state to nothing, and a job with no run history is
+-- immediately due again on the Scheduler's next ~30s tick. The result: a
+-- fresh rotation (and archive) every ~30 seconds forever, instead of once
+-- per interval_hours.
+--
+-- id is a stable identity for a configured rotation slot, independent of
+-- which live channel it currently points at - the Scheduler job key is built
+-- from this instead of channel_id, so retargeting channel_id never disturbs
+-- the job's persisted interval state again.
+ALTER TABLE settings_rotation_channels ADD COLUMN id BIGSERIAL UNIQUE;

@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,7 @@ type SettingsProvider interface {
 	ModRoleIDs(guildID string) []string
 	RotationChannels(guildID string) []settings.RotationChannel
 	RotationChannel(guildID, channelID string) (settings.RotationChannel, bool)
+	RotationChannelByID(guildID string, id int64) (settings.RotationChannel, bool)
 	UpsertRotationChannel(ctx context.Context, rc settings.RotationChannel) error
 	RemoveRotationChannel(ctx context.Context, guildID, channelID string) error
 	RetargetRotationChannel(ctx context.Context, guildID, oldChannelID, newChannelID string) error
@@ -158,7 +160,15 @@ func (p *Plugin) reconcile(guildID string) {
 	guildPrefix := scheduler.JobKey(guildID, "rotation:")
 	current := make(map[string]bool)
 	for _, rc := range p.settings.RotationChannels(guildID) {
-		jobKey := scheduler.JobKey(guildID, "rotation:"+rc.ChannelID)
+		// Keyed by rc.ID, NOT rc.ChannelID: ChannelID gets retargeted onto
+		// the new live channel after every successful rotation (execute.go),
+		// but the Scheduler persists this job's last-run/interval state under
+		// this exact key string — if the key changed every rotation too,
+		// that state would reset every cycle, and a job with no run history
+		// is immediately due again on the Scheduler's very next tick. This
+		// was a real bug: it looped, rotating (and archiving) every ~30s
+		// instead of once per interval_hours.
+		jobKey := scheduler.JobKey(guildID, "rotation:"+strconv.FormatInt(rc.ID, 10))
 		interval := time.Duration(rc.IntervalHours) * time.Hour
 		current[jobKey] = true
 
@@ -174,8 +184,8 @@ func (p *Plugin) reconcile(guildID string) {
 			delete(p.registeredJobs, jobKey)
 		}
 
-		channelID := rc.ChannelID
-		if err := p.sched.Register(jobKey, core.CronSpec{Interval: interval}, p.makeRotationJob(guildID, channelID)); err != nil {
+		rotationID := rc.ID
+		if err := p.sched.Register(jobKey, core.CronSpec{Interval: interval}, p.makeRotationJob(guildID, rotationID)); err != nil {
 			p.log.Error("rotation: register job", "job", jobKey, "err", err)
 			continue
 		}

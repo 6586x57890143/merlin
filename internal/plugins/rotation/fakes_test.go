@@ -275,6 +275,7 @@ type fakeSettings struct {
 	mu        sync.Mutex
 	modRoles  map[string][]string
 	rotations map[string]map[string]settings.RotationChannel // guildID -> channelID -> config
+	nextID    int64
 }
 
 func newFakeSettings() *fakeSettings {
@@ -307,11 +308,28 @@ func (f *fakeSettings) RotationChannel(guildID, channelID string) (settings.Rota
 	return rc, ok
 }
 
+func (f *fakeSettings) RotationChannelByID(guildID string, id int64) (settings.RotationChannel, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, rc := range f.rotations[guildID] {
+		if rc.ID == id {
+			return rc, true
+		}
+	}
+	return settings.RotationChannel{}, false
+}
+
 func (f *fakeSettings) UpsertRotationChannel(ctx context.Context, rc settings.RotationChannel) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.rotations[rc.GuildID] == nil {
 		f.rotations[rc.GuildID] = make(map[string]settings.RotationChannel)
+	}
+	if rc.ID == 0 {
+		// Mirrors the real Store's BIGSERIAL id column: assigned once, on
+		// first insert, and never touched again by an update-in-place.
+		f.nextID++
+		rc.ID = f.nextID
 	}
 	f.rotations[rc.GuildID][rc.ChannelID] = rc
 	return nil
@@ -335,6 +353,48 @@ func (f *fakeSettings) RetargetRotationChannel(ctx context.Context, guildID, old
 	delete(f.rotations[guildID], oldChannelID)
 	f.rotations[guildID][newChannelID] = rc
 	return nil
+}
+
+// fakeScheduler is an in-memory core.Scheduler for testing reconcile's job
+// key stability directly — records how many times each key was registered
+// or unregistered, so a test can assert a job was registered exactly once
+// despite its underlying settings row's ChannelID changing underneath it.
+type fakeScheduler struct {
+	mu              sync.Mutex
+	registered      map[string]bool
+	registerCalls   map[string]int
+	unregisterCalls map[string]int
+}
+
+func newFakeScheduler() *fakeScheduler {
+	return &fakeScheduler{
+		registered:      make(map[string]bool),
+		registerCalls:   make(map[string]int),
+		unregisterCalls: make(map[string]int),
+	}
+}
+
+func (f *fakeScheduler) Register(jobKey string, spec core.CronSpec, fn func(ctx context.Context) error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.registered[jobKey] {
+		return fmt.Errorf("fakeScheduler: job %q already registered", jobKey)
+	}
+	f.registered[jobKey] = true
+	f.registerCalls[jobKey]++
+	return nil
+}
+
+func (f *fakeScheduler) Unregister(jobKey string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.registered, jobKey)
+	f.unregisterCalls[jobKey]++
+	return nil
+}
+
+func (f *fakeScheduler) RunNow(ctx context.Context, jobKey string) error {
+	return fmt.Errorf("fakeScheduler: RunNow not supported in this test double")
 }
 
 func newTestPlugin(ops *fakeOps, archives ArchiveStore, audit *fakeAudit, fs *fakeSettings, at time.Time) *Plugin {

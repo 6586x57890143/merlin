@@ -53,7 +53,13 @@ type ActionOverride struct {
 
 // RotationChannel is one guild's configured rotating channel (spec.MD §6),
 // the DB-backed replacement for config.yaml's rotating_channels[] entries.
+// ID is a stable identity for this configured rotation slot, independent of
+// ChannelID — rotation.rotate retargets ChannelID onto the new live channel
+// after every successful rotation, but the Scheduler job tracking this
+// slot's interval must key off something that never changes, or its
+// persisted "last run" state resets every cycle (see migration 0009).
 type RotationChannel struct {
+	ID                      int64
 	GuildID                 string
 	ChannelID               string
 	IntervalHours           int
@@ -131,7 +137,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 	}
 	rows.Close()
 
-	rcRows, err := s.pool.Query(ctx, `SELECT channel_id, interval_hours, archive_category_id, archive_visibility,
+	rcRows, err := s.pool.Query(ctx, `SELECT id, channel_id, interval_hours, archive_category_id, archive_visibility,
 		archive_whitelist_role_ids, archive_whitelist_user_ids, retention_days, sticky_enabled, sticky_messages
 		FROM settings_rotation_channels WHERE guild_id = $1`, guildID)
 	if err != nil {
@@ -139,7 +145,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 	}
 	for rcRows.Next() {
 		rc := RotationChannel{GuildID: guildID}
-		if err := rcRows.Scan(&rc.ChannelID, &rc.IntervalHours, &rc.ArchiveCategoryID, &rc.ArchiveVisibility,
+		if err := rcRows.Scan(&rc.ID, &rc.ChannelID, &rc.IntervalHours, &rc.ArchiveCategoryID, &rc.ArchiveVisibility,
 			&rc.ArchiveWhitelistRoleIDs, &rc.ArchiveWhitelistUserIDs, &rc.RetentionDays, &rc.StickyEnabled, &rc.StickyMessages); err != nil {
 			rcRows.Close()
 			return fmt.Errorf("settings: scan rotation channel for %s: %w", guildID, err)
@@ -237,6 +243,20 @@ func (s *Store) RotationChannel(guildID, channelID string) (RotationChannel, boo
 	gc := s.guild(guildID)
 	rc, ok := gc.rotations[channelID]
 	return rc, ok
+}
+
+// RotationChannelByID looks up a rotation config by its stable ID rather
+// than its current (mutable) ChannelID — used by rotation's Scheduler job
+// closures, which must keep re-resolving the same logical rotation slot
+// across retargets. A guild's rotation count is always small, so a linear
+// scan over the already-cached slice needs no dedicated index.
+func (s *Store) RotationChannelByID(guildID string, id int64) (RotationChannel, bool) {
+	for _, rc := range s.RotationChannels(guildID) {
+		if rc.ID == id {
+			return rc, true
+		}
+	}
+	return RotationChannel{}, false
 }
 
 // --- mutations ---

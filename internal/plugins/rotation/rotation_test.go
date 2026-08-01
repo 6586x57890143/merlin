@@ -3,12 +3,15 @@ package rotation
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
@@ -455,6 +458,67 @@ func intToID(i int) string {
 // denyEveryone/botOverwriteAllow's own regression tests moved to
 // internal/core/channels_test.go — the logic now lives in
 // core.DenyEveryoneExceptBot, shared with adminconfig's setup channels.
+
+// TestReconcileJobKeyStableAcrossRetarget is a regression test for a bug
+// that shipped in the previous fix: reconcile used to build the Scheduler
+// job key from rc.ChannelID, which execute.go's rotate() now retargets onto
+// the new live channel after every successful rotation. The Scheduler
+// persists a job's last-run/interval-due state under its exact key string —
+// so a key that changes every rotation reset that state every single time,
+// and a job with no run history is immediately due again on the Scheduler's
+// very next ~30s tick. In production this meant a fresh rotation (and
+// archive) roughly every 30 seconds forever, instead of once per
+// interval_hours. Keying off rc.ID (stable across retargets, see migration
+// 0009) instead of rc.ChannelID fixes this: reconcile must register the
+// job exactly once and never touch it again just because the channel it
+// points at changed.
+func TestReconcileJobKeyStableAcrossRetarget(t *testing.T) {
+	fs := newFakeSettings()
+	fs.modRoles["g1"] = []string{"modrole1"}
+	_ = fs.UpsertRotationChannel(context.Background(), settings.RotationChannel{
+		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
+	})
+
+	sched := newFakeScheduler()
+	p := &Plugin{
+		settings:        fs,
+		sched:           sched,
+		log:             testLogger(),
+		bus:             core.NewEventBus(testLogger()),
+		now:             func() time.Time { return fixedNow },
+		sweepRegistered: make(map[string]bool),
+		registeredJobs:  make(map[string]time.Duration),
+	}
+
+	p.reconcile("g1")
+
+	rc, ok := fs.RotationChannel("g1", "old1")
+	if !ok {
+		t.Fatal("expected the seeded rotation config to be findable by its initial channel ID")
+	}
+	jobKey := scheduler.JobKey("g1", "rotation:"+strconv.FormatInt(rc.ID, 10))
+	if sched.registerCalls[jobKey] != 1 {
+		t.Fatalf("expected the rotation job registered exactly once, got %d", sched.registerCalls[jobKey])
+	}
+
+	// Mirrors exactly what execute.go's rotate does after a successful
+	// rotation (retarget), followed by the reconcile that
+	// RetargetRotationChannel's publishChanged triggers in real usage.
+	if err := fs.RetargetRotationChannel(context.Background(), "g1", "old1", "new1"); err != nil {
+		t.Fatalf("RetargetRotationChannel: %v", err)
+	}
+	p.reconcile("g1")
+
+	if sched.registerCalls[jobKey] != 1 {
+		t.Fatalf("expected the SAME job key to still be registered exactly once after retargeting, got %d registrations — "+
+			"a second registration under a fresh key would reset the Scheduler's persisted last-run state, "+
+			"causing rotation to fire again on the very next tick instead of waiting a full interval", sched.registerCalls[jobKey])
+	}
+	if sched.unregisterCalls[jobKey] != 0 {
+		t.Fatalf("expected the job to never be unregistered across a retarget, got %d unregister calls", sched.unregisterCalls[jobKey])
+	}
+}
 
 func TestArchiveOverwritesGrantsBotViewAccess(t *testing.T) {
 	out := archiveOverwrites("g1", "bot-user-id", nil, finiteRetentionRC())
