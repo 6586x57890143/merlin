@@ -212,7 +212,10 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 		respond(s, i, fmt.Sprintf("Failed to save: %v", err))
 		return
 	}
-	p.SyncGuild(i.GuildID)
+	// No explicit SyncGuild call needed: UpsertRotationChannel already
+	// published core.EventConfigChanged synchronously, which p.reconcile is
+	// subscribed to (rotation.go's Init) — calling SyncGuild here too would
+	// just re-run the identical, already-current reconcile a second time.
 	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> interval=%dh", rc.ChannelID, rc.IntervalHours))
 	respond(s, i, fmt.Sprintf("<#%s> will now rotate every %d hours.", rc.ChannelID, rc.IntervalHours))
 }
@@ -229,7 +232,8 @@ func (p *Plugin) handleRemove(ctx context.Context, s *discordgo.Session, i *disc
 		respond(s, i, fmt.Sprintf("Failed to remove: %v", err))
 		return
 	}
-	p.SyncGuild(i.GuildID)
+	// RemoveRotationChannel already triggered reconcile via
+	// core.EventConfigChanged — see the comment in handleAdd above.
 	p.auditConfigChange(ctx, i, "rotation.remove", fmt.Sprintf("channel=<#%s>", channelID), "")
 	respond(s, i, fmt.Sprintf("<#%s> will no longer rotate. Any existing archive is untouched.", channelID))
 }
@@ -266,7 +270,8 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 		respond(s, i, fmt.Sprintf("Failed to save: %v", err))
 		return
 	}
-	p.SyncGuild(i.GuildID)
+	// UpsertRotationChannel already triggered reconcile via
+	// core.EventConfigChanged — see the comment in handleAdd above.
 	after := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionDays, rc.ArchiveVisibility)
 	p.auditConfigChange(ctx, i, "rotation.edit", before, after)
 	respond(s, i, fmt.Sprintf("Updated <#%s>.", channelID))

@@ -144,8 +144,16 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		p.log.Info("rotation: active threads archived with channel",
 			"channel", oldChannel.ID, "threads", strings.Join(threadNames, ", "))
 	}
+	// The rotation itself has already fully succeeded by this point (rename,
+	// archive, new channel live, archive record persisted) — an audit-embed
+	// failure (e.g. #bot-audit-log not yet configured, or deleted) must not
+	// mark this job as failed, or the scheduler would retry an already-done
+	// rotation and eventually false-alarm #bot-status after
+	// maxConsecutiveFailures, masking the fact that rotation itself is fine.
+	// Matches the log-and-continue policy every other audit call site uses
+	// (sweep.go, adminconfig.go, rotation/configure.go).
 	if err := p.audit.Record(ctx, guildID, "system", "channel.rotated", oldChannel.ID, newChannel.ID); err != nil {
-		return fmt.Errorf("rotation: audit: %w", err)
+		p.log.Error("rotation: audit failed", "old_channel", oldChannel.ID, "new_channel", newChannel.ID, "err", err)
 	}
 	p.bus.Publish(ctx, core.Event{
 		Type:    core.EventChannelRotated,

@@ -120,13 +120,21 @@ func (r *Registry) InitAll() error {
 	return nil
 }
 
+// startupFailureShutdownTimeout bounds the ShutdownAll called from StartAll's
+// own failure path (see below) — matching the deadline main.go gives normal
+// shutdown, so a plugin with a hung Shutdown can't block a startup failure
+// from ever returning.
+const startupFailureShutdownTimeout = 10 * time.Second
+
 // StartAll starts plugins in registration order. If any Start fails, it
 // shuts down everything already started (reverse order) before returning,
 // so the process never limps along half-initialized.
 func (r *Registry) StartAll(ctx context.Context) error {
 	for _, p := range r.plugins {
 		if err := safeCall(func() error { return p.Start(ctx) }); err != nil {
-			r.ShutdownAll(context.Background())
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), startupFailureShutdownTimeout)
+			r.ShutdownAll(shutdownCtx)
+			cancel()
 			return fmt.Errorf("start plugin %q: %w", p.Name(), err)
 		}
 		r.started = append(r.started, p)

@@ -2,6 +2,7 @@ package rotation
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +129,32 @@ func TestRotateFullCycle(t *testing.T) {
 
 	if len(audit.records) != 1 || audit.records[0].action != "channel.rotated" {
 		t.Fatalf("expected 1 channel.rotated audit record, got %+v", audit.records)
+	}
+}
+
+// TestRotateSucceedsDespiteAuditFailure guards against a real bug fixed
+// alongside this test: rotation's own steps (rename, archive, new channel,
+// stickies, archive record) had already fully succeeded by the time audit
+// posting ran, so an audit-embed failure (e.g. #bot-audit-log not yet
+// configured, or deleted) must not make the Scheduler treat this job as
+// failed — that would trigger pointless retries of an already-complete
+// rotation and eventually a false failure alert, masking that rotation
+// itself is fine. Every other audit call site in this codebase already
+// logs-and-continues; rotate must too.
+func TestRotateSucceedsDespiteAuditFailure(t *testing.T) {
+	ops, _, audit, p, rc := setupRotation(t, finiteRetentionRC())
+	audit.failErr = errors.New("audit channel deleted")
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("rotate should succeed even when audit posting fails, got: %v", err)
+	}
+
+	channels, err := ops.GuildChannels("g1")
+	if err != nil {
+		t.Fatalf("GuildChannels: %v", err)
+	}
+	if findOtherChannelByName(channels, "general-chat", "old1") == nil {
+		t.Fatal("expected the rotation to have completed (new channel present) despite the audit failure")
 	}
 }
 

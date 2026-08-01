@@ -32,12 +32,14 @@ func New(pool *pgxpool.Pool, session *discordgo.Session, settings channelResolve
 
 // Record inserts an append-only audit_log row and posts a matching embed to
 // the guild's configured AuditLogChannelID. Both the DB write and the
-// Discord post must succeed for a nil error — callers should treat a
-// failure as "the audit trail is incomplete" and propagate it rather than
-// swallow it, per spec's fail-safe-not-fail-silent principle. A retried
-// caller may produce a harmless duplicate audit_log row; this is
-// acceptable for an append-only trail that's meant to over-record rather
-// than under-record.
+// Discord post must succeed for a nil error, but the DB row — the actual
+// durable audit trail spec.MD Design Principle 4 requires — is written
+// first and independently of the embed post. Callers should log a non-nil
+// error and continue rather than fail the action that triggered it: a
+// missing/deleted #bot-audit-log channel means the live notification was
+// missed, not that the underlying action (or the audit trail itself) failed.
+// See every call site (rotation/execute.go, sweep.go, adminconfig.go,
+// rotation/configure.go) for the consistent policy this implies.
 func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue, newValue string) error {
 	if _, err := w.pool.Exec(ctx, `
 		INSERT INTO audit_log (guild_id, actor_id, action, old_value, new_value)
