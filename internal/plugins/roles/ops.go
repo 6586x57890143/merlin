@@ -33,7 +33,10 @@ type DiscordMemberOps interface {
 
 // RoleManager is the narrow view of *core.Permissions this plugin depends
 // on — jail/grant both need the role-hierarchy safeguard (spec.MD §4 item
-// 4), never previously wired up to any handler until this plugin.
+// 4), never previously wired up to any handler until this plugin, and jail
+// additionally needs the actor-vs-target rank check that stops a TierMod
+// command from being used to strip an admin's authority.
 type RoleManager interface {
 	CanManageRole(guildID, targetRoleID string) error
+	CanModerate(guildID string, actor *discordgo.Member, targetUserID string, targetRoleIDs []string) error
 }

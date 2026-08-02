@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -59,37 +60,24 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		fail("Failed to fetch member", err)
 		return
 	}
+
+	// Rank check before anything is created or written: jail is TierMod but
+	// strips roles, so without this a mod could use it to strip an admin's
+	// Administrator bit and with it their TierAdmin access to this bot.
+	if err := p.perms.CanModerate(i.GuildID, i.Member, userID, member.Roles); err != nil {
+		fail("Cannot jail that member", err)
+		return
+	}
+
 	jailRoleID, err := p.resolveJailRole(i.GuildID)
 	if err != nil {
 		fail("Failed to resolve jail role", err)
 		return
 	}
 
-	newRoles, unmanageable := jailRoles(p.perms, i.GuildID, jailRoleID, member.Roles)
-	if _, err := p.ops.GuildMemberEdit(i.GuildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles}); err != nil {
-		if core.IsUnknownResource(err) {
-			// Most likely the cached Jailed role was deleted in Discord.
-			// Forget it so the next attempt recreates one instead of
-			// retrying against an ID that no longer exists until restart.
-			p.forgetJailRole(i.GuildID)
-		}
-		fail("Failed to update roles", err)
-		return
-	}
-
-	now := p.now()
-	releaseAt := now.Add(duration)
-	if err := p.store.InsertJail(ctx, JailRecord{
-		GuildID:         i.GuildID,
-		UserID:          userID,
-		SnapshotRoleIDs: member.Roles,
-		JailRoleID:      jailRoleID,
-		JailedAt:        now,
-		ReleaseAt:       &releaseAt,
-		JailedBy:        actorID(i),
-		Reason:          reason,
-	}); err != nil {
-		fail("Failed to save jail record", err)
+	unmanageable, err := p.applyJail(ctx, i.GuildID, userID, jailRoleID, member.Roles, duration, actorID(i), reason)
+	if err != nil {
+		fail("Failed to jail member", err)
 		return
 	}
 
@@ -104,6 +92,63 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 	if err := core.FollowUpOK(s, i, "Member jailed", msg); err != nil {
 		p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
 	}
+}
+
+// applyJail is the jail mutation itself: record the jail, then strip the
+// member down to the marker role. Split out of handleJail so the ordering
+// below is testable without a Discord session (same reason jailRoles is a
+// free function), since ordering is the entire correctness argument here.
+//
+// The tracking record is written *before* the roles are stripped, and that
+// order matters in exactly one direction. Stripping first and then failing to
+// record left a member holding nothing but the marker with nothing anywhere
+// tracking them: no sweep would ever release them, no /roles release would
+// find a record, and from the outside it looks like an ordinary jail that
+// simply never ends — the same "work silently abandoned, invisible from the
+// outside" failure the untrack-on-gone rule exists to prevent.
+//
+// Recording first can only fail the other way: a record for a member whose
+// roles were never touched. That self-heals on the next sweep a minute later
+// through the confused-deputy check release already applies — the marker
+// isn't on them, so it counts as already handled, gets untracked, and no
+// roles are restored. A spurious row that cleans itself up beats a member
+// jailed indefinitely. The rollback below just makes that immediate instead
+// of eventual.
+func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID string, currentRoles []string, duration time.Duration, actor, reason string) ([]string, error) {
+	newRoles, unmanageable := jailRoles(p.perms, guildID, jailRoleID, currentRoles)
+
+	now := p.now()
+	releaseAt := now.Add(duration)
+	if err := p.store.InsertJail(ctx, JailRecord{
+		GuildID:         guildID,
+		UserID:          userID,
+		SnapshotRoleIDs: currentRoles,
+		JailRoleID:      jailRoleID,
+		JailedAt:        now,
+		ReleaseAt:       &releaseAt,
+		JailedBy:        actor,
+		Reason:          reason,
+	}); err != nil {
+		return nil, fmt.Errorf("roles: save jail record for %s: %w", userID, err)
+	}
+
+	if _, err := p.ops.GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles}); err != nil {
+		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownRole) {
+			// The cached Jailed role was deleted in Discord. Forget it so the
+			// next attempt resolves or recreates one instead of retrying
+			// against a dead ID until the process restarts. Deliberately not
+			// any "unknown resource": this same call reports an unknown
+			// *member* when the target left the guild, which says nothing
+			// about the role and would throw away a good cache entry.
+			p.forgetJailRole(guildID)
+		}
+		if delErr := p.store.DeleteJail(ctx, guildID, userID); delErr != nil {
+			p.log.Error("roles: roll back jail record after failed role update",
+				"guild", guildID, "user", userID, "err", delErr)
+		}
+		return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
+	}
+	return unmanageable, nil
 }
 
 // jailRoles decides what a jailed member ends up holding: the marker role,

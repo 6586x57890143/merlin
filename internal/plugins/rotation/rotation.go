@@ -100,7 +100,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.registerCommands()
 
 	deps.Bus.Subscribe(core.EventConfigChanged, p.Name(), func(ctx context.Context, ev core.Event) {
-		p.reconcile(ev.GuildID)
+		p.reconcile(ctx, ev.GuildID)
 	})
 	return nil
 }
@@ -135,8 +135,8 @@ func (p *Plugin) getBotUserID() (string, error) {
 // — at startup for every guild the bot is already in, and again whenever
 // the bot joins a new one (both driven by discordgo's GuildCreate event; see
 // cmd/bot/main.go).
-func (p *Plugin) SyncGuild(guildID string) {
-	p.reconcile(guildID)
+func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
+	p.reconcile(ctx, guildID)
 }
 
 // deferFirstRotation seeds channelID's rotation job as if it had just run,
@@ -172,27 +172,72 @@ func (p *Plugin) deferFirstRotation(ctx context.Context, guildID, channelID stri
 	}
 }
 
+// reconcileSweepJob keeps guildID's archive-sweep job registered exactly when
+// there is something it could legitimately act on.
+//
+// This job permanently deletes channels, so it deliberately does not exist by
+// default: it used to be registered for every guild the bot could see, the
+// moment it saw it, whether or not that guild had ever configured rotation —
+// a deletion job armed in servers that never opted into one, and (since a job
+// with no run history is immediately due) firing within one Scheduler tick of
+// startup. It was harmless only by accident, because the table it reads
+// happened to be empty.
+//
+// hasRotation alone isn't sufficient to *unregister*: /rotation configure
+// remove explicitly promises existing archives are left untouched, so a guild
+// with no rotating channels can still have archives whose retention windows
+// are still owed. Pending archives therefore keep the job alive on their own.
+// A failed lookup leaves the current registration exactly as it is — neither
+// arming a sweep we can't justify nor dropping one that's still owed work.
+func (p *Plugin) reconcileSweepJob(ctx context.Context, guildID string, hasRotation bool) {
+	registered := p.sweepRegistered[guildID]
+
+	needed := hasRotation
+	if !needed {
+		// len() of the same rows the sweep itself reads, rather than a
+		// dedicated COUNT: reconcile runs on config changes and GuildCreate,
+		// not on a tick, and a guild's archive set is bounded by rotation
+		// frequency times retention.
+		archives, err := p.archives.ListForGuild(ctx, guildID)
+		if err != nil {
+			p.log.Error("rotation: check pending archives for sweep job", "guild", guildID, "err", err)
+			return
+		}
+		needed = len(archives) > 0
+	}
+
+	sweepKey := scheduler.JobKey(guildID, "rotation-sweep")
+	switch {
+	case needed && !registered:
+		if err := p.sched.Register(sweepKey, core.CronSpec{Schedule: core.IntervalSchedule{Interval: sweepInterval}}, p.makeSweepJob(guildID)); err != nil {
+			p.log.Error("rotation: register sweep job", "guild", guildID, "err", err)
+			return
+		}
+		p.sweepRegistered[guildID] = true
+	case !needed && registered:
+		if err := p.sched.Unregister(sweepKey); err != nil {
+			p.log.Error("rotation: unregister sweep job", "guild", guildID, "err", err)
+			return
+		}
+		delete(p.sweepRegistered, guildID)
+	}
+}
+
 // reconcile registers a Scheduler job for every currently-configured
 // rotating channel that doesn't have one yet (or whose interval changed —
 // Unregister+Register, since the Scheduler has no in-place spec update),
 // unregisters jobs for channels no longer configured, and ensures exactly
 // one archive-sweep job per guild.
-func (p *Plugin) reconcile(guildID string) {
+func (p *Plugin) reconcile(ctx context.Context, guildID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	sweepKey := scheduler.JobKey(guildID, "rotation-sweep")
-	if !p.sweepRegistered[guildID] {
-		if err := p.sched.Register(sweepKey, core.CronSpec{Schedule: core.IntervalSchedule{Interval: sweepInterval}}, p.makeSweepJob(guildID)); err != nil {
-			p.log.Error("rotation: register sweep job", "guild", guildID, "err", err)
-		} else {
-			p.sweepRegistered[guildID] = true
-		}
-	}
+	channels := p.settings.RotationChannels(guildID)
+	p.reconcileSweepJob(ctx, guildID, len(channels) > 0)
 
 	guildPrefix := scheduler.JobKey(guildID, "rotation:")
 	current := make(map[string]bool)
-	for _, rc := range p.settings.RotationChannels(guildID) {
+	for _, rc := range channels {
 		// Keyed by rc.ID, NOT rc.ChannelID: ChannelID gets retargeted onto
 		// the new live channel after every successful rotation (execute.go),
 		// but the Scheduler persists this job's last-run/interval state under

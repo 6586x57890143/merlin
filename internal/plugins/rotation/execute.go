@@ -201,16 +201,21 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	}
 
 	// 8. Record the archive for eventual sweep-based permanent deletion.
+	// DeleteAfter is the deadline as of right now; RotationID is what lets the
+	// sweep re-derive it from the live retention setting on every pass, so a
+	// later retention change applies to this archive too (see archiveDeadline).
 	var deleteAfter *time.Time
 	if rc.RetentionHours != nil {
 		t := now.Add(time.Duration(*rc.RetentionHours) * time.Hour)
 		deleteAfter = &t
 	}
+	rotationID := rc.ID
 	if err := p.archives.Insert(ctx, ArchiveRecord{
 		ChannelID:         oldChannel.ID,
 		GuildID:           guildID,
 		SourceChannelID:   rc.ChannelID,
 		ArchiveCategoryID: rc.ArchiveCategoryID,
+		RotationID:        &rotationID,
 		ArchivedAt:        now,
 		DeleteAfter:       deleteAfter,
 	}); err != nil {

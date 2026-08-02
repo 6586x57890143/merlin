@@ -2,6 +2,8 @@ package roles
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -213,5 +215,172 @@ func TestSweepRetriesJailReleaseUntilItSucceeds(t *testing.T) {
 	}
 	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
 		t.Fatal("expected the jail to be released on the retry sweep")
+	}
+}
+
+// TestJailRefusesProtectedTargetBeforeMutatingAnything is the ordering half
+// of the rank check (core.Permissions.CanModerate is where the rule itself
+// is tested). A refused jail must leave no trace: no roles edited, no jail
+// record, no Jailed role created for the guild. Checking after any of those
+// would still "work" from the user's point of view while leaving the target
+// stripped or the guild carrying a role it never needed.
+func TestJailRefusesProtectedTargetBeforeMutatingAnything(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMember("g1", "admin-user", []string{"admin-role"})
+
+	perms := newFakePerms()
+	perms.protected["admin-user"] = true
+
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), perms, newFakeScheduler())
+
+	member, err := ops.GuildMember("g1", "admin-user")
+	if err != nil {
+		t.Fatalf("GuildMember: %v", err)
+	}
+	if err := p.perms.CanModerate("g1", actorMember("mod-user"), "admin-user", member.Roles); err == nil {
+		t.Fatal("expected the rank check to refuse a mod jailing an admin")
+	}
+
+	// Nothing downstream of the check may have run.
+	if len(ops.memberEditCalls["admin-user"]) != 0 {
+		t.Fatalf("a refused jail edited the member's roles: %v", ops.memberEditCalls["admin-user"])
+	}
+	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "admin-user"); ok {
+		t.Fatal("a refused jail left a jail record behind")
+	}
+	if roles, _ := ops.GuildRoles("g1"); len(roles) != 0 {
+		t.Fatalf("a refused jail created guild roles: %v", roles)
+	}
+}
+
+func actorMember(userID string) *discordgo.Member {
+	return &discordgo.Member{User: &discordgo.User{ID: userID}}
+}
+
+// --- applyJail ordering ---
+//
+// The whole correctness argument for the jail mutation is the order of its
+// two writes. These pin it down in both failure directions.
+
+// TestApplyJailNeverStripsRolesWithoutTrackingThem is the one that matters.
+// The mutation used to strip roles first and record the jail second, so a
+// database blip between the two left a member holding nothing but the marker
+// role with nothing anywhere tracking them: no sweep would release them, no
+// /roles release would find a record, and it looks from the outside like an
+// ordinary jail that simply never ends.
+func TestApplyJailNeverStripsRolesWithoutTrackingThem(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMember("g1", "u1", []string{"role-a", "role-b"})
+
+	store := newFakeStore()
+	store.insertJailErr = errors.New("connection reset by peer")
+
+	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a", "role-b"}, time.Hour, "mod", ""); err == nil {
+		t.Fatal("expected applyJail to report the failed record write")
+	}
+
+	if len(ops.memberEditCalls["u1"]) != 0 {
+		t.Fatalf("roles were stripped even though the jail could not be recorded — the member would stay jailed forever, got %v", ops.memberEditCalls["u1"])
+	}
+	m, _ := ops.GuildMember("g1", "u1")
+	if len(m.Roles) != 2 {
+		t.Fatalf("expected the member's roles left untouched, got %v", m.Roles)
+	}
+}
+
+// TestApplyJailRollsBackRecordWhenRoleUpdateFails is the other direction: the
+// record lands, the role edit fails, and the guild must not be left tracking
+// a jail nobody is actually in.
+func TestApplyJailRollsBackRecordWhenRoleUpdateFails(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMember("g1", "u1", []string{"role-a"})
+	ops.memberEditErr = transientErr()
+
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a"}, time.Hour, "mod", ""); err == nil {
+		t.Fatal("expected applyJail to report the failed role update")
+	}
+	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+		t.Fatal("expected the jail record rolled back after the role update failed")
+	}
+}
+
+// TestApplyJailSucceedsAndTracks is the happy path, asserting both writes
+// landed and the unmanageable-role report survives the extraction.
+func TestApplyJailSucceedsAndTracks(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMember("g1", "u1", []string{"role-a", "untouchable"})
+
+	perms := newFakePerms()
+	perms.unmanageable["untouchable"] = true
+
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), perms, newFakeScheduler())
+
+	unmanageable, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a", "untouchable"}, 2*time.Hour, "mod", "spam")
+	if err != nil {
+		t.Fatalf("applyJail: %v", err)
+	}
+	if len(unmanageable) != 1 || unmanageable[0] != "untouchable" {
+		t.Fatalf("expected the untouchable role reported back, got %v", unmanageable)
+	}
+
+	m, _ := ops.GuildMember("g1", "u1")
+	if len(m.Roles) != 2 || m.Roles[0] != "jail-role" || m.Roles[1] != "untouchable" {
+		t.Fatalf("expected the marker plus the untouchable role, got %v", m.Roles)
+	}
+	rec, ok, _ := p.store.GetJail(context.Background(), "g1", "u1")
+	if !ok {
+		t.Fatal("expected the jail to be tracked")
+	}
+	if len(rec.SnapshotRoleIDs) != 2 || rec.JailedBy != "mod" || rec.Reason != "spam" {
+		t.Fatalf("jail record did not capture the pre-jail state: %+v", rec)
+	}
+	if rec.ReleaseAt == nil || !rec.ReleaseAt.Equal(fixedNow.Add(2*time.Hour)) {
+		t.Fatalf("expected release scheduled 2h out, got %v", rec.ReleaseAt)
+	}
+}
+
+// TestApplyJailForgetsCachedRoleOnlyWhenTheRoleIsGone: GuildMemberEdit
+// reports Unknown Member for a target who left and Unknown Role for a deleted
+// marker role. Treating them alike threw away a good cache entry on the wrong
+// signal.
+func TestApplyJailForgetsCachedRoleOnlyWhenTheRoleIsGone(t *testing.T) {
+	roleGone := &discordgo.RESTError{
+		Response: &http.Response{StatusCode: http.StatusNotFound},
+		Message:  &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownRole, Message: "Unknown Role"},
+	}
+
+	for _, tc := range []struct {
+		name        string
+		editErr     error
+		wantForgets bool
+	}{
+		{"marker role deleted", roleGone, true},
+		{"member left the guild", unknownMemberErr("g1", "u1"), false},
+		{"transient failure", transientErr(), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := newFakeOps()
+			ops.setMember("g1", "u1", []string{"role-a"})
+			ops.memberEditErr = tc.editErr
+
+			p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+			p.jailRoleID["g1"] = "cached-jail-role"
+
+			if _, err := p.applyJail(context.Background(), "g1", "u1", "cached-jail-role", []string{"role-a"}, time.Hour, "mod", ""); err == nil {
+				t.Fatal("expected applyJail to fail")
+			}
+
+			_, stillCached := p.jailRoleID["g1"]
+			if tc.wantForgets && stillCached {
+				t.Fatal("expected the cached jail role to be forgotten when Discord says the role is gone")
+			}
+			if !tc.wantForgets && !stillCached {
+				t.Fatal("cached jail role was discarded on an error that says nothing about the role")
+			}
+		})
 	}
 }

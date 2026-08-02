@@ -331,12 +331,39 @@ func (p *Plugin) handlePermissionsSetTier(ctx context.Context, s *discordgo.Sess
 		core.RespondErr(s, i, "Invalid tier", fmt.Errorf("tier must be one of the offered choices"))
 		return
 	}
+
+	if err := validateTierChange(action, tier); err != nil {
+		core.RespondErr(s, i, "Can't lower that action", err)
+		return
+	}
+
 	if err := p.settings.SetActionTier(ctx, i.GuildID, action, tier); err != nil {
 		core.RespondErr(s, i, "Failed to set tier", err)
 		return
 	}
 	p.audit(ctx, i, "config.permission_tier_set", "", fmt.Sprintf("action=%s tier=%s", action, tier))
 	core.RespondOK(s, i, "Tier updated", fmt.Sprintf("`%s` now requires **%s**.", action, tier))
+}
+
+// validateTierChange rejects a per-guild tier override that would break a
+// tier invariant this bot relies on. Today that's exactly one: config.mutate
+// governs /config admins add, mod-roles, permission grants, and the plugin
+// toggle, so lowering it to Admins+Mods would let any mod run
+// `/config admins add @themselves` — a one-command collapse of the whole
+// model, and precisely the escalation the tiers exist to prevent.
+//
+// Refused for the same reason adminconfig can't disable itself via
+// /config plugins set: it only ever reads as a mistake, and an invariant the
+// codebase states in prose is worth enforcing in code. A pure function so
+// the rule is testable without a Discord session, mirroring roles.jailRoles.
+func validateTierChange(action string, tier core.PermTier) error {
+	if action == actionMutate && tier != core.TierAdmin {
+		return fmt.Errorf(
+			"`%s` controls who can add admins, mod roles, and permission grants — leaving it below **Admins only** "+
+				"would let any mod grant themselves admin. Grant a specific person or role instead: "+
+				"`/config permissions allow action:%s`", actionMutate, actionMutate)
+	}
+	return nil
 }
 
 func (p *Plugin) handlePermissionsClearTier(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {

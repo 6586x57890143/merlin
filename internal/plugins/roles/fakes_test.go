@@ -36,6 +36,8 @@ type fakeOps struct {
 	// tests that care about how a *kind* of failure is handled rather than
 	// which call fails.
 	memberFetchErr error
+	// memberEditErr does the same for GuildMemberEdit.
+	memberEditErr error
 
 	roleAddCalls    []string // "guildID:userID:roleID"
 	roleRemoveCalls []string
@@ -102,6 +104,9 @@ func (f *fakeOps) GuildMember(guildID, userID string, options ...discordgo.Reque
 }
 
 func (f *fakeOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error) {
+	if f.memberEditErr != nil {
+		return nil, f.memberEditErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, ok := f.members[memberKey(guildID, userID)]
@@ -201,10 +206,13 @@ func (f *fakeOps) ChannelPermissionDelete(channelID, targetID string, options ..
 // --- fakeStore: in-memory Store ---
 
 type fakeStore struct {
-	mu     sync.Mutex
-	jails  map[string]JailRecord  // guildID+":"+userID
-	grants map[string]GrantRecord // guildID+":"+userID+":"+roleID
-	nextID int64
+	mu sync.Mutex
+	// insertJailErr, when set, fails every InsertJail — for testing what the
+	// jail mutation leaves behind when the record can't be written.
+	insertJailErr error
+	jails         map[string]JailRecord  // guildID+":"+userID
+	grants        map[string]GrantRecord // guildID+":"+userID+":"+roleID
+	nextID        int64
 }
 
 func newFakeStore() *fakeStore {
@@ -215,6 +223,9 @@ func jailKey(guildID, userID string) string          { return guildID + ":" + us
 func grantKey(guildID, userID, roleID string) string { return guildID + ":" + userID + ":" + roleID }
 
 func (f *fakeStore) InsertJail(ctx context.Context, rec JailRecord) error {
+	if f.insertJailErr != nil {
+		return f.insertJailErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.jails[jailKey(rec.GuildID, rec.UserID)] = rec
@@ -358,13 +369,32 @@ func (f *fakeAudit) Record(ctx context.Context, guildID, actorID, action, oldVal
 
 type fakePerms struct {
 	unmanageable map[string]bool // role IDs the "bot" can't manage
+	// protected are user IDs CanModerate refuses to act on, standing in for
+	// core.Permissions' "target is an admin and you aren't" answer without
+	// needing a live guild state cache to derive it from.
+	protected map[string]bool
+	// moderateErr, when set, fails every CanModerate call with it — for the
+	// fail-closed case where the guild's state can't be resolved at all.
+	moderateErr error
 }
 
-func newFakePerms() *fakePerms { return &fakePerms{unmanageable: make(map[string]bool)} }
+func newFakePerms() *fakePerms {
+	return &fakePerms{unmanageable: make(map[string]bool), protected: make(map[string]bool)}
+}
 
 func (f *fakePerms) CanManageRole(guildID, targetRoleID string) error {
 	if f.unmanageable[targetRoleID] {
 		return core.ErrForbidden{Reason: "target role at/above bot's top role"}
+	}
+	return nil
+}
+
+func (f *fakePerms) CanModerate(guildID string, actor *discordgo.Member, targetUserID string, targetRoleIDs []string) error {
+	if f.moderateErr != nil {
+		return f.moderateErr
+	}
+	if f.protected[targetUserID] {
+		return core.ErrForbidden{Reason: "target is an admin — only another admin can do that"}
 	}
 	return nil
 }

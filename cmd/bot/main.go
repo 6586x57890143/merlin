@@ -140,7 +140,7 @@ func run(log *slog.Logger) error {
 			log.Error("register commands for guild", "guild", gc.ID, "err", err)
 			commandsRegistered = false
 		}
-		rotationPlugin.SyncGuild(gc.ID)
+		rotationPlugin.SyncGuild(guildCtx, gc.ID)
 		rolesPlugin.SyncGuild(gc.ID)
 		if commandsRegistered {
 			// Only nudge toward /config setup if it was actually registered

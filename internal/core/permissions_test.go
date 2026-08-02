@@ -1,6 +1,9 @@
 package core
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -237,5 +240,200 @@ func TestCanManageRoleHierarchy(t *testing.T) {
 	}
 	if err := perms.CanManageRole("g1", "bot-role"); err == nil {
 		t.Fatal("expected denial for role at same position as bot's top role")
+	}
+}
+
+// TestAuthorizeTierOverrideCanRaiseAPublicAction is the regression for a
+// fail-open in the one function that has to fail closed: Authorize used to
+// short-circuit on the command's *compiled-in* TierPublic before applying
+// the guild's RequiredTier override, so `/config permissions set-tier` on a
+// public action was silently a no-op — the guild saw a success message and
+// got no restriction at all.
+func TestAuthorizeTierOverrideCanRaiseAPublicAction(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.admins["g1"] = []string{"adminuser"}
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"public.thing": {RequiredTier: TierAdmin},
+	}
+	perms := NewPermissions(nil, auth, "")
+	spec := PermSpec{Tier: TierPublic, Action: "public.thing"}
+
+	if err := perms.Authorize(memberInteraction("g1", "nobody", nil), spec); err == nil {
+		t.Fatal("guild raised this public action to Admins only, but a random member still passed")
+	}
+	if err := perms.Authorize(memberInteraction("g1", "adminuser", nil), spec); err != nil {
+		t.Fatalf("expected an admin to pass the raised tier, got %v", err)
+	}
+	// A guild that never customized the action must still get plain public
+	// behavior — the override is the exception, not a new default.
+	if err := perms.Authorize(memberInteraction("g2", "nobody", nil), spec); err != nil {
+		t.Fatalf("expected an un-overridden public action to stay public, got %v", err)
+	}
+}
+
+// TestAuthorizeRejectsMemberWithoutUser covers a malformed interaction on a
+// security path: no identity to check means refuse, not panic.
+func TestAuthorizeRejectsMemberWithoutUser(t *testing.T) {
+	perms := NewPermissions(nil, newFakeAuthData(), "")
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		GuildID: "g1",
+		Member:  &discordgo.Member{Roles: []string{"modrole"}},
+	}}
+	if err := perms.Authorize(i, PermSpec{Tier: TierMod, Action: "test"}); err == nil {
+		t.Fatal("expected a member with no User to be refused")
+	}
+}
+
+// moderationSession builds a session whose state holds one guild with an
+// Administrator-carrying role, an ordinary role, and a distinct owner — the
+// three things CanModerate has to tell apart for an arbitrary target.
+func moderationSession(t *testing.T) *discordgo.Session {
+	t.Helper()
+	session, err := discordgo.New("Bot faketoken")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	if err := session.State.GuildAdd(&discordgo.Guild{
+		ID:      "g1",
+		OwnerID: "owner",
+		Roles: []*discordgo.Role{
+			{ID: "admin-role", Permissions: discordgo.PermissionAdministrator},
+			{ID: "mod-role", Permissions: discordgo.PermissionKickMembers},
+			{ID: "member-role"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd: %v", err)
+	}
+	return session
+}
+
+func actorMember(userID string, roles []string) *discordgo.Member {
+	return &discordgo.Member{User: &discordgo.User{ID: userID}, Roles: roles}
+}
+
+// TestCanModerateProtectsAdminsFromMods pins down the privilege inversion the
+// tier model alone can't see: /roles jail is TierMod and strips roles, so
+// without this check a mod could strip an admin's Administrator bit — and
+// with it that admin's TierAdmin access to this bot — without ever running a
+// command above their own tier. A rogue mod could dismantle the whole admin
+// team one jail at a time and every individual action would look authorized.
+func TestCanModerateProtectsAdminsFromMods(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.admins["g1"] = []string{"db-listed-admin"}
+	perms := NewPermissions(moderationSession(t), auth, "bootstrap-user")
+
+	mod := actorMember("mod", []string{"mod-role"})
+
+	for _, tc := range []struct {
+		name         string
+		targetUserID string
+		targetRoles  []string
+	}{
+		{"admin by Discord's Administrator bit", "u1", []string{"admin-role"}},
+		{"admin listed in the guild's settings", "db-listed-admin", nil},
+		{"the guild owner", "owner", nil},
+		{"the bootstrap admin", "bootstrap-user", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := perms.CanModerate("g1", mod, tc.targetUserID, tc.targetRoles); err == nil {
+				t.Fatalf("a mod was allowed to act against %s", tc.name)
+			}
+		})
+	}
+
+	if err := perms.CanModerate("g1", mod, "regular", []string{"member-role"}); err != nil {
+		t.Fatalf("a mod must still be able to act against an ordinary member, got %v", err)
+	}
+}
+
+// TestCanModerateAllowsAdminsAndPeerMods records the deliberate limits of the
+// rule: it protects admins from *non*-admins only. Admins are peers and can
+// act on each other, and mod-on-mod moderation stays allowed — a mod acting
+// against a peer is ordinary moderation, and admins can always intervene.
+func TestCanModerateAllowsAdminsAndPeerMods(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.admins["g1"] = []string{"db-listed-admin"}
+	perms := NewPermissions(moderationSession(t), auth, "bootstrap-user")
+
+	admin := actorMember("db-listed-admin", nil)
+	if err := perms.CanModerate("g1", admin, "u1", []string{"admin-role"}); err != nil {
+		t.Fatalf("an admin must be able to act against a fellow admin, got %v", err)
+	}
+
+	mod := actorMember("mod", []string{"mod-role"})
+	if err := perms.CanModerate("g1", mod, "other-mod", []string{"mod-role"}); err != nil {
+		t.Fatalf("mod-on-mod moderation must stay allowed, got %v", err)
+	}
+}
+
+// TestCanModerateProtectsBootstrapFromAdminsToo: the bootstrap identity is
+// the operator's guaranteed way back into a guild, so like the deny-list's
+// own carve-out, no in-guild action may disable it — not even an admin's.
+func TestCanModerateProtectsBootstrapFromAdminsToo(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.admins["g1"] = []string{"db-listed-admin"}
+	perms := NewPermissions(moderationSession(t), auth, "bootstrap-user")
+
+	admin := actorMember("db-listed-admin", nil)
+	if err := perms.CanModerate("g1", admin, "bootstrap-user", nil); err == nil {
+		t.Fatal("the bootstrap admin must not be targetable, even by another admin")
+	}
+}
+
+// TestCanModerateFailsClosedWithoutGuildState verifies the direction this
+// errs in when it can't tell: if the guild isn't resolvable we cannot know
+// whether the target is an admin, so the action is refused. Allowing it would
+// turn a cache miss into the exact escalation this check exists to stop.
+func TestCanModerateFailsClosedWithoutGuildState(t *testing.T) {
+	perms := NewPermissions(nil, newFakeAuthData(), "bootstrap-user")
+	mod := actorMember("mod", []string{"mod-role"})
+	if err := perms.CanModerate("g1", mod, "target", []string{"whatever"}); err == nil {
+		t.Fatal("expected a refusal when the guild's state can't be resolved")
+	}
+}
+
+// TestAuthorizeIgnoresStoredPublicTierOverride is defense in depth against a
+// stored value rather than against a user: /config permissions set-tier only
+// ever offers Mod/Admin, so a TierPublic override can only come from a
+// corrupt row, a hand-edited database, or a future import path. Honoring one
+// would strip every check off a privileged action — the single direction an
+// override must never be able to move a command in. Loosening Admin to Mod
+// stays supported (TestAuthorizeTierOverrideLoosensAdminToMod).
+func TestAuthorizeIgnoresStoredPublicTierOverride(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"config.mutate": {RequiredTier: TierPublic},
+	}
+	perms := NewPermissions(nil, auth, "bootstrap-user")
+
+	i := memberInteraction("g1", "nobody", nil)
+	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err == nil {
+		t.Fatal("a stored public tier override made an admin-only action available to everyone")
+	}
+}
+
+// TestHasDiscordErrorCodeDistinguishesAbsences: one API call can report
+// several different absences — GuildMemberEdit answers Unknown Member for a
+// target who left and Unknown Role for a deleted role — and a caller reacting
+// to the wrong one acts on the wrong state.
+func TestHasDiscordErrorCodeDistinguishesAbsences(t *testing.T) {
+	roleGone := restErr(http.StatusNotFound, discordgo.ErrCodeUnknownRole)
+	memberGone := restErr(http.StatusNotFound, discordgo.ErrCodeUnknownMember)
+
+	if !HasDiscordErrorCode(roleGone, discordgo.ErrCodeUnknownRole) {
+		t.Error("expected the unknown-role error to match the unknown-role code")
+	}
+	if HasDiscordErrorCode(memberGone, discordgo.ErrCodeUnknownRole) {
+		t.Error("an unknown *member* must not read as an unknown role")
+	}
+	if !HasDiscordErrorCode(fmt.Errorf("edit: %w", roleGone), discordgo.ErrCodeUnknownRole) {
+		t.Error("expected a wrapped error to still match")
+	}
+	if HasDiscordErrorCode(errors.New("dial tcp"), discordgo.ErrCodeUnknownRole) {
+		t.Error("a non-REST error must not match any code")
+	}
+	// Both are still "gone" for the coarser question.
+	if !IsUnknownResource(memberGone) || !IsUnknownResource(roleGone) {
+		t.Error("both absences must still count as unknown resources")
 	}
 }

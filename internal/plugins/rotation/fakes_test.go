@@ -1,11 +1,13 @@
 package rotation
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -254,6 +256,7 @@ type fakeArchiveStore struct {
 	mu        sync.Mutex
 	records   map[string]ArchiveRecord
 	insertErr error
+	listErr   error
 }
 
 func newFakeArchiveStore() *fakeArchiveStore {
@@ -270,16 +273,38 @@ func (f *fakeArchiveStore) Insert(ctx context.Context, rec ArchiveRecord) error 
 	return nil
 }
 
-func (f *fakeArchiveStore) DueForDeletion(ctx context.Context, guildID string, now time.Time) ([]ArchiveRecord, error) {
+func (f *fakeArchiveStore) ListForGuild(ctx context.Context, guildID string) ([]ArchiveRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	var out []ArchiveRecord
 	for _, rec := range f.records {
-		if rec.GuildID == guildID && rec.DeleteAfter != nil && !rec.DeleteAfter.After(now) {
+		if rec.GuildID == guildID {
 			out = append(out, rec)
 		}
 	}
+	// Map iteration order is random; sweep results are asserted per-record,
+	// but a stable order keeps failures readable.
+	slices.SortFunc(out, func(a, b ArchiveRecord) int { return cmp.Compare(a.ChannelID, b.ChannelID) })
 	return out, nil
+}
+
+// dueForDeletion is the test-only convenience the production store no longer
+// provides: due-ness now depends on the live retention setting, so it's
+// decided in sweep.go rather than in a query. Tests that only care about
+// "which rows would this sweep act on" use this against a nil lookup, i.e.
+// the stored-deadline fallback.
+func (f *fakeArchiveStore) dueForDeletion(guildID string, now time.Time) []ArchiveRecord {
+	all, _ := f.ListForGuild(context.Background(), guildID)
+	var out []ArchiveRecord
+	for _, rec := range all {
+		if rec.DeleteAfter != nil && !rec.DeleteAfter.After(now) {
+			out = append(out, rec)
+		}
+	}
+	return out
 }
 
 func (f *fakeArchiveStore) Delete(ctx context.Context, channelID string) error {

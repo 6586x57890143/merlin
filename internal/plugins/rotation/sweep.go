@@ -3,8 +3,10 @@ package rotation
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/settings"
 )
 
 // makeSweepJob returns the Scheduler job function that permanently deletes
@@ -17,17 +19,63 @@ func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 	}
 }
 
+// archiveDeadline returns the instant rec may be permanently deleted, or nil
+// for "keep it, indefinitely".
+//
+// The deadline is re-derived from the rotation slot's *current* retention
+// setting rather than read from the delete_after column written when the
+// channel was archived. That column was frozen at archive time and nothing
+// ever updated it, so a retention change only applied to future archives: an
+// admin who widened retention (or switched to keep-forever) still watched the
+// sweep permanently delete existing archives on the old, earlier schedule,
+// and permanent channel deletion has no undo. The reverse leaked too —
+// tightening retention left older archives sitting past the new window, which
+// is the exact promise this feature exists to make (spec.MD §6).
+//
+// Re-deriving here matches how the rest of this plugin works: rotate()
+// re-derives every step from live Discord state, and roles' sweep re-fetches
+// members rather than trusting stored assumptions. Stored state describes
+// what happened; the live setting decides what should happen next.
+//
+// Two cases can't be re-derived and fall back to the stored deadline:
+// pre-migration-0013 rows, which carry no RotationID, and archives whose
+// rotation slot has since been removed via /rotation configure remove (which
+// promises existing archives are left untouched, so the retention they were
+// created under is the only promise still standing).
+func archiveDeadline(rec ArchiveRecord, lookup func(int64) (settings.RotationChannel, bool)) *time.Time {
+	if rec.RotationID == nil {
+		return rec.DeleteAfter
+	}
+	rc, ok := lookup(*rec.RotationID)
+	if !ok {
+		return rec.DeleteAfter
+	}
+	if rc.RetentionHours == nil {
+		return nil // keep forever, even if this row was written under a finite retention
+	}
+	t := rec.ArchivedAt.Add(time.Duration(*rc.RetentionHours) * time.Hour)
+	return &t
+}
+
 // sweep deletes every due archive for guildID. A single row's failure is
 // logged and doesn't abort the rest of the sweep — one bad row shouldn't
 // block deletion of others that are legitimately due.
 func (p *Plugin) sweep(ctx context.Context, guildID string) error {
-	due, err := p.archives.DueForDeletion(ctx, guildID, p.now())
+	archives, err := p.archives.ListForGuild(ctx, guildID)
 	if err != nil {
-		return fmt.Errorf("rotation sweep: query due archives: %w", err)
+		return fmt.Errorf("rotation sweep: list archives: %w", err)
+	}
+	now := p.now()
+	lookup := func(id int64) (settings.RotationChannel, bool) {
+		return p.settings.RotationChannelByID(guildID, id)
 	}
 
 	var firstErr error
-	for _, rec := range due {
+	for _, rec := range archives {
+		deadline := archiveDeadline(rec, lookup)
+		if deadline == nil || deadline.After(now) {
+			continue
+		}
 		if err := p.sweepOne(ctx, guildID, rec); err != nil {
 			p.log.Error("rotation sweep: row failed", "channel", rec.ChannelID, "err", err)
 			if firstErr == nil {

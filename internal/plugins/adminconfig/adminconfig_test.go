@@ -106,3 +106,36 @@ func TestInitRegistersAFullyWiredCommandTree(t *testing.T) {
 		t.Fatalf("Finalize: %v", err)
 	}
 }
+
+// TestConfigMutateCannotBeLoweredBelowAdmin guards the invariant the whole
+// tier model rests on: config.mutate covers /config admins add, so allowing
+// a guild to set it to Admins+Mods would let any mod grant themselves admin
+// — a one-command collapse of the separation between the two tiers. The
+// compiled-in PermSpec says TierAdmin, but a per-guild tier override could
+// silently undo that, which is why this is checked at the mutation and not
+// left to the registration table.
+func TestConfigMutateCannotBeLoweredBelowAdmin(t *testing.T) {
+	if err := validateTierChange(actionMutate, core.TierMod); err == nil {
+		t.Fatal("lowering config.mutate to Admins+Mods must be refused — it lets any mod self-promote to admin")
+	}
+	if err := validateTierChange(actionMutate, core.TierPublic); err == nil {
+		t.Fatal("lowering config.mutate to public must be refused")
+	}
+	if err := validateTierChange(actionMutate, core.TierAdmin); err != nil {
+		t.Fatalf("re-asserting config.mutate as Admins only must be allowed, got %v", err)
+	}
+}
+
+// TestOtherActionsStayFreelyRetierable is the counterweight: the guard above
+// is one deliberate exception, not a general freeze. Every feature action
+// must remain adjustable in both directions, which is the entire point of
+// /config permissions set-tier.
+func TestOtherActionsStayFreelyRetierable(t *testing.T) {
+	for _, action := range []string{actionRead, "rotation.configure_structural", "roles.jail", "scheduler.run_now"} {
+		for _, tier := range []core.PermTier{core.TierMod, core.TierAdmin} {
+			if err := validateTierChange(action, tier); err != nil {
+				t.Errorf("validateTierChange(%q, %v) = %v, want nil", action, tier, err)
+			}
+		}
+	}
+}

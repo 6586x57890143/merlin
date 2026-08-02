@@ -140,10 +140,7 @@ func TestRotateFullCycle(t *testing.T) {
 		t.Fatalf("expected 2 messages (sticky + notice) in the new channel, got %d", len(msgs))
 	}
 
-	due, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.AddDate(0, 0, 8))
-	if err != nil {
-		t.Fatalf("DueForDeletion: %v", err)
-	}
+	due := archives.dueForDeletion("g1", fixedNow.AddDate(0, 0, 8))
 	if len(due) != 1 {
 		t.Fatalf("expected 1 due archive 8 days after a 7-day retention rotation, got %d", len(due))
 	}
@@ -305,10 +302,7 @@ func TestRotateForeverRetentionNeverDue(t *testing.T) {
 		t.Fatalf("rotate: %v", err)
 	}
 
-	due, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.AddDate(10, 0, 0))
-	if err != nil {
-		t.Fatalf("DueForDeletion: %v", err)
-	}
+	due := archives.dueForDeletion("g1", fixedNow.AddDate(10, 0, 0))
 	if len(due) != 0 {
 		t.Fatalf("expected a forever-retention archive to never be due, got %d due rows", len(due))
 	}
@@ -326,18 +320,12 @@ func TestRotateRetentionHourBoundaryIsPrecise(t *testing.T) {
 		t.Fatalf("rotate: %v", err)
 	}
 
-	notYetDue, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.Add(59*time.Minute))
-	if err != nil {
-		t.Fatalf("DueForDeletion (59m): %v", err)
-	}
+	notYetDue := archives.dueForDeletion("g1", fixedNow.Add(59*time.Minute))
 	if len(notYetDue) != 0 {
 		t.Fatalf("expected a 1-hour retention archive to NOT be due at 59 minutes, got %d due rows", len(notYetDue))
 	}
 
-	due, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.Add(61*time.Minute))
-	if err != nil {
-		t.Fatalf("DueForDeletion (61m): %v", err)
-	}
+	due := archives.dueForDeletion("g1", fixedNow.Add(61*time.Minute))
 	if len(due) != 1 {
 		t.Fatalf("expected a 1-hour retention archive to be due at 61 minutes, got %d due rows", len(due))
 	}
@@ -575,7 +563,7 @@ func TestReconcileJobKeyStableAcrossRetarget(t *testing.T) {
 		registeredJobs:  make(map[string]time.Duration),
 	}
 
-	p.reconcile("g1")
+	p.reconcile(context.Background(), "g1")
 
 	rc, ok := fs.RotationChannel("g1", "old1")
 	if !ok {
@@ -592,7 +580,7 @@ func TestReconcileJobKeyStableAcrossRetarget(t *testing.T) {
 	if err := fs.RetargetRotationChannel(context.Background(), "g1", "old1", "new1"); err != nil {
 		t.Fatalf("RetargetRotationChannel: %v", err)
 	}
-	p.reconcile("g1")
+	p.reconcile(context.Background(), "g1")
 
 	if sched.registerCalls[jobKey] != 1 {
 		t.Fatalf("expected the SAME job key to still be registered exactly once after retargeting, got %d registrations — "+
@@ -634,7 +622,7 @@ func TestDeferFirstRotationSeedsNewChannelJob(t *testing.T) {
 	// reconcile is called explicitly here to mirror what the real
 	// settings.Store's publishChanged would trigger synchronously in
 	// production before handleAdd calls deferFirstRotation.
-	p.reconcile("g1")
+	p.reconcile(context.Background(), "g1")
 
 	rc, ok := fs.RotationChannel("g1", "new1")
 	if !ok {
@@ -677,7 +665,7 @@ func TestReconcileAloneNeverSeeds(t *testing.T) {
 		registeredJobs:  make(map[string]time.Duration),
 	}
 
-	p.SyncGuild("g1")
+	p.SyncGuild(context.Background(), "g1")
 
 	if len(sched.seedCalls) != 0 {
 		t.Fatalf("expected reconcile/SyncGuild to never seed on its own, got seed calls: %v", sched.seedCalls)
@@ -939,5 +927,126 @@ func TestRotateResumeRebuildsAReplacementDeletedAfterTheFlip(t *testing.T) {
 	}
 	if !strings.Contains(oldCh.Name, "general-chat-archive-") || oldCh.ParentID != "archivecat" {
 		t.Fatalf("the already-archived channel should have been left alone, got %+v", oldCh)
+	}
+}
+
+// reconcileTestPlugin builds a Plugin wired only with what reconcile needs.
+func reconcileTestPlugin(fs *fakeSettings, sched *fakeScheduler, archives ArchiveStore) *Plugin {
+	return &Plugin{
+		settings:        fs,
+		archives:        archives,
+		sched:           sched,
+		log:             testLogger(),
+		bus:             core.NewEventBus(testLogger()),
+		now:             func() time.Time { return fixedNow },
+		sweepRegistered: make(map[string]bool),
+		registeredJobs:  make(map[string]time.Duration),
+	}
+}
+
+// TestSweepJobNotArmedForGuildsWithoutRotation: the sweep permanently deletes
+// channels, and it used to be registered for every guild the bot could see
+// the moment it saw it — whether or not that guild had ever configured
+// rotation, and (since a job with no run history is immediately due) firing
+// within one tick of startup. It was harmless only because the table it read
+// happened to be empty. A deletion job should not exist where nobody asked
+// for one.
+func TestSweepJobNotArmedForGuildsWithoutRotation(t *testing.T) {
+	sched := newFakeScheduler()
+	p := reconcileTestPlugin(newFakeSettings(), sched, newFakeArchiveStore())
+
+	p.reconcile(context.Background(), "g1")
+
+	sweepKey := scheduler.JobKey("g1", "rotation-sweep")
+	if sched.registered[sweepKey] {
+		t.Fatal("a guild that never configured rotation must not get an archive-deletion job")
+	}
+}
+
+// TestSweepJobArmedOnceRotationIsConfigured is the counterweight: the moment
+// a guild actually configures a rotating channel, the sweep has to exist, or
+// its retention window would never be enforced at all.
+func TestSweepJobArmedOnceRotationIsConfigured(t *testing.T) {
+	fs := newFakeSettings()
+	sched := newFakeScheduler()
+	p := reconcileTestPlugin(fs, sched, newFakeArchiveStore())
+
+	p.reconcile(context.Background(), "g1")
+	if err := fs.UpsertRotationChannel(context.Background(), finiteRetentionRC()); err != nil {
+		t.Fatalf("UpsertRotationChannel: %v", err)
+	}
+	p.reconcile(context.Background(), "g1")
+
+	sweepKey := scheduler.JobKey("g1", "rotation-sweep")
+	if !sched.registered[sweepKey] {
+		t.Fatal("expected the sweep job once the guild configured a rotating channel")
+	}
+	if sched.registerCalls[sweepKey] != 1 {
+		t.Fatalf("expected the sweep registered exactly once, got %d", sched.registerCalls[sweepKey])
+	}
+}
+
+// TestSweepJobSurvivesRemovalWhileArchivesArePending guards the direction
+// that would silently break a retention promise: /rotation configure remove
+// says existing archives are left untouched, so those archives still have a
+// deletion date owed. Dropping the sweep because the rotation slot is gone
+// would leave them alive forever with nothing to ever collect them.
+func TestSweepJobSurvivesRemovalWhileArchivesArePending(t *testing.T) {
+	fs := newFakeSettings()
+	sched := newFakeScheduler()
+	archives := newFakeArchiveStore()
+	p := reconcileTestPlugin(fs, sched, archives)
+
+	if err := fs.UpsertRotationChannel(context.Background(), finiteRetentionRC()); err != nil {
+		t.Fatalf("UpsertRotationChannel: %v", err)
+	}
+	p.reconcile(context.Background(), "g1")
+
+	archives.records["arch1"] = ArchiveRecord{
+		ChannelID: "arch1", GuildID: "g1", ArchiveCategoryID: "archivecat",
+		ArchivedAt: fixedNow, DeleteAfter: timePtr(fixedNow.AddDate(0, 0, 7)),
+	}
+	if err := fs.RemoveRotationChannel(context.Background(), "g1", "old1"); err != nil {
+		t.Fatalf("RemoveRotationChannel: %v", err)
+	}
+	p.reconcile(context.Background(), "g1")
+
+	sweepKey := scheduler.JobKey("g1", "rotation-sweep")
+	if !sched.registered[sweepKey] {
+		t.Fatal("sweep job was dropped while archives were still awaiting their retention deadline")
+	}
+
+	// Once nothing is pending, it goes away again.
+	delete(archives.records, "arch1")
+	p.reconcile(context.Background(), "g1")
+	if sched.registered[sweepKey] {
+		t.Fatal("expected the sweep job to be unregistered once no rotation and no archives remain")
+	}
+}
+
+// TestSweepJobRegistrationUnchangedOnArchiveLookupFailure: a transient DB
+// error must not decide either way — arming a deletion job we can't justify,
+// or dropping one that's still owed work, are both worse than leaving the
+// current state alone until the next reconcile.
+func TestSweepJobRegistrationUnchangedOnArchiveLookupFailure(t *testing.T) {
+	fs := newFakeSettings()
+	sched := newFakeScheduler()
+	archives := newFakeArchiveStore()
+	p := reconcileTestPlugin(fs, sched, archives)
+
+	if err := fs.UpsertRotationChannel(context.Background(), finiteRetentionRC()); err != nil {
+		t.Fatalf("UpsertRotationChannel: %v", err)
+	}
+	p.reconcile(context.Background(), "g1")
+	sweepKey := scheduler.JobKey("g1", "rotation-sweep")
+
+	if err := fs.RemoveRotationChannel(context.Background(), "g1", "old1"); err != nil {
+		t.Fatalf("RemoveRotationChannel: %v", err)
+	}
+	archives.listErr = transientErr()
+	p.reconcile(context.Background(), "g1")
+
+	if !sched.registered[sweepKey] {
+		t.Fatal("a failed archive lookup must not unregister an existing sweep job")
 	}
 }

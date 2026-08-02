@@ -39,3 +39,19 @@ func IsUnknownResource(err error) bool {
 	// failure.
 	return restErr.Message == nil && restErr.Response != nil && restErr.Response.StatusCode == http.StatusNotFound
 }
+
+// HasDiscordErrorCode reports whether err is a Discord REST error carrying
+// exactly the given code (discordgo.ErrCodeUnknownRole, ...).
+//
+// Use this, not IsUnknownResource, when the reaction depends on *which* thing
+// is missing rather than on "something is missing." One API call can report
+// several different absences — GuildMemberEdit answers Unknown Member for a
+// target who left and Unknown Role for a deleted role — and a caller that
+// treats them alike acts on the wrong one.
+func HasDiscordErrorCode(err error, code int) bool {
+	var restErr *discordgo.RESTError
+	if !errors.As(err, &restErr) {
+		return false
+	}
+	return restErr.Message != nil && restErr.Message.Code == code
+}
