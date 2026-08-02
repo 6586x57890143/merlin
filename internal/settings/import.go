@@ -13,7 +13,7 @@ import (
 // settings from an existing config.yaml the first time a deployment
 // upgrades to DB-backed settings, or for disaster recovery from a
 // version-controlled backup of that file. It is deliberately not shared
-// with internal/config's bootstrap loader — import is a rare, explicitly
+// with internal/config's bootstrap loader: import is a rare, explicitly
 // human-triggered path, not something the hot startup path needs to know
 // about.
 type legacyYAML struct {
@@ -43,7 +43,7 @@ type legacyYAML struct {
 
 // ImportFromLegacyYAML reads path (the old config.yaml shape) and writes
 // every guild it describes into the settings store via the same mutation
-// methods commands use — never runs on its own; only in response to an
+// methods commands use. Never runs on its own; only in response to an
 // explicit /config import invocation (spec.MD §4a: config changes are
 // audited, not silent, and that includes this one, via the caller writing
 // an audit-log entry per guild imported).

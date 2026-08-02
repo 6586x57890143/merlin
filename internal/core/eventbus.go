@@ -8,7 +8,7 @@ import (
 )
 
 // EventType names a class of internal event. Plugins never call each other
-// directly (Design Principle 1) — they only publish/subscribe here, so e.g.
+// directly (Design Principle 1); they only publish/subscribe here, so e.g.
 // a future rotation plugin's channel.rotated event reaches factions without
 // either package importing the other.
 type EventType string
@@ -20,7 +20,7 @@ const (
 	// EventChannelRotated is published after a channel rotation completes
 	// successfully. Payload is ChannelRotatedPayload. Anything hardcoded to
 	// the old channel ID (external webhooks, other bots' configs) will keep
-	// posting into what is now the hidden archive — this event exists so
+	// posting into what is now the hidden archive. This event exists so
 	// in-process subscribers can react, and to document that this is a
 	// known, accepted limitation of rotation (spec.MD §6).
 	EventChannelRotated EventType = "channel.rotated"
@@ -62,7 +62,7 @@ func NewEventBus(log *slog.Logger) *EventBus {
 }
 
 // Subscribe registers fn for every Event of type t. pluginName is used only
-// for panic-isolation logging/attribution — it doesn't gate delivery.
+// for panic-isolation logging/attribution; it doesn't gate delivery.
 func (b *EventBus) Subscribe(t EventType, pluginName string, fn Handler) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

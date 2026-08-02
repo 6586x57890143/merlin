@@ -53,7 +53,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{states: make(map[string]JobState)}
 }
 
-// fakeSettings is a no-op statusChannelResolver — none of the scheduler unit
+// fakeSettings is a no-op statusChannelResolver; none of the scheduler unit
 // tests exercise alert routing via a real channel (TestThresholdFailuresAlertOnce
 // injects s.alertFunc directly instead), so an always-empty resolver is fine.
 type fakeSettings struct{}
@@ -165,7 +165,7 @@ func TestPersistedLastRunSurvivesRestart(t *testing.T) {
 		t.Fatalf("isDue: %v", err)
 	}
 	if due {
-		t.Fatal("expected job not due immediately after restart — last_run should have survived")
+		t.Fatal("expected job not due immediately after restart; last_run should have survived")
 	}
 }
 
@@ -337,7 +337,7 @@ func TestRunNowUnknownJobFails(t *testing.T) {
 
 // TestJitterSpreadsAcrossItsFullRange is a regression test for a silent
 // 32-bit overflow: jitterFor folded a uint32 hash into a nanosecond bound,
-// and nanoseconds outgrow uint32 at 4.3 seconds — so every job's jitter
+// and nanoseconds outgrow uint32 at 4.3 seconds, so every job's jitter
 // landed in a ~4s window no matter how large maxJitter was, and the
 // thundering-herd spread it exists to provide barely existed. With a
 // 24h interval the bound is maxJitter (2 minutes), and a healthy spread must
@@ -358,7 +358,7 @@ func TestJitterSpreadsAcrossItsFullRange(t *testing.T) {
 		buckets[int(j/(10*time.Second))] = true
 	}
 	if maxSeen < wantMinimum {
-		t.Errorf("largest jitter across %d jobs was %v, want at least %v — the range is being truncated", jobs, maxSeen, wantMinimum)
+		t.Errorf("largest jitter across %d jobs was %v, want at least %v; the range is being truncated", jobs, maxSeen, wantMinimum)
 	}
 	if len(buckets) < 6 {
 		t.Errorf("jitter clustered into %d of 12 ten-second buckets, want it spread across the range", len(buckets))
@@ -379,7 +379,7 @@ func TestJitterZeroForShortIntervals(t *testing.T) {
 // TestExecuteRecordsFailureAfterJobTimeout covers the bookkeeping detach: a
 // job killed by its own timeout must still have that failure persisted.
 // Writing it through the expired context instead would drop it, leaving the
-// job looking permanently healthy — never backing off, never alerting, and
+// job looking permanently healthy: never backing off, never alerting, and
 // re-running into the same wall every tick.
 func TestExecuteRecordsFailureAfterJobTimeout(t *testing.T) {
 	store := newFakeStore()
@@ -432,7 +432,7 @@ func TestAutocompleteJobCapsAtDiscordLimit(t *testing.T) {
 }
 
 // TestJobsForGuildIsolatesGuilds guards the prefix matching every per-guild
-// view depends on — /scheduler list and run-now must never surface, or run,
+// view depends on: /scheduler list and run-now must never surface, or run,
 // another server's job.
 func TestJobsForGuildIsolatesGuilds(t *testing.T) {
 	s := New(newFakeStore(), fakeSettings{}, testLogger())

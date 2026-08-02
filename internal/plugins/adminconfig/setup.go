@@ -11,7 +11,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
-// Names /config setup uses for the things it can create — never on its own:
+// Names /config setup uses for the things it can create, never on its own:
 // every one of them sits behind an explicit button on its wizard step, and
 // every step offers picking something the guild already has first. A server
 // that already keeps a mod-log channel or a moderator role shouldn't end up
@@ -49,7 +49,7 @@ const (
 )
 
 // maxSetupAdminPicks is how many users one pass of the admins step can add.
-// Discord caps a user select at 25; this is deliberately lower — standing
+// Discord caps a user select at 25; this is deliberately lower, since standing
 // admin access is the most powerful thing this wizard hands out, so the
 // picker shouldn't invite bulk-granting it in one careless click.
 const maxSetupAdminPicks = 5
@@ -57,7 +57,7 @@ const maxSetupAdminPicks = 5
 // registerSetupComponents wires every button and select menu the wizard
 // renders. All of them mutate guild config (or navigate a view that does),
 // so they carry the same TierAdmin/actionMutate spec as /config setup
-// itself — a component interaction is its own fresh interaction and gets no
+// itself: a component interaction is its own fresh interaction and gets no
 // exemption from authorization just because the message it's attached to
 // was rendered for someone allowed to see it.
 func (p *Plugin) registerSetupComponents() {
@@ -112,7 +112,7 @@ func (p *Plugin) updateSetupStep(s *discordgo.Session, i *discordgo.InteractionC
 }
 
 // renderSetupStep builds one step's embed and controls purely from the
-// guild's current settings — no Plugin state, no wizard session — which is
+// guild's current settings (no Plugin state, no wizard session), which is
 // what makes the wizard resumable, concurrently drivable, and testable
 // without a Discord session.
 func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
@@ -125,49 +125,49 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 	switch step {
 	case setupStepWelcome:
 		title = "Server setup"
-		desc = "Four things are worth setting before putting the bird to work. I'll walk you through them one at a time.\n\n" +
-			"Nothing gets created or changed unless you ask for it on the step itself — every step offers what this server already has first, " +
+		desc = "Four things worth setting before I get to work. I'll walk you through them one at a time.\n\n" +
+			"I won't create or change anything unless you ask for it on the step itself. Every step offers what this server already has first, " +
 			"and skipping a step is fine; you can come back to it whenever.\n\nHit **Next** to start."
 
 	case setupStepAuditLog:
 		title = "Audit log channel"
-		desc = fmt.Sprintf("Where config changes, rotations, and moderation actions get recorded. Mod roles are given access to it automatically.\n\nCurrently: **%s**",
+		desc = fmt.Sprintf("Where I write down config changes, rotations, and moderation actions. Your mod roles get access automatically.\n\nCurrently: **%s**",
 			channelStatusText(gs.AuditLogChannelID))
 		prompts = []discordgo.MessageComponent{
-			setupChannelSelectRow(setupAuditLogSelectCustomID, "Pick an existing channel for the audit log…"),
+			setupChannelSelectRow(setupAuditLogSelectCustomID, "Pick an existing channel for the audit log..."),
 			setupCreateRow("Create #"+birdAuditLogChannelName+" for me", setupAuditLogCreateCustomID),
 		}
 
 	case setupStepStatus:
 		title = "Status channel"
-		desc = fmt.Sprintf("Where the bird posts operational alerts — a scheduled job failing repeatedly, a rotation it couldn't complete. Quiet when nothing's wrong.\n\nCurrently: **%s**",
+		desc = fmt.Sprintf("Where I flag operational trouble: a scheduled job failing over and over, a rotation I couldn't finish. Quiet when nothing's wrong.\n\nCurrently: **%s**",
 			channelStatusText(gs.StatusChannelID))
 		prompts = []discordgo.MessageComponent{
-			setupChannelSelectRow(setupStatusSelectCustomID, "Pick an existing channel for status alerts…"),
+			setupChannelSelectRow(setupStatusSelectCustomID, "Pick an existing channel for status alerts..."),
 			setupCreateRow("Create #"+birdStatusChannelName+" for me", setupStatusCreateCustomID),
 		}
 
 	case setupStepModRole:
 		title = "Mod role"
 		desc = fmt.Sprintf("Which role counts as a moderator for mod-tier commands (jailing, releasing, running a rotation early). "+
-			"Most servers already have one — pick it rather than adding another.\n\nCurrently: **%s**",
+			"Most servers already have one, so pick it rather than adding another.\n\nCurrently: **%s**",
 			roleListText(gs.ModRoleIDs))
 		prompts = []discordgo.MessageComponent{
-			setupRoleSelectRow(setupModRoleSelectCustomID, "Pick an existing role to treat as a mod role…"),
-			setupCreateRow("Create a “"+merlinModRoleName+"” role for me", setupModRoleCreateCustomID),
+			setupRoleSelectRow(setupModRoleSelectCustomID, "Pick an existing role to treat as a mod role..."),
+			setupCreateRow("Create a "+merlinModRoleName+" role for me", setupModRoleCreateCustomID),
 		}
 
 	case setupStepAdmins:
 		title = "Admins"
-		desc = fmt.Sprintf("Who can change the bird's own configuration — permissions, plugins, rotation settings. "+
-			"Anyone holding Discord's **Administrator** permission already counts, so this list is only for people who should have admin access without it.\n\nCurrently: **%s**",
+		desc = fmt.Sprintf("Who can change my own configuration: permissions, plugins, rotation settings. "+
+			"Anyone holding Discord's **Administrator** permission already counts, so this list is just for people who should have admin access without it.\n\nCurrently: **%s**",
 			userListText(gs.AdminUserIDs))
-		prompts = []discordgo.MessageComponent{setupUserSelectRow(setupAdminsSelectCustomID, "Pick who should have standing admin access…")}
+		prompts = []discordgo.MessageComponent{setupUserSelectRow(setupAdminsSelectCustomID, "Pick who should have standing admin access...")}
 
 	case setupStepDone:
 		color = core.ColorSuccess
 		title = "Setup complete"
-		desc = "That's everything worth setting up front. Anything you skipped can be filled in later — `/config setup` picks up exactly where this left off."
+		desc = "That's everything worth setting up front. Anything you skipped can be filled in later; `/config setup` picks up exactly where this left off."
 	}
 
 	fields := []*discordgo.MessageEmbedField{{Name: "Setup so far", Value: setupChecklist(gs)}}
@@ -193,7 +193,7 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 // setupNavRow is the wizard's Back/Next control, mirroring core.PaginationRow's
 // shape and CustomID encoding (there's no server-side wizard session to
 // consult, so the target step rides along in the button's own ID) but
-// labelled as steps rather than pages, and always rendered — a wizard whose
+// labelled as steps rather than pages, and always rendered: a wizard whose
 // controls vanished on a single-step view would be a dead end.
 func setupNavRow(step int) discordgo.MessageComponent {
 	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{
@@ -268,10 +268,10 @@ func setupChecklistLine(done bool, label, value string) string {
 	if done {
 		mark = "✅"
 	}
-	return fmt.Sprintf("%s **%s** — %s", mark, label, value)
+	return fmt.Sprintf("%s **%s**: %s", mark, label, value)
 }
 
-// channelStatusText renders a possibly-unset channel ID — "not set" instead
+// channelStatusText renders a possibly-unset channel ID: "not set" instead
 // of a broken <#> mention when there's nothing to link to.
 func channelStatusText(channelID string) string {
 	if channelID == "" {
@@ -285,7 +285,7 @@ func roleListText(roleIDs []string) string {
 }
 
 func userListText(userIDs []string) string {
-	return mentionListText(userIDs, "<@%s>", "none set — Discord Administrators still count")
+	return mentionListText(userIDs, "<@%s>", "none set, Discord Administrators still count")
 }
 
 // mentionListText joins IDs as mentions, truncating past a handful so a
@@ -308,7 +308,7 @@ func mentionListText(ids []string, format, empty string) string {
 }
 
 // The wizard's action handlers. Each one applies its change and then
-// re-renders — advancing a step on success (the picked value is already
+// re-renders, advancing a step on success (the picked value is already
 // visible in the next step's checklist, so there's nothing to confirm by
 // staying put) and holding position with a notice on failure, so a mistyped
 // permission or a Discord error doesn't drop the admin out of setup.
@@ -377,7 +377,7 @@ func (p *Plugin) handleSetupModRoleCreate(ctx context.Context, s *discordgo.Sess
 		p.updateSetupStep(s, i, setupStepModRole, fmt.Sprintf("⚠️ Couldn't create the %s role: %v", merlinModRoleName, err))
 		return
 	}
-	p.setupAddModRole(ctx, s, i, role.ID, fmt.Sprintf("✅ Created <@&%s> — assign it to your moderators.", role.ID))
+	p.setupAddModRole(ctx, s, i, role.ID, fmt.Sprintf("✅ Created <@&%s>. Assign it to your moderators.", role.ID))
 }
 
 func (p *Plugin) setupAddModRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, roleID, notice string) {
@@ -417,7 +417,7 @@ func (p *Plugin) grantModRolesChannelAccess(s *discordgo.Session, guildID string
 
 // botChannelAllow is what the bot needs on the audit-log/status channels:
 // view/post/embed, all bits it already holds via @everyone's own guild
-// defaults in a typical guild — unlike rotation's staging channel, this
+// defaults in a typical guild. Unlike rotation's staging channel, this
 // never needs Manage Messages, so there's no risk of Discord rejecting the
 // overwrite for granting a bit the bot doesn't actually hold (see
 // core.DenyEveryoneExceptBot's doc comment for why that matters).

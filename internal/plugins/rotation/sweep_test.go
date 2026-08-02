@@ -70,7 +70,7 @@ func TestSweepSkipsNotYetDueArchive(t *testing.T) {
 
 func TestSweepRescuesChannelMovedOutOfArchiveCategory(t *testing.T) {
 	ops, archives, _, p := setupSweep(t)
-	// A mod moved the archived channel out of archivecat — this should be
+	// A mod moved the archived channel out of archivecat; this should be
 	// treated as an implicit "keep it," not deleted.
 	ops.addChannel(&discordgo.Channel{ID: "arch1", GuildID: "g1", Name: "general-chat-archive-x", ParentID: "some-other-category"})
 	archives.records["arch1"] = ArchiveRecord{
@@ -92,7 +92,7 @@ func TestSweepRescuesChannelMovedOutOfArchiveCategory(t *testing.T) {
 
 func TestSweepHandlesAlreadyDeletedChannel(t *testing.T) {
 	_, archives, _, p := setupSweep(t)
-	// No channel added — simulates a channel someone already deleted by hand.
+	// No channel added: simulates a channel someone already deleted by hand.
 	archives.records["gone1"] = ArchiveRecord{
 		ChannelID: "gone1", GuildID: "g1", SourceChannelID: "old1",
 		ArchivedAt: fixedNow.AddDate(0, 0, -8), DeleteAfter: timePtr(fixedNow.AddDate(0, 0, -1)),
@@ -109,7 +109,7 @@ func TestSweepHandlesAlreadyDeletedChannel(t *testing.T) {
 // TestSweepDeletesArchiveAfterRotationRetargetedConfig is a regression test
 // for a bug introduced by rotation.rotate's retarget fix: sweepOne used to
 // re-derive the archive's expected category by looking up
-// settings.RotationChannel(guildID, rec.SourceChannelID) — but rotate now
+// settings.RotationChannel(guildID, rec.SourceChannelID), but rotate now
 // retargets that row's ChannelID onto the new live channel immediately after
 // archiving, so the lookup by the OLD (archived) channel's ID stops finding
 // anything on every single rotation, making every archive look
@@ -172,7 +172,7 @@ func TestSweepContinuesAfterPerRowFailure(t *testing.T) {
 // TestSweepHandlesAlreadyDeletedChannel: sweepOne used to treat *any* error
 // fetching the archived channel as "already gone" and drop the tracking row.
 // A rate limit or a 5xx would then leave the channel alive with nothing left
-// to ever sweep it — a retention promise silently broken, which is the exact
+// to ever sweep it: a retention promise silently broken, which is the exact
 // failure this feature exists to prevent. Only Discord's own "unknown
 // channel" may untrack; everything else must fail and be retried.
 func TestSweepKeepsTrackingArchiveOnTransientFetchFailure(t *testing.T) {
@@ -188,7 +188,7 @@ func TestSweepKeepsTrackingArchiveOnTransientFetchFailure(t *testing.T) {
 		t.Fatal("expected sweep to report the transient fetch failure")
 	}
 	if _, ok := archives.records["arch1"]; !ok {
-		t.Fatal("archive row was dropped on a transient error — the channel would now never be swept")
+		t.Fatal("archive row was dropped on a transient error; the channel would now never be swept")
 	}
 
 	// The next sweep, with Discord healthy again, finishes the job.
@@ -212,7 +212,7 @@ func TestSweepKeepsTrackingArchiveOnTransientFetchFailure(t *testing.T) {
 // rotation slot's current retention setting on every pass.
 
 // archivedUnder registers rc, then records an archive produced by it at
-// archivedAt with the deadline that rc's retention implied *at that moment* —
+// archivedAt with the deadline that rc's retention implied *at that moment*,
 // exactly what rotate() writes. Tests then change rc's retention and assert
 // the sweep honors the new value, not the frozen one.
 func archivedUnder(t *testing.T, fs *fakeSettings, archives *fakeArchiveStore, rc settings.RotationChannel, archivedAt time.Time) settings.RotationChannel {
@@ -258,7 +258,7 @@ func sweepAt(t *testing.T, p *Plugin, at time.Time) {
 
 // TestSweepHonorsExtendedRetentionOnExistingArchives is the headline
 // regression. An admin archives under a 24h window, decides that's too
-// aggressive and widens it to 90 days, and the bot confirms the change — but
+// aggressive and widens it to 90 days, and the bot confirms the change, but
 // the sweep still deleted the channel 24 hours in, because the deadline was
 // frozen in the row. Channel deletion is permanent; there is no undo.
 func TestSweepHonorsExtendedRetentionOnExistingArchives(t *testing.T) {

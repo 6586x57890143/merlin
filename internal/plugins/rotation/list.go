@@ -51,7 +51,7 @@ func (p *Plugin) handleListPage(ctx context.Context, s *discordgo.Session, i *di
 }
 
 // handleListSelect drills into full detail for whichever channel the mod
-// picked from the list's select menu — the compact per-page summary line
+// picked from the list's select menu. The compact per-page summary line
 // doesn't have room for sticky message content or a spelled-out visibility
 // policy, so this is a genuinely useful expansion rather than pagination's
 // "same data, more of it."
@@ -66,7 +66,7 @@ func (p *Plugin) handleListSelect(ctx context.Context, s *discordgo.Session, i *
 	}
 	rc, exists := p.settings.RotationChannel(i.GuildID, values[0])
 	if !exists {
-		core.RespondErr(s, i, "No longer configured", fmt.Errorf("that channel isn't configured to rotate anymore — the list may be stale, try `/rotation list` again"))
+		core.RespondErr(s, i, "No longer configured", fmt.Errorf("that channel isn't configured to rotate anymore. The list may be stale, try `/rotation list` again"))
 		return
 	}
 	backRow := []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
@@ -82,7 +82,7 @@ func (p *Plugin) handleListSelect(ctx context.Context, s *discordgo.Session, i *
 }
 
 // handleListBack returns from a detail view to the list page the pick was
-// made from — re-queried fresh, same as every other component handler in
+// made from, re-queried fresh, same as every other component handler in
 // this bot, since nothing survives in memory between interactions.
 func (p *Plugin) handleListBack(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
 	page, err := core.ParsePaginationPage(customID, rotationListBackPrefix)
@@ -100,7 +100,7 @@ func (p *Plugin) handleListBack(ctx context.Context, s *discordgo.Session, i *di
 // Prev/Next buttons if more than one page exists at all.
 //
 // The select menu's options need real channel names (a mention renders as
-// raw text inside a select), which costs one guild-channel listing — a
+// raw text inside a select), which costs one guild-channel listing: a
 // single REST call for the whole page rather than one per row. Per-row
 // lookups blew the interaction's 3-second response budget on a page of ten,
 // and rotating channels change names on every rotation, so there's nothing

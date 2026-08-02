@@ -12,7 +12,7 @@ import (
 
 // CommandHandler handles one fully-resolved command/subcommand invocation.
 // Handlers are responsible for calling s.InteractionRespond themselves (the
-// response shape — deferred, ephemeral, modal, etc. — varies too much to
+// response shape (deferred, ephemeral, modal, etc.) varies too much to
 // usefully wrap).
 type CommandHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate)
 
@@ -26,7 +26,7 @@ type AutocompleteHandler func(ctx context.Context, i *discordgo.InteractionCreat
 // select-menu choice) whose CustomID matched a registered prefix. customID is
 // the component's full CustomID, so a handler can decode whatever state it
 // encoded into it (e.g. a page number, or which record a select menu row
-// refers to) — components carry no other server-side session of their own.
+// refers to). Components carry no other server-side session of their own.
 type ComponentHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string)
 
 type registeredLeaf struct {
@@ -49,8 +49,8 @@ type registeredComponent struct {
 // out each other's commands, since bulk-overwrite replaces the entire scope,
 // not just the caller's own commands; (2) discordgo's own event dispatch has
 // no recover() of its own (confirmed against the vendored source), so a
-// panic in any one plugin's handler could take down the whole process —
-// every dispatch here runs under recover().
+// panic in any one plugin's handler could take down the whole process.
+// Every dispatch here runs under recover().
 type CommandRouter struct {
 	perms *Permissions
 	gate  PluginGate
@@ -74,7 +74,7 @@ func NewCommandRouter(perms *Permissions, gate PluginGate, log *slog.Logger) *Co
 }
 
 // RegisterCommand adds one top-level command, owned by pluginName (used for
-// the per-guild plugin enable/disable gate — see PluginGate). cmd's Options
+// the per-guild plugin enable/disable gate, see PluginGate). cmd's Options
 // may nest subcommands/subcommand groups arbitrarily (as discordgo itself
 // requires); call Handle for every invocable leaf path underneath it before
 // Finalize.
@@ -84,7 +84,7 @@ func (r *CommandRouter) RegisterCommand(pluginName string, cmd *discordgo.Applic
 }
 
 // Plugins returns every distinct plugin name that has registered a top-level
-// command — used by /config plugins enable/disable's autocomplete.
+// command, used by /config plugins enable/disable's autocomplete.
 func (r *CommandRouter) Plugins() []string {
 	seen := make(map[string]bool, len(r.topLevelPlugin))
 	var out []string
@@ -101,17 +101,17 @@ func (r *CommandRouter) Plugins() []string {
 // Handle registers the handler and required PermSpec for one leaf path.
 // path is empty for a bare top-level command (e.g. "ping"), a single
 // segment for a direct subcommand ("run-now"), or "group/subcommand" for a
-// subcommand nested in a group ("configure/set-interval") — mirroring
+// subcommand nested in a group ("configure/set-interval"), mirroring
 // exactly the nesting depth Discord itself allows (max two levels below the
 // top-level command). spec.Tier must not be the zero value, and Action must
-// be set for anything above TierPublic — both are validated at Finalize, not
+// be set for anything above TierPublic. Both are validated at Finalize, not
 // here, so registration order doesn't matter.
 func (r *CommandRouter) Handle(topLevelName, path string, spec PermSpec, handler CommandHandler) {
 	r.leaves[leafKey(topLevelName, path)] = &registeredLeaf{spec: spec, handler: handler}
 }
 
 // Autocomplete attaches fn to an already-Handle'd leaf. Panics if the leaf
-// doesn't exist yet — call Handle for the same path first.
+// doesn't exist yet: call Handle for the same path first.
 func (r *CommandRouter) Autocomplete(topLevelName, path string, fn AutocompleteHandler) {
 	key := leafKey(topLevelName, path)
 	leaf, ok := r.leaves[key]
@@ -122,8 +122,8 @@ func (r *CommandRouter) Autocomplete(topLevelName, path string, fn AutocompleteH
 }
 
 // HandleComponent registers fn for every message-component interaction
-// (button click, select-menu choice) whose CustomID starts with prefix —
-// callers namespace their own prefixes (e.g. "rotation:list:") to avoid
+// (button click, select-menu choice) whose CustomID starts with prefix.
+// Callers namespace their own prefixes (e.g. "rotation:list:") to avoid
 // collisions; the longest matching prefix wins if more than one matches.
 // pluginName and spec are checked exactly like a slash command's (plugin
 // enabled, then Authorize) before fn runs: a component interaction is its
@@ -134,7 +134,7 @@ func (r *CommandRouter) HandleComponent(pluginName, prefix string, spec PermSpec
 }
 
 // Actions returns every distinct, non-empty PermSpec.Action currently
-// registered — used by /config permissions grant/revoke's autocomplete so
+// registered, used by /config permissions grant/revoke's autocomplete so
 // admins can discover valid action names without reading source code.
 func (r *CommandRouter) Actions() []string {
 	seen := make(map[string]bool)
@@ -192,13 +192,13 @@ func (r *CommandRouter) Finalize() error {
 }
 
 // RegisterGuild performs exactly one ApplicationCommandBulkOverwrite for
-// guildID with the full merged command set — single writer across every
+// guildID with the full merged command set: a single writer across every
 // plugin, so two plugins independently bulk-overwriting can't silently wipe
-// out each other's commands (the bug this router replaces) — scoped
+// out each other's commands (the bug this router replaces). Scoped
 // per-guild rather than global so commands appear instantly instead of
 // waiting on Discord's up-to-an-hour global-propagation delay. Call once per
 // guild the bot is in at startup, and again whenever it joins a new one
-// (both naturally driven by discordgo's GuildCreate event — see
+// (both naturally driven by discordgo's GuildCreate event, see
 // cmd/bot/main.go).
 func (r *CommandRouter) RegisterGuild(s *discordgo.Session, appID, guildID string) error {
 	if _, err := s.ApplicationCommandBulkOverwrite(appID, guildID, r.topLevel); err != nil {
@@ -209,24 +209,24 @@ func (r *CommandRouter) RegisterGuild(s *discordgo.Session, appID, guildID strin
 
 // PurgeGlobalCommands removes every application command currently registered
 // in Discord's global scope. This bot registers exclusively per-guild
-// (RegisterGuild) — nothing in this codebase should ever create a global
-// command — but pre-Milestone-4 code once did (a global "/admin" from the
+// (RegisterGuild), and nothing in this codebase should ever create a global
+// command, but pre-Milestone-4 code once did (a global "/admin" from the
 // original Scheduler plugin, a global "/ping" from the original ping plugin,
 // both via session.ApplicationCommandCreate(..., "", cmd) with an empty
 // guildID). Global commands are a completely separate scope from any guild's
-// commands, so RegisterGuild's per-guild BulkOverwrite never touched them —
+// commands, so RegisterGuild's per-guild BulkOverwrite never touched them:
 // they've sat there as duplicate/orphaned entries in every guild's command
 // list ever since, one of them ("/admin") pointing at a handler that no
 // longer exists.
 //
 // Pass an explicit empty (non-nil) slice, not nil: discordgo marshals a nil
 // slice as JSON `null`, which is not the same request as an empty array `[]`
-// and may not clear anything — the exact class of bug already fixed once in
+// and may not clear anything, the exact class of bug already fixed once in
 // this codebase for channel permission overwrites (see core.channels.go).
 //
 // Call once at startup, before opening the session. Bulk-overwriting an
 // already-empty global scope is a harmless no-op, so this needs no
-// one-time-only guard — every boot just re-confirms the invariant.
+// one-time-only guard: every boot just re-confirms the invariant.
 func (r *CommandRouter) PurgeGlobalCommands(s *discordgo.Session, appID string) error {
 	if _, err := s.ApplicationCommandBulkOverwrite(appID, "", []*discordgo.ApplicationCommand{}); err != nil {
 		return fmt.Errorf("purge global commands: %w", err)
@@ -280,7 +280,7 @@ func (r *CommandRouter) HandleInteraction(s *discordgo.Session, i *discordgo.Int
 }
 
 // matchComponent finds the registered component whose prefix is the
-// longest match for customID, or nil if none matches — split out from
+// longest match for customID, or nil if none matches. Split out from
 // dispatchComponent so the matching logic itself is unit-testable without
 // needing a live Discord session.
 func (r *CommandRouter) matchComponent(customID string) *registeredComponent {
@@ -297,7 +297,7 @@ func (r *CommandRouter) matchComponent(customID string) *registeredComponent {
 // dispatchComponent resolves a button/select-menu interaction to whichever
 // registered prefix its CustomID starts with (longest match wins, so two
 // plugins can't accidentally shadow each other), then runs the exact same
-// plugin-enabled + Authorize checks dispatchCommand does — a component
+// plugin-enabled + Authorize checks dispatchCommand does: a component
 // interaction is its own fresh interaction, never exempt from either check
 // just because it followed a successful command.
 func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -346,7 +346,7 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 	}()
 
 	// Every command is registered per guild, so a DM interaction shouldn't be
-	// reachable — but i.GuildID feeds straight into the settings cache key
+	// reachable, but i.GuildID feeds straight into the settings cache key
 	// for both the plugin gate and Authorize, and an empty key there resolves
 	// to a guild with no mod roles and no admins. Refusing outright is a
 	// cheap guard on the one path that must never fail open, and it costs
@@ -447,7 +447,7 @@ func resolveLeaf(data discordgo.ApplicationCommandInteractionData) (path string,
 // LeafArgs resolves i's invoked subcommand/subcommand-group path (the exact
 // walk dispatchCommand itself performs) and returns its arguments keyed by
 // name, so handlers that want direct-by-name access don't need to re-walk
-// the Options tree themselves — every plugin handler should use this instead
+// the Options tree themselves. Every plugin handler should use this instead
 // of hand-rolling the same walk, so there's exactly one implementation to
 // keep in sync with Discord's nesting rules.
 func LeafArgs(i *discordgo.InteractionCreate) map[string]*discordgo.ApplicationCommandInteractionDataOption {
@@ -470,7 +470,7 @@ const errCodeInteractionAlreadyAcknowledged = 40060
 // The fallback matters most on the path that needs it least often: the panic
 // recovery in dispatchCommand runs whether or not the handler had already
 // responded before panicking. A handler that deferred, did some work, and
-// then panicked would have this reply rejected with 40060 — and the error
+// then panicked would have this reply rejected with 40060, and the error
 // was previously discarded, so the user saw nothing at all and the logs said
 // nothing either. A panic mid-command is exactly when someone needs to be
 // told something went wrong.

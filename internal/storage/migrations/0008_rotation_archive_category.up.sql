@@ -2,7 +2,7 @@
 -- moment it was archived, onto the archive row itself. sweep.go's "was this
 -- channel rescued out of its archive category" check previously re-derived
 -- the expected category by looking up the LIVE settings_rotation_channels
--- row for the archive's source_channel_id — which broke the moment rotation
+-- row for the archive's source_channel_id, which broke the moment rotation
 -- started retargeting that row's channel_id onto the new live channel after
 -- every successful rotation (the row is no longer keyed by source_channel_id
 -- at all after the first cycle), making every archive look "unconfigured"

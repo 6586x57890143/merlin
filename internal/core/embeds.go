@@ -36,8 +36,8 @@ var bannerPNG []byte
 
 // Attachment names/URLs for the two brand images above. Both are embedded
 // directly into the binary (go:embed) and sent as a message attachment on
-// every embed response, referenced via Discord's attachment:// scheme —
-// deliberately not an external image host, so branding never breaks due to
+// every embed response, referenced via Discord's attachment:// scheme.
+// Deliberately not an external image host, so branding never breaks due to
 // link rot or an outage of something this bot doesn't control.
 const (
 	avatarAttachmentName = "merlin_avatar.png"
@@ -72,8 +72,8 @@ func NewEmbed(color int, title, description string, fields ...*discordgo.Message
 }
 
 // NewLandmarkEmbed is NewEmbed's richer sibling, reserved for the handful of
-// moments that genuinely warrant visual weight — first-time setup, the
-// onboarding DM — not every routine response (a banner image on every
+// moments that genuinely warrant visual weight (first-time setup, the
+// onboarding DM), not every routine response (a banner image on every
 // one-line confirmation would be noise, not polish). Adds Merlin's banner
 // as the embed's large image; everything else (footer, timestamp) matches
 // NewEmbed exactly.
@@ -84,7 +84,7 @@ func NewLandmarkEmbed(color int, title, description string, fields ...*discordgo
 }
 
 // RespondEmbed sends embed as an ephemeral interaction response, attaching
-// the brand avatar file its footer icon references — the embed-based
+// the brand avatar file its footer icon references, the embed-based
 // counterpart to respondEphemeral, exported so plugin handlers can use it
 // directly instead of building their own InteractionResponse.
 func RespondEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
@@ -98,8 +98,8 @@ func RespondEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *d
 	})
 }
 
-// RespondLandmarkEmbed is RespondEmbed's counterpart for a NewLandmarkEmbed
-// — also attaches the banner file the embed's Image references, alongside
+// RespondLandmarkEmbed is RespondEmbed's counterpart for a NewLandmarkEmbed:
+// it also attaches the banner file the embed's Image references, alongside
 // the footer's avatar file.
 func RespondLandmarkEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
 	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -113,7 +113,7 @@ func RespondLandmarkEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, 
 }
 
 // RespondLandmarkEmbedWithComponents combines RespondLandmarkEmbed's banner
-// attachment with RespondEmbedWithComponents' components — for the rare
+// attachment with RespondEmbedWithComponents' components, for the rare
 // response that's both a landmark moment and needs interactive controls
 // (e.g. /config setup's first-run channel prompts).
 func RespondLandmarkEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
@@ -131,7 +131,7 @@ func RespondLandmarkEmbedWithComponents(s *discordgo.Session, i *discordgo.Inter
 // RespondOK, RespondErr, RespondInfo, and RespondWarn are the response
 // shapes every command handler in this bot needs, kept here rather than
 // duplicated per plugin (adminconfig, rotation, scheduler all defined
-// identical copies before this) — response styling is UI concern, not
+// identical copies before this). Response styling is a UI concern, not
 // plugin business logic, so it lives in core and plugins just supply their
 // own title/content.
 func RespondOK(s *discordgo.Session, i *discordgo.InteractionCreate, title, msg string) {
@@ -147,7 +147,7 @@ func RespondInfo(s *discordgo.Session, i *discordgo.InteractionCreate, title, ms
 }
 
 // RespondWarn is for a response that succeeded but the invoker should still
-// notice something — e.g. a partial success, or a deprecated option.
+// notice something, e.g. a partial success, or a deprecated option.
 func RespondWarn(s *discordgo.Session, i *discordgo.InteractionCreate, title, msg string) {
 	_ = RespondEmbed(s, i, NewEmbed(ColorWarning, title, msg))
 }
@@ -155,7 +155,7 @@ func RespondWarn(s *discordgo.Session, i *discordgo.InteractionCreate, title, ms
 // DeferResponse acknowledges an interaction immediately, before doing the
 // work it asked for. Discord gives a handler 3 seconds to respond at all,
 // then permanently fails the interaction with a user-visible "the
-// application did not respond" — even when the work itself went on to
+// application did not respond", even when the work itself went on to
 // succeed. Any handler that runs a job, walks a guild's channels, or makes
 // more than a REST call or two must defer first and finish with
 // FollowUpOK/FollowUpErr, which have 15 minutes to land instead of 3
@@ -187,7 +187,7 @@ func followUp(s *discordgo.Session, i *discordgo.InteractionCreate, embed *disco
 }
 
 // maxEmbedFieldValue is Discord's hard limit on one embed field's value.
-// Exceeding it doesn't truncate server-side — it rejects the whole message,
+// Exceeding it doesn't truncate server-side: it rejects the whole message,
 // so a single over-long value (a guild's sticky messages, a long list) would
 // take out the entire response.
 const maxEmbedFieldValue = 1024
@@ -198,7 +198,7 @@ func TruncateEmbedField(s string) string {
 	if len(s) <= maxEmbedFieldValue {
 		return s
 	}
-	const ellipsis = "\n… (truncated)"
+	const ellipsis = "\n... (truncated)"
 	// Cut on a rune boundary: slicing mid-rune yields invalid UTF-8, which
 	// Discord rejects outright.
 	cut := maxEmbedFieldValue - len(ellipsis)

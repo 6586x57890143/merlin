@@ -48,7 +48,7 @@ func TestSyncAllJailChannelOverwritesDeniesByDefaultAllowsListed(t *testing.T) {
 
 // TestSyncAllJailChannelOverwritesClearsRemovedAllowEntry verifies a
 // channel previously allowlisted, then removed from the allowlist, gets its
-// stale "no overwrite" state replaced with an explicit deny — the whole
+// stale "no overwrite" state replaced with an explicit deny, which is the whole
 // point of sync-channels being re-runnable.
 func TestSyncAllJailChannelOverwritesClearsRemovedAllowEntry(t *testing.T) {
 	ops := newFakeOps()

@@ -16,11 +16,11 @@ import (
 // sweepInterval is how often each guild's due-jail/due-grant sweep runs.
 // Jail/grant durations are realistically minutes-to-hours, not rotation's
 // day-scale retention, so this runs every minute rather than matching
-// rotation's hourly cadence — deliberately not "fixed" to match it later.
+// rotation's hourly cadence, deliberately not "fixed" to match it later.
 const sweepInterval = time.Minute
 
 // jailRoleName is the role /roles jail resolves or auto-creates (mirroring
-// rotation's defaultArchiveCategoryName pattern) — a guild's jailed members
+// rotation's defaultArchiveCategoryName pattern). A guild's jailed members
 // all share this one marker role, which every other role gets stripped in
 // favor of.
 const jailRoleName = "Jailed"
@@ -46,7 +46,7 @@ type Plugin struct {
 	jailRoleID map[string]string // guild ID -> resolved jail role ID, cached per process
 }
 
-// OpsProvider yields the Discord ops view for one guild — see
+// OpsProvider yields the Discord ops view for one guild. See
 // rotation.OpsProvider for why the guild is bound explicitly rather than
 // inferred at call time.
 type OpsProvider func(guildID string) DiscordMemberOps
@@ -55,7 +55,7 @@ type OpsProvider func(guildID string) DiscordMemberOps
 // rather than through core.Deps: store is plugin-owned runtime state
 // (mirrors rotation's ArchiveStore precedent), jailChannelConfig is a narrow
 // slice of internal/settings.Store (mirrors rotation's own SettingsProvider
-// parameter) for the one piece of guild configuration this plugin has —
+// parameter) for the one piece of guild configuration this plugin has:
 // jail's channel-visibility allowlist.
 func New(store Store, jailChannelConfig JailChannelConfig, ops OpsProvider, dryRun func(guildID string) bool) *Plugin {
 	return &Plugin{
@@ -88,7 +88,7 @@ func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 
 // SyncGuild ensures guildID has its sweep job registered. Call once per
 // guild right after startup/GuildCreate (cmd/bot/main.go), mirroring
-// rotation.Plugin.SyncGuild — this plugin has no configurable settings that
+// rotation.Plugin.SyncGuild. This plugin has no configurable settings that
 // change job existence, just one fixed sweep per known guild.
 func (p *Plugin) SyncGuild(guildID string) {
 	p.mu.Lock()
@@ -108,7 +108,7 @@ func (p *Plugin) SyncGuild(guildID string) {
 // jail role after the bot has been removed from it, so a later re-add
 // re-registers the sweep and re-resolves the role rather than trusting state
 // from a membership that has since ended. Jail and grant rows in Postgres are
-// left alone — they hold the role snapshots needed to restore members, and a
+// left alone: they hold the role snapshots needed to restore members, and a
 // kick-and-re-invite must not be what silently discards them.
 func (p *Plugin) ForgetGuild(guildID string) {
 	p.mu.Lock()
@@ -118,7 +118,7 @@ func (p *Plugin) ForgetGuild(guildID string) {
 }
 
 // resolveJailRole returns guildID's jail marker role ID, creating one named
-// jailRoleName if none exists yet — mirrors rotation.resolveArchiveCategory's
+// jailRoleName if none exists yet. Mirrors rotation.resolveArchiveCategory's
 // find-by-name-or-create-if-missing pattern, so a mod never has to go create
 // this role by hand in Discord's UI before /roles jail works at all. Cached
 // per guild for the process lifetime once resolved: recreating it on every
@@ -157,7 +157,7 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	p.jailRoleID[guildID] = role.ID
 
 	// A freshly created jail role starts deny-by-default on every channel
-	// (the allowlist is almost always empty at this point) — otherwise a
+	// (the allowlist is almost always empty at this point). Otherwise a
 	// mod's very first /roles jail would strip roles but leave every
 	// channel visible, until someone thought to run sync-channels by hand.
 	if err := p.syncAllJailChannelOverwrites(guildID, role.ID); err != nil {
@@ -168,7 +168,7 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 
 // forgetJailRole drops guildID's cached jail role ID so the next
 // resolveJailRole looks it up (or recreates it) from scratch. Called when
-// Discord reports the cached role no longer exists — someone deleted it —
+// Discord reports the cached role no longer exists (someone deleted it),
 // which would otherwise keep every jail in that guild failing against a dead
 // ID until the process restarted.
 func (p *Plugin) forgetJailRole(guildID string) {

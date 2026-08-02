@@ -13,7 +13,7 @@ import (
 
 // makeSweepJob returns the Scheduler job function that permanently deletes
 // a guild's archived channels once they're past their retention window.
-// One sweep job is registered per guild (not per rotating channel) — it
+// One sweep job is registered per guild (not per rotating channel), and it
 // covers every rotating channel's archives in that guild.
 func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
@@ -39,7 +39,7 @@ func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 // ever updated it, so a retention change only applied to future archives: an
 // admin who widened retention (or switched to keep-forever) still watched the
 // sweep permanently delete existing archives on the old, earlier schedule,
-// and permanent channel deletion has no undo. The reverse leaked too —
+// and permanent channel deletion has no undo. The reverse leaked too:
 // tightening retention left older archives sitting past the new window, which
 // is the exact promise this feature exists to make (spec.MD §6).
 //
@@ -69,7 +69,7 @@ func archiveDeadline(rec ArchiveRecord, lookup func(int64) (settings.RotationCha
 }
 
 // sweep deletes every due archive for guildID. A single row's failure is
-// logged and doesn't abort the rest of the sweep — one bad row shouldn't
+// logged and doesn't abort the rest of the sweep, since one bad row shouldn't
 // block deletion of others that are legitimately due.
 func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 	archives, err := p.archives.ListForGuild(ctx, guildID)
@@ -119,12 +119,12 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 	ch, err := p.ops(guildID).Channel(rec.ChannelID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
-			// Already gone (e.g. manually deleted) — nothing left to sweep.
+			// Already gone (e.g. manually deleted), nothing left to sweep.
 			return p.archives.Delete(ctx, rec.ChannelID)
 		}
 		// Anything else (rate limit, 5xx, network blip) is transient.
 		// Dropping the row here would leave the archived channel alive with
-		// nothing left tracking it — a silently broken retention promise,
+		// nothing left tracking it: a silently broken retention promise,
 		// which is the exact failure this whole feature exists to prevent.
 		// Fail loudly instead and let the next hourly sweep retry.
 		return fmt.Errorf("fetch archived channel %s: %w", rec.ChannelID, err)
@@ -138,14 +138,14 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 	// rec.ArchiveCategoryID is recorded at archive time (not re-derived from
 	// the live settings.RotationChannel row), since that row's ChannelID gets
 	// retargeted onto the new live channel after every successful rotation
-	// (see execute.go's rotate) — looking it up by rec.SourceChannelID here
+	// (see execute.go's rotate), so looking it up by rec.SourceChannelID here
 	// would stop finding it after the very first rotation, making every
 	// archive look permanently "rescued." Empty means a pre-migration row
-	// whose real category was never recorded — treat that the same as an
+	// whose real category was never recorded: treat that the same as an
 	// actual mismatch: don't guess, don't delete.
 	if rec.ArchiveCategoryID == "" || ch.ParentID != rec.ArchiveCategoryID {
 		// Rescue hatch: a mod moved this archived channel out of its archive
-		// category — treat that as an implicit "keep it," stop tracking it,
+		// category, treat that as an implicit "keep it," stop tracking it,
 		// don't delete.
 		p.log.Info("rotation sweep: archived channel rescued, skipping deletion", "channel", rec.ChannelID)
 		return p.archives.Delete(ctx, rec.ChannelID)

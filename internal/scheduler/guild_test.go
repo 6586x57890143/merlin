@@ -41,7 +41,7 @@ func TestUnregisterGuildRemovesOnlyThatGuildsJobs(t *testing.T) {
 
 // JobHealth is what /config status reads to answer "is anything wedged?"
 // without shell access, so it has to count a job with any consecutive
-// failures as failing — and count an unreadable job as failing too, since a
+// failures as failing, and count an unreadable job as failing too, since a
 // health check that can't see a job must not call it healthy.
 func TestJobHealthCountsFailingAndUnreadableJobs(t *testing.T) {
 	store := newFakeStore()
@@ -79,7 +79,7 @@ func TestJobHealthCountsFailingAndUnreadableJobs(t *testing.T) {
 }
 
 // A guild ID that is a prefix of another must not take the other's jobs with
-// it — the key separator is the only thing keeping "123" from matching
+// it: the key separator is the only thing keeping "123" from matching
 // "1234:rotation:1".
 func TestUnregisterGuildDoesNotMatchPrefixGuilds(t *testing.T) {
 	s := New(newFakeStore(), fakeSettings{}, testLogger())

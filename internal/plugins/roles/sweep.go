@@ -12,8 +12,8 @@ import (
 // every sweepInterval (see roles.go).
 func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		// A paused guild is a deliberate operator state, not a failing job —
-		// see rotation.makeRotationJob for the full reasoning. Due jails stay
+		// A paused guild is a deliberate operator state, not a failing job.
+		// See rotation.makeRotationJob for the full reasoning. Due jails stay
 		// due and are released on the first sweep after the pause is lifted.
 		if err := p.sweep(ctx, guildID); err != nil {
 			if discordguard.Skipped(err) {
@@ -27,7 +27,7 @@ func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 }
 
 // sweep processes every due jail and grant for guildID. A single row's
-// failure is logged and doesn't abort the rest of the sweep — mirrors
+// failure is logged and doesn't abort the rest of the sweep, mirroring
 // rotation.sweep's "one bad row doesn't block the others" policy.
 func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 	// Release and revoke both untrack their row as part of doing the work, so

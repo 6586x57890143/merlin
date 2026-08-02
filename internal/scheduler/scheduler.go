@@ -51,14 +51,14 @@ const (
 	// jobTimeout bounds a single run. Without it, one wedged call (a REST
 	// request that never returns, a query behind a lock) holds the job's
 	// per-job lock forever: the job silently never runs again, and never
-	// fails either, so it never trips the failure alert — a stall that looks
+	// fails either, so it never trips the failure alert: a stall that looks
 	// exactly like "nothing was due." Generous enough that no legitimate
 	// rotation or sweep comes close.
 	jobTimeout = 10 * time.Minute
 
 	// stateWriteTimeout bounds the last-run/failure bookkeeping that follows
-	// a run, which deliberately outlives the run's own cancelled context —
-	// see execute.
+	// a run, which deliberately outlives the run's own cancelled context.
+	// See execute.
 	stateWriteTimeout = 10 * time.Second
 )
 
@@ -122,7 +122,7 @@ type Scheduler struct {
 	jobs map[string]*registeredJob
 
 	// alertFunc, if set, replaces the default "post to the guild's
-	// status channel" behavior — tests inject a fake so they don't need a
+	// status channel" behavior. Tests inject a fake so they don't need a
 	// live Discord session.
 	alertFunc func(ctx context.Context, jobKey, message string) error
 }
@@ -256,13 +256,13 @@ func (s *Scheduler) Unregister(jobKey string) error {
 // many were dropped. Called when the bot is removed from a guild: without
 // it, that guild's rotation and sweep jobs keep ticking forever against a
 // server the bot can no longer see, failing every REST call until they trip
-// the consecutive-failure alert — which then tries to post to a status
+// the consecutive-failure alert, which then tries to post to a status
 // channel in the same unreachable guild.
 //
 // Persisted last-run state is deliberately left in Postgres. It is small,
 // and keeping it means a guild that re-adds the bot resumes its old
 // schedule instead of treating every job as never-run and therefore
-// immediately due — which for rotation would mean rotating on the first
+// immediately due, which for rotation would mean rotating on the first
 // tick after rejoining.
 func (s *Scheduler) UnregisterGuild(guildID string) int {
 	prefix := JobKey(guildID, "")
@@ -296,7 +296,7 @@ func (s *Scheduler) RunNow(ctx context.Context, jobKey string) error {
 }
 
 // Seed marks jobKey as having just completed successfully at "at" (see
-// core.Scheduler's doc comment for why a caller would want this) — a plain
+// core.Scheduler's doc comment for why a caller would want this). A plain
 // passthrough to the same store.RecordSuccess a normal run would call, so a
 // job seeded this way is indistinguishable from one that just genuinely ran.
 func (s *Scheduler) Seed(ctx context.Context, jobKey string, at time.Time) error {
@@ -365,7 +365,7 @@ func jobIsDue(st JobState, sched core.Schedule, jitter time.Duration, now time.T
 }
 
 // nextDue estimates when j will next become due, for /scheduler list's
-// benefit — an estimate, not a promise: a currently-failing job's real next
+// benefit. An estimate, not a promise: a currently-failing job's real next
 // attempt depends on backoff, which resets on the next success.
 func nextDue(st JobState, sched core.Schedule, jitter time.Duration) (time.Time, bool) {
 	if st.ConsecutiveFailures == 0 && !st.HasLastRun {
@@ -386,7 +386,7 @@ func (s *Scheduler) execute(ctx context.Context, j *registeredJob) error {
 	now := s.now()
 
 	// The outcome has to be persisted even when ctx is exactly what ended
-	// the run (jobTimeout expiring, shutdown cancelling it) — writing
+	// the run (jobTimeout expiring, shutdown cancelling it). Writing
 	// through the dead context would drop the failure, so the job would keep
 	// looking healthy, never back off, and never alert. Detached, with its
 	// own bound so a wedged database can't hold the run open indefinitely.
@@ -450,7 +450,7 @@ func (s *Scheduler) jobsForGuild(guildID string) []*registeredJob {
 
 // schedulerListComponentPrefix namespaces this plugin's pagination buttons
 // (core.HandleComponent, spec.MD §4a) so they can't collide with another
-// plugin's — see reconcile's job-key comment for why the fully-qualified
+// plugin's. See reconcile's job-key comment for why the fully-qualified
 // scheduler job keys themselves aren't reused here for anything but display.
 const schedulerListComponentPrefix = "scheduler:list:page:"
 
@@ -467,7 +467,7 @@ func (s *Scheduler) handleList(ctx context.Context, sess *discordgo.Session, i *
 }
 
 // handleListPage re-renders handleList's embed for the page encoded in a
-// Prev/Next button's CustomID and edits the message in place — jobLines is
+// Prev/Next button's CustomID and edits the message in place. jobLines is
 // re-queried fresh rather than reused from the original response, since
 // nothing survives in memory between the two interactions.
 func (s *Scheduler) handleListPage(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
@@ -487,7 +487,7 @@ func (s *Scheduler) handleListPage(ctx context.Context, sess *discordgo.Session,
 //
 // A separate, deliberately coarse view from jobLines, which is for a mod
 // reading job-by-job detail. This answers the only question an operator has
-// during an incident — "is anything wedged?" — in one number, so it can sit
+// during an incident ("is anything wedged?") in one number, so it can sit
 // alongside database reachability and pause state in a single embed.
 func (s *Scheduler) JobHealth(ctx context.Context, guildID string) (total, failing int, err error) {
 	jobs := s.jobsForGuild(guildID)
@@ -510,7 +510,7 @@ func (s *Scheduler) JobHealth(ctx context.Context, guildID string) (total, faili
 }
 
 // jobLines formats one line per guildID job, newest logic unchanged from
-// before pagination existed — just split out so both handleList and
+// before pagination existed, just split out so both handleList and
 // handleListPage build from the same up-to-date source.
 func (s *Scheduler) jobLines(ctx context.Context, guildID string) []string {
 	jobs := s.jobsForGuild(guildID)
@@ -520,7 +520,7 @@ func (s *Scheduler) jobLines(ctx context.Context, guildID string) []string {
 		name := strings.TrimPrefix(j.key, prefix)
 		st, err := s.store.Get(ctx, j.key)
 		if err != nil {
-			lines = append(lines, fmt.Sprintf("`%s` — error reading state: %v", name, err))
+			lines = append(lines, fmt.Sprintf("`%s` · error reading state: %v", name, err))
 			continue
 		}
 		last := "never"
@@ -531,7 +531,7 @@ func (s *Scheduler) jobLines(ctx context.Context, guildID string) []string {
 		if due, ok := nextDue(st, j.spec.Schedule, j.jitter); ok {
 			next = due.Format(time.RFC3339)
 		}
-		lines = append(lines, fmt.Sprintf("`%s` — last run: %s, next due: %s, consecutive failures: %d", name, last, next, st.ConsecutiveFailures))
+		lines = append(lines, fmt.Sprintf("`%s` · last run: %s, next due: %s, consecutive failures: %d", name, last, next, st.ConsecutiveFailures))
 	}
 	return lines
 }
@@ -575,7 +575,7 @@ func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i
 }
 
 // maxAutocompleteChoices is Discord's hard limit on an autocomplete
-// response. Exceeding it doesn't truncate — the whole response is rejected
+// response. Exceeding it doesn't truncate: the whole response is rejected
 // and the user sees no suggestions at all, so a guild with many rotating
 // channels would lose autocomplete entirely.
 const maxAutocompleteChoices = 25
@@ -606,7 +606,7 @@ func safeRun(ctx context.Context, fn JobFunc) (err error) {
 
 // jitterFor deterministically derives a small, stable per-job offset from
 // jobKey so many guilds sharing the same interval don't all fire on the same
-// tick — computed once at Register time, never re-randomized.
+// tick, computed once at Register time, never re-randomized.
 //
 // The hash must be 64-bit: a duration in nanoseconds outgrows uint32 at just
 // 4.3 seconds, so folding a 32-bit hash into the bound silently capped every

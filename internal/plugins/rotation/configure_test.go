@@ -43,7 +43,7 @@ func fakeChannelOpt(name, channelID string) *discordgo.ApplicationCommandInterac
 // TestResolveArchiveCategoryUsesGivenOption is a regression test for the
 // second half of the same reported bug: archive_category used to be
 // required, forcing a mod to go create a category in Discord's UI before
-// they could ever run /rotation configure add at all. It's optional now —
+// they could ever run /rotation configure add at all. It's optional now,
 // this covers the case where one IS supplied, which must still just use it
 // as-is rather than ignoring it in favor of the auto-create fallback.
 func TestResolveArchiveCategoryUsesGivenOption(t *testing.T) {

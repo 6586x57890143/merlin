@@ -20,7 +20,7 @@ type JobState struct {
 	HasLastRun bool
 
 	// LastAttempt is the timestamp of the last attempt, success or
-	// failure — used as the backoff anchor while ConsecutiveFailures > 0.
+	// failure, used as the backoff anchor while ConsecutiveFailures > 0.
 	LastAttempt time.Time
 
 	ConsecutiveFailures int

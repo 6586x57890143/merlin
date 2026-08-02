@@ -41,7 +41,7 @@ func TestCollectJailUserIDsDropsDuplicates(t *testing.T) {
 	}
 	got := collectJailUserIDs(opts)
 	if !slices.Equal(got, []string{"u1", "u2"}) {
-		t.Errorf("collectJailUserIDs = %v, want [u1 u2] — the duplicate should collapse", got)
+		t.Errorf("collectJailUserIDs = %v, want [u1 u2]; the duplicate should collapse", got)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestJailManyJailsEveryTargetAndTracksThemAll(t *testing.T) {
 	for _, id := range []string{"u1", "u2", "u3"} {
 		rec, ok, _ := store.GetJail(context.Background(), "g1", id)
 		if !ok {
-			t.Errorf("%s was jailed with no record tracking them — nothing would ever release them", id)
+			t.Errorf("%s was jailed with no record tracking them; nothing would ever release them", id)
 			continue
 		}
 		if !slices.Equal(rec.SnapshotRoleIDs, []string{"role-a"}) {
@@ -117,7 +117,7 @@ func TestJailManyReportsPerTargetOutcomesAndKeepsGoing(t *testing.T) {
 	if !slices.Equal(res.alreadyIn, []string{"u2"}) {
 		t.Errorf("alreadyIn = %v, want [u2]", res.alreadyIn)
 	}
-	// The pre-existing record must be untouched — re-jailing would overwrite
+	// The pre-existing record must be untouched: re-jailing would overwrite
 	// its snapshot with the stripped state.
 	rec, _, _ := store.GetJail(context.Background(), "g1", "u2")
 	if !slices.Equal(rec.SnapshotRoleIDs, []string{"real-role"}) {
@@ -235,7 +235,7 @@ func TestMembersWithRolePagesBeyondOnePage(t *testing.T) {
 		t.Error("scan reported incomplete on a guild well inside the page budget")
 	}
 	if len(matches) != 5 {
-		t.Errorf("matched %d, want 5 — members past the first page were missed", len(matches))
+		t.Errorf("matched %d, want 5; members past the first page were missed", len(matches))
 	}
 	if ops.memberListCalls < 2 {
 		t.Errorf("only %d page fetch(es); pagination never advanced", ops.memberListCalls)
@@ -310,7 +310,7 @@ func TestExcludeSelfAndBotDropsBothAndKeepsOthers(t *testing.T) {
 	got := p.excludeSelfAndBot(targets, "mod1", session)
 
 	if len(got) != 1 || got[0].userID != "u1" {
-		t.Errorf("excludeSelfAndBot = %+v, want just u1 — jailing the actor or the bot is an accident, not an intent", got)
+		t.Errorf("excludeSelfAndBot = %+v, want just u1; jailing the actor or the bot is an accident, not an intent", got)
 	}
 }
 
@@ -335,7 +335,7 @@ func TestSummaryAccountsForEveryNonJailedMember(t *testing.T) {
 }
 
 // An embed field over 1024 bytes fails the whole message rather than being
-// trimmed, and a 50-member batch reaches that easily — the report has to
+// trimmed, and a 50-member batch reaches that easily, so the report has to
 // survive the size it was designed for.
 func TestSummaryStaysWithinDiscordsFieldLimit(t *testing.T) {
 	var res bulkJailResult

@@ -4,6 +4,6 @@
 -- Denial is enforced via permission overwrites on the shared "Jailed" role
 -- (internal/plugins/roles), not per-member overwrites: every channel not in
 -- this allowlist gets a deny overwrite for that one role, so jailing a
--- member never needs any per-channel API calls at all — only this
+-- member never needs any per-channel API calls at all, only this
 -- allowlist (rarely changed) does.
 ALTER TABLE settings_guild ADD COLUMN jail_allowed_channel_ids TEXT[] NOT NULL DEFAULT '{}';

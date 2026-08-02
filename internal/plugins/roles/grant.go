@@ -72,7 +72,7 @@ func (p *Plugin) handleRevoke(ctx context.Context, s *discordgo.Session, i *disc
 		core.RespondErr(s, i, "Failed to look up grant", err)
 		return
 	} else if !ok {
-		core.RespondErr(s, i, "Not a tracked grant", fmt.Errorf("merlin isn't tracking a grant of <@&%s> to <@%s> — revoke it directly in Discord if needed", roleID, userID))
+		core.RespondErr(s, i, "Not a tracked grant", fmt.Errorf("merlin isn't tracking a grant of <@&%s> to <@%s>. Revoke it directly in Discord if needed", roleID, userID))
 		return
 	}
 
@@ -86,13 +86,13 @@ func (p *Plugin) handleRevoke(ctx context.Context, s *discordgo.Session, i *disc
 // revokeGrant removes roleID from userID and stops tracking the grant.
 // Shared by the sweep job (automatic expiry) and handleRevoke (a mod
 // revoking early) for the same confused-deputy reason releaseJail is: if a
-// mod already manually removed the role, there's nothing left to revoke —
+// mod already manually removed the role, there's nothing left to revoke,
 // just stop tracking it.
 func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor string) error {
 	member, err := p.ops(guildID).GuildMember(guildID, userID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
-			// Member left the guild — the grant left with them.
+			// Member left the guild, so the grant left with them.
 			return p.store.DeleteGrant(ctx, guildID, userID, roleID)
 		}
 		// Transient: untracking here would leave a timed grant in place

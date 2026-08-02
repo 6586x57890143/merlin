@@ -1,7 +1,7 @@
 # Copy to config.yaml. As of Milestone 4 (spec.MD §4a), this file is
 # bootstrap-only: process-level settings needed before the bot can even open
 # a Discord session or reach Postgres. There is no guild/channel/role config
-# here anymore — mod roles, admins, permission whitelists, and rotation
+# here anymore: mod roles, admins, permission whitelists, and rotation
 # settings are all DB-backed (internal/settings) and configured entirely
 # through Discord commands (/config, /rotation configure) once the bot is
 # running. See README.md's "First-time setup" section.
@@ -10,5 +10,5 @@ log_level: info
 # One-time migration helper only: if you're upgrading from a pre-Milestone-4
 # deployment that had guild config in this file, keep a copy of the OLD
 # rotating_channels/mod_role_ids/etc. content elsewhere and run
-# `/config import` (as the bootstrap admin) pointing at it once — see
+# `/config import` (as the bootstrap admin) pointing at it once; see
 # internal/settings/import.go. New deployments never need this.

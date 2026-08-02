@@ -9,7 +9,7 @@ import (
 
 // resolveSticky returns rc's ordered sticky messages, or nil if sticky
 // reposting isn't enabled. Message text lives directly on the
-// settings.RotationChannel record (set via /rotation configure sticky) —
+// settings.RotationChannel record (set via /rotation configure sticky);
 // there's no separate named-template table to resolve against.
 func resolveSticky(rc settings.RotationChannel) []string {
 	if !rc.StickyEnabled {
@@ -19,7 +19,7 @@ func resolveSticky(rc settings.RotationChannel) []string {
 }
 
 // retentionNotice is the transparency message posted in every freshly
-// rotated channel (spec.MD §6 step 7) — genuinely useful to members and
+// rotated channel (spec.MD §6 step 7), genuinely useful to members and
 // doubles as documentation of the retention policy if it's ever questioned.
 // Given a birdlike flavor (Merlin is a bird, the falcon species) per
 // spec.MD, without dropping any of the required information: the reset
@@ -27,7 +27,7 @@ func resolveSticky(rc settings.RotationChannel) []string {
 //
 // It takes the whole config, not just the interval. It used to be handed
 // rc.IntervalMinutes and told members "nothing posted here roosts longer than
-// [interval]" — a statement about the *rotation cadence* presented as the
+// [interval]", a statement about the *rotation cadence* presented as the
 // retention policy, and the two are independent settings. A channel rotating
 // daily with a 3-hour retention had content deleted far sooner than the
 // notice implied; one with retention unset had content kept indefinitely
@@ -38,21 +38,21 @@ func retentionNotice(rc settings.RotationChannel) string {
 	cadence := humanDuration(time.Duration(rc.IntervalMinutes) * time.Minute)
 	if rc.RetentionHours == nil {
 		return fmt.Sprintf(
-			"🦅 Merlins travel light — this nest gets a fresh perch every %s. Retired perches are tucked "+
+			"🦅 Merlins travel light, so this nest gets a fresh perch every %s. Retired perches are tucked "+
 				"out of sight where only the flock's keepers can reach them.",
 			cadence,
 		)
 	}
 	return fmt.Sprintf(
-		"🦅 Merlins travel light — this nest gets a fresh perch every %s, and once a perch is retired "+
+		"🦅 Merlins travel light, so this nest gets a fresh perch every %s, and once a perch is retired "+
 			"nothing on it roosts more than %s before it's gone for good.",
 		cadence,
 		humanDuration(time.Duration(*rc.RetentionHours)*time.Hour),
 	)
 }
 
-// humanDuration renders d as a member-facing phrase ("3 days", "18 hours")
-// — the prose counterpart to core.FormatDuration's compact "3d"/"18h" used
+// humanDuration renders d as a member-facing phrase ("3 days", "18 hours"),
+// the prose counterpart to core.FormatDuration's compact "3d"/"18h" used
 // in command output, picking the same unit (whole days if it divides
 // evenly, otherwise hours) so both ends of this bot describe a given
 // interval/retention window the same way.

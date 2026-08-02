@@ -43,7 +43,7 @@ func memberInteraction(guildID, userID string, roles []string) *discordgo.Intera
 
 // memberInteractionWithPerms is memberInteraction plus a Discord permission
 // bitmask, mirroring what Discord itself attaches to Member.Permissions on
-// every real interaction — used to test the Administrator-bit path to
+// every real interaction, used to test the Administrator-bit path to
 // TierAdmin independent of the DB-listed admin/mod-role paths.
 func memberInteractionWithPerms(guildID, userID string, roles []string, perms int64) *discordgo.InteractionCreate {
 	i := memberInteraction(guildID, userID, roles)
@@ -145,7 +145,7 @@ func TestAuthorizeDenyWinsOverAllowAndAdministratorBit(t *testing.T) {
 	perms := NewPermissions(nil, auth, "")
 
 	// u1 is both allow-granted and Discord Administrator, but explicitly
-	// denied for this specific action — deny must still win.
+	// denied for this specific action: deny must still win.
 	i := memberInteractionWithPerms("g1", "u1", nil, discordgo.PermissionAdministrator)
 	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "rotation.configure"}); err == nil {
 		t.Fatal("expected an explicit deny to override both the allow-grant and the Administrator bit")
@@ -173,7 +173,7 @@ func TestAuthorizeTierOverrideTightensModToAdmin(t *testing.T) {
 	perms := NewPermissions(nil, auth, "")
 
 	// The command's own PermSpec says TierMod, but the guild has overridden
-	// this action to TierAdmin — a plain mod role must no longer be enough.
+	// this action to TierAdmin: a plain mod role must no longer be enough.
 	i := memberInteraction("g1", "u1", []string{"modrole"})
 	if err := perms.Authorize(i, PermSpec{Tier: TierMod, Action: "rotation.configure"}); err == nil {
 		t.Fatal("expected the guild's Admin-only override to reject a mod-role holder")
@@ -189,7 +189,7 @@ func TestAuthorizeTierOverrideLoosensAdminToMod(t *testing.T) {
 	perms := NewPermissions(nil, auth, "")
 
 	// The command's own PermSpec says TierAdmin, but the guild has loosened
-	// this action to TierMod — a plain mod role should now be enough.
+	// this action to TierMod: a plain mod role should now be enough.
 	i := memberInteraction("g1", "u1", []string{"modrole"})
 	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "rotation.configure_structural"}); err != nil {
 		t.Fatalf("expected the guild's Mod-allowed override to accept a mod-role holder, got %v", err)
@@ -247,7 +247,7 @@ func TestCanManageRoleHierarchy(t *testing.T) {
 // fail-open in the one function that has to fail closed: Authorize used to
 // short-circuit on the command's *compiled-in* TierPublic before applying
 // the guild's RequiredTier override, so `/config permissions set-tier` on a
-// public action was silently a no-op — the guild saw a success message and
+// public action was silently a no-op: the guild saw a success message and
 // got no restriction at all.
 func TestAuthorizeTierOverrideCanRaiseAPublicAction(t *testing.T) {
 	auth := newFakeAuthData()
@@ -265,7 +265,7 @@ func TestAuthorizeTierOverrideCanRaiseAPublicAction(t *testing.T) {
 		t.Fatalf("expected an admin to pass the raised tier, got %v", err)
 	}
 	// A guild that never customized the action must still get plain public
-	// behavior — the override is the exception, not a new default.
+	// behavior: the override is the exception, not a new default.
 	if err := perms.Authorize(memberInteraction("g2", "nobody", nil), spec); err != nil {
 		t.Fatalf("expected an un-overridden public action to stay public, got %v", err)
 	}
@@ -285,7 +285,7 @@ func TestAuthorizeRejectsMemberWithoutUser(t *testing.T) {
 }
 
 // moderationSession builds a session whose state holds one guild with an
-// Administrator-carrying role, an ordinary role, and a distinct owner — the
+// Administrator-carrying role, an ordinary role, and a distinct owner, the
 // three things CanModerate has to tell apart for an arbitrary target.
 func moderationSession(t *testing.T) *discordgo.Session {
 	t.Helper()
@@ -313,8 +313,8 @@ func actorMember(userID string, roles []string) *discordgo.Member {
 
 // TestCanModerateProtectsAdminsFromMods pins down the privilege inversion the
 // tier model alone can't see: /roles jail is TierMod and strips roles, so
-// without this check a mod could strip an admin's Administrator bit — and
-// with it that admin's TierAdmin access to this bot — without ever running a
+// without this check a mod could strip an admin's Administrator bit, and
+// with it that admin's TierAdmin access to this bot, without ever running a
 // command above their own tier. A rogue mod could dismantle the whole admin
 // team one jail at a time and every individual action would look authorized.
 func TestCanModerateProtectsAdminsFromMods(t *testing.T) {
@@ -348,7 +348,7 @@ func TestCanModerateProtectsAdminsFromMods(t *testing.T) {
 
 // TestCanModerateAllowsAdminsAndPeerMods records the deliberate limits of the
 // rule: it protects admins from *non*-admins only. Admins are peers and can
-// act on each other, and mod-on-mod moderation stays allowed — a mod acting
+// act on each other, and mod-on-mod moderation stays allowed: a mod acting
 // against a peer is ordinary moderation, and admins can always intervene.
 func TestCanModerateAllowsAdminsAndPeerMods(t *testing.T) {
 	auth := newFakeAuthData()
@@ -368,7 +368,7 @@ func TestCanModerateAllowsAdminsAndPeerMods(t *testing.T) {
 
 // TestCanModerateProtectsBootstrapFromAdminsToo: the bootstrap identity is
 // the operator's guaranteed way back into a guild, so like the deny-list's
-// own carve-out, no in-guild action may disable it — not even an admin's.
+// own carve-out, no in-guild action may disable it, not even an admin's.
 func TestCanModerateProtectsBootstrapFromAdminsToo(t *testing.T) {
 	auth := newFakeAuthData()
 	auth.admins["g1"] = []string{"db-listed-admin"}
@@ -396,7 +396,7 @@ func TestCanModerateFailsClosedWithoutGuildState(t *testing.T) {
 // stored value rather than against a user: /config permissions set-tier only
 // ever offers Mod/Admin, so a TierPublic override can only come from a
 // corrupt row, a hand-edited database, or a future import path. Honoring one
-// would strip every check off a privileged action — the single direction an
+// would strip every check off a privileged action, the single direction an
 // override must never be able to move a command in. Loosening Admin to Mod
 // stays supported (TestAuthorizeTierOverrideLoosensAdminToMod).
 func TestAuthorizeIgnoresStoredPublicTierOverride(t *testing.T) {
@@ -413,8 +413,8 @@ func TestAuthorizeIgnoresStoredPublicTierOverride(t *testing.T) {
 }
 
 // TestHasDiscordErrorCodeDistinguishesAbsences: one API call can report
-// several different absences — GuildMemberEdit answers Unknown Member for a
-// target who left and Unknown Role for a deleted role — and a caller reacting
+// several different absences (GuildMemberEdit answers Unknown Member for a
+// target who left and Unknown Role for a deleted role), and a caller reacting
 // to the wrong one acts on the wrong state.
 func TestHasDiscordErrorCodeDistinguishesAbsences(t *testing.T) {
 	roleGone := restErr(http.StatusNotFound, discordgo.ErrCodeUnknownRole)

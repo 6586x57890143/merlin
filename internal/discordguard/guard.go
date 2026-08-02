@@ -8,9 +8,9 @@
 // waiting for a deploy. Guard adds two controls that work from inside
 // Discord, at the speed an incident actually moves:
 //
-//   - pause — refuse every mutating call, leaving reads and inspection
+//   - pause: refuse every mutating call, leaving reads and inspection
 //     commands working so an admin can still see what the bot believes.
-//   - dry-run — let a rotation or sweep make its full decision and write its
+//   - dry-run: let a rotation or sweep make its full decision and write its
 //     full audit trail while touching nothing, so a feature whose failure
 //     mode has no undo can be rehearsed against the real guild first.
 //
@@ -19,7 +19,7 @@
 // roles.DiscordMemberOps) that *discordgo.Session satisfies structurally,
 // and assigns it once during Init. GuildOps implements the union of those
 // interfaces, so substituting it at that one assignment guards every call
-// site at once — and a future plugin that follows the same convention is
+// site at once, and a future plugin that follows the same convention is
 // covered without having to remember a flag check.
 package discordguard
 
@@ -52,7 +52,7 @@ func Skipped(err error) bool {
 }
 
 // GuildGate is the narrow slice of internal/settings.Store this package
-// needs — the per-guild half of the controls. Reads come from the same
+// needs: the per-guild half of the controls. Reads come from the same
 // in-memory cache as every other setting, so a pause takes effect on the
 // next call with no database round trip.
 type GuildGate interface {
@@ -144,7 +144,7 @@ func (g *Guard) DryRun(guildID string) bool {
 // than resolved from a channel ID at call time: most destructive calls are
 // channel-scoped and carry no guild, and inferring one from discordgo's
 // gateway cache would make the emergency stop depend on that cache being
-// populated — including for a channel the bot created moments earlier, whose
+// populated, including for a channel the bot created moments earlier, whose
 // ChannelCreate event may not have arrived yet.
 func (g *Guard) For(guildID string) *GuildOps {
 	return &GuildOps{guard: g, guildID: guildID}
@@ -210,7 +210,7 @@ func (o *GuildOps) GuildMember(guildID, userID string, options ...discordgo.Requ
 }
 
 // GuildMembers pages the guild's member list. A read, so ungated like the
-// rest — but note it is the one read here whose cost scales with guild size,
+// rest, but note it is the one read here whose cost scales with guild size,
 // and it requires the privileged GUILD_MEMBERS intent to return anything.
 func (o *GuildOps) GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error) {
 	return o.guard.session.GuildMembers(guildID, after, limit, options...)

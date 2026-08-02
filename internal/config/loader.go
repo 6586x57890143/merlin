@@ -43,7 +43,7 @@ func (l *Loader) reload() error {
 		return fmt.Errorf("validate config: %w", err)
 	}
 
-	// Secrets/identifiers are env-only and re-applied on every reload — never
+	// Secrets/identifiers are env-only and re-applied on every reload, never
 	// read from YAML, so a hot-reloaded config file can never leak or
 	// override them.
 	next.Discord.Token = os.Getenv("DISCORD_BOT_TOKEN")
@@ -53,7 +53,7 @@ func (l *Loader) reload() error {
 	next.PauseAllWrites = isTruthy(os.Getenv("MERLIN_PAUSE_ALL_WRITES"))
 	// Opt-out rather than opt-in: see GlobalConfig.GuildMembersIntent. The
 	// superseded MERLIN_ENABLE_GUILD_MEMBERS_INTENT is deliberately not read
-	// any more — an existing .env that sets it now gets the behavior it was
+	// any more: an existing .env that sets it now gets the behavior it was
 	// asking for regardless, and one that doesn't gets it too, which was the
 	// entire point of changing the default.
 	next.GuildMembersIntent = !isTruthy(os.Getenv("MERLIN_DISABLE_GUILD_MEMBERS_INTENT"))
@@ -82,7 +82,7 @@ func (l *Loader) reload() error {
 }
 
 // isTruthy accepts the spellings an operator under pressure is likely to
-// reach for. Anything unrecognized — including a typo — leaves the pause
+// reach for. Anything unrecognized, including a typo, leaves the pause
 // disengaged, so the emergency stop can only ever be turned on deliberately.
 func isTruthy(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {

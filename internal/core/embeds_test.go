@@ -28,7 +28,7 @@ func TestNewEmbedWithNoFields(t *testing.T) {
 }
 
 // TestTruncateEmbedField guards a hard Discord limit: an over-long field
-// value doesn't get trimmed server-side, it rejects the entire message — so
+// value doesn't get trimmed server-side, it rejects the entire message, so
 // one guild with a long sticky-message set would lose the whole response.
 func TestTruncateEmbedField(t *testing.T) {
 	short := strings.Repeat("a", maxEmbedFieldValue)

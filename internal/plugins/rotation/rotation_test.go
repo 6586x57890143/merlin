@@ -110,7 +110,7 @@ func TestRotateFullCycle(t *testing.T) {
 		}
 	}
 	if !foundBotAccess {
-		t.Fatal("expected the bot itself to retain VIEW_CHANNEL on the archived channel it just denied @everyone on — " +
+		t.Fatal("expected the bot itself to retain VIEW_CHANNEL on the archived channel it just denied @everyone on: " +
 			"regression test for the bug where the bot locked itself out of channels it created/archived")
 	}
 
@@ -156,7 +156,7 @@ func TestRotateFullCycle(t *testing.T) {
 // overwrites (everyone sees it purely via @everyone's guild-level role
 // permissions, no channel-specific entry needed). revealNewChannel used to
 // pass that empty/nil slice straight through to ChannelEditComplex, which
-// discordgo marshals with `omitempty` — Discord then left the staging
+// discordgo marshals with `omitempty`; Discord then left the staging
 // channel's "deny @everyone, allow only the bot" overwrites in place
 // forever on what was supposed to become the fully public replacement, so
 // nobody but the bot could ever see the rotated channel again.
@@ -170,7 +170,7 @@ func TestRotateRevealRestoresAccessWhenOldChannelHadNoExplicitOverwrites(t *test
 		ID:      "old1",
 		GuildID: "g1",
 		Name:    "general-chat",
-		// Deliberately no PermissionOverwrites — the common case for a
+		// Deliberately no PermissionOverwrites: the common case for a
 		// fully public channel relying only on @everyone's base role perms.
 	})
 
@@ -235,7 +235,7 @@ func TestRotateRetargetsRotationConfigToNewChannel(t *testing.T) {
 // stickies, archive record) had already fully succeeded by the time audit
 // posting ran, so an audit-embed failure (e.g. #bot-audit-log not yet
 // configured, or deleted) must not make the Scheduler treat this job as
-// failed — that would trigger pointless retries of an already-complete
+// failed, since that would trigger pointless retries of an already-complete
 // rotation and eventually a false failure alert, masking that rotation
 // itself is fine. Every other audit call site in this codebase already
 // logs-and-continues; rotate must too.
@@ -394,13 +394,13 @@ func TestRotateConcurrentFetchFailurePrioritizesChannelError(t *testing.T) {
 // TestRotateSkipsThreadCaptureOnAlreadyRevealedRetry is a regression test
 // for the thread-capture reordering in execute.go's rotate: capturing
 // active threads only matters (and only happens) on a fresh run, not when
-// a retry finds the new channel already revealed — re-fetching them again
+// a retry finds the new channel already revealed: re-fetching them again
 // would just be a wasted ThreadsActive call, since the first attempt
 // already captured and logged them.
 func TestRotateSkipsThreadCaptureOnAlreadyRevealedRetry(t *testing.T) {
 	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
 	// Fail archiving old (2nd ChannelEditComplex call) on the first attempt
-	// only — reveal succeeds, so the retry finds alreadyRevealed == true.
+	// only: reveal succeeds, so the retry finds alreadyRevealed == true.
 	ops.failOnCall["ChannelEditComplex"] = 2
 
 	if err := p.rotate(context.Background(), "g1", rc); err == nil {
@@ -528,14 +528,14 @@ func intToID(i int) string {
 }
 
 // denyEveryone/botOverwriteAllow's own regression tests moved to
-// internal/core/channels_test.go — the logic now lives in
+// internal/core/channels_test.go; the logic now lives in
 // core.DenyEveryoneExceptBot, shared with adminconfig's setup channels.
 
 // TestReconcileJobKeyStableAcrossRetarget is a regression test for a bug
 // that shipped in the previous fix: reconcile used to build the Scheduler
 // job key from rc.ChannelID, which execute.go's rotate() now retargets onto
 // the new live channel after every successful rotation. The Scheduler
-// persists a job's last-run/interval-due state under its exact key string —
+// persists a job's last-run/interval-due state under its exact key string,
 // so a key that changes every rotation reset that state every single time,
 // and a job with no run history is immediately due again on the Scheduler's
 // very next ~30s tick. In production this meant a fresh rotation (and
@@ -583,7 +583,7 @@ func TestReconcileJobKeyStableAcrossRetarget(t *testing.T) {
 	p.reconcile(context.Background(), "g1")
 
 	if sched.registerCalls[jobKey] != 1 {
-		t.Fatalf("expected the SAME job key to still be registered exactly once after retargeting, got %d registrations — "+
+		t.Fatalf("expected the SAME job key to still be registered exactly once after retargeting, got %d registrations; "+
 			"a second registration under a fresh key would reset the Scheduler's persisted last-run state, "+
 			"causing rotation to fire again on the very next tick instead of waiting a full interval", sched.registerCalls[jobKey])
 	}
@@ -644,8 +644,8 @@ func TestDeferFirstRotationSeedsNewChannelJob(t *testing.T) {
 // TestReconcileAloneNeverSeeds guards the other half of the same fix: a
 // restart calls SyncGuild (-> reconcile) for every already-configured
 // channel, including ones with real run history. reconcile must never seed
-// on its own — only handleAdd's explicit deferFirstRotation call may do
-// that — or a restart would incorrectly reset an overdue rotation's clock.
+// on its own: only handleAdd's explicit deferFirstRotation call may do
+// that, or a restart would incorrectly reset an overdue rotation's clock.
 func TestReconcileAloneNeverSeeds(t *testing.T) {
 	fs := newFakeSettings()
 	fs.modRoles["g1"] = []string{"modrole1"}
@@ -691,7 +691,7 @@ func TestArchiveOverwritesGrantsBotViewAccess(t *testing.T) {
 // revealed, old channel renamed into the archive category) and only the
 // bookkeeping afterwards failed. On the retry the "old" channel no longer
 // carries its original name, so name-based matching found nothing and the
-// rotation ran a second time — leaving the guild with two replacement
+// rotation ran a second time, leaving the guild with two replacement
 // channels, a doubly-archived original, and sticky messages posted twice.
 // rotate now recognizes an already-archived channel by its name and category
 // and resumes at the bookkeeping step instead.
@@ -774,7 +774,7 @@ func TestRotateRetryAfterArchiveKeepsArchiveNameStable(t *testing.T) {
 
 // TestRotateIgnoresSameNamedChannelInAnotherCategory is the duplicate-name
 // guard. Discord allows two channels to share a name in different
-// categories, and the replacement-detection used to match on name alone —
+// categories, and the replacement-detection used to match on name alone,
 // so an unrelated #general elsewhere in the guild looked exactly like a
 // replacement a previous attempt had already revealed. Rotation would then
 // archive the live channel without creating anything, and retarget its own
@@ -879,7 +879,7 @@ func TestArchiveNameRoundTrips(t *testing.T) {
 // TestRotateResumeRebuildsAReplacementDeletedAfterTheFlip is the worst
 // corner of the resume path: the flip completed, the bookkeeping failed, and
 // then someone deleted the replacement channel before the retry. The retry
-// has to rebuild a live channel — and must not build it inside the archive
+// has to rebuild a live channel, and must not build it inside the archive
 // category, which is where the "old" channel now lives and therefore what
 // its parent would otherwise be copied from.
 func TestRotateResumeRebuildsAReplacementDeletedAfterTheFlip(t *testing.T) {
@@ -946,7 +946,7 @@ func reconcileTestPlugin(fs *fakeSettings, sched *fakeScheduler, archives Archiv
 
 // TestSweepJobNotArmedForGuildsWithoutRotation: the sweep permanently deletes
 // channels, and it used to be registered for every guild the bot could see
-// the moment it saw it — whether or not that guild had ever configured
+// the moment it saw it, whether or not that guild had ever configured
 // rotation, and (since a job with no run history is immediately due) firing
 // within one tick of startup. It was harmless only because the table it read
 // happened to be empty. A deletion job should not exist where nobody asked
@@ -1025,7 +1025,7 @@ func TestSweepJobSurvivesRemovalWhileArchivesArePending(t *testing.T) {
 }
 
 // TestSweepJobRegistrationUnchangedOnArchiveLookupFailure: a transient DB
-// error must not decide either way — arming a deletion job we can't justify,
+// error must not decide either way: arming a deletion job we can't justify,
 // or dropping one that's still owed work, are both worse than leaving the
 // current state alone until the next reconcile.
 func TestSweepJobRegistrationUnchangedOnArchiveLookupFailure(t *testing.T) {

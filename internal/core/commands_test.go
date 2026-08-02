@@ -159,7 +159,7 @@ func TestMatchComponentLongestPrefixWins(t *testing.T) {
 	r, _ := newTestRouter()
 	generic := func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {}
 	// Two prefixes both match "rotation:list:page:2" ("rotation:" and
-	// "rotation:list:") — tagged with different plugin names purely so the
+	// "rotation:list:"), tagged with different plugin names purely so the
 	// test can tell which one matchComponent actually picked.
 	r.HandleComponent("shorter-prefix-plugin", "rotation:", PermSpec{Tier: TierPublic}, generic)
 	r.HandleComponent("longer-prefix-plugin", "rotation:list:", PermSpec{Tier: TierPublic}, generic)

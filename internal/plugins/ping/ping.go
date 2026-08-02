@@ -22,7 +22,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 		Name:        "ping",
 		Description: "Health check - replies pong",
 	})
-	// /ping is intentionally public — TierPublic, the only tier that never
+	// /ping is intentionally public: TierPublic, the only tier that never
 	// requires an Action, unlike every other command (spec.MD §4a).
 	deps.Commands.Handle("ping", "", core.PermSpec{Tier: core.TierPublic}, handlePing)
 	return nil

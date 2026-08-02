@@ -15,7 +15,7 @@ import (
 //
 // withMembers controls GUILD_MEMBERS, which is what lets the roles plugin
 // react to a rejoin the instant it happens rather than on the next sweep
-// (roles.reapplyEvadedJails remains the fallback either way — the intent
+// (roles.reapplyEvadedJails remains the fallback either way; the intent
 // narrows the window, it does not create the protection). It is privileged:
 // a Developer Portal toggle below 100 guilds, Discord approval above. If the
 // portal has not granted it, Discord rejects the connection outright, which
@@ -46,18 +46,18 @@ const readyTimeout = 45 * time.Second
 //
 // It is split from the waiting deliberately, and must be called *before*
 // Open. discordgo starts its listen goroutine inside Open, so READY can be
-// dispatched the moment Open returns — registering the handler afterwards
+// dispatched the moment Open returns, so registering the handler afterwards
 // races against it, and losing that race would mean waiting the full timeout
 // and then failing startup on a connection that was perfectly healthy.
 //
 // The reason to check at all: Open returns as soon as the identify payload has
 // been *sent*, never that Discord accepted it. When the gateway rejects the
-// identify (close code 4014, "disallowed intents" — the bot asked for a
+// identify (close code 4014, "disallowed intents": the bot asked for a
 // privileged intent its application has not been granted), discordgo neither
 // surfaces the close code nor gives up; it reconnects, is rejected again, and
 // loops. Open having returned nil, startup carries on and logs that the bot is
 // running. The result is a process that looks healthy, holds no gateway
-// connection, receives no events, and silently does nothing — jails never
+// connection, receives no events, and silently does nothing: jails never
 // released, rotations never fired, and no error anywhere above debug level.
 //
 // Waiting for READY is what separates "connected" from "has not failed loudly
@@ -69,7 +69,7 @@ func WatchReady(s *discordgo.Session) func() error {
 }
 
 // readyWatcher is the sliver of *discordgo.Session watchReady needs, so the
-// timeout and dispatch paths are testable without a gateway connection —
+// timeout and dispatch paths are testable without a gateway connection,
 // the same narrow-seam pattern the plugins use for their Discord ops.
 type readyWatcher interface {
 	AddHandler(handler any) func()
@@ -92,7 +92,7 @@ func watchReady(s readyWatcher, timeout time.Duration) func() error {
 			return nil
 		case <-time.After(timeout):
 			return fmt.Errorf("no READY from Discord within %s: the gateway is refusing this connection. "+
-				"The usual cause is a privileged intent the application has not been granted — enable "+
+				"The usual cause is a privileged intent the application has not been granted. Enable "+
 				"\"Server Members Intent\" under Bot in the Discord Developer Portal, or set "+
 				"MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1 to run without it", timeout)
 		}

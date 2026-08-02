@@ -4,7 +4,7 @@ import "github.com/bwmarrin/discordgo"
 
 // DenyEveryoneExceptBot returns a permission-overwrite list that denies
 // @everyone VIEW_CHANNEL while guaranteeing the bot itself keeps whatever
-// access botAllow grants — merging into any pre-existing overwrite for
+// access botAllow grants, merging into any pre-existing overwrite for
 // either ID rather than appending a duplicate.
 //
 // This exists because "deny everyone, then separately remember to grant
@@ -13,11 +13,11 @@ import "github.com/bwmarrin/discordgo"
 // channel all denied @everyone without a matching bot grant, locking the
 // bot itself out of channels it had just created. Centralizing both halves
 // into one call makes forgetting the bot grant impossible rather than
-// something every future caller has to remember — the same reasoning as
+// something every future caller has to remember, the same reasoning as
 // core.LeafArgs/core.RespondOK.
 //
 // botAllow should only include permission bits the bot's own Discord role
-// actually holds at the guild level — Discord rejects the whole request
+// actually holds at the guild level: Discord rejects the whole request
 // (403 "Missing Permissions") if an overwrite tries to grant a bit the
 // actor doesn't have, so don't reach for e.g. PermissionManageMessages here
 // unless the bot's invite scope actually requests it.

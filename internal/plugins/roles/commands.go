@@ -15,7 +15,7 @@ import (
 
 // Action namespaces for whitelist grants (core.PermSpec.Action). jail is
 // restriction-only (TierMod-eligible); grant can hand out any role the bot
-// can manage, so it stays a separate, TierAdmin-only action — a mod could
+// can manage, so it stays a separate, TierAdmin-only action, since a mod could
 // otherwise use "grant" to hand themselves or an ally an escalated role.
 // configure_jail_channels is its own action too: it changes what every
 // jailed member (present and future) can see guild-wide, a bigger blast
@@ -24,7 +24,7 @@ import (
 // actionJailRole is deliberately separate from actionJail, and Admin-tier by
 // default. Jailing everyone holding a role is the same kind of action as
 // jailing one person but with a blast radius closer to
-// configure_jail_channels' — one command can silence a large slice of the
+// configure_jail_channels': one command can silence a large slice of the
 // server, and getting the wrong role means undoing it member by member. That
 // is the same reasoning that already keeps configure_jail_channels on its own
 // Admin-only action. A guild that wants its mods to hold the raid button can
@@ -68,11 +68,11 @@ func (p *Plugin) registerCommands() {
 				Description: "Strip up to 5 members' roles and channel access for a period, then automatically restore them",
 				// Discord requires required options ahead of optional ones,
 				// so the extra member slots follow duration. They are plain
-				// optional User pickers rather than a free-text list of IDs —
-				// see collectJailUserIDs.
+				// optional User pickers rather than a free-text list of IDs.
+				// See collectJailUserIDs.
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to jail"),
-					durationOpt("duration", "How long before automatic release — e.g. \"24h\" or \"3d\"", true),
+					durationOpt("duration", "How long before automatic release, e.g. \"24h\" or \"3d\"", true),
 					optionalUserOpt("user2", "A second member, jailed with the same duration and reason"),
 					optionalUserOpt("user3", "A third member"),
 					optionalUserOpt("user4", "A fourth member"),
@@ -83,10 +83,10 @@ func (p *Plugin) registerCommands() {
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "jail-role",
-				Description: "Jail everyone holding one role — for shutting down a raid",
+				Description: "Jail everyone holding one role, for shutting down a raid",
 				Options: []*discordgo.ApplicationCommandOption{
 					roleOpt("role", "Every member holding this role will be jailed"),
-					durationOpt("duration", "How long before automatic release — e.g. \"24h\" or \"3d\"", true),
+					durationOpt("duration", "How long before automatic release, e.g. \"24h\" or \"3d\"", true),
 					reasonOpt,
 				},
 			},
@@ -103,7 +103,7 @@ func (p *Plugin) registerCommands() {
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to grant a role to"),
 					roleOpt("role", "The role to grant"),
-					durationOpt("duration", "How long before automatic revocation — e.g. \"24h\" or \"3d\". Omit for permanent.", false),
+					durationOpt("duration", "How long before automatic revocation, e.g. \"24h\" or \"3d\". Omit for permanent.", false),
 					reasonOpt,
 				},
 			},
@@ -186,7 +186,7 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 		if rec.ReleaseAt != nil {
 			release = rec.ReleaseAt.Format(time.RFC3339)
 		}
-		lines = append(lines, fmt.Sprintf("**Jailed** — released at %s", release))
+		lines = append(lines, fmt.Sprintf("**Jailed:** released at %s", release))
 	}
 
 	grants, err := p.store.ListGrants(ctx, i.GuildID, userID)
@@ -200,7 +200,7 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 		if g.ExpiresAt != nil {
 			expiry = "expires " + g.ExpiresAt.Format(time.RFC3339)
 		}
-		lines = append(lines, fmt.Sprintf("<@&%s> — %s", g.RoleID, expiry))
+		lines = append(lines, fmt.Sprintf("<@&%s> · %s", g.RoleID, expiry))
 	}
 
 	if len(lines) == 0 {
@@ -238,8 +238,8 @@ func (p *Plugin) handleDisallowChannel(ctx context.Context, s *discordgo.Session
 
 // syncOneChannelBestEffort applies the just-changed allowlist to channelID's
 // live permission overwrite. If the jail role hasn't been created yet in
-// this guild (nobody has ever run /roles jail), there's nothing to sync —
-// the allowlist is still recorded and will apply once resolveJailRole
+// this guild (nobody has ever run /roles jail), there's nothing to sync.
+// The allowlist is still recorded and will apply once resolveJailRole
 // eventually creates the role and runs its own full sync.
 func (p *Plugin) syncOneChannelBestEffort(s *discordgo.Session, i *discordgo.InteractionCreate, channelID string) {
 	p.jailRoleMu.Lock()
@@ -256,7 +256,7 @@ func (p *Plugin) syncOneChannelBestEffort(s *discordgo.Session, i *discordgo.Int
 func (p *Plugin) handleListChannels(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	ids := p.jailChannelConfig.JailAllowedChannelIDs(i.GuildID)
 	if len(ids) == 0 {
-		core.RespondInfo(s, i, "No allowed channels", "No channels are configured to stay visible to jailed members — jail currently hides every channel.")
+		core.RespondInfo(s, i, "No allowed channels", "No channels are configured to stay visible to jailed members, so jail currently hides every channel.")
 		return
 	}
 	lines := make([]string, len(ids))

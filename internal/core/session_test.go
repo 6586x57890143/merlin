@@ -47,7 +47,7 @@ func TestWatchReadyReturnsOnceDiscordAcceptsTheConnection(t *testing.T) {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 	if gw.removals != 1 {
-		t.Errorf("handler removals = %d, want 1 — the watch must not leak its subscription", gw.removals)
+		t.Errorf("handler removals = %d, want 1; the watch must not leak its subscription", gw.removals)
 	}
 }
 
@@ -66,7 +66,7 @@ func TestWatchReadySubscribesBeforeItIsWaitedOn(t *testing.T) {
 		t.Fatal("no READY handler registered before waiting; the event can be missed")
 	}
 
-	// Fire before anyone waits — the result must still be observed.
+	// Fire before anyone waits: the result must still be observed.
 	gw.fireReady()
 	if err := wait(); err != nil {
 		t.Fatalf("READY fired before the wait began and was lost: %v", err)

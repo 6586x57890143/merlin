@@ -36,7 +36,7 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
 	// Loaded in dev only; in the container, env comes from Docker secrets /
-	// the platform's secret manager, and .env won't exist — that's fine.
+	// the platform's secret manager, and .env won't exist, which is fine.
 	_ = godotenv.Load()
 
 	if err := runGuarded(log, level); err != nil {
@@ -158,14 +158,14 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return fmt.Errorf("finalize commands: %w", err)
 	}
 	// This bot registers commands exclusively per-guild (RegisterGuild below,
-	// on every GuildCreate) — nothing here should ever leave a global command
+	// on every GuildCreate), so nothing here should ever leave a global command
 	// behind. Clears any that pre-Milestone-4 code left registered (a REST
 	// call, doesn't need session.Open() first).
 	if err := commands.PurgeGlobalCommands(session, cfg.Discord.AppID); err != nil {
 		log.Error("purge global commands", "err", err)
 	}
 
-	// One dispatcher for every plugin's commands (spec.MD §4a) — replaces
+	// One dispatcher for every plugin's commands (spec.MD §4a), replacing
 	// each plugin calling session.AddHandler itself. Guild-scoped command
 	// registration and settings loading both happen reactively per guild via
 	// GuildCreate, not from a static config list: discordgo fires one
@@ -185,9 +185,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		//
 		// What made that invisible is that slash commands are registered on
 		// Discord's side and persist across restarts. A guild in this state
-		// still answered /roles jail perfectly, while its roles-sweep job — the
+		// still answered /roles jail perfectly, while its roles-sweep job (the
 		// only thing that releases jails when they expire and the only
-		// intent-free defense against a rejoin evader — had never been
+		// intent-free defense against a rejoin evader) had never been
 		// registered at all. No command failed, no error repeated, and the
 		// symptom was simply that jails quietly became permanent and escapable.
 		//
@@ -208,7 +208,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		rolesPlugin.SyncGuild(gc.ID)
 		if settingsLoaded {
 			// Rotation, unlike the sweep, derives which jobs should exist from
-			// settings — reconciling against fail-closed defaults would read as
+			// settings, and reconciling against fail-closed defaults would read as
 			// "this guild rotates nothing" and unregister real work. The
 			// stale-retry loop publishes EventConfigChanged once the guild is
 			// readable again, which is what reconciles it.
@@ -216,7 +216,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		}
 		if commandsRegistered && settingsLoaded {
 			// Only nudge toward /config setup if it was actually registered
-			// here — otherwise the nudge would point at a command that
+			// here. Otherwise the nudge would point at a command that
 			// doesn't exist yet, and (if the DM itself succeeds) burn the
 			// one-time nudge for nothing instead of retrying once
 			// registration succeeds on a later restart. Same reasoning for
@@ -232,14 +232,14 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// counter climbs, and the eventual "job is wedged" alert tries to post to
 	// a status channel in the same unreachable guild.
 	//
-	// Nothing in Postgres is deleted. Being removed is frequently temporary —
-	// a kick and re-invite, a botched permission change — and a guild's mod
+	// Nothing in Postgres is deleted. Being removed is frequently temporary
+	// (a kick and re-invite, a botched permission change), and a guild's mod
 	// roles, permission policy, rotation config, and jail snapshots must not
 	// be silently destroyed by the bot briefly losing access. GuildCreate
 	// puts it all back on rejoin.
 	// A member who left to shed their Jailed role gets it back as they walk in,
 	// rather than up to a sweep later. Registered only when the intent was
-	// actually requested, so the handler's presence always matches reality —
+	// actually requested, so the handler's presence always matches reality:
 	// without GUILD_MEMBERS Discord never sends this event, and reapplyEvadedJails
 	// on the one-minute sweep is the whole protection instead of the backstop.
 	if cfg.GuildMembersIntent {
@@ -284,7 +284,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
 	})
 
-	// Armed before Open, which is where discordgo starts dispatching — see
+	// Armed before Open, which is where discordgo starts dispatching. See
 	// core.WatchReady. Open only means the identify was sent, never that
 	// Discord accepted it, and nothing below works without a live gateway.
 	awaitReady := core.WatchReady(session)

@@ -7,7 +7,7 @@ ALTER TABLE settings_permission_overrides
     ADD COLUMN deny_role_ids TEXT[] NOT NULL DEFAULT '{}',
     ADD COLUMN deny_user_ids TEXT[] NOT NULL DEFAULT '{}';
 
--- Per-guild whole-plugin on/off switch, coarser than any per-action policy —
+-- Per-guild whole-plugin on/off switch, coarser than any per-action policy,
 -- checked by core.CommandRouter before a disabled plugin's commands are even
 -- authorized. "adminconfig" (owning /config) is guarded against being listed
 -- here at the application layer, since disabling it would permanently lock

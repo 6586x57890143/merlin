@@ -30,7 +30,7 @@ const (
 // minRotationInterval is the floor on how often a channel may rotate.
 //
 // Interval is stored in minutes and accepted at minute precision, so "every
-// 90 minutes" and "every 2h30m" are both expressible — but not "every 5
+// 90 minutes" and "every 2h30m" are both expressible, but not "every 5
 // minutes". Each rotation creates a channel, populates it, edits two
 // channels, and eventually deletes one, and a guild's channel-create budget
 // in discordguard is 20/hour: a sub-hourly cadence on even a couple of
@@ -48,7 +48,7 @@ const (
 
 // defaultArchiveCategoryName is what /rotation configure add creates (or
 // reuses, if one already exists under this name) when archive_category is
-// omitted — mirroring /config setup's "auto-create whatever's missing"
+// omitted, mirroring /config setup's "auto-create whatever's missing"
 // pattern (adminconfig.handleSetup) instead of forcing a mod to go create a
 // category by hand in Discord's UI before they can configure rotation at
 // all.
@@ -64,7 +64,7 @@ func (p *Plugin) registerCommands() {
 			ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText},
 		}
 	}
-	// durationOpt is used for both interval and retention — a plain string
+	// durationOpt is used for both interval and retention: a plain string
 	// rather than an Integer, so one option can accept either unit
 	// (core.ParseFlexibleDuration): "24h" or "3d" for a daily rotation, "30d"
 	// or "720h" for a month of retention. Integer options can't express a
@@ -113,14 +113,14 @@ func (p *Plugin) registerCommands() {
 						Description: "Start rotating a channel",
 						Options: []*discordgo.ApplicationCommandOption{
 							channelOpt("channel", "The live channel to rotate"),
-							durationOpt("interval", "How often it rotates — e.g. \"24h\", \"3d\", \"90m\". Minimum 1 hour.", true),
+							durationOpt("interval", "How often it rotates, e.g. \"24h\", \"3d\", \"90m\". Minimum 1 hour.", true),
 							{
 								Type:         discordgo.ApplicationCommandOptionChannel,
 								Name:         "archive_category",
 								Description:  "Hidden category archived channels move into. Omit to auto-create/reuse one named \"Archive\"",
 								ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildCategory},
 							},
-							durationOpt("retention", "How long to keep the archive before permanent deletion — e.g. \"30d\" or \"72h\". Omit to keep forever.", false),
+							durationOpt("retention", "How long to keep the archive before permanent deletion, e.g. \"30d\" or \"72h\". Omit to keep forever.", false),
 							visibilityOpt(false),
 						},
 					},
@@ -136,8 +136,8 @@ func (p *Plugin) registerCommands() {
 						Description: "Adjust an already-configured rotating channel",
 						Options: []*discordgo.ApplicationCommandOption{
 							channelOpt("channel", "The rotating channel to adjust"),
-							durationOpt("interval", "New rotation interval — e.g. \"24h\", \"3d\", \"90m\". Minimum 1 hour.", false),
-							durationOpt("retention", "New retention — e.g. \"30d\" or \"72h\"", false),
+							durationOpt("interval", "New rotation interval, e.g. \"24h\", \"3d\", \"90m\". Minimum 1 hour.", false),
+							durationOpt("retention", "New retention, e.g. \"30d\" or \"72h\"", false),
 							{
 								Type:        discordgo.ApplicationCommandOptionBoolean,
 								Name:        "retention_forever",
@@ -161,7 +161,7 @@ func (p *Plugin) registerCommands() {
 							{
 								Type:        discordgo.ApplicationCommandOptionString,
 								Name:        "messages",
-								Description: "One message per line — replaces the current set. Omit to leave unchanged.",
+								Description: "One message per line. Replaces the current set. Omit to leave unchanged.",
 							},
 						},
 					},
@@ -225,7 +225,7 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 		return
 	}
 	if _, exists := p.settings.RotationChannel(i.GuildID, rc.ChannelID); exists {
-		core.RespondErr(s, i, "Already rotating", fmt.Errorf("that channel is already configured to rotate — use `/rotation configure edit` instead"))
+		core.RespondErr(s, i, "Already rotating", fmt.Errorf("that channel is already configured to rotate. Use `/rotation configure edit` instead"))
 		return
 	}
 
@@ -235,10 +235,10 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 	}
 	// No explicit SyncGuild call needed: UpsertRotationChannel already
 	// published core.EventConfigChanged synchronously, which p.reconcile is
-	// subscribed to (rotation.go's Init) — calling SyncGuild here too would
+	// subscribed to (rotation.go's Init), so calling SyncGuild here too would
 	// just re-run the identical, already-current reconcile a second time.
 	// The reconcile it just triggered registered this channel's job with no
-	// run history, which the Scheduler treats as immediately due — defer
+	// run history, which the Scheduler treats as immediately due, so defer
 	// that first fire by one interval since this channel was *just* added.
 	p.deferFirstRotation(ctx, i.GuildID, rc.ChannelID)
 	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> %s", rc.ChannelID, rotationSummary(rc)))
@@ -247,7 +247,7 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 
 // resolveArchiveCategory returns the archive_category option's channel ID
 // if the mod supplied one, otherwise finds (by name) or creates a category
-// called defaultArchiveCategoryName — so archive_category being optional
+// called defaultArchiveCategoryName, so archive_category being optional
 // doesn't just shift the "go create a category first" chore onto a
 // separate manual step; the bird does it.
 func (p *Plugin) resolveArchiveCategory(guildID string, opts map[string]*discordgo.ApplicationCommandInteractionDataOption) (string, error) {
@@ -286,7 +286,7 @@ func (p *Plugin) handleRemove(ctx context.Context, s *discordgo.Session, i *disc
 		return
 	}
 	// RemoveRotationChannel already triggered reconcile via
-	// core.EventConfigChanged — see the comment in handleAdd above.
+	// core.EventConfigChanged, see the comment in handleAdd above.
 	p.auditConfigChange(ctx, i, "rotation.remove", fmt.Sprintf("channel=<#%s>", channelID), "")
 	core.RespondOK(s, i, "Rotation removed", fmt.Sprintf("<#%s> will no longer rotate. Any existing archive is untouched.", channelID))
 }
@@ -297,7 +297,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 
 	rc, exists := p.settings.RotationChannel(i.GuildID, channelID)
 	if !exists {
-		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate — use `/rotation configure add` first"))
+		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate. Use `/rotation configure add` first"))
 		return
 	}
 	before := rotationSummary(rc)
@@ -334,7 +334,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 		return
 	}
 	// UpsertRotationChannel already triggered reconcile via
-	// core.EventConfigChanged — see the comment in handleAdd above.
+	// core.EventConfigChanged, see the comment in handleAdd above.
 	after := rotationSummary(rc)
 	p.auditConfigChange(ctx, i, "rotation.edit", before, after)
 	core.RespondOK(s, i, "Rotation updated", fmt.Sprintf("Updated <#%s>.", channelID))
@@ -346,7 +346,7 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 
 	rc, exists := p.settings.RotationChannel(i.GuildID, channelID)
 	if !exists {
-		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate — use `/rotation configure add` first"))
+		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate. Use `/rotation configure add` first"))
 		return
 	}
 
@@ -361,7 +361,7 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 		rc.StickyMessages = msgs
 	}
 	if rc.StickyEnabled && len(rc.StickyMessages) == 0 {
-		core.RespondErr(s, i, "Nothing to stick", fmt.Errorf("sticky is enabled but there are no messages set — pass `messages` at least once"))
+		core.RespondErr(s, i, "Nothing to stick", fmt.Errorf("sticky is enabled but there are no messages set. Pass `messages` at least once"))
 		return
 	}
 
@@ -376,7 +376,7 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 // rotationSummary renders the settings that decide how long content survives,
 // for the audit trail. Retention gets its own formatting because it is a
 // *int: the audit line used to interpolate it with %v, which prints the
-// pointer address ("retention=0x55c4509432e8") rather than the value — so the
+// pointer address ("retention=0x55c4509432e8") rather than the value, so the
 // audit record for the one irreversible setting in this plugin was
 // unreadable, in the exact place someone would look after a channel was
 // permanently deleted.
@@ -404,7 +404,7 @@ func (p *Plugin) auditConfigChange(ctx context.Context, i *discordgo.Interaction
 
 // validateRotationChannel mirrors the checks the old YAML-loader-time
 // validation used to perform (internal/config/rotation_validate.go, removed
-// with the move to DB-backed settings) — now enforced at the point of
+// with the move to DB-backed settings), now enforced at the point of
 // mutation instead of at config-file load time.
 func validateRotationChannel(rc settings.RotationChannel) error {
 	if rc.ChannelID == rc.ArchiveCategoryID {

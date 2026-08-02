@@ -40,7 +40,7 @@ func TestRotationPutsReplacementBackInTheOriginalSlot(t *testing.T) {
 		t.Fatal("no replacement channel found")
 	}
 	if replacement.Position != 3 {
-		t.Errorf("replacement sits at position %d, want 3 — it did not take the original's place", replacement.Position)
+		t.Errorf("replacement sits at position %d, want 3; it did not take the original's place", replacement.Position)
 	}
 
 	// An explicit edit, not just an inherited create-time value: Discord ties
@@ -56,7 +56,7 @@ func TestRotationPutsReplacementBackInTheOriginalSlot(t *testing.T) {
 
 // Ordering is the whole argument. While both channels are in the category
 // they compete for the slot, and Discord re-flows the survivors when one
-// leaves — so a position set before the archive is undone by the archive.
+// leaves, so a position set before the archive is undone by the archive.
 func TestPositionRestoreHappensAfterTheOldChannelLeavesTheCategory(t *testing.T) {
 	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
 
@@ -84,7 +84,7 @@ func TestPositionRestoreHappensAfterTheOldChannelLeavesTheCategory(t *testing.T)
 // The rotation is already correct by the time the position is set: the
 // replacement is live under the right name and the old channel is archived.
 // Failing the job here would have the Scheduler retry the whole rotation,
-// which re-enters rotate() and creates a *second* replacement — trading a
+// which re-enters rotate() and creates a *second* replacement, trading a
 // cosmetic misplacement for a duplicate channel on every retry.
 func TestRotationSucceedsEvenIfThePositionEditFails(t *testing.T) {
 	ops, archives, _, p, rc := setupRotation(t, finiteRetentionRC())
@@ -98,7 +98,7 @@ func TestRotationSucceedsEvenIfThePositionEditFails(t *testing.T) {
 	// And the rotation's real work must still be recorded, or the next sweep
 	// would never delete this archive.
 	if len(archives.records) != 1 {
-		t.Errorf("archive records = %d, want 1 — the rotation did not complete its bookkeeping", len(archives.records))
+		t.Errorf("archive records = %d, want 1; the rotation did not complete its bookkeeping", len(archives.records))
 	}
 }
 

@@ -5,7 +5,7 @@
 -- leaving read/inspect commands working, so a rotation loop or a runaway
 -- sweep can be halted from inside Discord instead of by redeploying.
 -- writes_dry_run lets a rotation or sweep run end to end, writing its full
--- audit trail, without touching Discord at all — the pre-launch rehearsal
+-- audit trail, without touching Discord at all: the pre-launch rehearsal
 -- for a feature whose failure mode (permanent channel deletion) has no undo.
 --
 -- Both default false so an existing guild's behavior is unchanged. The

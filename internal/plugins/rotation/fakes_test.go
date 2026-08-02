@@ -21,7 +21,7 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// findOtherChannelByName locates a channel by name, ignoring excludeID —
+// findOtherChannelByName locates a channel by name, ignoring excludeID,
 // a test-side assertion helper for "did the replacement channel end up
 // where it should", deliberately looser than rotate's own replacement
 // matching so a test can catch a replacement that landed in the wrong
@@ -49,7 +49,7 @@ type fakeOps struct {
 	// editCalls records every ChannelEditComplex in order. Final state alone
 	// can't express the position restore's correctness argument, which is
 	// about *when* it happens relative to the old channel leaving the
-	// category — an assertion on the end state would pass even if the two
+	// category; an assertion on the end state would pass even if the two
 	// were swapped.
 	editCalls []recordedEdit
 }
@@ -79,7 +79,7 @@ func (f *fakeOps) addChannel(ch *discordgo.Channel) {
 }
 
 // unknownChannelErr mirrors what discordgo returns for a channel that no
-// longer exists — a *discordgo.RESTError carrying Discord's own 10003 code —
+// longer exists: a *discordgo.RESTError carrying Discord's own 10003 code,
 // rather than a bare error string. Callers distinguish that case from a
 // transient failure (core.IsUnknownResource), so a fake that returned an
 // undifferentiated error would let "gone" and "try again later" test
@@ -197,15 +197,15 @@ func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEd
 	if len(data.PermissionOverwrites) > 0 {
 		// Mirrors discordgo's real wire behavior: ChannelEdit.PermissionOverwrites
 		// is `json:"...,omitempty"`, so a nil OR empty slice is dropped from the
-		// outgoing PATCH entirely — Discord then leaves existing overwrites
+		// outgoing PATCH entirely; Discord then leaves existing overwrites
 		// untouched. A `!= nil` check here (an empty-but-non-nil slice) would
 		// let a test believe an explicit-clear succeeded when the real API
-		// would silently no-op it — exactly the bug that shipped in
+		// would silently no-op it, exactly the bug that shipped in
 		// revealNewChannel because this fake didn't reproduce it.
 		ch.PermissionOverwrites = data.PermissionOverwrites
 	}
 	// Position is a *int precisely so "move to 0" is distinguishable from
-	// "leave it alone" — reproducing that here is what lets a test catch a
+	// "leave it alone"; reproducing that here is what lets a test catch a
 	// rotation that puts the replacement at the top of the category.
 	if data.Position != nil {
 		ch.Position = *data.Position
@@ -358,7 +358,7 @@ func (f *fakeAudit) Record(ctx context.Context, guildID, actorID, action, oldVal
 	return nil
 }
 
-// fakeSettings is an in-memory SettingsProvider for tests — mirrors
+// fakeSettings is an in-memory SettingsProvider for tests, mirroring
 // fakeArchiveStore's role, standing in for internal/settings.Store without
 // a live Postgres.
 type fakeSettings struct {
@@ -446,7 +446,7 @@ func (f *fakeSettings) RetargetRotationChannel(ctx context.Context, guildID, old
 }
 
 // fakeScheduler is an in-memory core.Scheduler for testing reconcile's job
-// key stability directly — records how many times each key was registered
+// key stability directly: records how many times each key was registered
 // or unregistered, so a test can assert a job was registered exactly once
 // despite its underlying settings row's ChannelID changing underneath it.
 type fakeScheduler struct {

@@ -9,7 +9,7 @@ import (
 )
 
 // PermTier is how restrictive a command/subcommand is. The zero value,
-// tierUnset, is deliberately invalid — every leaf command registered with
+// tierUnset, is deliberately invalid. Every leaf command registered with
 // CommandRouter must declare an explicit tier, so a plugin author forgetting
 // to set one fails loudly at startup instead of silently defaulting to the
 // most permissive tier (spec.MD Design Principle 2, "fail safe not fail
@@ -18,7 +18,7 @@ type PermTier int
 
 const (
 	tierUnset PermTier = iota
-	// TierPublic requires no authorization at all — e.g. /ping.
+	// TierPublic requires no authorization at all, e.g. /ping.
 	TierPublic
 	// TierMod requires the invoker to hold one of the guild's configured mod
 	// roles, be a configured admin (admins satisfy every mod-tier check), or
@@ -26,15 +26,15 @@ const (
 	TierMod
 	// TierAdmin requires the invoker to be a configured admin, the
 	// bootstrap admin, or hold Discord's own Administrator permission in
-	// the guild (see Authorize) — or be individually whitelisted for this
+	// the guild (see Authorize), or be individually whitelisted for this
 	// command's Action. Mutating the admin list or granting a whitelist
-	// entry must always be TierAdmin, never TierMod — otherwise a mod could
+	// entry must always be TierAdmin, never TierMod, or a mod could
 	// grant themselves admin.
 	TierAdmin
 )
 
 // IsSet reports whether t is an explicit tier, as opposed to the zero value
-// (tierUnset) meaning "no per-guild override configured for this action" —
+// (tierUnset) meaning "no per-guild override configured for this action",
 // used by ActionPolicy.RequiredTier consumers instead of comparing against
 // the unexported tierUnset directly.
 func (t PermTier) IsSet() bool { return t != tierUnset }
@@ -55,11 +55,11 @@ func (t PermTier) String() string {
 }
 
 // PermSpec is what a registered command/subcommand requires. Action namespaces
-// the per-command whitelist independently of Tier — e.g. "rotation.configure",
-// "admin.run_now" — so a specific role/user can be granted just that one
+// the per-command whitelist independently of Tier, e.g. "rotation.configure",
+// "admin.run_now", so a specific role/user can be granted just that one
 // action without becoming a full mod or admin. Action also doubles as the
 // key a guild can use to override the effective tier and grant/deny specific
-// people, via ActionPolicy below — a command with no Action can't be
+// people, via ActionPolicy below. A command with no Action can't be
 // customized per guild at all, only ever governed by its compiled-in Tier.
 type PermSpec struct {
 	Tier   PermTier
@@ -68,11 +68,11 @@ type PermSpec struct {
 
 // ActionPolicy is a guild's customization of one Action, layered on top of
 // the command's compiled-in PermSpec (see Authorize). RequiredTier ==
-// tierUnset means "no override, use the command's own PermSpec.Tier" — a
+// tierUnset means "no override, use the command's own PermSpec.Tier". A
 // guild only ever explicitly sets this to TierMod or TierAdmin, never back
 // to tierUnset except via an explicit "clear" mutation. Deny always wins
 // over Allow (and over tier/Administrator-bit) for the same person/role,
-// except for the bootstrap admin, which nothing can deny — see Authorize.
+// except for the bootstrap admin, which nothing can deny (see Authorize).
 type ActionPolicy struct {
 	RequiredTier PermTier
 	AllowRoleIDs []string
@@ -82,7 +82,7 @@ type ActionPolicy struct {
 }
 
 // GuildAuthData is the narrow, in-memory view of a guild's authorization
-// settings that Permissions needs. Implemented by internal/settings.Store —
+// settings that Permissions needs. Implemented by internal/settings.Store,
 // referenced here only as an interface so this package (which
 // internal/settings must import for the EventBus/EventConfigChanged it
 // publishes on writes) never imports internal/settings back.
@@ -94,12 +94,12 @@ type GuildAuthData interface {
 	// bootstrap admin.
 	AdminUserIDs(guildID string) []string
 	// ActionPolicy returns guildID's customization of action (tier override,
-	// allow-list, deny-list) — the zero value (tierUnset, no lists) if the
+	// allow-list, deny-list), or the zero value (tierUnset, no lists) if the
 	// guild hasn't customized this action at all.
 	ActionPolicy(guildID, action string) ActionPolicy
 }
 
-// PluginGate answers whether a whole plugin is enabled in a guild — a
+// PluginGate answers whether a whole plugin is enabled in a guild: a
 // coarser, precondition check made once per dispatch by CommandRouter,
 // before Authorize (or any per-action policy) ever runs. Deliberately its
 // own interface, not folded into GuildAuthData/Permissions: "is this plugin
@@ -111,7 +111,7 @@ type PluginGate interface {
 
 // Permissions implements spec.MD §4a's tiered authorization: every
 // privileged command/subcommand's registered PermSpec is checked centrally
-// by CommandRouter before its handler ever runs — there is no per-plugin
+// by CommandRouter before its handler ever runs, so there is no per-plugin
 // choke point to forget.
 type Permissions struct {
 	session     *discordgo.Session
@@ -128,19 +128,19 @@ func NewPermissions(s *discordgo.Session, settings GuildAuthData, bootstrapAdmin
 }
 
 // Authorize checks spec against the invoking member. Discord's own
-// default_member_permissions is intentionally NOT re-checked here — for
+// default_member_permissions is intentionally NOT re-checked here. For
 // Mod/Admin-tier commands it's registered as unset (visible to @everyone at
 // the Discord layer) precisely so a whitelisted non-mod user, or a mod role
 // that happens to carry no matching Discord permission bit, is never blocked
 // before this check runs. This is the sole real gate; it can't be forgotten
 // because CommandRouter calls it for every dispatched command (after the
-// plugin-enabled gate — see PluginGate/CommandRouter).
+// plugin-enabled gate, see PluginGate/CommandRouter).
 //
 // Checks run in three layers, coarsest first:
 //
 //  1. Deny: if spec.Action is set and the guild has denied this action to
 //     the invoker's user ID or any of their roles, they're rejected
-//     immediately — deny wins over everything below, including
+//     immediately: deny wins over everything below, including
 //     Administrator and an explicit allow-grant. The one exception is the
 //     bootstrap admin: nothing can deny it, preserving Milestone 4's
 //     "never permanently lock the operator out" guarantee.
@@ -150,14 +150,14 @@ func NewPermissions(s *discordgo.Session, settings GuildAuthData, bootstrapAdmin
 //     paths, any one sufficient: the bootstrap admin, a user
 //     explicitly added via /config admins, or Discord's own Administrator
 //     permission bit (member.Permissions, already computed and attached to
-//     every interaction by Discord — no extra API call). The Administrator
+//     every interaction by Discord, no extra API call). The Administrator
 //     path exists so a guild's own trusted admins can self-serve
 //     /config setup and everything else without first needing an existing
 //     bot-admin to add them. It's deliberately NOT extended to TierMod:
 //     mods stay purely /config mod-roles-driven, with no permission-bit
 //     shortcut, so holding an elevated Discord permission never grants
 //     bot-reconfiguration rights on its own. Note the resulting asymmetry:
-//     /config admins remove only ever revokes the DB-listed path — a
+//     /config admins remove only ever revokes the DB-listed path. A
 //     Discord Administrator keeps access via that path regardless, until a
 //     fellow Administrator changes their Discord role; that's intentional,
 //     since Discord's own role system is authoritative for that path, not
@@ -187,14 +187,14 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 	// The effective tier is resolved *before* the TierPublic shortcut, not
 	// after. Short-circuiting on spec.Tier instead would silently ignore a
 	// guild's set-tier override on any action whose compiled-in tier is
-	// TierPublic — a fail-open in the one function that must fail closed.
+	// TierPublic, a fail-open in the one function that must fail closed.
 	// The reverse can't happen: /config permissions set-tier only ever offers
 	// Mod/Admin, so an override can raise a public command's bar but can
 	// never lower a privileged one to public.
 	// Only Mod and Admin overrides are honored, never a stored TierPublic.
 	// /config permissions set-tier offers nothing else, so a public override
 	// could only arrive via a corrupt row, a hand-edited database, or some
-	// future import path — and honoring one would silently strip every check
+	// future import path, and honoring one would silently strip every check
 	// off a privileged action. Loosening Admin to Mod is a deliberate feature;
 	// loosening anything to "no check at all" is the one direction a stored
 	// value must never be able to move a command in.
@@ -240,7 +240,7 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 // targetUserID/targetRoleIDs.
 //
 // This closes the one privilege inversion the tier model alone doesn't:
-// jail is TierMod, and jailing strips every role the bot can manage — which
+// jail is TierMod, and jailing strips every role the bot can manage, which
 // for an admin whose authority comes from Discord's own Administrator bit
 // also strips their TierAdmin path here (see Authorize). Without this check
 // a single rogue or compromised mod could neutralize a guild's entire admin
@@ -249,7 +249,7 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 //
 // The rule is deliberately narrow: only admin-equivalent *targets* are
 // protected, and only from non-admin actors. Mod-on-mod moderation stays
-// allowed — a mod acting against a peer is ordinary, sometimes necessary
+// allowed: a mod acting against a peer is ordinary, sometimes necessary
 // moderation, and admins can always intervene. The bootstrap identity is
 // protected from everyone, matching the deny-list's own carve-out: it is the
 // operator's guaranteed way back in, so no in-guild action may disable it.
@@ -277,7 +277,7 @@ func (p *Permissions) CanModerate(guildID string, actor *discordgo.Member, targe
 		return fmt.Errorf("core: resolve actor's privilege in guild %s: %w", guildID, err)
 	}
 	if !actorIsAdmin {
-		return ErrForbidden{Reason: "target is an admin — only another admin can do that"}
+		return ErrForbidden{Reason: "target is an admin, only another admin can do that"}
 	}
 	return nil
 }
@@ -321,7 +321,7 @@ func (p *Permissions) guild(guildID string) (*discordgo.Guild, error) {
 
 // CanManageRole enforces layer 3: the bot's own top role must sit strictly
 // above targetRoleID in the guild's role hierarchy. Discord enforces this
-// API-side too — this check exists so we fail cleanly with a clear message
+// API-side too. This check exists so we fail cleanly with a clear message
 // instead of surfacing a raw 403 from Discord.
 func (p *Permissions) CanManageRole(guildID, targetRoleID string) error {
 	guild, err := p.guild(guildID)

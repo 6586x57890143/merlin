@@ -11,7 +11,7 @@ import (
 // plugin depends on for jail's channel-visibility allowlist. Which channels
 // stay visible to a jailed member is guild configuration, not jail/grant
 // runtime state, so it belongs in settings.Store rather than this plugin's
-// own pgStore — mirrors rotation's own settings-vs-store split exactly.
+// own pgStore. Mirrors rotation's own settings-vs-store split exactly.
 type JailChannelConfig interface {
 	JailAllowedChannelIDs(guildID string) []string
 	AddJailAllowedChannel(ctx context.Context, guildID, channelID string) error
@@ -22,7 +22,7 @@ type JailChannelConfig interface {
 // overwrite applies to. Categories are deliberately excluded: setting an
 // overwrite on a category cascades to any child channel that doesn't have
 // its own overwrite, which would fight per-channel overwrites in
-// unpredictable ways depending on child/category ordering — explicit,
+// unpredictable ways depending on child/category ordering. Explicit,
 // per-channel overwrites only, no cascade surprises. Threads aren't a
 // channel type Discord accepts permission overwrites on at all; they
 // inherit their parent channel's visibility.
@@ -50,7 +50,7 @@ func jailDenyFor(t discordgo.ChannelType) int64 {
 
 // syncJailChannelOverwrite sets or clears channelID's permission overwrite
 // for the Jailed role to match whether it's currently in guildID's
-// allowlist — called after a single allow-channel/disallow-channel
+// allowlist, called after a single allow-channel/disallow-channel
 // configuration change, so a config edit costs exactly one Discord API
 // call, never a full-guild resync.
 func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string) error {
@@ -83,11 +83,11 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 }
 
 // syncAllJailChannelOverwrites recomputes every managed channel's Jailed-role
-// overwrite in guildID against the current allowlist and channel list —
-// run once when the Jailed role is first created (so a fresh setup starts
+// overwrite in guildID against the current allowlist and channel list.
+// Run once when the Jailed role is first created (so a fresh setup starts
 // deny-by-default everywhere) and again on demand via /roles configure
 // sync-channels (e.g. after creating new channels, which don't
-// automatically inherit a deny overwrite — this plugin has no gateway
+// automatically inherit a deny overwrite; this plugin has no gateway
 // listener for channel creation, by design: keeping this to an explicit,
 // mod-triggered action avoids a second event-handling surface to reason
 // about for a case a mod can just re-run after setting up new channels).

@@ -34,13 +34,13 @@ type fakeOps struct {
 	nextRoleID int
 	overwrites map[overwriteKey]struct{ allow, deny int64 }
 
-	// memberFetchErr, when set, fails every GuildMember call with it — for
+	// memberFetchErr, when set, fails every GuildMember call with it, for
 	// tests that care about how a *kind* of failure is handled rather than
 	// which call fails.
 	memberFetchErr error
 	// memberEditErr does the same for GuildMemberEdit.
 	memberEditErr error
-	// memberListErr does the same for GuildMembers — standing in for a guild
+	// memberListErr does the same for GuildMembers, standing in for a guild
 	// whose member list can't be paged (most realistically, the GUILD_MEMBERS
 	// intent not being granted).
 	memberListErr   error
@@ -64,7 +64,7 @@ func newFakeOps() *fakeOps {
 func memberKey(guildID, userID string) string { return guildID + ":" + userID }
 
 // unknownMemberErr mirrors what discordgo returns for a member who has left
-// the guild — a *discordgo.RESTError carrying Discord's own 10007 code.
+// the guild: a *discordgo.RESTError carrying Discord's own 10007 code.
 // Callers distinguish that from a transient failure (core.IsUnknownResource)
 // before deciding to stop tracking a jail or grant, so an undifferentiated
 // error here would make "they left" and "Discord hiccuped" test identically.
@@ -96,7 +96,7 @@ func (f *fakeOps) setMember(guildID, userID string, roleIDs []string) {
 }
 
 // setMemberJoined is setMember plus a JoinedAt, which is what distinguishes a
-// member who left and came back from one who never left — see
+// member who left and came back from one who never left. See
 // rejoinedSinceJail.
 func (f *fakeOps) setMemberJoined(guildID, userID string, roleIDs []string, joinedAt time.Time) {
 	f.mu.Lock()
@@ -264,7 +264,7 @@ func (f *fakeOps) ChannelPermissionDelete(channelID, targetID string, options ..
 
 type fakeStore struct {
 	mu sync.Mutex
-	// insertJailErr, when set, fails every InsertJail — for testing what the
+	// insertJailErr, when set, fails every InsertJail, for testing what the
 	// jail mutation leaves behind when the record can't be written.
 	insertJailErr error
 	jails         map[string]JailRecord  // guildID+":"+userID
@@ -324,7 +324,7 @@ func (f *fakeStore) DueJails(ctx context.Context, guildID string, now time.Time)
 
 // ActiveJails mirrors the real store's "still in force" predicate: not yet
 // due, or indefinite. Sorted by user ID rather than the real store's
-// jailed_at DESC purely so test output is stable — the ordering only exists
+// jailed_at DESC purely so test output is stable; the ordering only exists
 // there to decide what falls off the LIMIT, which this fake has no need for.
 func (f *fakeStore) ActiveJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error) {
 	f.mu.Lock()
@@ -454,7 +454,7 @@ type fakePerms struct {
 	// core.Permissions' "target is an admin and you aren't" answer without
 	// needing a live guild state cache to derive it from.
 	protected map[string]bool
-	// moderateErr, when set, fails every CanModerate call with it — for the
+	// moderateErr, when set, fails every CanModerate call with it, for the
 	// fail-closed case where the guild's state can't be resolved at all.
 	moderateErr error
 }
@@ -475,7 +475,7 @@ func (f *fakePerms) CanModerate(guildID string, actor *discordgo.Member, targetU
 		return f.moderateErr
 	}
 	if f.protected[targetUserID] {
-		return core.ErrForbidden{Reason: "target is an admin — only another admin can do that"}
+		return core.ErrForbidden{Reason: "target is an admin, only another admin can do that"}
 	}
 	return nil
 }
