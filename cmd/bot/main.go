@@ -92,7 +92,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
-	session, err := core.NewSession(cfg.Discord.Token, cfg.EnableGuildMembersIntent)
+	session, err := core.NewSession(cfg.Discord.Token, cfg.GuildMembersIntent)
 	if err != nil {
 		return err
 	}
@@ -177,23 +177,51 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	session.AddHandler(func(s *discordgo.Session, gc *discordgo.GuildCreate) {
 		guildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+
+		// A failed settings load must not skip the wiring below, and it used
+		// to: this handler returned, and because that guild had never been
+		// through a mutator it was never queued for retry either, so nothing
+		// re-ran for the life of the process.
+		//
+		// What made that invisible is that slash commands are registered on
+		// Discord's side and persist across restarts. A guild in this state
+		// still answered /roles jail perfectly, while its roles-sweep job — the
+		// only thing that releases jails when they expire and the only
+		// intent-free defense against a rejoin evader — had never been
+		// registered at all. No command failed, no error repeated, and the
+		// symptom was simply that jails quietly became permanent and escapable.
+		//
+		// So: queue the guild for retry, and go on to do everything that does
+		// not actually need settings. The roles sweep needs none of it.
+		settingsLoaded := true
 		if err := settingsStore.Refresh(guildCtx, gc.ID); err != nil {
-			log.Error("refresh settings for guild", "guild", gc.ID, "err", err)
-			return
+			log.Error("refresh settings for guild, continuing on fail-closed defaults",
+				"guild", gc.ID, "err", err)
+			settingsStore.MarkStale(gc.ID)
+			settingsLoaded = false
 		}
 		commandsRegistered := true
 		if err := commands.RegisterGuild(s, cfg.Discord.AppID, gc.ID); err != nil {
 			log.Error("register commands for guild", "guild", gc.ID, "err", err)
 			commandsRegistered = false
 		}
-		rotationPlugin.SyncGuild(guildCtx, gc.ID)
 		rolesPlugin.SyncGuild(gc.ID)
-		if commandsRegistered {
+		if settingsLoaded {
+			// Rotation, unlike the sweep, derives which jobs should exist from
+			// settings — reconciling against fail-closed defaults would read as
+			// "this guild rotates nothing" and unregister real work. The
+			// stale-retry loop publishes EventConfigChanged once the guild is
+			// readable again, which is what reconciles it.
+			rotationPlugin.SyncGuild(guildCtx, gc.ID)
+		}
+		if commandsRegistered && settingsLoaded {
 			// Only nudge toward /config setup if it was actually registered
 			// here — otherwise the nudge would point at a command that
 			// doesn't exist yet, and (if the DM itself succeeds) burn the
 			// one-time nudge for nothing instead of retrying once
-			// registration succeeds on a later restart.
+			// registration succeeds on a later restart. Same reasoning for
+			// unreadable settings: "unconfigured" can't be told apart from
+			// "couldn't be read", and the nudge only fires once.
 			adminconfigPlugin.NudgeIfUnconfigured(guildCtx, gc)
 		}
 	})
@@ -209,13 +237,13 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// roles, permission policy, rotation config, and jail snapshots must not
 	// be silently destroyed by the bot briefly losing access. GuildCreate
 	// puts it all back on rejoin.
-	// Opt-in: without the GUILD_MEMBERS intent Discord never sends this, and
-	// the roles sweep is the only thing re-jailing evaders. With it, a member
-	// who left to shed their Jailed role gets it back as they walk in rather
-	// than up to a minute later. Registered only when the intent was actually
-	// requested, so the handler's presence always matches reality.
-	if cfg.EnableGuildMembersIntent {
-		log.Info("GUILD_MEMBERS intent enabled: jails re-apply immediately on rejoin")
+	// A member who left to shed their Jailed role gets it back as they walk in,
+	// rather than up to a sweep later. Registered only when the intent was
+	// actually requested, so the handler's presence always matches reality —
+	// without GUILD_MEMBERS Discord never sends this event, and reapplyEvadedJails
+	// on the one-minute sweep is the whole protection instead of the backstop.
+	if cfg.GuildMembersIntent {
+		log.Info("GUILD_MEMBERS intent requested: jails re-apply the moment an evader rejoins")
 		session.AddHandler(func(s *discordgo.Session, ma *discordgo.GuildMemberAdd) {
 			if ma.Member == nil || ma.User == nil {
 				return
@@ -224,6 +252,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			defer cancel()
 			rolesPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.User.ID)
 		})
+	} else {
+		log.Warn("GUILD_MEMBERS intent disabled by MERLIN_DISABLE_GUILD_MEMBERS_INTENT: " +
+			"a jailed member who rejoins keeps full access until the next sweep")
 	}
 
 	// A channel disappearing under a rotation config is otherwise only
@@ -253,6 +284,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
 	})
 
+	// Armed before Open, which is where discordgo starts dispatching — see
+	// core.WatchReady. Open only means the identify was sent, never that
+	// Discord accepted it, and nothing below works without a live gateway.
+	awaitReady := core.WatchReady(session)
+
 	if err := session.Open(); err != nil {
 		return err
 	}
@@ -261,6 +297,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			log.Error("closing discord session", "err", err)
 		}
 	}()
+
+	if err := awaitReady(); err != nil {
+		return err
+	}
 
 	if err := registry.StartAll(ctx); err != nil {
 		return err

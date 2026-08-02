@@ -29,13 +29,24 @@ type GlobalConfig struct {
 	// The per-guild equivalents (/config pause, /config dryrun) live in
 	// internal/settings for everything short of that.
 	PauseAllWrites bool `yaml:"-"`
-	// EnableGuildMembersIntent adds Discord's privileged GUILD_MEMBERS gateway
+	// GuildMembersIntent requests Discord's privileged GUILD_MEMBERS gateway
 	// intent, letting the roles plugin re-apply a jail the instant an evader
-	// rejoins instead of on the next one-minute sweep. Off by default: it is a
-	// privileged intent, and jail already survives a leave-and-rejoin without
-	// it. Turning it on also requires enabling the intent for the application
-	// in Discord's Developer Portal, or the gateway refuses the connection.
-	EnableGuildMembersIntent bool `yaml:"-"`
+	// rejoins rather than on the next one-minute sweep.
+	//
+	// On by default, and the default changed deliberately. It used to be
+	// opt-in via MERLIN_ENABLE_GUILD_MEMBERS_INTENT, which put the operator in
+	// the position of enabling "Server Members Intent" in the Developer Portal
+	// — the only step that looks like it should matter — and getting no
+	// behavior change, because the bot never asked for the intent. Nothing
+	// reported the mismatch. Requesting it by default makes the portal toggle
+	// mean what it appears to mean; a deployment that cannot enable it there
+	// sets MERLIN_DISABLE_GUILD_MEMBERS_INTENT and keeps the sweep fallback.
+	//
+	// Asking for an intent the portal has not granted makes Discord reject the
+	// connection, so this must be paired with the readiness check in
+	// cmd/bot/main.go — see waitForReady, which turns that rejection into a
+	// startup failure naming the toggle instead of a silent reconnect loop.
+	GuildMembersIntent bool `yaml:"-"`
 }
 
 // Level maps LogLevel onto slog. The value is validated at load time, so an

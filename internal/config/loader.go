@@ -51,7 +51,12 @@ func (l *Loader) reload() error {
 	next.Database.DSN = os.Getenv("DATABASE_URL")
 	next.BootstrapAdminUserID = os.Getenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID")
 	next.PauseAllWrites = isTruthy(os.Getenv("MERLIN_PAUSE_ALL_WRITES"))
-	next.EnableGuildMembersIntent = isTruthy(os.Getenv("MERLIN_ENABLE_GUILD_MEMBERS_INTENT"))
+	// Opt-out rather than opt-in: see GlobalConfig.GuildMembersIntent. The
+	// superseded MERLIN_ENABLE_GUILD_MEMBERS_INTENT is deliberately not read
+	// any more — an existing .env that sets it now gets the behavior it was
+	// asking for regardless, and one that doesn't gets it too, which was the
+	// entire point of changing the default.
+	next.GuildMembersIntent = !isTruthy(os.Getenv("MERLIN_DISABLE_GUILD_MEMBERS_INTENT"))
 	// LOG_LEVEL overrides the YAML value when set. On a deployed host .env is
 	// already the file an operator edits; config.yaml is a read-only mount,
 	// so requiring a file change to raise verbosity mid-incident would be the
