@@ -26,7 +26,7 @@ func resolveSticky(rc settings.RotationChannel) []string {
 // cadence and how long content survives after a rotation.
 //
 // It takes the whole config, not just the interval. It used to be handed
-// rc.IntervalHours and told members "nothing posted here roosts longer than
+// rc.IntervalMinutes and told members "nothing posted here roosts longer than
 // [interval]" — a statement about the *rotation cadence* presented as the
 // retention policy, and the two are independent settings. A channel rotating
 // daily with a 3-hour retention had content deleted far sooner than the
@@ -35,7 +35,7 @@ func resolveSticky(rc settings.RotationChannel) []string {
 // claim is worse than publishing none, in a community whose whole reason for
 // running this feature is being able to point at what it actually does.
 func retentionNotice(rc settings.RotationChannel) string {
-	cadence := humanDuration(time.Duration(rc.IntervalHours) * time.Hour)
+	cadence := humanDuration(time.Duration(rc.IntervalMinutes) * time.Minute)
 	if rc.RetentionHours == nil {
 		return fmt.Sprintf(
 			"🦅 Merlins travel light — this nest gets a fresh perch every %s. Retired perches are tucked "+

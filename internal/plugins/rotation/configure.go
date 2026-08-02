@@ -27,6 +27,25 @@ const (
 	actionList       = "rotation.list"
 )
 
+// minRotationInterval is the floor on how often a channel may rotate.
+//
+// Interval is stored in minutes and accepted at minute precision, so "every
+// 90 minutes" and "every 2h30m" are both expressible — but not "every 5
+// minutes". Each rotation creates a channel, populates it, edits two
+// channels, and eventually deletes one, and a guild's channel-create budget
+// in discordguard is 20/hour: a sub-hourly cadence on even a couple of
+// channels would spend it on rotation alone and starve everything else,
+// including the sweep that deletes the archives it just produced. It is also
+// the point past which rotation stops being a privacy measure and becomes
+// unusable for members, who lose the channel mid-conversation.
+//
+// A floor, not a granularity: anything at or above it is allowed to the
+// minute.
+const (
+	minRotationInterval        = time.Hour
+	minRotationIntervalMinutes = int(minRotationInterval / time.Minute)
+)
+
 // defaultArchiveCategoryName is what /rotation configure add creates (or
 // reuses, if one already exists under this name) when archive_category is
 // omitted — mirroring /config setup's "auto-create whatever's missing"
@@ -94,7 +113,7 @@ func (p *Plugin) registerCommands() {
 						Description: "Start rotating a channel",
 						Options: []*discordgo.ApplicationCommandOption{
 							channelOpt("channel", "The live channel to rotate"),
-							durationOpt("interval", "How often it rotates — e.g. \"24h\" or \"3d\"", true),
+							durationOpt("interval", "How often it rotates — e.g. \"24h\", \"3d\", \"90m\". Minimum 1 hour.", true),
 							{
 								Type:         discordgo.ApplicationCommandOptionChannel,
 								Name:         "archive_category",
@@ -117,7 +136,7 @@ func (p *Plugin) registerCommands() {
 						Description: "Adjust an already-configured rotating channel",
 						Options: []*discordgo.ApplicationCommandOption{
 							channelOpt("channel", "The rotating channel to adjust"),
-							durationOpt("interval", "New rotation interval — e.g. \"24h\" or \"3d\"", false),
+							durationOpt("interval", "New rotation interval — e.g. \"24h\", \"3d\", \"90m\". Minimum 1 hour.", false),
 							durationOpt("retention", "New retention — e.g. \"30d\" or \"72h\"", false),
 							{
 								Type:        discordgo.ApplicationCommandOptionBoolean,
@@ -185,7 +204,7 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 		GuildID:           i.GuildID,
 		ChannelID:         channelID.Value.(string),
 		ArchiveCategoryID: archiveCategoryID,
-		IntervalHours:     int(interval / time.Hour),
+		IntervalMinutes:   int(interval / time.Minute),
 		ArchiveVisibility: "mod_only",
 	}
 	if v, ok := opts["visibility"]; ok {
@@ -289,7 +308,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 			core.RespondErr(s, i, "Invalid interval", err)
 			return
 		}
-		rc.IntervalHours = int(interval / time.Hour)
+		rc.IntervalMinutes = int(interval / time.Minute)
 	}
 	if v, ok := opts["retention_forever"]; ok && v.BoolValue() {
 		rc.RetentionHours = nil
@@ -363,7 +382,7 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 // permanently deleted.
 func rotationSummary(rc settings.RotationChannel) string {
 	return fmt.Sprintf("interval=%s retention=%s visibility=%s",
-		core.FormatDuration(time.Duration(rc.IntervalHours)*time.Hour),
+		core.FormatDuration(time.Duration(rc.IntervalMinutes)*time.Minute),
 		formatRetention(rc.RetentionHours),
 		rc.ArchiveVisibility)
 }
@@ -399,8 +418,10 @@ func validateRotationChannel(rc settings.RotationChannel) error {
 	if rc.RetentionHours != nil && *rc.RetentionHours < 1 {
 		return fmt.Errorf("retention must be at least 1 hour if set (omit it entirely for forever)")
 	}
-	if rc.IntervalHours < 1 {
-		return fmt.Errorf("interval must be at least 1 hour")
+	if rc.IntervalMinutes < minRotationIntervalMinutes {
+		return fmt.Errorf("interval must be at least %s (got %s)",
+			core.FormatDuration(minRotationInterval),
+			core.FormatDuration(time.Duration(rc.IntervalMinutes)*time.Minute))
 	}
 	return nil
 }

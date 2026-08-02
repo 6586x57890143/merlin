@@ -19,7 +19,7 @@ func intPtr(n int) *int { return &n }
 
 func finiteRetentionRC() settings.RotationChannel {
 	return settings.RotationChannel{
-		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "old1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
 		RetentionHours: intPtr(7 * 24),
 		StickyEnabled:  true, StickyMessages: []string{"hello!"},
@@ -28,7 +28,7 @@ func finiteRetentionRC() settings.RotationChannel {
 
 func whitelistVisibilityRC() settings.RotationChannel {
 	return settings.RotationChannel{
-		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "old1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "whitelist",
 		ArchiveWhitelistRoleIDs: []string{"vip-role"}, ArchiveWhitelistUserIDs: []string{"vip-user"},
 		RetentionHours: intPtr(7 * 24),
@@ -37,14 +37,14 @@ func whitelistVisibilityRC() settings.RotationChannel {
 
 func foreverRetentionRC() settings.RotationChannel {
 	return settings.RotationChannel{
-		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "old1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
 	}
 }
 
 func hourRetentionRC() settings.RotationChannel {
 	return settings.RotationChannel{
-		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "old1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
 		RetentionHours: intPtr(1),
 	}
@@ -225,7 +225,7 @@ func TestRotateRetargetsRotationConfigToNewChannel(t *testing.T) {
 	if !ok {
 		t.Fatal("expected the rotation config retargeted to the new channel's ID")
 	}
-	if updated.IntervalHours != rc.IntervalHours || updated.ArchiveCategoryID != rc.ArchiveCategoryID {
+	if updated.IntervalMinutes != rc.IntervalMinutes || updated.ArchiveCategoryID != rc.ArchiveCategoryID {
 		t.Fatalf("expected the retargeted config to preserve its other settings, got %+v", updated)
 	}
 }
@@ -548,7 +548,7 @@ func TestReconcileJobKeyStableAcrossRetarget(t *testing.T) {
 	fs := newFakeSettings()
 	fs.modRoles["g1"] = []string{"modrole1"}
 	_ = fs.UpsertRotationChannel(context.Background(), settings.RotationChannel{
-		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "old1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
 	})
 
@@ -602,7 +602,7 @@ func TestDeferFirstRotationSeedsNewChannelJob(t *testing.T) {
 	fs := newFakeSettings()
 	fs.modRoles["g1"] = []string{"modrole1"}
 	_ = fs.UpsertRotationChannel(context.Background(), settings.RotationChannel{
-		GuildID: "g1", ChannelID: "new1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "new1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
 	})
 
@@ -650,7 +650,7 @@ func TestReconcileAloneNeverSeeds(t *testing.T) {
 	fs := newFakeSettings()
 	fs.modRoles["g1"] = []string{"modrole1"}
 	_ = fs.UpsertRotationChannel(context.Background(), settings.RotationChannel{
-		GuildID: "g1", ChannelID: "existing1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "existing1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
 	})
 

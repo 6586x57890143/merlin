@@ -45,6 +45,20 @@ type fakeOps struct {
 	callCounts map[string]int
 	failOnCall map[string]int
 	failWith   map[string]error
+
+	// editCalls records every ChannelEditComplex in order. Final state alone
+	// can't express the position restore's correctness argument, which is
+	// about *when* it happens relative to the old channel leaving the
+	// category — an assertion on the end state would pass even if the two
+	// were swapped.
+	editCalls []recordedEdit
+}
+
+type recordedEdit struct {
+	channelID string
+	name      string
+	parentID  string
+	position  *int
 }
 
 func newFakeOps() *fakeOps {
@@ -167,6 +181,9 @@ func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEd
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.editCalls = append(f.editCalls, recordedEdit{
+		channelID: channelID, name: data.Name, parentID: data.ParentID, position: data.Position,
+	})
 	ch, ok := f.channels[channelID]
 	if !ok {
 		return nil, unknownChannelErr(channelID)
@@ -186,6 +203,12 @@ func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEd
 		// would silently no-op it — exactly the bug that shipped in
 		// revealNewChannel because this fake didn't reproduce it.
 		ch.PermissionOverwrites = data.PermissionOverwrites
+	}
+	// Position is a *int precisely so "move to 0" is distinguishable from
+	// "leave it alone" — reproducing that here is what lets a test catch a
+	// rotation that puts the replacement at the top of the category.
+	if data.Position != nil {
+		ch.Position = *data.Position
 	}
 	return ch, nil
 }

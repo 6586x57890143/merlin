@@ -301,7 +301,7 @@ func (p *Plugin) reconcile(ctx context.Context, guildID string) {
 		// was a real bug: it looped, rotating (and archiving) every ~30s
 		// instead of once per interval_hours.
 		jobKey := scheduler.JobKey(guildID, "rotation:"+strconv.FormatInt(rc.ID, 10))
-		interval := time.Duration(rc.IntervalHours) * time.Hour
+		interval := time.Duration(rc.IntervalMinutes) * time.Minute
 		current[jobKey] = true
 
 		if existingInterval, ok := p.registeredJobs[jobKey]; ok {

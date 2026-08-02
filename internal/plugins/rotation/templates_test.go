@@ -8,7 +8,7 @@ import (
 )
 
 // TestRetentionNoticeDescribesRetentionNotInterval is a regression for a
-// false public statement. The notice used to be handed rc.IntervalHours and
+// false public statement. The notice used to be handed rc.IntervalMinutes and
 // tell members "nothing posted here roosts longer than [interval]" — the
 // rotation cadence presented as the deletion policy, when the two are
 // independent settings. This bot's whole justification is being able to point
@@ -16,7 +16,7 @@ import (
 // none at all.
 func TestRetentionNoticeDescribesRetentionNotInterval(t *testing.T) {
 	hours := 3
-	rc := settings.RotationChannel{IntervalHours: 24, RetentionHours: &hours}
+	rc := settings.RotationChannel{IntervalMinutes: 24 * 60, RetentionHours: &hours}
 
 	notice := retentionNotice(rc)
 	if !strings.Contains(notice, "3 hours") {
@@ -32,7 +32,7 @@ func TestRetentionNoticeDescribesRetentionNotInterval(t *testing.T) {
 // the notice still announced a deletion window derived from the interval —
 // telling members their content would be erased when nothing would erase it.
 func TestRetentionNoticeOnKeepForeverPromisesNoDeletion(t *testing.T) {
-	notice := retentionNotice(settings.RotationChannel{IntervalHours: 24, RetentionHours: nil})
+	notice := retentionNotice(settings.RotationChannel{IntervalMinutes: 24 * 60, RetentionHours: nil})
 
 	for _, claim := range []string{"gone for good", "roosts more than"} {
 		if strings.Contains(notice, claim) {
@@ -52,7 +52,7 @@ func TestRetentionNoticeOnKeepForeverPromisesNoDeletion(t *testing.T) {
 func TestRotationSummaryNeverPrintsAPointer(t *testing.T) {
 	hours := 168
 	got := rotationSummary(settings.RotationChannel{
-		IntervalHours: 24, RetentionHours: &hours, ArchiveVisibility: "mod_only",
+		IntervalMinutes: 24 * 60, RetentionHours: &hours, ArchiveVisibility: "mod_only",
 	})
 
 	if strings.Contains(got, "0x") {
