@@ -42,19 +42,24 @@ just links to it rather than repeating it.
   model and `/config`'s subcommands. Who counts as "mod"/"admin" is
   configured via `/config mod-roles`/`/config admins` — see "First-time
   setup" below.
-- **Gateway intents**: `GUILDS` by default. `MESSAGE_CONTENT` is never
-  requested. `GUILD_MEMBERS` is **optional**, off unless you set
-  `MERLIN_ENABLE_GUILD_MEMBERS_INTENT=1`:
-  - Without it, a member who leaves and rejoins to shed their Jailed role is
-    re-jailed by the next `roles-sweep` tick — at most one minute later.
-    Jail survives a rejoin either way; this is not a gap you have to opt out
-    of.
-  - With it, the re-jail happens as they walk back in. Enable it only if that
-    minute matters to you: it is a privileged intent, which means also
-    ticking "Server Members Intent" for the application in Discord's
-    Developer Portal (a self-serve toggle below 100 servers; Discord approval
-    above that). If the env var is set and the portal toggle isn't, the
-    gateway refuses the connection at startup.
+- **Gateway intents**: `GUILDS` and `GUILD_MEMBERS`. `MESSAGE_CONTENT` is
+  never requested.
+  - `GUILD_MEMBERS` is privileged, so it must also be ticked as **"Server
+    Members Intent"** under Bot in Discord's Developer Portal (a self-serve
+    toggle below 100 servers; Discord approval above that). Ticking it there
+    is all you need to do — the bot asks for it by default.
+  - It is what re-jails a member the moment they rejoin, rather than on the
+    next `roles-sweep` tick. Jail survives a rejoin either way, so the intent
+    narrows the window from "at most a minute" to "immediately"; it does not
+    create the protection.
+  - If the portal toggle is off, Discord refuses the connection and the bot
+    **exits at startup with that explanation** rather than running on
+    silently. To run without it, set `MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1`
+    and rely on the sweep.
+  - This used to be opt-in via `MERLIN_ENABLE_GUILD_MEMBERS_INTENT`, which
+    was a trap: ticking the portal toggle looked like it should be enough,
+    changed nothing on its own, and nothing reported the mismatch. That
+    variable is no longer read.
 
 ## Local development
 

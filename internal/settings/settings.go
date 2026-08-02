@@ -218,6 +218,16 @@ func (s *Store) invalidate(guildID string) {
 	s.mu.Unlock()
 }
 
+// MarkStale queues guildID for re-read by RetryStale without any mutation
+// having happened.
+//
+// The mutation paths reach the same set through invalidate, but a guild whose
+// very first load failed never went through a mutator, so nothing had it
+// queued: the failure was logged once at GuildCreate and then forgotten for
+// the life of the process. Exported so cmd/bot/main.go can hand a guild it
+// could not load to the retry loop instead of dropping it.
+func (s *Store) MarkStale(guildID string) { s.invalidate(guildID) }
+
 // Forget drops guildID from the cache entirely, without marking it stale —
 // for when the bot has left the guild and there is nothing to retry. The
 // Postgres rows are deliberately left alone: being removed from a server is
@@ -246,7 +256,16 @@ func (s *Store) RetryStale(ctx context.Context) int {
 	for _, guildID := range pending {
 		if err := s.Refresh(ctx, guildID); err != nil {
 			remaining++
+			continue
 		}
+		// Recovering the cache is only half the job: while the guild was
+		// unreadable every consumer saw fail-closed defaults, and plugins that
+		// derive registered work from settings (rotation.reconcile) acted on
+		// them. They rebuild from EventConfigChanged, and nothing else is going
+		// to publish one — a successful retry is not a mutation. Without this a
+		// guild recovered its settings but kept whatever job set it had
+		// computed while it had none.
+		s.publishChanged(ctx, guildID)
 	}
 	return remaining
 }

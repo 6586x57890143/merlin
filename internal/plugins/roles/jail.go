@@ -227,8 +227,10 @@ func rejoinedSinceJail(member *discordgo.Member, rec JailRecord) bool {
 //
 // Runs on the same one-minute sweep as automatic release, so the window an
 // evader gets is bounded by that tick rather than by how long nobody notices.
-// Setting MERLIN_ENABLE_GUILD_MEMBERS_INTENT closes it to near-instant by
-// also reacting to the rejoin event itself — see HandleMemberJoin.
+// The GUILD_MEMBERS intent, requested by default, closes that window to
+// near-instant by also reacting to the rejoin event itself — see
+// HandleMemberJoin. This remains the backstop, and the sole mechanism for a
+// deployment that has turned the intent off.
 func (p *Plugin) reapplyEvadedJails(ctx context.Context, guildID string) error {
 	active, err := p.store.ActiveJails(ctx, guildID, p.now())
 	if err != nil {
@@ -305,10 +307,10 @@ func releaseAtText(rec JailRecord) string {
 }
 
 // HandleMemberJoin re-applies a still-active jail the moment a member rejoins,
-// rather than waiting for the next sweep. Only ever called when the operator
-// has opted into the GUILD_MEMBERS intent (MERLIN_ENABLE_GUILD_MEMBERS_INTENT)
-// — without it Discord never sends the event, and the sweep above remains the
-// sole mechanism.
+// rather than waiting for the next sweep. Only ever called while the
+// GUILD_MEMBERS intent is in effect (on by default,
+// MERLIN_DISABLE_GUILD_MEMBERS_INTENT opts out) — without it Discord never
+// sends the event, and the sweep above remains the sole mechanism.
 func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
 	if err != nil {
