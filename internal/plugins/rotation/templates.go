@@ -23,13 +23,31 @@ func resolveSticky(rc settings.RotationChannel) []string {
 // doubles as documentation of the retention policy if it's ever questioned.
 // Given a birdlike flavor (Merlin is a bird, the falcon species) per
 // spec.MD, without dropping any of the required information: the reset
-// cadence, that content doesn't outlive it, and the moderation-report
-// exception.
-func retentionNotice(intervalHours int) string {
+// cadence and how long content survives after a rotation.
+//
+// It takes the whole config, not just the interval. It used to be handed
+// rc.IntervalHours and told members "nothing posted here roosts longer than
+// [interval]" — a statement about the *rotation cadence* presented as the
+// retention policy, and the two are independent settings. A channel rotating
+// daily with a 3-hour retention had content deleted far sooner than the
+// notice implied; one with retention unset had content kept indefinitely
+// while the notice promised deletion outright. Publishing a false retention
+// claim is worse than publishing none, in a community whose whole reason for
+// running this feature is being able to point at what it actually does.
+func retentionNotice(rc settings.RotationChannel) string {
+	cadence := humanDuration(time.Duration(rc.IntervalHours) * time.Hour)
+	if rc.RetentionHours == nil {
+		return fmt.Sprintf(
+			"🦅 Merlins travel light — this nest gets a fresh perch every %s. Retired perches are tucked "+
+				"out of sight where only the flock's keepers can reach them.",
+			cadence,
+		)
+	}
 	return fmt.Sprintf(
-		"🦅 Merlins travel light — this nest gets a fresh perch every %s, and nothing posted here roosts "+
-			"longer than that.",
-		humanDuration(time.Duration(intervalHours)*time.Hour),
+		"🦅 Merlins travel light — this nest gets a fresh perch every %s, and once a perch is retired "+
+			"nothing on it roosts more than %s before it's gone for good.",
+		cadence,
+		humanDuration(time.Duration(*rc.RetentionHours)*time.Hour),
 	)
 }
 
