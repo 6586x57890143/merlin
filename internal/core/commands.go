@@ -22,10 +22,23 @@ type CommandHandler func(ctx context.Context, s *discordgo.Session, i *discordgo
 // you if more are returned.
 type AutocompleteHandler func(ctx context.Context, i *discordgo.InteractionCreate, focusedOption, focusedValue string) []*discordgo.ApplicationCommandOptionChoice
 
+// ComponentHandler handles a message-component interaction (a button click or
+// select-menu choice) whose CustomID matched a registered prefix. customID is
+// the component's full CustomID, so a handler can decode whatever state it
+// encoded into it (e.g. a page number, or which record a select menu row
+// refers to) — components carry no other server-side session of their own.
+type ComponentHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string)
+
 type registeredLeaf struct {
 	spec         PermSpec
 	handler      CommandHandler
 	autocomplete AutocompleteHandler
+}
+
+type registeredComponent struct {
+	pluginName string
+	spec       PermSpec
+	handler    ComponentHandler
 }
 
 // CommandRouter is the single owner of slash-command registration and
@@ -46,6 +59,7 @@ type CommandRouter struct {
 	topLevel       []*discordgo.ApplicationCommand
 	topLevelPlugin map[string]string // top-level command name -> owning plugin name
 	leaves         map[string]*registeredLeaf
+	components     map[string]*registeredComponent // CustomID prefix -> handler
 }
 
 func NewCommandRouter(perms *Permissions, gate PluginGate, log *slog.Logger) *CommandRouter {
@@ -55,6 +69,7 @@ func NewCommandRouter(perms *Permissions, gate PluginGate, log *slog.Logger) *Co
 		log:            log,
 		leaves:         make(map[string]*registeredLeaf),
 		topLevelPlugin: make(map[string]string),
+		components:     make(map[string]*registeredComponent),
 	}
 }
 
@@ -106,6 +121,18 @@ func (r *CommandRouter) Autocomplete(topLevelName, path string, fn AutocompleteH
 	leaf.autocomplete = fn
 }
 
+// HandleComponent registers fn for every message-component interaction
+// (button click, select-menu choice) whose CustomID starts with prefix —
+// callers namespace their own prefixes (e.g. "rotation:list:") to avoid
+// collisions; the longest matching prefix wins if more than one matches.
+// pluginName and spec are checked exactly like a slash command's (plugin
+// enabled, then Authorize) before fn runs: a component interaction is its
+// own fresh interaction, not an extension of whatever originally rendered
+// it, so it gets no exemption from either check.
+func (r *CommandRouter) HandleComponent(pluginName, prefix string, spec PermSpec, fn ComponentHandler) {
+	r.components[prefix] = &registeredComponent{pluginName: pluginName, spec: spec, handler: fn}
+}
+
 // Actions returns every distinct, non-empty PermSpec.Action currently
 // registered — used by /config permissions grant/revoke's autocomplete so
 // admins can discover valid action names without reading source code.
@@ -137,6 +164,14 @@ func leafKey(topLevelName, path string) string {
 // in Discord's UI but silently does nothing). Call once, after every
 // plugin's Init has run and before the session opens.
 func (r *CommandRouter) Finalize() error {
+	for prefix, rc := range r.components {
+		if rc.spec.Tier == tierUnset {
+			return fmt.Errorf("core: component %q registered with no PermSpec.Tier", prefix)
+		}
+		if rc.spec.Tier != TierPublic && rc.spec.Action == "" {
+			return fmt.Errorf("core: component %q is above TierPublic but has no PermSpec.Action", prefix)
+		}
+	}
 	for key, leaf := range r.leaves {
 		if leaf.spec.Tier == tierUnset {
 			return fmt.Errorf("core: command %q registered with no PermSpec.Tier", key)
@@ -239,7 +274,60 @@ func (r *CommandRouter) HandleInteraction(s *discordgo.Session, i *discordgo.Int
 		r.dispatchCommand(s, i)
 	case discordgo.InteractionApplicationCommandAutocomplete:
 		r.dispatchAutocomplete(s, i)
+	case discordgo.InteractionMessageComponent:
+		r.dispatchComponent(s, i)
 	}
+}
+
+// matchComponent finds the registered component whose prefix is the
+// longest match for customID, or nil if none matches — split out from
+// dispatchComponent so the matching logic itself is unit-testable without
+// needing a live Discord session.
+func (r *CommandRouter) matchComponent(customID string) *registeredComponent {
+	var matched *registeredComponent
+	var matchedPrefix string
+	for prefix, rc := range r.components {
+		if strings.HasPrefix(customID, prefix) && len(prefix) > len(matchedPrefix) {
+			matched, matchedPrefix = rc, prefix
+		}
+	}
+	return matched
+}
+
+// dispatchComponent resolves a button/select-menu interaction to whichever
+// registered prefix its CustomID starts with (longest match wins, so two
+// plugins can't accidentally shadow each other), then runs the exact same
+// plugin-enabled + Authorize checks dispatchCommand does — a component
+// interaction is its own fresh interaction, never exempt from either check
+// just because it followed a successful command.
+func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.log.Error("component handler panicked", "panic", rec)
+			respondEphemeral(s, i, "Something went wrong handling that.")
+		}
+	}()
+
+	customID := i.MessageComponentData().CustomID
+	matched := r.matchComponent(customID)
+	if matched == nil {
+		r.log.Error("component dispatch: no handler registered", "custom_id", customID)
+		respondEphemeral(s, i, "This button or menu isn't wired up yet.")
+		return
+	}
+
+	if !r.gate.PluginEnabled(i.GuildID, matched.pluginName) {
+		respondEphemeral(s, i, "This feature is disabled in this server.")
+		return
+	}
+	if err := r.perms.Authorize(i, matched.spec); err != nil {
+		respondEphemeral(s, i, "You are not allowed to do that.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	matched.handler(ctx, s, i, customID)
 }
 
 func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {

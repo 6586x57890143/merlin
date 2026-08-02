@@ -1,6 +1,6 @@
 // Package audit implements core.AuditWriter: every config/state change gets
 // written to an append-only DB table and posted as an embed to the guild's
-// #bot-audit-log channel (spec.MD Design Principle 4 — "config changes are
+// #bird-audit-log channel (spec.MD Design Principle 4 — "config changes are
 // audited, not silent").
 package audit
 
@@ -38,7 +38,7 @@ func New(pool *pgxpool.Pool, session *discordgo.Session, settings channelResolve
 // durable audit trail spec.MD Design Principle 4 requires — is written
 // first and independently of the embed post. Callers should log a non-nil
 // error and continue rather than fail the action that triggered it: a
-// missing/deleted #bot-audit-log channel means the live notification was
+// missing/deleted #bird-audit-log channel means the live notification was
 // missed, not that the underlying action (or the audit trail itself) failed.
 // See every call site (rotation/execute.go, sweep.go, adminconfig.go,
 // rotation/configure.go) for the consistent policy this implies.

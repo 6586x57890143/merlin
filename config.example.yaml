@@ -10,5 +10,5 @@ log_level: info
 # One-time migration helper only: if you're upgrading from a pre-Milestone-4
 # deployment that had guild config in this file, keep a copy of the OLD
 # rotating_channels/mod_role_ids/etc. content elsewhere and run
-# `/config import` (as the break-glass admin) pointing at it once — see
+# `/config import` (as the bootstrap admin) pointing at it once — see
 # internal/settings/import.go. New deployments never need this.

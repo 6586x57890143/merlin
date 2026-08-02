@@ -14,7 +14,7 @@ import (
 )
 
 // AuditWriter is the narrow interface plugins depend on for audit logging.
-// The concrete implementation (DB write + #bot-audit-log embed) lands in a
+// The concrete implementation (DB write + #bird-audit-log embed) lands in a
 // later milestone; this shape lets code written now compile against it
 // without a hard package dependency.
 type AuditWriter interface {

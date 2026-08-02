@@ -76,7 +76,7 @@ func run(log *slog.Logger) error {
 
 	bus := core.NewEventBus(log)
 	settingsStore := settings.New(db.Pool, bus)
-	perms := core.NewPermissions(session, settingsStore, cfg.BreakGlassAdminUserID)
+	perms := core.NewPermissions(session, settingsStore, cfg.BootstrapAdminUserID)
 	commands := core.NewCommandRouter(perms, settingsStore, log)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	auditWriter := audit.New(db.Pool, session, settingsStore)

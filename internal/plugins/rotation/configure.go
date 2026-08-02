@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -26,6 +27,14 @@ const (
 	actionList       = "rotation.list"
 )
 
+// defaultArchiveCategoryName is what /rotation configure add creates (or
+// reuses, if one already exists under this name) when archive_category is
+// omitted — mirroring /config setup's "auto-create whatever's missing"
+// pattern (adminconfig.handleSetup) instead of forcing a mod to go create a
+// category by hand in Discord's UI before they can configure rotation at
+// all.
+const defaultArchiveCategoryName = "Archive"
+
 func (p *Plugin) registerCommands() {
 	channelOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{
@@ -34,6 +43,34 @@ func (p *Plugin) registerCommands() {
 			Description:  desc,
 			Required:     true,
 			ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText},
+		}
+	}
+	// durationOpt is used for both interval and retention — a plain string
+	// rather than an Integer, so one option can accept either unit
+	// (core.ParseFlexibleDuration): "24h" or "3d" for a daily rotation, "30d"
+	// or "720h" for a month of retention. Integer options can't express a
+	// unit at all, which is exactly why this used to be interval_hours/
+	// retention_days: two different granularities for what's conceptually
+	// the same kind of value, and no way to ask for "3 days" without doing
+	// the multiplication by hand.
+	durationOpt := func(name, desc string, required bool) *discordgo.ApplicationCommandOption {
+		return &discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        name,
+			Description: desc,
+			Required:    required,
+		}
+	}
+	visibilityOpt := func(required bool) *discordgo.ApplicationCommandOption {
+		return &discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "visibility",
+			Description: "Who can see the archive besides mods (default: mods only)",
+			Required:    required,
+			Choices: []*discordgo.ApplicationCommandOptionChoice{
+				{Name: "Mods only", Value: "mod_only"},
+				{Name: "Mods + whitelist", Value: "whitelist"},
+			},
 		}
 	}
 
@@ -57,35 +94,15 @@ func (p *Plugin) registerCommands() {
 						Description: "Start rotating a channel",
 						Options: []*discordgo.ApplicationCommandOption{
 							channelOpt("channel", "The live channel to rotate"),
+							durationOpt("interval", "How often it rotates — e.g. \"24h\" or \"3d\"", true),
 							{
 								Type:         discordgo.ApplicationCommandOptionChannel,
 								Name:         "archive_category",
-								Description:  "Hidden category archived channels move into",
-								Required:     true,
+								Description:  "Hidden category archived channels move into. Omit to auto-create/reuse one named \"Archive\"",
 								ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildCategory},
 							},
-							{
-								Type:        discordgo.ApplicationCommandOptionInteger,
-								Name:        "interval_hours",
-								Description: "How often it rotates, in hours",
-								Required:    true,
-								MinValue:    float64Ptr(1),
-							},
-							{
-								Type:        discordgo.ApplicationCommandOptionInteger,
-								Name:        "retention_days",
-								Description: "Days to keep the archive before permanent deletion. Omit to keep forever.",
-								MinValue:    float64Ptr(1),
-							},
-							{
-								Type:        discordgo.ApplicationCommandOptionString,
-								Name:        "visibility",
-								Description: "Who can see the archive besides mods (default: mods only)",
-								Choices: []*discordgo.ApplicationCommandOptionChoice{
-									{Name: "Mods only", Value: "mod_only"},
-									{Name: "Mods + whitelist", Value: "whitelist"},
-								},
-							},
+							durationOpt("retention", "How long to keep the archive before permanent deletion — e.g. \"30d\" or \"72h\". Omit to keep forever.", false),
+							visibilityOpt(false),
 						},
 					},
 					{
@@ -100,32 +117,14 @@ func (p *Plugin) registerCommands() {
 						Description: "Adjust an already-configured rotating channel",
 						Options: []*discordgo.ApplicationCommandOption{
 							channelOpt("channel", "The rotating channel to adjust"),
-							{
-								Type:        discordgo.ApplicationCommandOptionInteger,
-								Name:        "interval_hours",
-								Description: "New rotation interval, in hours",
-								MinValue:    float64Ptr(1),
-							},
-							{
-								Type:        discordgo.ApplicationCommandOptionInteger,
-								Name:        "retention_days",
-								Description: "New minimum retention, in days",
-								MinValue:    float64Ptr(1),
-							},
+							durationOpt("interval", "New rotation interval — e.g. \"24h\" or \"3d\"", false),
+							durationOpt("retention", "New retention — e.g. \"30d\" or \"72h\"", false),
 							{
 								Type:        discordgo.ApplicationCommandOptionBoolean,
 								Name:        "retention_forever",
 								Description: "Set true to keep archives forever instead of a fixed retention",
 							},
-							{
-								Type:        discordgo.ApplicationCommandOptionString,
-								Name:        "visibility",
-								Description: "Who can see the archive besides mods",
-								Choices: []*discordgo.ApplicationCommandOptionChoice{
-									{Name: "Mods only", Value: "mod_only"},
-									{Name: "Mods + whitelist", Value: "whitelist"},
-								},
-							},
+							visibilityOpt(false),
 						},
 					},
 					{
@@ -158,24 +157,9 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("rotation", "configure/remove", core.PermSpec{Tier: core.TierAdmin, Action: actionStructural}, p.handleRemove)
 	p.commands.Handle("rotation", "configure/edit", core.PermSpec{Tier: core.TierAdmin, Action: actionAdjust}, p.handleEdit)
 	p.commands.Handle("rotation", "configure/sticky", core.PermSpec{Tier: core.TierAdmin, Action: actionAdjust}, p.handleSticky)
-}
-
-func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	channels := p.settings.RotationChannels(i.GuildID)
-	if len(channels) == 0 {
-		core.RespondInfo(s, i, "Rotating channels", "No channels are configured to rotate in this server. Use `/rotation configure add` to start.")
-		return
-	}
-	var b strings.Builder
-	for _, rc := range channels {
-		retention := "forever"
-		if rc.RetentionDays != nil {
-			retention = fmt.Sprintf("%d days", *rc.RetentionDays)
-		}
-		fmt.Fprintf(&b, "- <#%s> — every %dh, archive: <#%s> (%s), retention: %s, sticky: %v\n",
-			rc.ChannelID, rc.IntervalHours, rc.ArchiveCategoryID, rc.ArchiveVisibility, retention, rc.StickyEnabled)
-	}
-	core.RespondInfo(s, i, "Rotating channels", b.String())
+	p.commands.HandleComponent(p.Name(), rotationListComponentPrefix, core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleListPage)
+	p.commands.HandleComponent(p.Name(), rotationListSelectPrefix, core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleListSelect)
+	p.commands.HandleComponent(p.Name(), rotationListBackPrefix, core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleListBack)
 }
 
 func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -186,19 +170,35 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 		core.RespondErr(s, i, "Missing channel", fmt.Errorf("the channel option is required"))
 		return
 	}
+	interval, err := core.ParseFlexibleDuration(opts["interval"].StringValue())
+	if err != nil {
+		core.RespondErr(s, i, "Invalid interval", err)
+		return
+	}
+	archiveCategoryID, err := p.resolveArchiveCategory(i.GuildID, opts)
+	if err != nil {
+		core.RespondErr(s, i, "Failed to resolve archive category", err)
+		return
+	}
+
 	rc := settings.RotationChannel{
 		GuildID:           i.GuildID,
 		ChannelID:         channelID.Value.(string),
-		ArchiveCategoryID: opts["archive_category"].Value.(string),
-		IntervalHours:     int(opts["interval_hours"].IntValue()),
+		ArchiveCategoryID: archiveCategoryID,
+		IntervalHours:     int(interval / time.Hour),
 		ArchiveVisibility: "mod_only",
 	}
 	if v, ok := opts["visibility"]; ok {
 		rc.ArchiveVisibility = v.StringValue()
 	}
-	if v, ok := opts["retention_days"]; ok {
-		days := int(v.IntValue())
-		rc.RetentionDays = &days
+	if v, ok := opts["retention"]; ok {
+		retention, err := core.ParseFlexibleDuration(v.StringValue())
+		if err != nil {
+			core.RespondErr(s, i, "Invalid retention", err)
+			return
+		}
+		hours := int(retention / time.Hour)
+		rc.RetentionHours = &hours
 	}
 
 	if err := validateRotationChannel(rc); err != nil {
@@ -218,8 +218,36 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 	// published core.EventConfigChanged synchronously, which p.reconcile is
 	// subscribed to (rotation.go's Init) — calling SyncGuild here too would
 	// just re-run the identical, already-current reconcile a second time.
-	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> interval=%dh", rc.ChannelID, rc.IntervalHours))
-	core.RespondOK(s, i, "Rotation configured", fmt.Sprintf("<#%s> will now rotate every %d hours.", rc.ChannelID, rc.IntervalHours))
+	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> interval=%s", rc.ChannelID, core.FormatDuration(interval)))
+	core.RespondOK(s, i, "Rotation configured", fmt.Sprintf("<#%s> will now rotate every %s.", rc.ChannelID, humanDuration(interval)))
+}
+
+// resolveArchiveCategory returns the archive_category option's channel ID
+// if the mod supplied one, otherwise finds (by name) or creates a category
+// called defaultArchiveCategoryName — so archive_category being optional
+// doesn't just shift the "go create a category first" chore onto a
+// separate manual step; the bird does it.
+func (p *Plugin) resolveArchiveCategory(guildID string, opts map[string]*discordgo.ApplicationCommandInteractionDataOption) (string, error) {
+	if v, ok := opts["archive_category"]; ok {
+		return v.Value.(string), nil
+	}
+	channels, err := p.ops.GuildChannels(guildID)
+	if err != nil {
+		return "", fmt.Errorf("list channels: %w", err)
+	}
+	for _, ch := range channels {
+		if ch.Type == discordgo.ChannelTypeGuildCategory && ch.Name == defaultArchiveCategoryName {
+			return ch.ID, nil
+		}
+	}
+	created, err := p.ops.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+		Name: defaultArchiveCategoryName,
+		Type: discordgo.ChannelTypeGuildCategory,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create %q category: %w", defaultArchiveCategoryName, err)
+	}
+	return created.ID, nil
 }
 
 func (p *Plugin) handleRemove(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -249,16 +277,26 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate — use `/rotation configure add` first"))
 		return
 	}
-	before := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionDays, rc.ArchiveVisibility)
+	before := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionHours, rc.ArchiveVisibility)
 
-	if v, ok := opts["interval_hours"]; ok {
-		rc.IntervalHours = int(v.IntValue())
+	if v, ok := opts["interval"]; ok {
+		interval, err := core.ParseFlexibleDuration(v.StringValue())
+		if err != nil {
+			core.RespondErr(s, i, "Invalid interval", err)
+			return
+		}
+		rc.IntervalHours = int(interval / time.Hour)
 	}
 	if v, ok := opts["retention_forever"]; ok && v.BoolValue() {
-		rc.RetentionDays = nil
-	} else if v, ok := opts["retention_days"]; ok {
-		days := int(v.IntValue())
-		rc.RetentionDays = &days
+		rc.RetentionHours = nil
+	} else if v, ok := opts["retention"]; ok {
+		retention, err := core.ParseFlexibleDuration(v.StringValue())
+		if err != nil {
+			core.RespondErr(s, i, "Invalid retention", err)
+			return
+		}
+		hours := int(retention / time.Hour)
+		rc.RetentionHours = &hours
 	}
 	if v, ok := opts["visibility"]; ok {
 		rc.ArchiveVisibility = v.StringValue()
@@ -274,7 +312,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 	}
 	// UpsertRotationChannel already triggered reconcile via
 	// core.EventConfigChanged — see the comment in handleAdd above.
-	after := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionDays, rc.ArchiveVisibility)
+	after := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionHours, rc.ArchiveVisibility)
 	p.auditConfigChange(ctx, i, "rotation.edit", before, after)
 	core.RespondOK(s, i, "Rotation updated", fmt.Sprintf("Updated <#%s>.", channelID))
 }
@@ -331,13 +369,11 @@ func validateRotationChannel(rc settings.RotationChannel) error {
 	default:
 		return fmt.Errorf("visibility must be mod_only or whitelist, got %q", rc.ArchiveVisibility)
 	}
-	if rc.RetentionDays != nil && *rc.RetentionDays < 1 {
-		return fmt.Errorf("retention_days must be at least 1 if set (omit it entirely for forever)")
+	if rc.RetentionHours != nil && *rc.RetentionHours < 1 {
+		return fmt.Errorf("retention must be at least 1 hour if set (omit it entirely for forever)")
 	}
 	if rc.IntervalHours < 1 {
-		return fmt.Errorf("interval_hours must be at least 1")
+		return fmt.Errorf("interval must be at least 1 hour")
 	}
 	return nil
 }
-
-func float64Ptr(f float64) *float64 { return &f }

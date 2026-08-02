@@ -13,12 +13,12 @@ type GlobalConfig struct {
 
 	Discord  DiscordConfig  `yaml:"-"`
 	Database DatabaseConfig `yaml:"-"`
-	// BreakGlassAdminUserID always satisfies core.TierAdmin, in every guild,
-	// regardless of internal/settings state — the one bootstrap identity
-	// that guarantees a wiped or not-yet-configured guild's settings can
-	// never permanently lock the operator out of /config. Env-sourced only,
-	// same as the other secrets/identifiers below.
-	BreakGlassAdminUserID string `yaml:"-"`
+	// BootstrapAdminUserID always satisfies core.TierAdmin, in every guild,
+	// regardless of internal/settings state — the one identity that
+	// guarantees a wiped or not-yet-configured guild's settings can never
+	// permanently lock the operator out of /config. Env-sourced only, same
+	// as the other secrets/identifiers below.
+	BootstrapAdminUserID string `yaml:"-"`
 }
 
 type DiscordConfig struct {

@@ -76,6 +76,11 @@ func (s *Store) ImportFromLegacyYAML(ctx context.Context, path string) (imported
 			}
 		}
 		for _, rc := range gc.RotatingChannels {
+			var retentionHours *int
+			if rc.RetentionDays != nil {
+				h := *rc.RetentionDays * 24
+				retentionHours = &h
+			}
 			if err := s.UpsertRotationChannel(ctx, RotationChannel{
 				GuildID:                 guildID,
 				ChannelID:               rc.ChannelID,
@@ -84,7 +89,7 @@ func (s *Store) ImportFromLegacyYAML(ctx context.Context, path string) (imported
 				ArchiveVisibility:       rc.ArchiveVisibility,
 				ArchiveWhitelistRoleIDs: rc.ArchiveWhitelistRoleIDs,
 				ArchiveWhitelistUserIDs: rc.ArchiveWhitelistUserIDs,
-				RetentionDays:           rc.RetentionDays,
+				RetentionHours:          retentionHours,
 				StickyEnabled:           rc.Sticky.Enabled,
 				StickyMessages:          rc.Sticky.Messages,
 			}); err != nil {

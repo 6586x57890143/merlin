@@ -89,10 +89,10 @@ func TestAuthorizeAdminTierRejectsMod(t *testing.T) {
 	}
 }
 
-func TestAuthorizeBreakGlassAdminAlwaysSatisfiesAdminTier(t *testing.T) {
-	perms := NewPermissions(nil, newFakeAuthData(), "breakglass-user")
-	if err := perms.Authorize(memberInteraction("unconfigured-guild", "breakglass-user", nil), PermSpec{Tier: TierAdmin, Action: "test"}); err != nil {
-		t.Fatalf("expected break-glass admin to satisfy TierAdmin even in an unconfigured guild, got %v", err)
+func TestAuthorizeBootstrapAdminAlwaysSatisfiesAdminTier(t *testing.T) {
+	perms := NewPermissions(nil, newFakeAuthData(), "bootstrap-user")
+	if err := perms.Authorize(memberInteraction("unconfigured-guild", "bootstrap-user", nil), PermSpec{Tier: TierAdmin, Action: "test"}); err != nil {
+		t.Fatalf("expected bootstrap admin to satisfy TierAdmin even in an unconfigured guild, got %v", err)
 	}
 }
 
@@ -149,15 +149,15 @@ func TestAuthorizeDenyWinsOverAllowAndAdministratorBit(t *testing.T) {
 	}
 }
 
-func TestAuthorizeDenyNeverAppliesToBreakGlassAdmin(t *testing.T) {
+func TestAuthorizeDenyNeverAppliesToBootstrapAdmin(t *testing.T) {
 	auth := newFakeAuthData()
 	auth.policies["g1"] = map[string]ActionPolicy{
-		"config.mutate": {DenyUserIDs: []string{"breakglass-user"}},
+		"config.mutate": {DenyUserIDs: []string{"bootstrap-user"}},
 	}
-	perms := NewPermissions(nil, auth, "breakglass-user")
+	perms := NewPermissions(nil, auth, "bootstrap-user")
 
-	if err := perms.Authorize(memberInteraction("g1", "breakglass-user", nil), PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err != nil {
-		t.Fatalf("expected the break-glass admin to be immune to deny-listing, got %v", err)
+	if err := perms.Authorize(memberInteraction("g1", "bootstrap-user", nil), PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err != nil {
+		t.Fatalf("expected the bootstrap admin to be immune to deny-listing, got %v", err)
 	}
 }
 

@@ -3,8 +3,8 @@
 // whitelists, and rotation config are all mutated through Discord commands
 // (internal/plugins/adminconfig, internal/plugins/rotation) and persisted
 // here, not hand-edited on the host. config.yaml/.env are left holding only
-// process bootstrap (Discord token, DB DSN, log level, the break-glass
-// admin user ID).
+// process bootstrap (Discord token, DB DSN, log level, the bootstrap admin
+// user ID).
 package settings
 
 import (
@@ -67,7 +67,7 @@ type RotationChannel struct {
 	ArchiveVisibility       string // "mod_only" | "whitelist"
 	ArchiveWhitelistRoleIDs []string
 	ArchiveWhitelistUserIDs []string
-	RetentionDays           *int // nil = keep forever, never swept
+	RetentionHours          *int // nil = keep forever, never swept
 	StickyEnabled           bool
 	StickyMessages          []string
 }
@@ -146,7 +146,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 	for rcRows.Next() {
 		rc := RotationChannel{GuildID: guildID}
 		if err := rcRows.Scan(&rc.ID, &rc.ChannelID, &rc.IntervalHours, &rc.ArchiveCategoryID, &rc.ArchiveVisibility,
-			&rc.ArchiveWhitelistRoleIDs, &rc.ArchiveWhitelistUserIDs, &rc.RetentionDays, &rc.StickyEnabled, &rc.StickyMessages); err != nil {
+			&rc.ArchiveWhitelistRoleIDs, &rc.ArchiveWhitelistUserIDs, &rc.RetentionHours, &rc.StickyEnabled, &rc.StickyMessages); err != nil {
 			rcRows.Close()
 			return fmt.Errorf("settings: scan rotation channel for %s: %w", guildID, err)
 		}
@@ -561,15 +561,15 @@ func (s *Store) UpsertRotationChannel(ctx context.Context, rc RotationChannel) e
 	}
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO settings_rotation_channels (guild_id, channel_id, interval_hours, archive_category_id,
-			archive_visibility, archive_whitelist_role_ids, archive_whitelist_user_ids, retention_days,
+			archive_visibility, archive_whitelist_role_ids, archive_whitelist_user_ids, retention_hours,
 			sticky_enabled, sticky_messages, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
 		ON CONFLICT (guild_id, channel_id) DO UPDATE SET
 			interval_hours = $3, archive_category_id = $4, archive_visibility = $5,
-			archive_whitelist_role_ids = $6, archive_whitelist_user_ids = $7, retention_days = $8,
+			archive_whitelist_role_ids = $6, archive_whitelist_user_ids = $7, retention_hours = $8,
 			sticky_enabled = $9, sticky_messages = $10, updated_at = now()`,
 		rc.GuildID, rc.ChannelID, rc.IntervalHours, rc.ArchiveCategoryID, rc.ArchiveVisibility,
-		rc.ArchiveWhitelistRoleIDs, rc.ArchiveWhitelistUserIDs, rc.RetentionDays, rc.StickyEnabled, rc.StickyMessages,
+		rc.ArchiveWhitelistRoleIDs, rc.ArchiveWhitelistUserIDs, rc.RetentionHours, rc.StickyEnabled, rc.StickyMessages,
 	); err != nil {
 		return fmt.Errorf("settings: upsert rotation channel: %w", err)
 	}

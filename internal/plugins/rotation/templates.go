@@ -2,6 +2,7 @@ package rotation
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/6586x57890143/merlin/internal/settings"
 )
@@ -26,8 +27,28 @@ func resolveSticky(rc settings.RotationChannel) []string {
 // exception.
 func retentionNotice(intervalHours int) string {
 	return fmt.Sprintf(
-		"🦅 Merlins travel light — this nest gets a fresh perch every %d hours, and nothing posted here roosts "+
+		"🦅 Merlins travel light — this nest gets a fresh perch every %s, and nothing posted here roosts "+
 			"longer than that.",
-		intervalHours,
+		humanDuration(time.Duration(intervalHours)*time.Hour),
 	)
+}
+
+// humanDuration renders d as a member-facing phrase ("3 days", "18 hours")
+// — the prose counterpart to core.FormatDuration's compact "3d"/"18h" used
+// in command output, picking the same unit (whole days if it divides
+// evenly, otherwise hours) so both ends of this bot describe a given
+// interval/retention window the same way.
+func humanDuration(d time.Duration) string {
+	hours := int(d / time.Hour)
+	if hours > 0 && hours%24 == 0 {
+		days := hours / 24
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	if hours == 1 {
+		return "1 hour"
+	}
+	return fmt.Sprintf("%d hours", hours)
 }

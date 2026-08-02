@@ -127,8 +127,8 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 
 	// 8. Record the archive for eventual sweep-based permanent deletion.
 	var deleteAfter *time.Time
-	if rc.RetentionDays != nil {
-		t := now.AddDate(0, 0, *rc.RetentionDays)
+	if rc.RetentionHours != nil {
+		t := now.Add(time.Duration(*rc.RetentionHours) * time.Hour)
 		deleteAfter = &t
 	}
 	if err := p.archives.Insert(ctx, ArchiveRecord{
@@ -160,9 +160,9 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	}
 	// The rotation itself has already fully succeeded by this point (rename,
 	// archive, new channel live, archive record persisted) — an audit-embed
-	// failure (e.g. #bot-audit-log not yet configured, or deleted) must not
+	// failure (e.g. #bird-audit-log not yet configured, or deleted) must not
 	// mark this job as failed, or the scheduler would retry an already-done
-	// rotation and eventually false-alarm #bot-status after
+	// rotation and eventually false-alarm #bird-status after
 	// maxConsecutiveFailures, masking the fact that rotation itself is fine.
 	// Matches the log-and-continue policy every other audit call site uses
 	// (sweep.go, adminconfig.go, rotation/configure.go).

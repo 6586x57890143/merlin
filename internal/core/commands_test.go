@@ -137,6 +137,51 @@ func TestPluginsDedupes(t *testing.T) {
 	}
 }
 
+func TestFinalizeRejectsComponentWithUnsetTier(t *testing.T) {
+	r, _ := newTestRouter()
+	r.HandleComponent("testplugin", "rotation:list:", PermSpec{}, func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {})
+
+	if err := r.Finalize(); err == nil {
+		t.Fatal("expected Finalize to reject a component with an unset PermSpec.Tier")
+	}
+}
+
+func TestFinalizeRejectsComponentMissingActionAboveTierPublic(t *testing.T) {
+	r, _ := newTestRouter()
+	r.HandleComponent("testplugin", "rotation:list:", PermSpec{Tier: TierMod}, func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {})
+
+	if err := r.Finalize(); err == nil {
+		t.Fatal("expected Finalize to reject a TierMod component with no Action")
+	}
+}
+
+func TestMatchComponentLongestPrefixWins(t *testing.T) {
+	r, _ := newTestRouter()
+	generic := func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {}
+	// Two prefixes both match "rotation:list:page:2" ("rotation:" and
+	// "rotation:list:") — tagged with different plugin names purely so the
+	// test can tell which one matchComponent actually picked.
+	r.HandleComponent("shorter-prefix-plugin", "rotation:", PermSpec{Tier: TierPublic}, generic)
+	r.HandleComponent("longer-prefix-plugin", "rotation:list:", PermSpec{Tier: TierPublic}, generic)
+
+	matched := r.matchComponent("rotation:list:page:2")
+	if matched == nil {
+		t.Fatal("expected a match")
+	}
+	if matched.pluginName != "longer-prefix-plugin" {
+		t.Fatalf("expected the longer, more specific prefix to win, got plugin %q", matched.pluginName)
+	}
+}
+
+func TestMatchComponentReturnsNilWhenNoPrefixMatches(t *testing.T) {
+	r, _ := newTestRouter()
+	r.HandleComponent("rotation", "rotation:list:", PermSpec{Tier: TierPublic}, func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {})
+
+	if matched := r.matchComponent("scheduler:list:page:1"); matched != nil {
+		t.Fatalf("expected no match for an unrelated CustomID, got %+v", matched)
+	}
+}
+
 func TestActionsDedupesAndSkipsEmpty(t *testing.T) {
 	r, _ := newTestRouter()
 	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{Name: "a"})

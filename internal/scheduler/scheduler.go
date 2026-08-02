@@ -149,6 +149,7 @@ func (s *Scheduler) Init(deps core.Deps) error {
 	s.commands.Handle("scheduler", "list", core.PermSpec{Tier: core.TierMod, Action: "scheduler.list"}, s.handleList)
 	s.commands.Handle("scheduler", "run-now", core.PermSpec{Tier: core.TierMod, Action: "scheduler.run_now"}, s.handleRunNow)
 	s.commands.Autocomplete("scheduler", "run-now", s.autocompleteJob)
+	s.commands.HandleComponent(s.Name(), schedulerListComponentPrefix, core.PermSpec{Tier: core.TierMod, Action: "scheduler.list"}, s.handleListPage)
 	return nil
 }
 
@@ -364,20 +365,52 @@ func (s *Scheduler) jobsForGuild(guildID string) []*registeredJob {
 	return out
 }
 
+// schedulerListComponentPrefix namespaces this plugin's pagination buttons
+// (core.HandleComponent, spec.MD §4a) so they can't collide with another
+// plugin's — see reconcile's job-key comment for why the fully-qualified
+// scheduler job keys themselves aren't reused here for anything but display.
+const schedulerListComponentPrefix = "scheduler:list:page:"
+
 func (s *Scheduler) handleList(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	jobs := s.jobsForGuild(i.GuildID)
-	if len(jobs) == 0 {
+	lines := s.jobLines(ctx, i.GuildID)
+	if len(lines) == 0 {
 		core.RespondInfo(sess, i, "Registered jobs", "No background jobs are registered for this server.")
 		return
 	}
+	embed, components := s.renderJobsPage(lines, 0)
+	if err := core.RespondEmbedWithComponents(sess, i, embed, components); err != nil {
+		s.log.Error("scheduler: list response failed", "err", err)
+	}
+}
 
-	prefix := i.GuildID + ":"
-	var b strings.Builder
+// handleListPage re-renders handleList's embed for the page encoded in a
+// Prev/Next button's CustomID and edits the message in place — jobLines is
+// re-queried fresh rather than reused from the original response, since
+// nothing survives in memory between the two interactions.
+func (s *Scheduler) handleListPage(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+	page, err := core.ParsePaginationPage(customID, schedulerListComponentPrefix)
+	if err != nil {
+		s.log.Error("scheduler: parse pagination page", "custom_id", customID, "err", err)
+		page = 0
+	}
+	embed, components := s.renderJobsPage(s.jobLines(ctx, i.GuildID), page)
+	if err := core.UpdateEmbedWithComponents(sess, i, embed, components); err != nil {
+		s.log.Error("scheduler: list page update failed", "err", err)
+	}
+}
+
+// jobLines formats one line per guildID job, newest logic unchanged from
+// before pagination existed — just split out so both handleList and
+// handleListPage build from the same up-to-date source.
+func (s *Scheduler) jobLines(ctx context.Context, guildID string) []string {
+	jobs := s.jobsForGuild(guildID)
+	prefix := guildID + ":"
+	lines := make([]string, 0, len(jobs))
 	for _, j := range jobs {
 		name := strings.TrimPrefix(j.key, prefix)
 		st, err := s.store.Get(ctx, j.key)
 		if err != nil {
-			fmt.Fprintf(&b, "- `%s` — error reading state: %v\n", name, err)
+			lines = append(lines, fmt.Sprintf("`%s` — error reading state: %v", name, err))
 			continue
 		}
 		last := "never"
@@ -388,9 +421,15 @@ func (s *Scheduler) handleList(ctx context.Context, sess *discordgo.Session, i *
 		if due, ok := nextDue(st, j.spec.Interval, j.jitter); ok {
 			next = due.Format(time.RFC3339)
 		}
-		fmt.Fprintf(&b, "- `%s` — last run: %s, next due: %s, consecutive failures: %d\n", name, last, next, st.ConsecutiveFailures)
+		lines = append(lines, fmt.Sprintf("`%s` — last run: %s, next due: %s, consecutive failures: %d", name, last, next, st.ConsecutiveFailures))
 	}
-	core.RespondInfo(sess, i, "Registered jobs", b.String())
+	return lines
+}
+
+func (s *Scheduler) renderJobsPage(lines []string, page int) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	pageLines, clampedPage, totalPages := core.Paginate(lines, page)
+	embed := core.NewEmbed(core.ColorInfo, "Registered jobs", strings.Join(pageLines, "\n"))
+	return embed, core.PaginationRow(schedulerListComponentPrefix, clampedPage, totalPages)
 }
 
 func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {

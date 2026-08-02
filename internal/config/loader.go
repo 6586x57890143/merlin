@@ -48,12 +48,12 @@ func (l *Loader) reload() error {
 	next.Discord.Token = os.Getenv("DISCORD_BOT_TOKEN")
 	next.Discord.AppID = os.Getenv("DISCORD_APP_ID")
 	next.Database.DSN = os.Getenv("DATABASE_URL")
-	next.BreakGlassAdminUserID = os.Getenv("MERLIN_BREAK_GLASS_ADMIN_USER_ID")
+	next.BootstrapAdminUserID = os.Getenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID")
 	if next.Discord.Token == "" {
 		return errors.New("DISCORD_BOT_TOKEN not set")
 	}
-	if next.BreakGlassAdminUserID == "" {
-		return errors.New("MERLIN_BREAK_GLASS_ADMIN_USER_ID not set: without it, a guild with no settings configured yet has no way to run /config at all")
+	if next.BootstrapAdminUserID == "" {
+		return errors.New("MERLIN_BOOTSTRAP_ADMIN_USER_ID not set: without it, a guild with no settings configured yet has no way to run /config at all")
 	}
 
 	l.mu.Lock()

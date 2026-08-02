@@ -48,7 +48,7 @@ just links to it rather than repeating it.
 
 ```sh
 cp .env.example .env            # fill in DISCORD_BOT_TOKEN, DISCORD_APP_ID,
-                                 # and MERLIN_BREAK_GLASS_ADMIN_USER_ID (your
+                                 # and MERLIN_BOOTSTRAP_ADMIN_USER_ID (your
                                  # own Discord user ID)
 cp config.example.yaml config.yaml   # bootstrap-only as of Milestone 4 — just log_level
 docker compose up --build
@@ -98,7 +98,7 @@ secrets/guild config and must be created there once by hand:
 
 ```sh
 # one-time setup on the VPS, in /home/deploy/merlin
-cp .env.example .env                  # fill in real values, incl. MERLIN_BREAK_GLASS_ADMIN_USER_ID
+cp .env.example .env                  # fill in real values, incl. MERLIN_BOOTSTRAP_ADMIN_USER_ID
 cp config.example.yaml config.yaml    # bootstrap-only (log_level) — see "First-time setup"
 ```
 
@@ -128,7 +128,7 @@ process, visibility/retention semantics, and archive sweep behavior.
   permissions (`permissions.go`), the single command router/dispatcher
   (`commands.go`, spec.MD §4a), shared Discord session.
 - `internal/config` — process-bootstrap-only config as of Milestone 4: log
-  level, Discord token/App ID, DB DSN, and the break-glass admin user ID.
+  level, Discord token/App ID, DB DSN, and the bootstrap admin user ID.
   No guild/role/channel config here anymore.
 - `internal/settings` — DB-backed, per-guild config (mod roles, admins,
   permission whitelists, rotation settings), in-memory cached and
@@ -138,7 +138,7 @@ process, visibility/retention semantics, and archive sweep behavior.
   (`storage.Migrate`, applied automatically at startup), and SQL migrations.
 - `internal/scheduler` — cron core (see above); itself a `core.Plugin` and
   the concrete implementation behind `Deps.Scheduler`.
-- `internal/audit` — minimal `core.AuditWriter`: DB insert + `#bot-audit-log`
+- `internal/audit` — minimal `core.AuditWriter`: DB insert + `#bird-audit-log`
   embed, behind `Deps.Audit`.
 - `internal/plugins/ping` — reference plugin exercising the full lifecycle.
 - `internal/plugins/rotation` — channel rotation (see above).
@@ -159,12 +159,12 @@ Once the bot is invited (see the invite link above) and running:
    configured yet, it DMs the guild owner once pointing at `/config setup`
    — see spec.MD §4a for why the owner, specifically.
 2. **Run `/config setup`** as the owner, any other Administrator, or the
-   break-glass admin. Creates `#bot-audit-log`, `#bot-status`, and a mod
+   bootstrap admin. Creates `#bird-audit-log`, `#bird-status`, and a mod
    role for whatever's missing; safe to re-run any time as a status check.
 3. **`/config admins add`** / **`/config mod-roles add`** to bring in
-   others beyond the Administrator/break-glass paths.
+   others beyond the Administrator/bootstrap paths.
 4. **`/rotation configure add`** for any channel you want periodically
    refreshed.
 5. Optionally fine-tune access per action with `/config permissions
-   set-tier|grant|block` or turn a whole plugin off with `/config plugins
-   disable` — see spec.MD §4a for the full model.
+   set-tier|allow|deny` or turn a whole plugin off with `/config plugins
+   set` — see spec.MD §4a for the full model.

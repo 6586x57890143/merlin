@@ -23,11 +23,11 @@ const (
 	// be individually whitelisted for this command's Action.
 	TierMod
 	// TierAdmin requires the invoker to be a configured admin, the
-	// break-glass bootstrap admin, or hold Discord's own Administrator
-	// permission in the guild (see Authorize) — or be individually
-	// whitelisted for this command's Action. Mutating the admin list or
-	// granting a whitelist entry must always be TierAdmin, never TierMod —
-	// otherwise a mod could grant themselves admin.
+	// bootstrap admin, or hold Discord's own Administrator permission in
+	// the guild (see Authorize) — or be individually whitelisted for this
+	// command's Action. Mutating the admin list or granting a whitelist
+	// entry must always be TierAdmin, never TierMod — otherwise a mod could
+	// grant themselves admin.
 	TierAdmin
 )
 
@@ -70,7 +70,7 @@ type PermSpec struct {
 // guild only ever explicitly sets this to TierMod or TierAdmin, never back
 // to tierUnset except via an explicit "clear" mutation. Deny always wins
 // over Allow (and over tier/Administrator-bit) for the same person/role,
-// except for the break-glass admin, which nothing can deny — see Authorize.
+// except for the bootstrap admin, which nothing can deny — see Authorize.
 type ActionPolicy struct {
 	RequiredTier PermTier
 	AllowRoleIDs []string
@@ -89,7 +89,7 @@ type GuildAuthData interface {
 	// error) for a guild with no settings configured yet.
 	ModRoleIDs(guildID string) []string
 	// AdminUserIDs returns the guild's configured admin user IDs, beyond the
-	// break-glass bootstrap admin.
+	// bootstrap admin.
 	AdminUserIDs(guildID string) []string
 	// ActionPolicy returns guildID's customization of action (tier override,
 	// allow-list, deny-list) — the zero value (tierUnset, no lists) if the
@@ -112,17 +112,17 @@ type PluginGate interface {
 // by CommandRouter before its handler ever runs — there is no per-plugin
 // choke point to forget.
 type Permissions struct {
-	session      *discordgo.Session
-	settings     GuildAuthData
-	breakGlassID string
+	session     *discordgo.Session
+	settings    GuildAuthData
+	bootstrapID string
 }
 
-// NewPermissions constructs Permissions. breakGlassAdminUserID is a
-// bootstrap identity (env-sourced, never DB-backed) that always satisfies
-// TierAdmin regardless of settings state, so a wiped or not-yet-configured
-// guild's settings can never permanently lock the operator out.
-func NewPermissions(s *discordgo.Session, settings GuildAuthData, breakGlassAdminUserID string) *Permissions {
-	return &Permissions{session: s, settings: settings, breakGlassID: breakGlassAdminUserID}
+// NewPermissions constructs Permissions. bootstrapAdminUserID is a bootstrap
+// identity (env-sourced, never DB-backed) that always satisfies TierAdmin
+// regardless of settings state, so a wiped or not-yet-configured guild's
+// settings can never permanently lock the operator out.
+func NewPermissions(s *discordgo.Session, settings GuildAuthData, bootstrapAdminUserID string) *Permissions {
+	return &Permissions{session: s, settings: settings, bootstrapID: bootstrapAdminUserID}
 }
 
 // Authorize checks spec against the invoking member. Discord's own
@@ -140,12 +140,12 @@ func NewPermissions(s *discordgo.Session, settings GuildAuthData, breakGlassAdmi
 //     the invoker's user ID or any of their roles, they're rejected
 //     immediately — deny wins over everything below, including
 //     Administrator and an explicit allow-grant. The one exception is the
-//     break-glass admin: nothing can deny it, preserving Milestone 4's
+//     bootstrap admin: nothing can deny it, preserving Milestone 4's
 //     "never permanently lock the operator out" guarantee.
 //  2. Tier: TierPublic always passes. Otherwise the effective tier is the
 //     guild's ActionPolicy.RequiredTier override if one is set for
 //     spec.Action, else spec.Tier itself. TierAdmin has three independent
-//     paths, any one sufficient: the break-glass bootstrap admin, a user
+//     paths, any one sufficient: the bootstrap admin, a user
 //     explicitly added via /config admins, or Discord's own Administrator
 //     permission bit (member.Permissions, already computed and attached to
 //     every interaction by Discord — no extra API call). The Administrator
@@ -168,7 +168,7 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 	var policy ActionPolicy
 	if spec.Action != "" {
 		policy = p.settings.ActionPolicy(i.GuildID, spec.Action)
-		if member != nil && member.User.ID != p.breakGlassID {
+		if member != nil && member.User.ID != p.bootstrapID {
 			userID := member.User.ID
 			if slices.Contains(policy.DenyUserIDs, userID) || hasAnyRole(member.Roles, policy.DenyRoleIDs) {
 				return ErrForbidden{Reason: "denied for " + spec.Action}
@@ -184,7 +184,7 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 	}
 	userID := member.User.ID
 
-	isAdmin := userID == p.breakGlassID ||
+	isAdmin := userID == p.bootstrapID ||
 		slices.Contains(p.settings.AdminUserIDs(i.GuildID), userID) ||
 		member.Permissions&discordgo.PermissionAdministrator != 0
 

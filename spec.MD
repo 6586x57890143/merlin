@@ -61,7 +61,7 @@ merlin/
 
 │   ├── audit/
 
-│   │   └── audit.go                # writes to DB + posts embeds to #bot-audit-log
+│   │   └── audit.go                # writes to DB + posts embeds to #bird-audit-log
 
 │   ├── storage/
 
@@ -173,13 +173,13 @@ merlin/
 
 Every privileged command/action checks, in order, before its handler ever runs:
 
-0\. \*\*Plugin enabled?\*\* (`/config plugins enable\|disable`) — checked first; a disabled plugin's commands are unusable by anyone, including admins, until re-enabled.
+0\. \*\*Plugin enabled?\*\* (`/config plugins set`) — checked first; a disabled plugin's commands are unusable by anyone, including admins, until re-enabled.
 
-1\. \*\*Deny\*\* (`/config permissions block\|unblock`): has this specific person/role been explicitly blocked from this action? Wins over every layer below, including Administrator — except the break-glass admin, which nothing can deny.
+1\. \*\*Deny\*\* (`/config permissions deny`): has this specific person/role been explicitly blocked from this action? Wins over every layer below, including Administrator — except the bootstrap admin, which nothing can deny.
 
-2\. \*\*Tier\*\*: Public always passes. Mod/Admin check the action's effective tier — a per-guild override (`/config permissions set-tier\|clear-tier`) if one is set, else the command's own compiled-in default (mandatory at registration; `core.CommandRouter.Finalize()` refuses to start the bot if any command is missing one). Admin passes for a DB-listed admin, the break-glass bootstrap identity, or anyone holding Discord's own Administrator permission (read directly off the interaction, no extra API call) — deliberately \*not\* extended to Mod, so holding an elevated Discord permission never grants bot-reconfiguration rights on its own. Mod passes for a DB-listed mod role or an admin.
+2\. \*\*Tier\*\*: Public always passes. Mod/Admin check the action's effective tier — a per-guild override (`/config permissions set-tier\|clear-tier`) if one is set, else the command's own compiled-in default (mandatory at registration; `core.CommandRouter.Finalize()` refuses to start the bot if any command is missing one). Admin passes for a DB-listed admin, the bootstrap identity, or anyone holding Discord's own Administrator permission (read directly off the interaction, no extra API call) — deliberately \*not\* extended to Mod, so holding an elevated Discord permission never grants bot-reconfiguration rights on its own. Mod passes for a DB-listed mod role or an admin.
 
-3\. \*\*Allow\*\* (`/config permissions grant\|revoke`): an additive per-action whitelist lets a specific role/user past regardless of tier, without becoming a full mod or admin.
+3\. \*\*Allow\*\* (`/config permissions allow`): an additive per-action whitelist lets a specific role/user past regardless of tier, without becoming a full mod or admin.
 
 4\. Role-hierarchy sanity: the bot can never assign/remove a role positioned above its own top role (Discord enforces this API-side too, but check and fail cleanly rather than surface a raw API error).
 
@@ -195,7 +195,7 @@ Mutating any of the above (admin list, mod roles, tier overrides, allow/deny, pl
 
 \- \*\*Panic isolation\*\*: every plugin's event handlers run under `recover()`; a panic in one plugin logs and alerts, it never takes down the process or other plugins.
 
-\- \*\*Config-change audit trail\*\*: every change to rotation intervals, faction definitions, or the mod allow-list is written to an append-only log \*and\* posted as an embed to a locked-down `#bot-audit-log` channel (who, what changed, old value, new value, timestamp) — visible to the bot and, once a guild has any mod roles configured, to those roles too (granted automatically whenever a role becomes a mod role, whether via `/config setup` or `/config mod-roles add`); \*\*not\*\* to `@everyone`.
+\- \*\*Config-change audit trail\*\*: every change to rotation intervals, faction definitions, or the mod allow-list is written to an append-only log \*and\* posted as an embed to a locked-down `#bird-audit-log` channel (who, what changed, old value, new value, timestamp) — visible to the bot and, once a guild has any mod roles configured, to those roles too (granted automatically whenever a role becomes a mod role, whether via `/config setup` or `/config mod-roles add`); \*\*not\*\* to `@everyone`.
 
 \- \*\*Confused-deputy checks\*\*: before acting on any channel/role ID pulled from an event or scheduled job, re-verify it still belongs to the configured guild and matches the expected config entry — don't trust a cached ID blindly.
 
@@ -225,21 +225,21 @@ Every plugin registers its own top-level slash command (`/rotation`, `/scheduler
 
 
 
-\*\*Self-serve configuration\*\*: guild-scoped settings (mod roles, admins, permission policy, rotation config) live in Postgres via `internal/settings`, mutated only through Discord commands. `config.yaml`/`.env` hold nothing but process bootstrap — Discord token/App ID, DB DSN, log level, and one \*\*break-glass admin user ID\*\* that always satisfies Admin tier everywhere, so a wiped or misconfigured guild's settings can never permanently lock the operator out. `/config import` seeds a guild's settings from a legacy `config.yaml` once, for migrating a pre-this-model deployment — never run automatically.
+\*\*Self-serve configuration\*\*: guild-scoped settings (mod roles, admins, permission policy, rotation config) live in Postgres via `internal/settings`, mutated only through Discord commands. `config.yaml`/`.env` hold nothing but process bootstrap — Discord token/App ID, DB DSN, log level, and one \*\*bootstrap admin user ID\*\* that always satisfies Admin tier everywhere, so a wiped or misconfigured guild's settings can never permanently lock the operator out. `/config import` seeds a guild's settings from a legacy `config.yaml` once, for migrating a pre-this-model deployment — never run automatically.
 
 
 
-\*\*Permission policy is per-guild-configurable\*\*, not fixed at registration, in three composable layers (coarsest first, matching §4's Authorization order): a whole plugin can be switched off (`/config plugins enable\|disable` — except `/config` itself, which can never be disabled, or a guild could never re-enable anything); any action's effective tier can be overridden (`/config permissions set-tier\|clear-tier`) independent of its compiled-in default — rotation, for instance, splits structural changes (add/remove a rotating channel) from adjustment (interval/retention/visibility/sticky) into two separate actions specifically so one can be loosened without the other; and specific people/roles can be granted or explicitly blocked (`/config permissions grant\|revoke\|block\|unblock`) regardless of tier — a block always wins except against the break-glass identity.
+\*\*Permission policy is per-guild-configurable\*\*, not fixed at registration, in three composable layers (coarsest first, matching §4's Authorization order): a whole plugin can be switched off (`/config plugins set` — except `/config` itself, which can never be disabled, or a guild could never re-enable anything); any action's effective tier can be overridden (`/config permissions set-tier\|clear-tier`) independent of its compiled-in default — rotation, for instance, splits structural changes (add/remove a rotating channel) from adjustment (interval/retention/visibility/sticky) into two separate actions specifically so one can be loosened without the other; and specific people/roles can be granted or explicitly blocked (`/config permissions allow\|deny`) regardless of tier — a block always wins except against the bootstrap identity.
 
 
 
 \*\*First-time setup\*\*, concretely:
 
-1\. Before first run, an operator sets `MERLIN\_BREAK\_GLASS\_ADMIN\_USER\_ID` to their own Discord ID.
+1\. Before first run, an operator sets `MERLIN\_BOOTSTRAP\_ADMIN\_USER\_ID` to their own Discord ID.
 
 2\. On joining a guild with nothing configured yet, the bot DMs the guild owner once, pointing at `/config setup` — Discord has no API for "who invited the bot," so the owner (who always implicitly holds Administrator) is the best available proxy. No public fallback if the DM fails; it just retries on the bot's next restart.
 
-3\. The owner (via the Administrator bit) or the break-glass identity runs `/config setup`, which creates `#bot-audit-log`, `#bot-status`, and a mod role for whatever's missing, and is safe to re-run any time as a status check.
+3\. The owner (via the Administrator bit) or the bootstrap identity runs `/config setup`, which creates `#bird-audit-log`, `#bird-status`, and a mod role for whatever's missing, and is safe to re-run any time as a status check.
 
 4\. `/config admins add`/`/config mod-roles add` bring in others; `/config permissions`/`/config plugins` fine-tune access from there.
 
@@ -275,7 +275,7 @@ Key requirements:
 
 \- Wraps `robfig/cron/v3` but \*\*persists last-run timestamps per job key\*\* (guild + job name) in storage. This matters specifically for the rotation plugin: "every N hours" is a per-guild interval, not a fixed daily wall-clock cron expression, so a naive `@every 24h` resets its clock on every process restart. Track `next\_due = last\_run + interval` explicitly so a bot restart doesn't silently reset (or double-fire) a rotation window.
 
-\- Retry with backoff on job failure; after N consecutive failures, alert `#bot-status` rather than retry forever.
+\- Retry with backoff on job failure; after N consecutive failures, alert `#bird-status` rather than retry forever.
 
 \- Jitter across guilds so many guilds with the same interval don't all fire in the same second.
 
@@ -329,11 +329,11 @@ Per-channel rotation config is DB-backed (`internal/settings`), configured entir
 
 7\. Post a short system embed in the new channel, e.g.: \*"This channel resets every {N} hours as part of the server's data-retention policy. Anything posted here isn't kept past that window, except where an open moderation report requires it."\* This is genuinely useful transparency for members and also documents your retention policy if it's ever questioned. Make sure this is also communicated in a birdlike way without missing any of the information as Merlin is a bird, like the species of Bird (Merlin)
 
-8\. Write to the audit log and `#bot-audit-log`: old channel ID, new channel ID, timestamp, triggering job.
+8\. Write to the audit log and `#bird-audit-log`: old channel ID, new channel ID, timestamp, triggering job.
 
 9\. Schedule a \*\*follow-up\*\* job to permanently delete the archived channel after `retention\_days` — never delete immediately in the same pass. This is the safeguard from the top of this doc: mods retain a window to act on any report that references content now in the archive, and Discord's own report pipeline is unaffected by any of this since it snapshots reported content independently.
 
-10\. On failure at any step, stop, log clearly, leave both channels in whatever state they're in, and alert `#bot-status` for manual mod intervention. Never proceed to "hide" or "delete" a channel if an earlier step (e.g., new-channel creation) failed.
+10\. On failure at any step, stop, log clearly, leave both channels in whatever state they're in, and alert `#bird-status` for manual mod intervention. Never proceed to "hide" or "delete" a channel if an earlier step (e.g., new-channel creation) failed.
 
 
 

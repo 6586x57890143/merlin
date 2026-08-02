@@ -124,7 +124,7 @@ func (p *Plugin) getBotUserID() (string, error) {
 	}
 	me, err := p.ops.User("@me")
 	if err != nil {
-		return "", fmt.Errorf("rotation: resolve bot user ID: %w", err)
+		return "", fmt.Errorf("rotation: resolve bird user ID: %w", err)
 	}
 	p.botUserID = me.ID
 	return p.botUserID, nil

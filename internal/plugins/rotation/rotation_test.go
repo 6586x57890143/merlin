@@ -15,14 +15,14 @@ import (
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
-func retentionDaysPtr(d int) *int { return &d }
+func intPtr(n int) *int { return &n }
 
 func finiteRetentionRC() settings.RotationChannel {
 	return settings.RotationChannel{
 		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
-		RetentionDays: retentionDaysPtr(7),
-		StickyEnabled: true, StickyMessages: []string{"hello!"},
+		RetentionHours: intPtr(7 * 24),
+		StickyEnabled:  true, StickyMessages: []string{"hello!"},
 	}
 }
 
@@ -31,7 +31,7 @@ func whitelistVisibilityRC() settings.RotationChannel {
 		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
 		ArchiveCategoryID: "archivecat", ArchiveVisibility: "whitelist",
 		ArchiveWhitelistRoleIDs: []string{"vip-role"}, ArchiveWhitelistUserIDs: []string{"vip-user"},
-		RetentionDays: retentionDaysPtr(7),
+		RetentionHours: intPtr(7 * 24),
 	}
 }
 
