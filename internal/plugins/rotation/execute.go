@@ -28,7 +28,7 @@ const (
 // — stable across retargets, unlike ChannelID; see rotation.go's reconcile).
 // It re-fetches the slot's current settings at execution time (not at
 // registration time) so edits made via /rotation configure take effect on
-// the very next run without needing a job re-register — only IntervalHours
+// the very next run without needing a job re-register — only IntervalMinutes
 // needs that (see reconcile in rotation.go), since it drives the Scheduler's
 // own due-check.
 func (p *Plugin) makeRotationJob(guildID string, rotationID int64) func(ctx context.Context) error {
@@ -224,6 +224,15 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		if err := p.archiveOldChannel(oldChannel.ID, archiveName, rc.ArchiveCategoryID, guildID, modRoleIDs, rc); err != nil {
 			return fmt.Errorf("rotation: archive old channel: %w", err)
 		}
+
+		// 7b. Put the replacement exactly where the original sat in the
+		// sidebar. Only after the archive: until the old channel leaves the
+		// category, both occupy it, and Discord resolves the collision by
+		// pushing one of them down — so a position set at create time is
+		// re-flowed out from under us the moment the old channel moves. Doing
+		// it here, with the slot genuinely free, is the only ordering that
+		// lands the channel where members expect to find it.
+		p.restorePosition(guildID, newChannel.ID, oldChannel.Position)
 	}
 
 	// 8. Record the archive for eventual sweep-based permanent deletion.
@@ -388,6 +397,29 @@ func (p *Plugin) revealNewChannel(channelID, finalName, guildID string, original
 		PermissionOverwrites: overwrites,
 	})
 	return err
+}
+
+// restorePosition moves the freshly revealed channel into the slot its
+// predecessor occupied.
+//
+// Best-effort by design, and the one step here that must never fail a
+// rotation. Everything that makes a rotation *correct* has already happened by
+// the time this runs: the replacement is live under the right name and the old
+// channel is archived. Returning an error would hand the Scheduler a failed
+// job, and its retry re-enters rotate() — which, finding the configured
+// channel already rotated, would rotate again and create a second replacement.
+// Trading a channel in the wrong sidebar position for a duplicate channel every
+// retry is a bad trade, so this logs and moves on, exactly like the
+// audit-failure policy every other call site follows.
+//
+// Deliberately not attempted on the resumed-after-archive path: the old
+// channel's position by then is its position inside the archive category, and
+// applying that to the live channel would be worse than leaving it alone.
+func (p *Plugin) restorePosition(guildID, channelID string, position int) {
+	if _, err := p.ops(guildID).ChannelEditComplex(channelID, &discordgo.ChannelEdit{Position: &position}); err != nil {
+		p.log.Error("rotation: could not restore channel position; rotation itself succeeded",
+			"guild", guildID, "channel", channelID, "position", position, "err", err)
+	}
 }
 
 func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, guildID string, modRoleIDs []string, rc settings.RotationChannel) error {

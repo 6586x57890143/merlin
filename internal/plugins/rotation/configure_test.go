@@ -16,7 +16,7 @@ import (
 // missing.
 func TestValidateRotationChannelAcceptsNilRetention(t *testing.T) {
 	rc := settings.RotationChannel{
-		GuildID: "g1", ChannelID: "c1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "c1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "cat1", ArchiveVisibility: "mod_only",
 		RetentionHours: nil,
 	}
@@ -27,7 +27,7 @@ func TestValidateRotationChannelAcceptsNilRetention(t *testing.T) {
 
 func TestValidateRotationChannelRejectsZeroRetention(t *testing.T) {
 	rc := settings.RotationChannel{
-		GuildID: "g1", ChannelID: "c1", IntervalHours: 24,
+		GuildID: "g1", ChannelID: "c1", IntervalMinutes: 24 * 60,
 		ArchiveCategoryID: "cat1", ArchiveVisibility: "mod_only",
 		RetentionHours: intPtr(0),
 	}

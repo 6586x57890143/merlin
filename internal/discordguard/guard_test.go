@@ -51,6 +51,11 @@ func (f *fakeSession) GuildMember(string, string, ...discordgo.RequestOption) (*
 	return &discordgo.Member{}, nil
 }
 
+func (f *fakeSession) GuildMembers(string, string, int, ...discordgo.RequestOption) ([]*discordgo.Member, error) {
+	f.reads++
+	return nil, nil
+}
+
 func (f *fakeSession) GuildRoles(string, ...discordgo.RequestOption) ([]*discordgo.Role, error) {
 	f.reads++
 	return nil, nil

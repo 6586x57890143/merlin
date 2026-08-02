@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,11 @@ type fakeOps struct {
 	memberFetchErr error
 	// memberEditErr does the same for GuildMemberEdit.
 	memberEditErr error
+	// memberListErr does the same for GuildMembers — standing in for a guild
+	// whose member list can't be paged (most realistically, the GUILD_MEMBERS
+	// intent not being granted).
+	memberListErr   error
+	memberListCalls int
 
 	roleAddCalls    []string // "guildID:userID:roleID"
 	roleRemoveCalls []string
@@ -120,6 +126,38 @@ func (f *fakeOps) GuildMember(guildID, userID string, options ...discordgo.Reque
 	cp := *m
 	cp.Roles = append([]string(nil), m.Roles...)
 	return &cp, nil
+}
+
+// GuildMembers pages this guild's members in a stable (ID-sorted) order, so
+// pagination behaviour is deterministic and membersWithRole's "after" cursor
+// is actually exercised rather than always fitting in one page.
+func (f *fakeOps) GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.memberListErr != nil {
+		return nil, f.memberListErr
+	}
+	f.memberListCalls++
+
+	var all []*discordgo.Member
+	for key, m := range f.members {
+		if strings.HasPrefix(key, guildID+":") {
+			all = append(all, m)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].User.ID < all[j].User.ID })
+
+	var page []*discordgo.Member
+	for _, m := range all {
+		if after != "" && m.User.ID <= after {
+			continue
+		}
+		if len(page) == limit {
+			break
+		}
+		page = append(page, m)
+	}
+	return page, nil
 }
 
 func (f *fakeOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error) {

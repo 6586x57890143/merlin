@@ -127,7 +127,7 @@ func (p *Plugin) renderListPage(guildID string, channels []settings.RotationChan
 		fields = append(fields, &discordgo.MessageEmbedField{
 			Name: fmt.Sprintf("<#%s>", rc.ChannelID),
 			Value: fmt.Sprintf("Every %s · archive <#%s> (%s) · retention %s · sticky %v",
-				humanDuration(time.Duration(rc.IntervalHours)*time.Hour), rc.ArchiveCategoryID, rc.ArchiveVisibility, retention, rc.StickyEnabled),
+				humanDuration(time.Duration(rc.IntervalMinutes)*time.Minute), rc.ArchiveCategoryID, rc.ArchiveVisibility, retention, rc.StickyEnabled),
 		})
 
 		label := rc.ChannelID
@@ -161,7 +161,7 @@ func renderRotationDetailEmbed(rc settings.RotationChannel) *discordgo.MessageEm
 		retention = humanDuration(time.Duration(*rc.RetentionHours) * time.Hour)
 	}
 	fields := []*discordgo.MessageEmbedField{
-		{Name: "Interval", Value: humanDuration(time.Duration(rc.IntervalHours) * time.Hour), Inline: true},
+		{Name: "Interval", Value: humanDuration(time.Duration(rc.IntervalMinutes) * time.Minute), Inline: true},
 		{Name: "Retention", Value: retention, Inline: true},
 		{Name: "Archive category", Value: fmt.Sprintf("<#%s>", rc.ArchiveCategoryID), Inline: true},
 		{Name: "Archive visibility", Value: rc.ArchiveVisibility, Inline: true},

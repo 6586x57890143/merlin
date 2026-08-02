@@ -12,6 +12,12 @@ type DiscordMemberOps interface {
 	// handleRelease, handleRevoke) needs the member's actual current roles,
 	// not a possibly-stale gateway cache snapshot.
 	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)
+	// GuildMembers pages the guild's member list, which is the only way to
+	// find everyone holding a given role — Discord has no "members with role
+	// X" endpoint. It needs the privileged GUILD_MEMBERS intent to return
+	// anything, which is why /roles jail-role reports that plainly rather
+	// than silently finding nobody. See membersWithRole.
+	GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error)
 	GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error)
 	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 	GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)

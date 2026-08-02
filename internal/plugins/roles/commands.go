@@ -21,8 +21,18 @@ import (
 // jailed member (present and future) can see guild-wide, a bigger blast
 // radius than a single jail/grant, so it stays Admin-only independent of
 // the other two.
+// actionJailRole is deliberately separate from actionJail, and Admin-tier by
+// default. Jailing everyone holding a role is the same kind of action as
+// jailing one person but with a blast radius closer to
+// configure_jail_channels' — one command can silence a large slice of the
+// server, and getting the wrong role means undoing it member by member. That
+// is the same reasoning that already keeps configure_jail_channels on its own
+// Admin-only action. A guild that wants its mods to hold the raid button can
+// say so explicitly with /config permissions set-tier roles.jail_role, which
+// is a decision worth making on purpose rather than inheriting.
 const (
 	actionJail            = "roles.jail"
+	actionJailRole        = "roles.jail_role"
 	actionGrant           = "roles.grant"
 	actionList            = "roles.list"
 	actionConfigureJailCh = "roles.configure_jail_channels"
@@ -31,6 +41,9 @@ const (
 func (p *Plugin) registerCommands() {
 	userOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionUser, Name: name, Description: desc, Required: true}
+	}
+	optionalUserOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
+		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionUser, Name: name, Description: desc}
 	}
 	roleOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionRole, Name: name, Description: desc, Required: true}
@@ -52,9 +65,27 @@ func (p *Plugin) registerCommands() {
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "jail",
-				Description: "Strip a member's roles and channel access for a period, then automatically restore both",
+				Description: "Strip up to 5 members' roles and channel access for a period, then automatically restore them",
+				// Discord requires required options ahead of optional ones,
+				// so the extra member slots follow duration. They are plain
+				// optional User pickers rather than a free-text list of IDs —
+				// see collectJailUserIDs.
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to jail"),
+					durationOpt("duration", "How long before automatic release — e.g. \"24h\" or \"3d\"", true),
+					optionalUserOpt("user2", "A second member, jailed with the same duration and reason"),
+					optionalUserOpt("user3", "A third member"),
+					optionalUserOpt("user4", "A fourth member"),
+					optionalUserOpt("user5", "A fifth member"),
+					reasonOpt,
+				},
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "jail-role",
+				Description: "Jail everyone holding one role — for shutting down a raid",
+				Options: []*discordgo.ApplicationCommandOption{
+					roleOpt("role", "Every member holding this role will be jailed"),
 					durationOpt("duration", "How long before automatic release — e.g. \"24h\" or \"3d\"", true),
 					reasonOpt,
 				},
@@ -125,6 +156,7 @@ func (p *Plugin) registerCommands() {
 
 	p.commands.RegisterCommand(p.Name(), cmd)
 	p.commands.Handle("roles", "jail", core.PermSpec{Tier: core.TierMod, Action: actionJail}, p.handleJail)
+	p.commands.Handle("roles", "jail-role", core.PermSpec{Tier: core.TierAdmin, Action: actionJailRole}, p.handleJailRole)
 	p.commands.Handle("roles", "release", core.PermSpec{Tier: core.TierMod, Action: actionJail}, p.handleRelease)
 	p.commands.Handle("roles", "grant", core.PermSpec{Tier: core.TierAdmin, Action: actionGrant}, p.handleGrant)
 	p.commands.Handle("roles", "revoke", core.PermSpec{Tier: core.TierAdmin, Action: actionGrant}, p.handleRevoke)

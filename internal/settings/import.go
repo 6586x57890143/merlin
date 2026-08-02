@@ -23,7 +23,10 @@ type legacyYAML struct {
 		AuditLogChannelID string   `yaml:"audit_log_channel_id"`
 		StatusChannelID   string   `yaml:"status_channel_id"`
 		RotatingChannels  []struct {
-			ChannelID               string   `yaml:"channel_id"`
+			ChannelID string `yaml:"channel_id"`
+			// Still hours: this parses pre-Milestone-4 config.yaml files,
+			// whose shape is fixed history and can't be renamed. Converted to
+			// the store's minutes below.
 			IntervalHours           int      `yaml:"interval_hours"`
 			ArchiveCategoryID       string   `yaml:"archive_category_id"`
 			ArchiveVisibility       string   `yaml:"archive_visibility"`
@@ -84,7 +87,7 @@ func (s *Store) ImportFromLegacyYAML(ctx context.Context, path string) (imported
 			if err := s.UpsertRotationChannel(ctx, RotationChannel{
 				GuildID:                 guildID,
 				ChannelID:               rc.ChannelID,
-				IntervalHours:           rc.IntervalHours,
+				IntervalMinutes:         rc.IntervalHours * 60,
 				ArchiveCategoryID:       rc.ArchiveCategoryID,
 				ArchiveVisibility:       rc.ArchiveVisibility,
 				ArchiveWhitelistRoleIDs: rc.ArchiveWhitelistRoleIDs,

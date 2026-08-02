@@ -278,6 +278,21 @@ trail. Configured per guild via `/rotation configure add|edit|remove|sticky`
 and inspected with `/rotation list` — see spec.MD §6 for the full rotation
 process, visibility/retention semantics, and archive sweep behavior.
 
+**Interval** accepts anything from one hour upward, to the minute: `90m`,
+`2h30m`, `24h`, `3d`. One hour is a floor, not a granularity — below it a
+single guild's rotations would exhaust its channel-create budget and starve
+the sweep that deletes the archives they produce, and members lose the
+channel mid-conversation.
+
+**The replacement keeps the original's place in the sidebar.** Discord
+breaks ties between equal channel positions by channel ID, so a replacement
+created at the same index as the channel it replaces still sorts below it;
+the position is re-asserted explicitly once the old channel has moved to the
+archive category and the slot is genuinely free. If that last step fails the
+rotation still succeeds — the channel is live and correctly named, and
+failing the job would have the scheduler retry and create a second
+replacement.
+
 ## Role management
 
 `internal/plugins/roles` implements jail (snapshot-and-strip a member's
@@ -289,6 +304,26 @@ jail/grants. Jail denies every channel except a guild-configured allowlist
 via one shared "Jailed" role's own permission overwrites rather than
 per-member overwrites, so jailing scales to any server size at a fixed
 Discord API cost.
+
+**Jailing several people at once.** `/roles jail` takes up to five members
+(`user`, `user2` … `user5`) with one duration and reason. `/roles jail-role`
+jails everyone holding a given role — the raid button. Both report every
+member individually: jailed, already jailed, skipped for outranking you, or
+failed. Nothing is omitted, because a summary that lists only successes lets
+a mod believe a raid was contained when it wasn't.
+
+`jail-role` is **Admin-tier by default** while `/roles jail` stays Mod-tier —
+one command silencing a large slice of the server is a different kind of
+action from jailing one person. Lower it deliberately with
+`/config permissions set-tier roles.jail_role mod` if your mods should hold
+it. It refuses `@everyone` outright, refuses any role positioned at or above
+Merlin's own (its members would keep the role and the jail wouldn't do its
+job), skips you and the bot, and caps a batch at 50 members. That cap exists
+because jail and release draw on the same per-guild rate budget: a batch big
+enough to drain it would leave you unable to run the releases that undo it.
+Over the cap it refuses rather than jailing an arbitrary subset. Finding a
+role's members needs the privileged `GUILD_MEMBERS` intent (see Gateway
+intents above).
 
 **Jail survives leaving and rejoining.** Discord drops every role a member
 holds when they leave, so without this a jailed member could shed the Jailed

@@ -21,9 +21,37 @@ import (
 // visibility is handled entirely by the Jailed role's own permission
 // overwrites (jailchannels.go) — jailing a member never touches channels
 // directly, only which roles they hold.
+// jailUserOptionNames are /roles jail's member slots, in the order they are
+// read. Discord has no multi-user option type, so "several people at once"
+// means several native User pickers rather than a free-text list of IDs —
+// spec.MD §4a's rule that user-valued options never take a raw string is
+// exactly what stops a mistyped snowflake from jailing a stranger. Five is a
+// judgement call: enough for the usual "these three started it", short of the
+// point where /roles jail-role is the better tool.
+var jailUserOptionNames = []string{"user", "user2", "user3", "user4", "user5"}
+
+// collectJailUserIDs reads the filled-in member slots, in order, without
+// duplicates — picking the same person in two slots is a slip, and letting it
+// through would report them as "already jailed" by their own first slot.
+func collectJailUserIDs(opts map[string]*discordgo.ApplicationCommandInteractionDataOption) []string {
+	var ids []string
+	for _, name := range jailUserOptionNames {
+		opt, ok := opts[name]
+		if !ok {
+			continue
+		}
+		id, _ := opt.Value.(string)
+		if id == "" || slices.Contains(ids, id) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	opts := core.LeafArgs(i)
-	userID := opts["user"].Value.(string)
+	userIDs := collectJailUserIDs(opts)
 	duration, err := core.ParseFlexibleDuration(opts["duration"].StringValue())
 	if err != nil {
 		core.RespondErr(s, i, "Invalid duration", err)
@@ -33,11 +61,16 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 	if v, ok := opts["reason"]; ok {
 		reason = v.StringValue()
 	}
+	if len(userIDs) == 0 {
+		core.RespondErr(s, i, "No members given", errors.New("pick at least one member to jail"))
+		return
+	}
 
 	// Deferred because the first jail in a guild is the expensive one: it
 	// creates the Jailed role and writes a deny overwrite to every channel,
 	// which in a large server runs well past Discord's 3-second response
-	// deadline. Every path below therefore answers with FollowUp*.
+	// deadline. Several members only add to that. Every path below therefore
+	// answers with FollowUp*.
 	if err := core.DeferResponse(s, i); err != nil {
 		p.log.Error("roles: defer jail response failed", "guild", i.GuildID, "err", err)
 		return
@@ -48,67 +81,88 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		}
 	}
 
-	// Checked before the tracking record is written, not left to
+	// Checked before any tracking record is written, not left to
 	// discordguard's per-call refusal: applyJail deliberately records the
 	// jail before stripping roles, so a refusal at the strip would leave a
 	// jail record for a member who was never actually jailed.
 	if p.dryRun(i.GuildID) {
-		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server — <@%s> was not jailed. Turn it off with `/config dryrun enabled:false`.", userID)); err != nil {
+		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server — %s not jailed. Turn it off with `/config dryrun enabled:false`.",
+			mentionList(userIDs))); err != nil {
 			p.log.Error("roles: jail dry-run follow-up failed", "guild", i.GuildID, "err", err)
 		}
 		return
 	}
 
-	if _, ok, err := p.store.GetJail(ctx, i.GuildID, userID); err != nil {
-		fail("Failed to check existing jail", err)
-		return
-	} else if ok {
-		fail("Already jailed", fmt.Errorf("<@%s> is already jailed — use `/roles release` first", userID))
-		return
-	}
-
-	member, err := p.ops(i.GuildID).GuildMember(i.GuildID, userID)
-	if err != nil {
-		fail("Failed to fetch member", err)
-		return
-	}
+	targets, fetchFailed := p.resolveTargets(i.GuildID, userIDs)
 
 	// Rank check before anything is created or written: jail is TierMod but
 	// strips roles, so without this a mod could use it to strip an admin's
 	// Administrator bit and with it their TierAdmin access to this bot.
-	if err := p.perms.CanModerate(i.GuildID, i.Member, userID, member.Roles); err != nil {
-		fail("Cannot jail that member", err)
-		return
-	}
+	allowed, res := p.partitionByRank(i.GuildID, i.Member, targets)
+	res.failed = append(res.failed, fetchFailed...)
 
-	jailRoleID, err := p.resolveJailRole(i.GuildID)
-	if err != nil {
-		fail("Failed to resolve jail role", err)
-		return
-	}
-
-	unmanageable, err := p.applyJail(ctx, i.GuildID, userID, jailRoleID, member.Roles, duration, actorID(i), reason)
-	if err != nil {
-		// Losing the insert race means a concurrent jail already recorded
-		// this member and stripped their roles. Nothing was changed here, and
-		// the snapshot on record is the one taken before they were stripped —
-		// reporting it as a plain failure would invite a retry that could
-		// only overwrite that snapshot with the stripped state.
-		if errors.Is(err, ErrAlreadyJailed) {
-			fail("Already jailed", fmt.Errorf("<@%s> was jailed by someone else a moment ago — use `/roles release` first", userID))
+	if len(allowed) > 0 {
+		jailRoleID, err := p.resolveJailRole(i.GuildID)
+		if err != nil {
+			fail("Failed to resolve jail role", err)
 			return
 		}
-		fail("Failed to jail member", err)
+		res = res.merge(p.jailMany(ctx, i.GuildID, jailRoleID, allowed, duration, actorID(i), reason))
+	}
+
+	// One member keeps the precise, actionable wording it always had — and its
+	// original roles.jail audit action, so existing audit history stays one
+	// queryable series rather than splitting the day this landed. Several get
+	// the batch summary and a single roles.jail_bulk entry. Same execution
+	// path either way; only the reporting differs, so the two can't drift in
+	// behaviour.
+	if len(userIDs) == 1 {
+		if len(res.jailed) == 1 {
+			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.jail", "",
+				fmt.Sprintf("user=%s duration=%s reason=%q", userIDs[0], core.FormatDuration(duration), reason)); err != nil {
+				p.log.Error("roles: audit jail failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
+			}
+		}
+		p.respondSingleJail(s, i, userIDs[0], duration, res)
 		return
 	}
 
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.jail", "", fmt.Sprintf("user=%s duration=%s reason=%q unmanageable_roles=%v", userID, core.FormatDuration(duration), reason, unmanageable)); err != nil {
-		p.log.Error("roles: audit jail failed", "guild", i.GuildID, "user", userID, "err", err)
+	p.recordBulkAudit(ctx, i.GuildID, actorID(i), fmt.Sprintf("users=%d", len(userIDs)), duration, reason, res)
+	title := fmt.Sprintf("Jailed %d of %d member(s)", len(res.jailed), len(userIDs))
+	if err := core.FollowUpOK(s, i, title, summarizeBulkJail(res, duration)); err != nil {
+		p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+	}
+}
+
+// respondSingleJail renders a one-member outcome, preserving the wording (and
+// the audit action name) from before /roles jail could take several members.
+func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.InteractionCreate, userID string, duration time.Duration, res bulkJailResult) {
+	fail := func(title string, err error) {
+		if ferr := core.FollowUpErr(s, i, title, err); ferr != nil {
+			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", ferr)
+		}
+	}
+
+	switch {
+	case len(res.protected) > 0:
+		fail("Cannot jail that member", fmt.Errorf("<@%s> outranks you", userID))
+		return
+	case len(res.alreadyIn) > 0:
+		// Losing the insert race means a concurrent jail already recorded this
+		// member and stripped their roles. Nothing was changed here, and the
+		// snapshot on record is the one taken before they were stripped —
+		// reporting it as a plain failure would invite a retry that could only
+		// overwrite that snapshot with the stripped state.
+		fail("Already jailed", fmt.Errorf("<@%s> is already jailed — use `/roles release` first", userID))
+		return
+	case len(res.failed) > 0:
+		fail("Failed to jail member", errors.New(res.failed[0]))
+		return
 	}
 
 	msg := fmt.Sprintf("<@%s> jailed for %s.", userID, core.FormatDuration(duration))
-	if len(unmanageable) > 0 {
-		msg += fmt.Sprintf(" %d role(s) could not be stripped (positioned at/above Merlin's own top role).", len(unmanageable))
+	if res.unmanageable > 0 {
+		msg += " Some role(s) could not be stripped (positioned at/above Merlin's own top role)."
 	}
 	if err := core.FollowUpOK(s, i, "Member jailed", msg); err != nil {
 		p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)

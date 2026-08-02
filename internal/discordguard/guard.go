@@ -78,6 +78,7 @@ type Session interface {
 	ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error
 	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
 	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)
+	GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error)
 	GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error)
 	GuildMemberRoleAdd(guildID, userID, roleID string, options ...discordgo.RequestOption) error
 	GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error
@@ -206,6 +207,13 @@ func (o *GuildOps) User(userID string, options ...discordgo.RequestOption) (*dis
 
 func (o *GuildOps) GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error) {
 	return o.guard.session.GuildMember(guildID, userID, options...)
+}
+
+// GuildMembers pages the guild's member list. A read, so ungated like the
+// rest — but note it is the one read here whose cost scales with guild size,
+// and it requires the privileged GUILD_MEMBERS intent to return anything.
+func (o *GuildOps) GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error) {
+	return o.guard.session.GuildMembers(guildID, after, limit, options...)
 }
 
 func (o *GuildOps) GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {
