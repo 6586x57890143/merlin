@@ -29,6 +29,13 @@ type GlobalConfig struct {
 	// The per-guild equivalents (/config pause, /config dryrun) live in
 	// internal/settings for everything short of that.
 	PauseAllWrites bool `yaml:"-"`
+	// EnableGuildMembersIntent adds Discord's privileged GUILD_MEMBERS gateway
+	// intent, letting the roles plugin re-apply a jail the instant an evader
+	// rejoins instead of on the next one-minute sweep. Off by default: it is a
+	// privileged intent, and jail already survives a leave-and-rejoin without
+	// it. Turning it on also requires enabling the intent for the application
+	// in Discord's Developer Portal, or the gateway refuses the connection.
+	EnableGuildMembersIntent bool `yaml:"-"`
 }
 
 // Level maps LogLevel onto slog. The value is validated at load time, so an

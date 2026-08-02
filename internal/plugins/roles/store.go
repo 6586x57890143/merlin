@@ -65,6 +65,10 @@ type Store interface {
 	GetJail(ctx context.Context, guildID, userID string) (JailRecord, bool, error)
 	DeleteJail(ctx context.Context, guildID, userID string) error
 	DueJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
+	// ActiveJails returns jails still in force (not yet due, or indefinite) —
+	// the ones a member could still be trying to escape by leaving and
+	// rejoining. Bounded; see maxActiveJailChecks.
+	ActiveJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
 
 	InsertGrant(ctx context.Context, rec GrantRecord) error
 	GetGrant(ctx context.Context, guildID, userID, roleID string) (GrantRecord, bool, error)
@@ -153,6 +157,41 @@ func (s *pgStore) DueJails(ctx context.Context, guildID string, now time.Time) (
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("roles store: iterate due jails: %w", err)
+	}
+	return out, nil
+}
+
+// maxActiveJailChecks bounds how many jails one evasion pass examines, since
+// each costs a REST member fetch. Ordered newest-first because a jail handed
+// out minutes ago is the one someone is plausibly trying to duck; a jail from
+// three days ago whose subject already left is not coming back mid-sentence.
+// A guild with more simultaneous jails than this has a raid on its hands and
+// a bigger problem than the tail of the list.
+const maxActiveJailChecks = 200
+
+func (s *pgStore) ActiveJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id, snapshot_role_ids, jail_role_id, jailed_at, release_at, jailed_by, reason
+		FROM role_jails
+		WHERE guild_id = $1 AND (release_at IS NULL OR release_at > $2)
+		ORDER BY jailed_at DESC
+		LIMIT $3
+	`, guildID, now, maxActiveJailChecks)
+	if err != nil {
+		return nil, fmt.Errorf("roles store: active jails: %w", err)
+	}
+	defer rows.Close()
+
+	var out []JailRecord
+	for rows.Next() {
+		rec := JailRecord{GuildID: guildID}
+		if err := rows.Scan(&rec.UserID, &rec.SnapshotRoleIDs, &rec.JailRoleID, &rec.JailedAt, &rec.ReleaseAt, &rec.JailedBy, &rec.Reason); err != nil {
+			return nil, fmt.Errorf("roles store: scan active jail: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("roles store: iterate active jails: %w", err)
 	}
 	return out, nil
 }

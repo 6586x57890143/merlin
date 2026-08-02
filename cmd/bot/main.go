@@ -92,7 +92,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
-	session, err := core.NewSession(cfg.Discord.Token)
+	session, err := core.NewSession(cfg.Discord.Token, cfg.EnableGuildMembersIntent)
 	if err != nil {
 		return err
 	}
@@ -209,6 +209,23 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// roles, permission policy, rotation config, and jail snapshots must not
 	// be silently destroyed by the bot briefly losing access. GuildCreate
 	// puts it all back on rejoin.
+	// Opt-in: without the GUILD_MEMBERS intent Discord never sends this, and
+	// the roles sweep is the only thing re-jailing evaders. With it, a member
+	// who left to shed their Jailed role gets it back as they walk in rather
+	// than up to a minute later. Registered only when the intent was actually
+	// requested, so the handler's presence always matches reality.
+	if cfg.EnableGuildMembersIntent {
+		log.Info("GUILD_MEMBERS intent enabled: jails re-apply immediately on rejoin")
+		session.AddHandler(func(s *discordgo.Session, ma *discordgo.GuildMemberAdd) {
+			if ma.Member == nil || ma.User == nil {
+				return
+			}
+			joinCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			rolesPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.User.ID)
+		})
+	}
+
 	// A channel disappearing under a rotation config is otherwise only
 	// noticed as a job that quietly fails for five runs before alerting.
 	session.AddHandler(func(s *discordgo.Session, cd *discordgo.ChannelDelete) {

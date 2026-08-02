@@ -41,6 +41,15 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 
 	var firstErr error
 
+	// Before releasing anyone, put back the jails people walked out of.
+	// Discord drops a member's roles when they leave, so a jailed member who
+	// leaves and rejoins returns with no marker role and full access, while
+	// the record still says they're jailed. Checked every sweep, so the
+	// escape lasts at most one tick.
+	if err := p.reapplyEvadedJails(ctx, guildID); err != nil {
+		firstErr = err
+	}
+
 	dueJails, err := p.store.DueJails(ctx, guildID, p.now())
 	if err != nil {
 		return fmt.Errorf("roles sweep: query due jails: %w", err)

@@ -42,9 +42,19 @@ just links to it rather than repeating it.
   model and `/config`'s subcommands. Who counts as "mod"/"admin" is
   configured via `/config mod-roles`/`/config admins` — see "First-time
   setup" below.
-- **Gateway intents**: `GUILDS` only. `GUILD_MEMBERS` and `MESSAGE_CONTENT`
-  are privileged intents requiring Discord approval at scale, and neither is
-  requested until a specific plugin genuinely needs it.
+- **Gateway intents**: `GUILDS` by default. `MESSAGE_CONTENT` is never
+  requested. `GUILD_MEMBERS` is **optional**, off unless you set
+  `MERLIN_ENABLE_GUILD_MEMBERS_INTENT=1`:
+  - Without it, a member who leaves and rejoins to shed their Jailed role is
+    re-jailed by the next `roles-sweep` tick — at most one minute later.
+    Jail survives a rejoin either way; this is not a gap you have to opt out
+    of.
+  - With it, the re-jail happens as they walk back in. Enable it only if that
+    minute matters to you: it is a privileged intent, which means also
+    ticking "Server Members Intent" for the application in Discord's
+    Developer Portal (a self-serve toggle below 100 servers; Discord approval
+    above that). If the env var is set and the portal toggle isn't, the
+    gateway refuses the connection at startup.
 
 ## Local development
 
@@ -274,6 +284,17 @@ jail/grants. Jail denies every channel except a guild-configured allowlist
 via one shared "Jailed" role's own permission overwrites rather than
 per-member overwrites, so jailing scales to any server size at a fixed
 Discord API cost.
+
+**Jail survives leaving and rejoining.** Discord drops every role a member
+holds when they leave, so without this a jailed member could shed the Jailed
+role — and with it every channel restriction — simply by leaving and coming
+back, while Merlin's own record still said they were jailed. The sweep
+compares each active jail against the member's `JoinedAt`: a join later than
+the jail began is a rejoin, and the marker goes back on. A member whose
+marker is gone *without* a later join is treated as a deliberate manual
+release by a mod, exactly as before. Re-applying never touches the stored
+role snapshot or the release time — leaving neither serves the sentence nor
+extends it.
 
 ## Package layout
 
