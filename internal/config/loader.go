@@ -51,6 +51,17 @@ func (l *Loader) reload() error {
 	next.Database.DSN = os.Getenv("DATABASE_URL")
 	next.BootstrapAdminUserID = os.Getenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID")
 	next.PauseAllWrites = isTruthy(os.Getenv("MERLIN_PAUSE_ALL_WRITES"))
+	// LOG_LEVEL overrides the YAML value when set. On a deployed host .env is
+	// already the file an operator edits; config.yaml is a read-only mount,
+	// so requiring a file change to raise verbosity mid-incident would be the
+	// harder path for no benefit. Validated after the override so a typo in
+	// either source fails startup rather than silently reverting to Info.
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		next.LogLevel = v
+	}
+	if err := validator.New().Struct(&next); err != nil {
+		return fmt.Errorf("validate config: %w", err)
+	}
 	if next.Discord.Token == "" {
 		return errors.New("DISCORD_BOT_TOKEN not set")
 	}
