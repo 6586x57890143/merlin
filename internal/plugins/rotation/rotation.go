@@ -148,6 +148,51 @@ func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
 	p.reconcile(ctx, guildID)
 }
 
+// HandleChannelDeleted reports that a channel this guild rotates was deleted
+// out from under the configuration.
+//
+// The rotation job for it will now fail on every run — the channel it is
+// configured against no longer exists — and the Scheduler's own backoff and
+// consecutive-failure alert will eventually say so. But that alert arrives
+// after five failures and names a job key, not a channel, and by then
+// whoever deleted the channel has long since moved on. Saying it once,
+// immediately, in the audit log, is the difference between "a mod deleted
+// #general-chat this morning" and an unexplained wedged job.
+//
+// The configuration is deliberately left in place. Removing a rotation slot
+// discards the archive retention it promised, and this event can't
+// distinguish "we're done with this channel" from "someone deleted the wrong
+// thing and wants it back" — that call belongs to an admin, via
+// /rotation configure remove.
+func (p *Plugin) HandleChannelDeleted(ctx context.Context, guildID, channelID string) {
+	if _, ok := p.settings.RotationChannel(guildID, channelID); !ok {
+		return
+	}
+	p.log.Warn("rotation: configured rotating channel was deleted", "guild", guildID, "channel", channelID)
+	if err := p.audit.Record(ctx, guildID, "system", "rotation.channel_deleted", channelID,
+		"the channel this rotation is configured against was deleted; rotation will fail until it is reconfigured with /rotation configure"); err != nil {
+		p.log.Error("rotation: audit deleted channel", "guild", guildID, "err", err)
+	}
+}
+
+// ForgetGuild drops guildID's job-registration bookkeeping after the bot has
+// been removed from it. The Scheduler jobs themselves are unregistered by the
+// caller (cmd/bot/main.go's GuildDelete handler); this clears the maps that
+// track what *is* registered, so that if the bot is later re-added, reconcile
+// sees an empty slate and registers everything again rather than believing
+// jobs it no longer has are still in place.
+func (p *Plugin) ForgetGuild(guildID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.sweepRegistered, guildID)
+	prefix := scheduler.JobKey(guildID, "")
+	for jobKey := range p.registeredJobs {
+		if strings.HasPrefix(jobKey, prefix) {
+			delete(p.registeredJobs, jobKey)
+		}
+	}
+}
+
 // deferFirstRotation seeds channelID's rotation job as if it had just run,
 // so a channel a mod just added to rotation waits a full interval before its
 // first real rotation instead of firing on the Scheduler's very next tick.

@@ -2,6 +2,7 @@ package roles
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -41,6 +42,43 @@ func TestSweepDryRunReleasesNothingAndKeepsTracking(t *testing.T) {
 	}
 	if len(member.Roles) != 1 || member.Roles[0] != "jail-role" {
 		t.Errorf("dry-run sweep changed the member's roles to %v", member.Roles)
+	}
+}
+
+// The jail snapshot is the only record of what roles a member held before
+// being stripped, and release is the only thing that gives them back. A
+// second concurrent jail must therefore never overwrite it: the loser would
+// be writing the *stripped* role list (just the marker) over the real one,
+// and releasing the member afterwards would restore nothing.
+func TestConcurrentJailDoesNotOverwriteRoleSnapshot(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMember("g1", "u1", []string{"role-a", "role-b"})
+	store := newFakeStore()
+	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	// First jail wins and records the member's real roles.
+	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role",
+		[]string{"role-a", "role-b"}, time.Hour, "mod1", "first"); err != nil {
+		t.Fatalf("first jail: %v", err)
+	}
+
+	// Second jail arrives after the first stripped them, so all it can see
+	// is the marker role.
+	_, err := p.applyJail(context.Background(), "g1", "u1", "jail-role",
+		[]string{"jail-role"}, time.Hour, "mod2", "second")
+	if !errors.Is(err, ErrAlreadyJailed) {
+		t.Fatalf("second jail returned %v, want ErrAlreadyJailed", err)
+	}
+
+	rec, ok, err := store.GetJail(context.Background(), "g1", "u1")
+	if err != nil || !ok {
+		t.Fatalf("GetJail: %v (found=%v)", err, ok)
+	}
+	if len(rec.SnapshotRoleIDs) != 2 || rec.SnapshotRoleIDs[0] != "role-a" || rec.SnapshotRoleIDs[1] != "role-b" {
+		t.Errorf("snapshot is %v, want the pre-jail roles [role-a role-b] — the member's roles are unrecoverable", rec.SnapshotRoleIDs)
+	}
+	if rec.JailedBy != "mod1" {
+		t.Errorf("JailedBy = %q, want the winning call's actor", rec.JailedBy)
 	}
 }
 

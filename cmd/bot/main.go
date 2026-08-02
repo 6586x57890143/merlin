@@ -99,6 +99,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 
 	bus := core.NewEventBus(log)
 	settingsStore := settings.New(db.Pool, bus)
+	// A guild whose settings couldn't be re-read after a mutation falls back
+	// to fail-closed defaults; this walks those back to real values once the
+	// database is reachable again, instead of waiting on the next mutation.
+	settingsStore.StartRetry(ctx, log)
 	perms := core.NewPermissions(session, settingsStore, cfg.BootstrapAdminUserID)
 	commands := core.NewCommandRouter(perms, settingsStore, log)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
@@ -187,6 +191,44 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			// registration succeeds on a later restart.
 			adminconfigPlugin.NudgeIfUnconfigured(guildCtx, gc)
 		}
+	})
+
+	// The bot was removed from a guild (or the guild was deleted). Without
+	// this, that guild's rotation and sweep jobs keep ticking against a
+	// server the bot can no longer see: every REST call fails, the failure
+	// counter climbs, and the eventual "job is wedged" alert tries to post to
+	// a status channel in the same unreachable guild.
+	//
+	// Nothing in Postgres is deleted. Being removed is frequently temporary —
+	// a kick and re-invite, a botched permission change — and a guild's mod
+	// roles, permission policy, rotation config, and jail snapshots must not
+	// be silently destroyed by the bot briefly losing access. GuildCreate
+	// puts it all back on rejoin.
+	// A channel disappearing under a rotation config is otherwise only
+	// noticed as a job that quietly fails for five runs before alerting.
+	session.AddHandler(func(s *discordgo.Session, cd *discordgo.ChannelDelete) {
+		if cd.GuildID == "" {
+			return
+		}
+		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		rotationPlugin.HandleChannelDeleted(guildCtx, cd.GuildID, cd.ID)
+	})
+
+	session.AddHandler(func(s *discordgo.Session, gd *discordgo.GuildDelete) {
+		// Discord sends the same event for "this guild is temporarily
+		// unavailable" (an outage on their side) as for "you were removed",
+		// distinguished only by this flag. Tearing down on an outage would
+		// mean an unrelated Discord incident silently stopped rotations.
+		if gd.Unavailable {
+			log.Warn("guild unavailable, keeping jobs registered", "guild", gd.ID)
+			return
+		}
+		dropped := sched.UnregisterGuild(gd.ID)
+		rotationPlugin.ForgetGuild(gd.ID)
+		rolesPlugin.ForgetGuild(gd.ID)
+		settingsStore.Forget(gd.ID)
+		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
 	})
 
 	if err := session.Open(); err != nil {

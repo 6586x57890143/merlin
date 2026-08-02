@@ -252,6 +252,32 @@ func (s *Scheduler) Unregister(jobKey string) error {
 	return nil
 }
 
+// UnregisterGuild removes every job belonging to guildID and returns how
+// many were dropped. Called when the bot is removed from a guild: without
+// it, that guild's rotation and sweep jobs keep ticking forever against a
+// server the bot can no longer see, failing every REST call until they trip
+// the consecutive-failure alert — which then tries to post to a status
+// channel in the same unreachable guild.
+//
+// Persisted last-run state is deliberately left in Postgres. It is small,
+// and keeping it means a guild that re-adds the bot resumes its old
+// schedule instead of treating every job as never-run and therefore
+// immediately due — which for rotation would mean rotating on the first
+// tick after rejoining.
+func (s *Scheduler) UnregisterGuild(guildID string) int {
+	prefix := JobKey(guildID, "")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for key := range s.jobs {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.jobs, key)
+			n++
+		}
+	}
+	return n
+}
+
 // RunNow executes jobKey immediately, regardless of due-ness, and persists
 // its result exactly like a normal scheduled run. Fails if the job is
 // already running (per-job lock) or unknown.

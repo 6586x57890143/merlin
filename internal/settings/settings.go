@@ -10,6 +10,7 @@ package settings
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -19,6 +20,12 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
+
+// staleRetryInterval is how often StartRetry re-reads guilds whose cache was
+// dropped by a failed refresh. Short enough that a blip doesn't leave a guild
+// on fail-closed defaults for long, long enough that a sustained outage isn't
+// hammered.
+const staleRetryInterval = 30 * time.Second
 
 // GuildSettings is a guild's core bot-wide settings.
 type GuildSettings struct {
@@ -104,10 +111,20 @@ type Store struct {
 
 	mu    sync.RWMutex
 	cache map[string]*guildCache // by guild ID
+	// stale holds guilds whose cache entry was dropped because a refresh
+	// failed. RetryStale works through them in the background — without it,
+	// nothing would ever re-read them and the guild would stay locked into
+	// fail-closed defaults until the next mutation or restart.
+	stale map[string]bool
 }
 
 func New(pool *pgxpool.Pool, bus *core.EventBus) *Store {
-	return &Store{pool: pool, bus: bus, cache: make(map[string]*guildCache)}
+	return &Store{
+		pool:  pool,
+		bus:   bus,
+		cache: make(map[string]*guildCache),
+		stale: make(map[string]bool),
+	}
 }
 
 // Refresh reloads guildID's settings from Postgres into the in-memory
@@ -174,8 +191,85 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 
 	s.mu.Lock()
 	s.cache[guildID] = gc
+	delete(s.stale, guildID)
 	s.mu.Unlock()
 	return nil
+}
+
+// invalidate drops guildID's cached settings after a failed refresh, rather
+// than leaving the pre-mutation copy in place.
+//
+// Leaving it was a quiet fail-open. Every mutator writes to Postgres and
+// then refreshes; if that refresh failed, the row had already changed but
+// the cache still answered with the old values, and nothing ever retried —
+// so a /config permissions deny could be committed to the database and go on
+// being ignored by Authorize indefinitely, with the only evidence a single
+// error return the admin may well have read as "it didn't work."
+//
+// Dropping the entry instead means reads fall back to zero-value defaults:
+// no mod roles, no admins, no overrides. That is fail-closed for Mod and
+// Admin tiers, and deliberately still leaves the bootstrap identity and
+// Discord's own Administrator bit working, so a guild can never be locked
+// out of /config by a database blip.
+func (s *Store) invalidate(guildID string) {
+	s.mu.Lock()
+	delete(s.cache, guildID)
+	s.stale[guildID] = true
+	s.mu.Unlock()
+}
+
+// Forget drops guildID from the cache entirely, without marking it stale —
+// for when the bot has left the guild and there is nothing to retry. The
+// Postgres rows are deliberately left alone: being removed from a server is
+// often temporary (a kick and re-invite, a permissions mistake), and
+// deleting a guild's mod roles, admins, permission policy, and rotation
+// config on the way out would turn that into a silent, unrecoverable wipe.
+func (s *Store) Forget(guildID string) {
+	s.mu.Lock()
+	delete(s.cache, guildID)
+	delete(s.stale, guildID)
+	s.mu.Unlock()
+}
+
+// RetryStale re-reads every guild whose cache was dropped by a failed
+// refresh, returning the number still stale afterwards. Called on a ticker
+// by StartRetry.
+func (s *Store) RetryStale(ctx context.Context) int {
+	s.mu.RLock()
+	pending := make([]string, 0, len(s.stale))
+	for guildID := range s.stale {
+		pending = append(pending, guildID)
+	}
+	s.mu.RUnlock()
+
+	remaining := 0
+	for _, guildID := range pending {
+		if err := s.Refresh(ctx, guildID); err != nil {
+			remaining++
+		}
+	}
+	return remaining
+}
+
+// StartRetry runs RetryStale until ctx is cancelled. A guild is only in the
+// stale set because the database was unreachable at exactly the wrong
+// moment, so this is idle almost always; it exists so recovery doesn't wait
+// on the next mutation or a restart.
+func (s *Store) StartRetry(ctx context.Context, log *slog.Logger) {
+	go func() {
+		ticker := time.NewTicker(staleRetryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if remaining := s.RetryStale(ctx); remaining > 0 {
+					log.Warn("settings: guilds still unreadable, running on fail-closed defaults", "count", remaining)
+				}
+			}
+		}
+	}()
 }
 
 func (s *Store) guild(guildID string) *guildCache {
@@ -316,6 +410,7 @@ func (s *Store) AddModRole(ctx context.Context, guildID, roleID string) error {
 		return fmt.Errorf("settings: add mod role: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -329,6 +424,7 @@ func (s *Store) RemoveModRole(ctx context.Context, guildID, roleID string) error
 		return fmt.Errorf("settings: remove mod role: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -348,6 +444,7 @@ func (s *Store) AddJailAllowedChannel(ctx context.Context, guildID, channelID st
 		return fmt.Errorf("settings: add jail allowed channel: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -361,6 +458,7 @@ func (s *Store) RemoveJailAllowedChannel(ctx context.Context, guildID, channelID
 		return fmt.Errorf("settings: remove jail allowed channel: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -377,6 +475,7 @@ func (s *Store) AddAdmin(ctx context.Context, guildID, userID string) error {
 		return fmt.Errorf("settings: add admin: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -390,6 +489,7 @@ func (s *Store) RemoveAdmin(ctx context.Context, guildID, userID string) error {
 		return fmt.Errorf("settings: remove admin: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -404,6 +504,7 @@ func (s *Store) SetAuditLogChannel(ctx context.Context, guildID, channelID strin
 		return fmt.Errorf("settings: set audit log channel: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -418,6 +519,7 @@ func (s *Store) SetStatusChannel(ctx context.Context, guildID, channelID string)
 		return fmt.Errorf("settings: set status channel: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -437,6 +539,7 @@ func (s *Store) MarkOnboardingNudgeSent(ctx context.Context, guildID string) err
 		return fmt.Errorf("settings: mark onboarding nudge sent: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -463,6 +566,7 @@ func (s *Store) GrantOverride(ctx context.Context, guildID, action, roleID, user
 		return fmt.Errorf("settings: grant override: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -480,6 +584,7 @@ func (s *Store) RevokeOverride(ctx context.Context, guildID, action, roleID, use
 		return fmt.Errorf("settings: revoke override: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -500,6 +605,7 @@ func (s *Store) SetActionTier(ctx context.Context, guildID, action string, tier 
 		return fmt.Errorf("settings: set action tier: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -516,6 +622,7 @@ func (s *Store) ClearActionTier(ctx context.Context, guildID, action string) err
 		return fmt.Errorf("settings: clear action tier: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -542,6 +649,7 @@ func (s *Store) DenyOverride(ctx context.Context, guildID, action, roleID, userI
 		return fmt.Errorf("settings: deny override: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -559,6 +667,7 @@ func (s *Store) UndenyOverride(ctx context.Context, guildID, action, roleID, use
 		return fmt.Errorf("settings: undeny override: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -581,6 +690,7 @@ func (s *Store) DisablePlugin(ctx context.Context, guildID, pluginName string) e
 		return fmt.Errorf("settings: disable plugin: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -595,6 +705,7 @@ func (s *Store) EnablePlugin(ctx context.Context, guildID, pluginName string) er
 		return fmt.Errorf("settings: enable plugin: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -623,6 +734,7 @@ func (s *Store) setWriteControl(ctx context.Context, guildID, column string, val
 		return fmt.Errorf("settings: set %s: %w", column, err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -667,6 +779,7 @@ func (s *Store) UpsertRotationChannel(ctx context.Context, rc RotationChannel) e
 		return fmt.Errorf("settings: upsert rotation channel: %w", err)
 	}
 	if err := s.Refresh(ctx, rc.GuildID); err != nil {
+		s.invalidate(rc.GuildID)
 		return err
 	}
 	s.publishChanged(ctx, rc.GuildID)
@@ -679,6 +792,7 @@ func (s *Store) RemoveRotationChannel(ctx context.Context, guildID, channelID st
 		return fmt.Errorf("settings: remove rotation channel: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)
@@ -700,6 +814,7 @@ func (s *Store) RetargetRotationChannel(ctx context.Context, guildID, oldChannel
 		return fmt.Errorf("settings: retarget rotation channel: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
 		return err
 	}
 	s.publishChanged(ctx, guildID)

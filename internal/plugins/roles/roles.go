@@ -104,6 +104,19 @@ func (p *Plugin) SyncGuild(guildID string) {
 	p.sweepRegistered[guildID] = true
 }
 
+// ForgetGuild drops guildID's sweep-registration bookkeeping and its cached
+// jail role after the bot has been removed from it, so a later re-add
+// re-registers the sweep and re-resolves the role rather than trusting state
+// from a membership that has since ended. Jail and grant rows in Postgres are
+// left alone — they hold the role snapshots needed to restore members, and a
+// kick-and-re-invite must not be what silently discards them.
+func (p *Plugin) ForgetGuild(guildID string) {
+	p.mu.Lock()
+	delete(p.sweepRegistered, guildID)
+	p.mu.Unlock()
+	p.forgetJailRole(guildID)
+}
+
 // resolveJailRole returns guildID's jail marker role ID, creating one named
 // jailRoleName if none exists yet — mirrors rotation.resolveArchiveCategory's
 // find-by-name-or-create-if-missing pattern, so a mod never has to go create

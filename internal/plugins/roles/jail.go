@@ -2,6 +2,7 @@ package roles
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -52,7 +53,7 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 	// jail before stripping roles, so a refusal at the strip would leave a
 	// jail record for a member who was never actually jailed.
 	if p.dryRun(i.GuildID) {
-		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server — <@%s> was not jailed. Turn it off with `/config dryrun clear`.", userID)); err != nil {
+		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server — <@%s> was not jailed. Turn it off with `/config dryrun enabled:false`.", userID)); err != nil {
 			p.log.Error("roles: jail dry-run follow-up failed", "guild", i.GuildID, "err", err)
 		}
 		return
@@ -88,6 +89,15 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 
 	unmanageable, err := p.applyJail(ctx, i.GuildID, userID, jailRoleID, member.Roles, duration, actorID(i), reason)
 	if err != nil {
+		// Losing the insert race means a concurrent jail already recorded
+		// this member and stripped their roles. Nothing was changed here, and
+		// the snapshot on record is the one taken before they were stripped —
+		// reporting it as a plain failure would invite a retry that could
+		// only overwrite that snapshot with the stripped state.
+		if errors.Is(err, ErrAlreadyJailed) {
+			fail("Already jailed", fmt.Errorf("<@%s> was jailed by someone else a moment ago — use `/roles release` first", userID))
+			return
+		}
 		fail("Failed to jail member", err)
 		return
 	}

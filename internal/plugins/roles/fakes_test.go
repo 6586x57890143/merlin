@@ -228,7 +228,14 @@ func (f *fakeStore) InsertJail(ctx context.Context, rec JailRecord) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.jails[jailKey(rec.GuildID, rec.UserID)] = rec
+	// Mirrors the real store's ON CONFLICT DO NOTHING: an existing jail is
+	// never overwritten, so a lost race can't destroy the role snapshot the
+	// winning call recorded.
+	key := jailKey(rec.GuildID, rec.UserID)
+	if _, exists := f.jails[key]; exists {
+		return fmt.Errorf("fake store: insert jail for %s: %w", rec.UserID, ErrAlreadyJailed)
+	}
+	f.jails[key] = rec
 	return nil
 }
 

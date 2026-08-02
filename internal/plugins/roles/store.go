@@ -19,6 +19,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrAlreadyJailed reports that a jail record for this member already
+// existed, so this attempt wrote nothing. It means the caller lost a race
+// with a concurrent jail, and must not go on to strip the member's roles —
+// the winning call already did, and the snapshot on record is the one taken
+// before that happened.
+var ErrAlreadyJailed = errors.New("roles: member is already jailed")
+
 // JailRecord tracks one member currently jailed in a guild: the roles they
 // held before being stripped (so release can restore exactly what was
 // removed), and the marker role applied in their place.
@@ -51,6 +58,9 @@ type GrantRecord struct {
 // state — mirrors rotation.ArchiveStore's role: pending future actions
 // tracked here, not in internal/settings (guild configuration only).
 type Store interface {
+	// InsertJail returns ErrAlreadyJailed if the member already has a jail
+	// record — the caller lost a race with a concurrent jail, and must not
+	// treat that as success.
 	InsertJail(ctx context.Context, rec JailRecord) error
 	GetJail(ctx context.Context, guildID, userID string) (JailRecord, bool, error)
 	DeleteJail(ctx context.Context, guildID, userID string) error
@@ -77,14 +87,26 @@ func (s *pgStore) InsertJail(ctx context.Context, rec JailRecord) error {
 	if rec.SnapshotRoleIDs == nil {
 		rec.SnapshotRoleIDs = []string{}
 	}
-	_, err := s.pool.Exec(ctx, `
+	// DO NOTHING, not DO UPDATE. handleJail checks for an existing jail
+	// first, but that check and this write are not atomic, and the gap is
+	// destructive: two concurrent /roles jail calls on the same member both
+	// pass the check, the first strips the member down to the marker role,
+	// and the second then overwrites snapshot_role_ids with what it read —
+	// the marker alone. The member's original roles are gone from the only
+	// place they were recorded, and releasing them restores nothing.
+	//
+	// Losing the race is reported rather than swallowed so the second caller
+	// is told the member is already jailed instead of believing it succeeded.
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO role_jails (guild_id, user_id, snapshot_role_ids, jail_role_id, jailed_at, release_at, jailed_by, reason)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		ON CONFLICT (guild_id, user_id) DO UPDATE SET
-			snapshot_role_ids = $3, jail_role_id = $4, jailed_at = $5, release_at = $6, jailed_by = $7, reason = $8
+		ON CONFLICT (guild_id, user_id) DO NOTHING
 	`, rec.GuildID, rec.UserID, rec.SnapshotRoleIDs, rec.JailRoleID, rec.JailedAt, rec.ReleaseAt, rec.JailedBy, rec.Reason)
 	if err != nil {
 		return fmt.Errorf("roles store: insert jail: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("roles store: insert jail for %s: %w", rec.UserID, ErrAlreadyJailed)
 	}
 	return nil
 }

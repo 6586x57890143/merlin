@@ -304,24 +304,31 @@ func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.Int
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("component handler panicked", "panic", rec)
-			respondEphemeral(s, i, "Something went wrong handling that.")
+			r.respondEphemeral(s, i, "Something went wrong handling that.")
 		}
 	}()
+
+	// Same fail-closed guard as dispatchCommand: GuildID is the settings
+	// cache key both checks below depend on.
+	if i.GuildID == "" {
+		r.respondEphemeral(s, i, "This only works inside a server.")
+		return
+	}
 
 	customID := i.MessageComponentData().CustomID
 	matched := r.matchComponent(customID)
 	if matched == nil {
 		r.log.Error("component dispatch: no handler registered", "custom_id", customID)
-		respondEphemeral(s, i, "This button or menu isn't wired up yet.")
+		r.respondEphemeral(s, i, "This button or menu isn't wired up yet.")
 		return
 	}
 
 	if !r.gate.PluginEnabled(i.GuildID, matched.pluginName) {
-		respondEphemeral(s, i, "This feature is disabled in this server.")
+		r.respondEphemeral(s, i, "This feature is disabled in this server.")
 		return
 	}
 	if err := r.perms.Authorize(i, matched.spec); err != nil {
-		respondEphemeral(s, i, "You are not allowed to do that.")
+		r.respondEphemeral(s, i, "You are not allowed to do that.")
 		return
 	}
 
@@ -334,9 +341,20 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("command handler panicked", "panic", rec)
-			respondEphemeral(s, i, "Something went wrong running that command.")
+			r.respondEphemeral(s, i, "Something went wrong running that command.")
 		}
 	}()
+
+	// Every command is registered per guild, so a DM interaction shouldn't be
+	// reachable — but i.GuildID feeds straight into the settings cache key
+	// for both the plugin gate and Authorize, and an empty key there resolves
+	// to a guild with no mod roles and no admins. Refusing outright is a
+	// cheap guard on the one path that must never fail open, and it costs
+	// nothing on the path that actually happens.
+	if i.GuildID == "" {
+		r.respondEphemeral(s, i, "This command only works inside a server.")
+		return
+	}
 
 	data := i.ApplicationCommandData()
 	path, _ := resolveLeaf(data)
@@ -344,17 +362,17 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 	leaf, ok := r.leaves[key]
 	if !ok {
 		r.log.Error("command dispatch: no handler registered", "key", key)
-		respondEphemeral(s, i, "This command isn't wired up yet.")
+		r.respondEphemeral(s, i, "This command isn't wired up yet.")
 		return
 	}
 
 	if !r.gate.PluginEnabled(i.GuildID, r.topLevelPlugin[data.Name]) {
-		respondEphemeral(s, i, "This feature is disabled in this server.")
+		r.respondEphemeral(s, i, "This feature is disabled in this server.")
 		return
 	}
 
 	if err := r.perms.Authorize(i, leaf.spec); err != nil {
-		respondEphemeral(s, i, "You are not allowed to run this command.")
+		r.respondEphemeral(s, i, "You are not allowed to run this command.")
 		return
 	}
 
@@ -441,12 +459,40 @@ func LeafArgs(i *discordgo.InteractionCreate) map[string]*discordgo.ApplicationC
 	return m
 }
 
-func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+// errCodeInteractionAlreadyAcknowledged is Discord's 40060, returned when an
+// interaction has already been responded to or deferred. discordgo doesn't
+// export a constant for it.
+const errCodeInteractionAlreadyAcknowledged = 40060
+
+// respondEphemeral answers an interaction privately, falling back to a
+// follow-up if it has already been acknowledged.
+//
+// The fallback matters most on the path that needs it least often: the panic
+// recovery in dispatchCommand runs whether or not the handler had already
+// responded before panicking. A handler that deferred, did some work, and
+// then panicked would have this reply rejected with 40060 — and the error
+// was previously discarded, so the user saw nothing at all and the logs said
+// nothing either. A panic mid-command is exactly when someone needs to be
+// told something went wrong.
+func (r *CommandRouter) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: msg,
 			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
+	if err == nil {
+		return
+	}
+	if HasDiscordErrorCode(err, errCodeInteractionAlreadyAcknowledged) {
+		if _, ferr := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: msg,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		}); ferr != nil {
+			r.log.Error("interaction follow-up failed after already-acknowledged", "err", ferr)
+		}
+		return
+	}
+	r.log.Error("interaction response failed", "err", err)
 }
