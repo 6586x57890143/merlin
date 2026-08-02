@@ -138,7 +138,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 	rows.Close()
 
 	rcRows, err := s.pool.Query(ctx, `SELECT id, channel_id, interval_hours, archive_category_id, archive_visibility,
-		archive_whitelist_role_ids, archive_whitelist_user_ids, retention_days, sticky_enabled, sticky_messages
+		archive_whitelist_role_ids, archive_whitelist_user_ids, retention_hours, sticky_enabled, sticky_messages
 		FROM settings_rotation_channels WHERE guild_id = $1`, guildID)
 	if err != nil {
 		return fmt.Errorf("settings: load rotation channels for %s: %w", guildID, err)
