@@ -5,7 +5,7 @@ import "github.com/bwmarrin/discordgo"
 // DiscordChannelOps is the narrow slice of *discordgo.Session's REST methods
 // the rotation state machine and sweep job need. Method signatures match
 // discordgo's exactly (including the variadic RequestOption parameter), so
-// *discordgo.Session satisfies this interface with no wrapper needed — only
+// *discordgo.Session satisfies this interface with no wrapper needed. Only
 // tests provide a different (fake) implementation, mirroring the
 // JobStateStore seam in internal/scheduler.
 type DiscordChannelOps interface {
@@ -19,7 +19,7 @@ type DiscordChannelOps interface {
 	ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
-	// User, called with "@me", resolves the bot's own user ID — needed so
+	// User, called with "@me", resolves the bot's own user ID, needed so
 	// newly-created channels that deny @everyone VIEW_CHANNEL (the hidden
 	// staging channel, the archived channel) can also explicitly grant the
 	// bot itself access; without it the bot would lock itself out of a

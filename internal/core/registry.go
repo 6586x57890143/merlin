@@ -22,7 +22,7 @@ type AuditWriter interface {
 }
 
 // CronSpec describes a recurring job's schedule via a Schedule (see
-// schedule.go) — restart-safety comes from persisting last-run state and
+// schedule.go). Restart-safety comes from persisting last-run state and
 // computing next-due = Schedule.Next(last-run) ourselves, which a bare cron
 // expression can't do on its own (spec.MD §5).
 type CronSpec struct {
@@ -31,7 +31,7 @@ type CronSpec struct {
 
 // Scheduler is the narrow interface plugins depend on to register recurring
 // jobs. The concrete implementation lives in internal/scheduler, which is
-// itself a Plugin — it's referenced here only as an interface so this
+// itself a Plugin, referenced here only as an interface so this
 // package (which internal/scheduler must import for Plugin/Deps) never
 // imports internal/scheduler back, avoiding a cycle.
 type Scheduler interface {
@@ -52,13 +52,13 @@ type Scheduler interface {
 	// seen before is otherwise treated as immediately due (correct for a job
 	// like rotation's archive sweep, which should start working right away);
 	// Seed lets a caller that just registered a job representing something a
-	// user freshly configured — e.g. rotation's /rotation configure add —
+	// user freshly configured (e.g. rotation's /rotation configure add)
 	// defer its first real fire by one full schedule period instead.
 	Seed(ctx context.Context, jobKey string, at time.Time) error
 }
 
 // Plugin is the interface every feature module implements. Plugins are
-// compiled into the binary and registered at startup — never dynamically
+// compiled into the binary and registered at startup, never dynamically
 // loaded (spec.MD Design Principle 1). Modularity here is for code
 // organization and blast-radius containment, not runtime extensibility.
 type Plugin interface {
@@ -68,7 +68,7 @@ type Plugin interface {
 
 	// Init runs once, before any plugin's Start, in registration order.
 	// Plugins register slash command definitions and event subscriptions
-	// here. The Discord session may not be connected yet — no gateway or
+	// here. The Discord session may not be connected yet: no gateway or
 	// REST calls in Init.
 	Init(deps Deps) error
 
@@ -84,7 +84,7 @@ type Plugin interface {
 
 // Deps is the fixed set of shared core services injected into every plugin
 // at Init time, so plugins reach for nothing global and never call each
-// other directly — they only publish/subscribe on Bus.
+// other directly; they only publish/subscribe on Bus.
 type Deps struct {
 	Session   *discordgo.Session
 	Bus       *EventBus
@@ -118,7 +118,7 @@ func (r *Registry) Register(p Plugin) {
 
 // InitAll calls Init on every registered plugin, in registration order,
 // under panic recovery. A failure or panic in any plugin's Init aborts the
-// whole startup — fail safe, not fail silent (spec.MD Principle 2).
+// whole startup: fail safe, not fail silent (spec.MD Principle 2).
 func (r *Registry) InitAll() error {
 	for _, p := range r.plugins {
 		if err := safeCall(func() error { return p.Init(r.deps) }); err != nil {
@@ -129,7 +129,7 @@ func (r *Registry) InitAll() error {
 }
 
 // startupFailureShutdownTimeout bounds the ShutdownAll called from StartAll's
-// own failure path (see below) — matching the deadline main.go gives normal
+// own failure path (see below), matching the deadline main.go gives normal
 // shutdown, so a plugin with a hung Shutdown can't block a startup failure
 // from ever returning.
 const startupFailureShutdownTimeout = 10 * time.Second

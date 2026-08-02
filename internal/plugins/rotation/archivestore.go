@@ -20,14 +20,14 @@ import (
 //
 // DeleteAfter is the deadline as computed at archive time. It is retained as
 // the fallback for pre-0013 rows and for archives whose rotation slot has
-// since been removed entirely, but it is no longer authoritative on its own —
+// since been removed entirely, but it is no longer authoritative on its own;
 // see archiveDeadline in sweep.go.
 //
 // ArchiveCategoryID is recorded at archive time (not re-derived from
 // settings.RotationChannel at sweep time) so sweep's "was this channel
 // rescued out of its archive category" check stays correct even after
-// rotation.rotate retargets the live config's ChannelID onto the new channel
-// — see migration 0008's comment for why a live settings lookup keyed by
+// rotation.rotate retargets the live config's ChannelID onto the new channel.
+// See migration 0008's comment for why a live settings lookup keyed by
 // SourceChannelID stopped working.
 type ArchiveRecord struct {
 	ChannelID         string
@@ -45,7 +45,7 @@ type ArchiveRecord struct {
 // and sweeps them on a normal recurring Scheduler job.
 type ArchiveStore interface {
 	Insert(ctx context.Context, rec ArchiveRecord) error
-	// ListForGuild returns every archive still tracked for guildID —
+	// ListForGuild returns every archive still tracked for guildID,
 	// deliberately *not* a "give me the due ones" query. Due-ness now depends
 	// on the live retention setting rather than on a column frozen at archive
 	// time, so the decision belongs in Go where that setting is readable (see

@@ -1,6 +1,6 @@
 // Package audit implements core.AuditWriter: every config/state change gets
 // written to an append-only DB table and posted as an embed to the guild's
-// #bird-audit-log channel (spec.MD Design Principle 4 — "config changes are
+// #bird-audit-log channel (spec.MD Design Principle 4, "config changes are
 // audited, not silent").
 package audit
 
@@ -26,7 +26,7 @@ type channelResolver interface {
 //
 // A year is deliberately long: this is the moderation trail spec.MD Design
 // Principle 4 exists to keep, and the whole point of channel rotation is that
-// the *content* is gone — the record of what the bot did, and who told it to,
+// the *content* is gone: the record of what the bot did, and who told it to,
 // is what remains. It is also small (one row per config change or automated
 // action), so a year of it is nothing next to the cost of not being able to
 // answer "who changed the retention window in March."
@@ -49,8 +49,8 @@ func New(pool *pgxpool.Pool, session *discordgo.Session, settings channelResolve
 
 // Record inserts an append-only audit_log row and posts a matching embed to
 // the guild's configured AuditLogChannelID. Both the DB write and the
-// Discord post must succeed for a nil error, but the DB row — the actual
-// durable audit trail spec.MD Design Principle 4 requires — is written
+// Discord post must succeed for a nil error, but the DB row (the actual
+// durable audit trail spec.MD Design Principle 4 requires) is written
 // first and independently of the embed post. Callers should log a non-nil
 // error and continue rather than fail the action that triggered it: a
 // missing/deleted #bird-audit-log channel means the live notification was
@@ -79,7 +79,7 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 		},
 	}
 	// Truncated because an embed field over 1024 bytes doesn't get trimmed by
-	// Discord, it fails the entire message — so a single long value (a sweep
+	// Discord, it fails the entire message, so a single long value (a sweep
 	// listing many channel IDs, a rotation config with a long sticky) would
 	// silently cost the guild its live audit notification for that action.
 	// The durable row above is already written in full and is unaffected.
@@ -103,7 +103,7 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 // Housekeeping runs on its own goroutine rather than as a Scheduler job:
 // these tables are process-wide, not per guild, and the Scheduler's job keys,
 // failure alerting, and persisted last-run state are all built around a guild
-// that this work doesn't have. Missing a tick is harmless — the next one
+// that this work doesn't have. Missing a tick is harmless: the next one
 // prunes the same rows.
 func (w *Writer) StartRetention(ctx context.Context, log *slog.Logger, extra ...Pruner) {
 	go func() {
@@ -120,7 +120,7 @@ func (w *Writer) StartRetention(ctx context.Context, log *slog.Logger, extra ...
 	}()
 }
 
-// Pruner is anything with its own age-based retention to enforce —
+// Pruner is anything with its own age-based retention to enforce,
 // implemented by discordguard's action journal.
 type Pruner interface {
 	PruneBefore(ctx context.Context, cutoff time.Time) (int64, error)
@@ -151,7 +151,7 @@ func (w *Writer) pruneOnce(ctx context.Context, log *slog.Logger, extra []Pruner
 }
 
 // journalRetention is much shorter than the audit trail's: the action journal
-// is diagnostic — "what did the bot try to do, and what came back" — and is
+// is diagnostic ("what did the bot try to do, and what came back") and is
 // useful for reconstructing a recent incident, not for answering questions
 // about last spring.
 const journalRetention = 30 * 24 * time.Hour

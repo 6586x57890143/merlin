@@ -20,7 +20,7 @@ If the Discord bot token is ever leaked (committed, logged, pasted):
 2. Update the secret in your deployment's secret manager (Docker secret /
    Vault / platform equivalent) with the new token.
 3. Redeploy. The bot re-authenticates on next start with no other changes
-   needed — token rotation does not require a code change.
+   needed, since token rotation does not require a code change.
 
 ## Scope
 

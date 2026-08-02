@@ -13,7 +13,7 @@ import (
 
 // JobHealth and DBHealth are the narrow views /config status needs of the
 // Scheduler and the database, defined here rather than taken from core.Deps
-// so this plugin can be tested against tiny fakes — the same seam pattern as
+// so this plugin can be tested against tiny fakes, the same seam pattern as
 // rotation.SettingsProvider and roles.JailChannelConfig.
 type JobHealth interface {
 	JobHealth(ctx context.Context, guildID string) (total, failing int, err error)
@@ -29,7 +29,7 @@ type DBHealth interface {
 // logs over SSH: whether the database is reachable, whether any scheduled job
 // is wedged, whether someone left the guild paused or in dry-run, and whether
 // the channels and roles the guild configured still exist. Those last two
-// matter because a deleted audit-log channel doesn't announce itself — the
+// matter because a deleted audit-log channel doesn't announce itself: the
 // audit trail simply stops appearing, and the bot goes on working.
 //
 // TierMod, not TierAdmin: it reads state and changes nothing, and a mod
@@ -42,38 +42,38 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	// Database first: if it's down, everything below is suspect, and saying
 	// so plainly beats reporting a lot of stale-looking numbers.
 	if p.db == nil {
-		b.WriteString("**Database** — not wired up\n")
+		b.WriteString("**Database:** not wired up\n")
 	} else if err := p.db.Healthy(ctx); err != nil {
-		fmt.Fprintf(&b, "**Database** — ❌ unreachable: %v\n", err)
+		fmt.Fprintf(&b, "**Database:** ❌ unreachable: %v\n", err)
 	} else {
-		b.WriteString("**Database** — ✅ reachable\n")
+		b.WriteString("**Database:** ✅ reachable\n")
 	}
 
 	if p.jobs == nil {
-		b.WriteString("**Jobs** — not wired up\n")
+		b.WriteString("**Jobs:** not wired up\n")
 	} else {
 		total, failing, err := p.jobs.JobHealth(ctx, i.GuildID)
 		switch {
 		case err != nil:
-			fmt.Fprintf(&b, "**Jobs** — ⚠️ %d registered, state unreadable: %v\n", total, err)
+			fmt.Fprintf(&b, "**Jobs:** ⚠️ %d registered, state unreadable: %v\n", total, err)
 		case total == 0:
-			b.WriteString("**Jobs** — none registered (no rotation configured yet)\n")
+			b.WriteString("**Jobs:** none registered (no rotation configured yet)\n")
 		case failing > 0:
-			fmt.Fprintf(&b, "**Jobs** — ⚠️ %d of %d failing; see `/scheduler list`\n", failing, total)
+			fmt.Fprintf(&b, "**Jobs:** ⚠️ %d of %d failing; see `/scheduler list`\n", failing, total)
 		default:
-			fmt.Fprintf(&b, "**Jobs** — ✅ %d registered, all healthy\n", total)
+			fmt.Fprintf(&b, "**Jobs:** ✅ %d registered, all healthy\n", total)
 		}
 	}
 
 	switch {
 	case gs.WritesPaused && gs.WritesDryRun:
-		b.WriteString("**Actions** — ⛔ paused *and* in dry-run; nothing will be changed\n")
+		b.WriteString("**Actions:** ⛔ paused *and* in dry-run; nothing will be changed\n")
 	case gs.WritesPaused:
-		b.WriteString("**Actions** — ⛔ paused; clear with `/config pause paused:false`\n")
+		b.WriteString("**Actions:** ⛔ paused; clear with `/config pause paused:false`\n")
 	case gs.WritesDryRun:
-		b.WriteString("**Actions** — 🧪 dry-run; clear with `/config dryrun enabled:false`\n")
+		b.WriteString("**Actions:** 🧪 dry-run; clear with `/config dryrun enabled:false`\n")
 	default:
-		b.WriteString("**Actions** — ✅ running normally\n")
+		b.WriteString("**Actions:** ✅ running normally\n")
 	}
 
 	b.WriteString("\n")
@@ -95,16 +95,16 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 // nothing anywhere saying why.
 func (p *Plugin) configuredResourceLines(gs settings.GuildSettings) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**Audit log** — %s\n", p.channelState(gs.AuditLogChannelID))
-	fmt.Fprintf(&b, "**Status channel** — %s\n", p.channelState(gs.StatusChannelID))
+	fmt.Fprintf(&b, "**Audit log:** %s\n", p.channelState(gs.AuditLogChannelID))
+	fmt.Fprintf(&b, "**Status channel:** %s\n", p.channelState(gs.StatusChannelID))
 
 	switch n := len(gs.ModRoleIDs); n {
 	case 0:
-		b.WriteString("**Mod roles** — ⚠️ none configured; only admins can use mod commands\n")
+		b.WriteString("**Mod roles:** ⚠️ none configured; only admins can use mod commands\n")
 	default:
-		fmt.Fprintf(&b, "**Mod roles** — %d configured\n", n)
+		fmt.Fprintf(&b, "**Mod roles:** %d configured\n", n)
 	}
-	fmt.Fprintf(&b, "**Admins** — %d configured (plus anyone with Discord's Administrator permission)\n",
+	fmt.Fprintf(&b, "**Admins:** %d configured (plus anyone with Discord's Administrator permission)\n",
 		len(gs.AdminUserIDs))
 	return b.String()
 }
@@ -118,7 +118,7 @@ func (p *Plugin) channelState(channelID string) string {
 	}
 	if _, err := p.session.Channel(channelID); err != nil {
 		if core.IsUnknownResource(err) {
-			return fmt.Sprintf("❌ configured as `%s`, but that channel no longer exists — re-run `/config setup`", channelID)
+			return fmt.Sprintf("❌ configured as `%s`, but that channel no longer exists. Re-run `/config setup`", channelID)
 		}
 		return fmt.Sprintf("<#%s> (couldn't verify: %v)", channelID, err)
 	}

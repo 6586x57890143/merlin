@@ -150,7 +150,7 @@ func TestCalendarScheduleValidate(t *testing.T) {
 	}
 }
 
-// Both concrete types must satisfy Schedule — compile-time check.
+// Both concrete types must satisfy Schedule: compile-time check.
 var (
 	_ Schedule = IntervalSchedule{}
 	_ Schedule = CalendarSchedule{}

@@ -15,7 +15,7 @@ const journalTimeout = 5 * time.Second
 // Journal records destructive Discord calls as they are attempted.
 //
 // It is strictly a record. Nothing reads it to decide what to do, nothing
-// retries from it, and plugin logic must never consult it — rotation and
+// retries from it, and plugin logic must never consult it: rotation and
 // roles already re-derive their own idempotency from live Discord state, and
 // a second source of truth driving recovery alongside the first would be two
 // mechanisms that can disagree rather than one that works.
@@ -118,5 +118,5 @@ func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	return s[:max] + "..."
 }

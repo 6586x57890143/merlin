@@ -20,7 +20,7 @@ import (
 // Jail and release both go through GuildMemberEdit, so they draw on the same
 // per-guild member.edit budget in discordguard (opCaps). A batch large enough
 // to drain that budget would leave the guild unable to run the releases that
-// undo it — the mistake and its remedy compete for the same tokens, and the
+// undo it: the mistake and its remedy compete for the same tokens, and the
 // mistake gets there first. Capping well below the hourly allowance keeps a
 // mass jail reversible within the same hour, which matters more than being
 // able to jail an arbitrarily large group in one go.
@@ -56,7 +56,7 @@ type jailTarget struct {
 type bulkJailResult struct {
 	jailed       []string
 	alreadyIn    []string // already jailed; left exactly as they were
-	protected    []string // CanModerate refused — target outranks the actor
+	protected    []string // CanModerate refused, target outranks the actor
 	failed       []string // "userID: reason"
 	unmanageable int      // members who kept at least one role the bot can't touch
 }
@@ -81,7 +81,7 @@ func (r bulkJailResult) merge(other bulkJailResult) bulkJailResult {
 //
 // Deliberately not transactional. Each member's jail is its own record plus
 // its own Discord mutation, and there is no way to atomically un-jail the
-// first thirty if the thirty-first fails — attempting a rollback would mean
+// first thirty if the thirty-first fails, since attempting a rollback would mean
 // doing the exact thing that failed, thirty more times, on a guild that is
 // evidently already unhappy. Instead every target is attempted and every
 // outcome is reported, so a mod can see precisely who ended up jailed and
@@ -116,7 +116,7 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 //
 // Separate from jailMany, and run before it, because resolving the jail role
 // can *create* it (and write an overwrite to every channel). A batch where the
-// actor outranks nobody must not leave that behind as a side effect — the same
+// actor outranks nobody must not leave that behind as a side effect, the same
 // "a refused jail creates no guild roles" property the single-member path has
 // always had.
 //
@@ -162,8 +162,8 @@ func (p *Plugin) resolveTargets(guildID string, userIDs []string) (targets []jai
 //
 // Discord offers no endpoint for this, so it pages the full member list and
 // filters. Enumeration stops early once the match count passes maxBulkJailTargets
-// — the caller only needs to know the batch is too large, not exactly how
-// large — and gives up after maxMemberScanPages rather than paging a very
+// (the caller only needs to know the batch is too large, not exactly how
+// large) and gives up after maxMemberScanPages rather than paging a very
 // large guild indefinitely.
 //
 // complete reports whether the scan actually finished. A caller must not treat
@@ -205,7 +205,7 @@ func (p *Plugin) validateJailRoleTarget(guildID, roleID string) error {
 	// could undo it. No moderation need is served by letting that through the
 	// same path as an ordinary role.
 	if roleID == guildID {
-		return errors.New("that's @everyone — jailing it would jail the entire server, including you and everyone who could undo it")
+		return errors.New("that's @everyone, and jailing it would jail the entire server, including you and everyone who could undo it")
 	}
 
 	// A role positioned at or above Merlin's own survives jailRoles by design
@@ -214,8 +214,8 @@ func (p *Plugin) validateJailRoleTarget(guildID, roleID string) error {
 	// half-working: the mod would see "jailed 40 members" and still have 40
 	// members holding the role they were trying to neutralise.
 	if err := p.perms.CanManageRole(guildID, roleID); err != nil {
-		return fmt.Errorf("<@&%s> sits at or above Merlin's own top role, so she can't strip it — "+
-			"its members would keep it even while jailed: %w", roleID, err)
+		return fmt.Errorf("<@&%s> sits at or above Merlin's own top role, so she can't strip it. "+
+			"Its members would keep it even while jailed: %w", roleID, err)
 	}
 	return nil
 }
@@ -267,7 +267,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 			fail("Dry-run: failed to enumerate members", err)
 			return
 		}
-		msg := fmt.Sprintf("Dry-run is enabled — nobody was jailed. <@&%s> currently has %s member(s) who would be considered.",
+		msg := fmt.Sprintf("Dry-run is enabled, so nobody was jailed. <@&%s> currently has %s member(s) who would be considered.",
 			roleID, describeCount(len(targets), complete))
 		if ferr := core.FollowUpOK(s, i, "Dry-run", msg); ferr != nil {
 			p.log.Error("roles: jail-role dry-run follow-up failed", "guild", i.GuildID, "err", ferr)
@@ -277,7 +277,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 
 	targets, complete, err := p.membersWithRole(i.GuildID, roleID)
 	if err != nil {
-		fail("Failed to list members", fmt.Errorf("%w — note this needs the privileged GUILD_MEMBERS intent", err))
+		fail("Failed to list members", fmt.Errorf("%w (note this needs the privileged GUILD_MEMBERS intent)", err))
 		return
 	}
 	if !complete {
@@ -288,7 +288,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 
 	// Cap-check on the raw match count, *before* dropping the actor and the
 	// bot. membersWithRole stops scanning once it is past the cap, so the
-	// number in hand is a floor, not a total — trimming one or two names off
+	// number in hand is a floor, not a total: trimming one or two names off
 	// it first could bring 200 real holders down to an apparent 50 and jail an
 	// arbitrary slice of them while reporting complete success.
 	if len(targets) > maxBulkJailTargets {
@@ -354,7 +354,7 @@ func (p *Plugin) excludeSelfAndBot(targets []jailTarget, actorID string, s *disc
 //
 // Per-member entries would be more granular, but audit.Writer posts an embed
 // to the audit channel for every record, so a 50-member jail would be 50
-// embeds — both unreadable and enough message.send calls to eat a large share
+// embeds, both unreadable and enough message.send calls to eat a large share
 // of the guild's hourly budget. One entry per command matches what actually
 // happened: a mod ran one action. Per-member state stays queryable in
 // role_jails via /roles list.

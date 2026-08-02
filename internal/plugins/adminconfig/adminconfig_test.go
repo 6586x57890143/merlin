@@ -12,7 +12,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
-// fakeSettingsAdmin is a no-op SettingsAdmin — enough for Init to run and
+// fakeSettingsAdmin is a no-op SettingsAdmin, enough for Init to run and
 // register its full command tree without touching Postgres.
 type fakeSettingsAdmin struct{}
 
@@ -73,7 +73,7 @@ func (fakeSettingsAdmin) SetWritesDryRun(ctx context.Context, guildID string, dr
 }
 
 // fakeAuthData/fakeGate are minimal core.GuildAuthData/core.PluginGate
-// implementations — Init doesn't exercise authorization, but
+// implementations: Init doesn't exercise authorization, but
 // core.NewCommandRouter/NewPermissions need something satisfying the
 // interfaces to construct.
 type fakeAuthData struct{}
@@ -94,7 +94,7 @@ func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Disca
 // this package's growth risks: /config's command tree (admins, mod-roles,
 // permissions incl. set-tier/clear-tier/grant/revoke/block/unblock/list,
 // plugins incl. list/enable/disable, setup, import) must have a Handle call
-// for every declared subcommand, each with a valid PermSpec — Finalize is
+// for every declared subcommand, each with a valid PermSpec, since Finalize is
 // the same fail-closed check core.CommandRouter itself is tested with,
 // exercised here against this plugin's actual registration code instead of
 // a hand-built test tree.
@@ -115,14 +115,14 @@ func TestInitRegistersAFullyWiredCommandTree(t *testing.T) {
 
 // TestConfigMutateCannotBeLoweredBelowAdmin guards the invariant the whole
 // tier model rests on: config.mutate covers /config admins add, so allowing
-// a guild to set it to Admins+Mods would let any mod grant themselves admin
-// — a one-command collapse of the separation between the two tiers. The
+// a guild to set it to Admins+Mods would let any mod grant themselves admin,
+// a one-command collapse of the separation between the two tiers. The
 // compiled-in PermSpec says TierAdmin, but a per-guild tier override could
 // silently undo that, which is why this is checked at the mutation and not
 // left to the registration table.
 func TestConfigMutateCannotBeLoweredBelowAdmin(t *testing.T) {
 	if err := validateTierChange(actionMutate, core.TierMod); err == nil {
-		t.Fatal("lowering config.mutate to Admins+Mods must be refused — it lets any mod self-promote to admin")
+		t.Fatal("lowering config.mutate to Admins+Mods must be refused: it lets any mod self-promote to admin")
 	}
 	if err := validateTierChange(actionMutate, core.TierPublic); err == nil {
 		t.Fatal("lowering config.mutate to public must be refused")

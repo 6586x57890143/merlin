@@ -9,7 +9,7 @@ import (
 )
 
 // PageSize is the number of list entries shown per page across every
-// paginated list in this bot — one shared constant so pagination feels
+// paginated list in this bot, one shared constant so pagination feels
 // consistent regardless of which plugin's list you're looking at.
 const PageSize = 10
 
@@ -55,7 +55,7 @@ func ParsePaginationPage(customID, prefix string) (int, error) {
 // PaginationRow builds the Prev/Next button row for page (0-based) out of
 // totalPages, disabling whichever end is already at its limit, with a
 // disabled middle button showing "page X/Y" for orientation. Returns nil if
-// there's only one page — no controls needed at all, so a short list stays
+// there's only one page: no controls needed at all, so a short list stays
 // exactly as plain as it was before pagination existed.
 func PaginationRow(prefix string, page, totalPages int) []discordgo.MessageComponent {
 	if totalPages <= 1 {
@@ -86,7 +86,7 @@ func PaginationRow(prefix string, page, totalPages int) []discordgo.MessageCompo
 }
 
 // RespondEmbedWithComponents is RespondEmbed's counterpart for a response
-// that also needs message components (pagination buttons, a select menu) —
+// that also needs message components (pagination buttons, a select menu). It
 // still attaches the brand avatar file the embed's footer icon references.
 func RespondEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
 	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -102,7 +102,7 @@ func RespondEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCr
 
 // UpdateEmbedWithComponents edits the message a component interaction (a
 // Prev/Next click, a select-menu choice) arrived on in place, rather than
-// sending a new one — the correct response type for any ComponentHandler
+// sending a new one, the correct response type for any ComponentHandler
 // that's re-rendering the same list/detail view the user is already
 // looking at.
 func UpdateEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
@@ -110,14 +110,14 @@ func UpdateEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCre
 }
 
 // UpdateLandmarkEmbedWithComponents is UpdateEmbedWithComponents for a
-// NewLandmarkEmbed — also re-uploads the banner file its Image references.
+// NewLandmarkEmbed. Also re-uploads the banner file its Image references.
 func UpdateLandmarkEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
 	return updateEmbed(s, i, embed, components, []*discordgo.File{avatarFile(), bannerFile()})
 }
 
 func updateEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent, files []*discordgo.File) error {
 	// Empty (not omitted) attachments means "keep none of what's already on
-	// the message" — the newly uploaded files are the whole set afterwards.
+	// the message": the newly uploaded files are the whole set afterwards.
 	// Omitting it instead retains the old ones and appends these, so a view
 	// edited repeatedly (a paginated list, /config setup's wizard) would
 	// accumulate a duplicate avatar per click until the embed's

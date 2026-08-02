@@ -27,7 +27,7 @@ const (
 )
 
 // Store wraps the shared connection pool. Domain-specific queries (audit,
-// rotation, factions) are added by the milestones that need them — this
+// rotation, factions) are added by the milestones that need them; this
 // pass only establishes connectivity and a health check.
 type Store struct {
 	Pool *pgxpool.Pool

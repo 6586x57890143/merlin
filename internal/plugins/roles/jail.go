@@ -14,16 +14,16 @@ import (
 
 // handleJail snapshots userID's current roles, replaces them with just the
 // jail marker role (resolveJailRole) plus any role the bot structurally
-// can't manage (CanManageRole — spec.MD §4 item 4), and schedules automatic
+// can't manage (CanManageRole, spec.MD §4 item 4), and schedules automatic
 // release. The snapshot always records every role the member held, even
 // ones the bot couldn't strip, so release restores the member's exact prior
 // state regardless of which roles jail itself was able to touch. Channel
 // visibility is handled entirely by the Jailed role's own permission
-// overwrites (jailchannels.go) — jailing a member never touches channels
+// overwrites (jailchannels.go). Jailing a member never touches channels
 // directly, only which roles they hold.
 // jailUserOptionNames are /roles jail's member slots, in the order they are
 // read. Discord has no multi-user option type, so "several people at once"
-// means several native User pickers rather than a free-text list of IDs —
+// means several native User pickers rather than a free-text list of IDs.
 // spec.MD §4a's rule that user-valued options never take a raw string is
 // exactly what stops a mistyped snowflake from jailing a stranger. Five is a
 // judgement call: enough for the usual "these three started it", short of the
@@ -31,7 +31,7 @@ import (
 var jailUserOptionNames = []string{"user", "user2", "user3", "user4", "user5"}
 
 // collectJailUserIDs reads the filled-in member slots, in order, without
-// duplicates — picking the same person in two slots is a slip, and letting it
+// duplicates: picking the same person in two slots is a slip, and letting it
 // through would report them as "already jailed" by their own first slot.
 func collectJailUserIDs(opts map[string]*discordgo.ApplicationCommandInteractionDataOption) []string {
 	var ids []string
@@ -86,7 +86,7 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 	// jail before stripping roles, so a refusal at the strip would leave a
 	// jail record for a member who was never actually jailed.
 	if p.dryRun(i.GuildID) {
-		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server — %s not jailed. Turn it off with `/config dryrun enabled:false`.",
+		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server: %s not jailed. Turn it off with `/config dryrun enabled:false`.",
 			mentionList(userIDs))); err != nil {
 			p.log.Error("roles: jail dry-run follow-up failed", "guild", i.GuildID, "err", err)
 		}
@@ -110,7 +110,7 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		res = res.merge(p.jailMany(ctx, i.GuildID, jailRoleID, allowed, duration, actorID(i), reason))
 	}
 
-	// One member keeps the precise, actionable wording it always had — and its
+	// One member keeps the precise, actionable wording it always had, and its
 	// original roles.jail audit action, so existing audit history stays one
 	// queryable series rather than splitting the day this landed. Several get
 	// the batch summary and a single roles.jail_bulk entry. Same execution
@@ -150,10 +150,10 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	case len(res.alreadyIn) > 0:
 		// Losing the insert race means a concurrent jail already recorded this
 		// member and stripped their roles. Nothing was changed here, and the
-		// snapshot on record is the one taken before they were stripped —
-		// reporting it as a plain failure would invite a retry that could only
+		// snapshot on record is the one taken before they were stripped.
+		// Reporting it as a plain failure would invite a retry that could only
 		// overwrite that snapshot with the stripped state.
-		fail("Already jailed", fmt.Errorf("<@%s> is already jailed — use `/roles release` first", userID))
+		fail("Already jailed", fmt.Errorf("<@%s> is already jailed. Use `/roles release` first", userID))
 		return
 	case len(res.failed) > 0:
 		fail("Failed to jail member", errors.New(res.failed[0]))
@@ -179,12 +179,12 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 // record left a member holding nothing but the marker with nothing anywhere
 // tracking them: no sweep would ever release them, no /roles release would
 // find a record, and from the outside it looks like an ordinary jail that
-// simply never ends — the same "work silently abandoned, invisible from the
+// simply never ends, the same "work silently abandoned, invisible from the
 // outside" failure the untrack-on-gone rule exists to prevent.
 //
 // Recording first can only fail the other way: a record for a member whose
 // roles were never touched. That self-heals on the next sweep a minute later
-// through the confused-deputy check release already applies — the marker
+// through the confused-deputy check release already applies: the marker
 // isn't on them, so it counts as already handled, gets untracked, and no
 // roles are restored. A spurious row that cleans itself up beats a member
 // jailed indefinitely. The rollback below just makes that immediate instead
@@ -228,7 +228,7 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 
 // jailRoles decides what a jailed member ends up holding: the marker role,
 // plus every role the bot structurally can't manage (positioned at or above
-// its own top role — spec.MD §4 item 4), which stay put and are returned
+// its own top role, spec.MD §4 item 4), which stay put and are returned
 // separately so the mod is told the jail was partial rather than left to
 // discover it. A pure function of the member's current roles, so the rule
 // stays testable without a Discord session.
@@ -256,16 +256,16 @@ const rejoinGrace = 30 * time.Second
 //
 // This is what makes jail survive a leave-and-rejoin without the privileged
 // GUILD_MEMBERS intent. Discord does not preserve roles across a rejoin, so a
-// jailed member who left and returned comes back with nothing — including no
-// marker role — and every channel the Jailed role was denying becomes visible
+// jailed member who left and returned comes back with nothing, including no
+// marker role, and every channel the Jailed role was denying becomes visible
 // again. The bot's own record still says "jailed", but nothing was checking.
 //
 // JoinedAt is the discriminator, and it comes free with the REST member fetch
 // the sweep already makes. A member who never left has a JoinedAt from before
 // their jail; one who left and returned has a JoinedAt after it. That
 // distinction is exactly what separates an evasion from the case the
-// confused-deputy rule protects — a mod deliberately stripping the marker to
-// let someone out early — so honoring one doesn't cost the other.
+// confused-deputy rule protects (a mod deliberately stripping the marker to
+// let someone out early), so honoring one doesn't cost the other.
 func rejoinedSinceJail(member *discordgo.Member, rec JailRecord) bool {
 	if member.JoinedAt.IsZero() {
 		// No timestamp to reason from. Fail toward the existing behavior
@@ -282,7 +282,7 @@ func rejoinedSinceJail(member *discordgo.Member, rec JailRecord) bool {
 // Runs on the same one-minute sweep as automatic release, so the window an
 // evader gets is bounded by that tick rather than by how long nobody notices.
 // The GUILD_MEMBERS intent, requested by default, closes that window to
-// near-instant by also reacting to the rejoin event itself — see
+// near-instant by also reacting to the rejoin event itself, see
 // HandleMemberJoin. This remains the backstop, and the sole mechanism for a
 // deployment that has turned the intent off.
 func (p *Plugin) reapplyEvadedJails(ctx context.Context, guildID string) error {
@@ -306,7 +306,7 @@ func (p *Plugin) reapplyEvadedJails(ctx context.Context, guildID string) error {
 // without it, having rejoined since being jailed.
 //
 // It deliberately does not touch the stored record. The snapshot holds the
-// member's real pre-jail roles and is the only copy of them — overwriting it
+// member's real pre-jail roles and is the only copy of them. Overwriting it
 // with what they hold now (nothing, having just rejoined) would mean their
 // eventual release restores nothing, the same way the concurrent-jail race
 // used to destroy it. ReleaseAt is left alone too: how long someone is jailed
@@ -328,7 +328,7 @@ func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRe
 	}
 	if !rejoinedSinceJail(member, rec) {
 		// Marker gone without a rejoin: a mod released them by hand. That is
-		// the confused-deputy rescue hatch, and it stays honored — the
+		// the confused-deputy rescue hatch, and it stays honored: the
 		// existing sweep untracks them when the jail comes due.
 		return nil
 	}
@@ -363,7 +363,7 @@ func releaseAtText(rec JailRecord) string {
 // HandleMemberJoin re-applies a still-active jail the moment a member rejoins,
 // rather than waiting for the next sweep. Only ever called while the
 // GUILD_MEMBERS intent is in effect (on by default,
-// MERLIN_DISABLE_GUILD_MEMBERS_INTENT opts out) — without it Discord never
+// MERLIN_DISABLE_GUILD_MEMBERS_INTENT opts out). Without it Discord never
 // sends the event, and the sweep above remains the sole mechanism.
 func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
@@ -410,17 +410,17 @@ func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *dis
 // confused-deputy safeguard: re-fetch the member fresh and only restore if
 // they still hold the jail marker role. If a mod already manually changed
 // the member's roles (marker gone), that's treated as an implicit "already
-// handled" — stop tracking, don't fight the manual override, matching
+// handled": stop tracking, don't fight the manual override, matching
 // rotation.sweepOne's rescue-hatch precedent.
 func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec JailRecord) error {
 	member, err := p.ops(guildID).GuildMember(guildID, userID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
-			// Member left the guild — nothing left to restore.
+			// Member left the guild, nothing left to restore.
 			return p.store.DeleteJail(ctx, guildID, userID)
 		}
 		// Any other failure is transient. Dropping the row here would strand
-		// the member in jail permanently with nothing left tracking them —
+		// the member in jail permanently with nothing left tracking them,
 		// the worst outcome this plugin can produce, and invisible until
 		// somebody complains. Fail so the next sweep (a minute later) retries.
 		return fmt.Errorf("roles: fetch member %s for release: %w", userID, err)

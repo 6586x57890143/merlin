@@ -23,7 +23,7 @@ type migration struct {
 
 // Migrate applies every embedded *.up.sql migration not yet recorded in
 // schema_migrations, in ascending version order, each in its own
-// transaction. Safe to call on every startup — already-applied versions are
+// transaction. Safe to call on every startup; already-applied versions are
 // skipped.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	migrations, err := loadMigrations()
@@ -32,7 +32,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	// 0001_init creates schema_migrations itself, so it can't be gated on
-	// that table's existence — apply it unconditionally if the table is
+	// that table's existence, so apply it unconditionally if the table is
 	// missing, then let every later migration go through the normal check.
 	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version BIGINT PRIMARY KEY,

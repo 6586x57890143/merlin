@@ -19,7 +19,7 @@ func setupComponentIDs(t *testing.T, components []discordgo.MessageComponent) []
 	for _, row := range components {
 		ar, ok := row.(discordgo.ActionsRow)
 		if !ok {
-			t.Fatalf("component %T is not an ActionsRow — Discord only accepts top-level rows", row)
+			t.Fatalf("component %T is not an ActionsRow; Discord only accepts top-level rows", row)
 		}
 		for _, c := range ar.Components {
 			switch c := c.(type) {
@@ -121,7 +121,7 @@ func TestSetupEveryStepIsNavigable(t *testing.T) {
 }
 
 // TestSetupStepClamping keeps a hand-edited or stale CustomID from rendering
-// an empty step — the same fail-safe core.Paginate applies to list pages.
+// an empty step, the same fail-safe core.Paginate applies to list pages.
 func TestSetupStepClamping(t *testing.T) {
 	for _, step := range []int{-5, -1, setupStepCount, setupStepCount + 99} {
 		embed, components := renderSetupStep(settings.GuildSettings{}, step, "")
@@ -177,7 +177,7 @@ func TestMentionListTextTruncates(t *testing.T) {
 }
 
 // TestSetupNoticeIsShownAboveStepText verifies the one-off "here's what just
-// happened" line survives into the rendered embed — it's the only feedback an
+// happened" line survives into the rendered embed: it's the only feedback an
 // admin gets that a pick actually took effect, since the wizard advances
 // rather than posting a separate confirmation.
 func TestSetupNoticeIsShownAboveStepText(t *testing.T) {

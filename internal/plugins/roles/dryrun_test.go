@@ -10,7 +10,7 @@ import (
 // A rehearsing guild's sweep must leave its pending work exactly where it
 // found it. Release and revoke both untrack their row as part of doing the
 // work, so a dry-run that let them run would quietly forget the jails the
-// real sweep still owes — the member would stay jailed forever with nothing
+// real sweep still owes: the member would stay jailed forever with nothing
 // tracking them, which is the precise failure the record-before-strip
 // ordering in applyJail exists to prevent.
 func TestSweepDryRunReleasesNothingAndKeepsTracking(t *testing.T) {
@@ -34,7 +34,7 @@ func TestSweepDryRunReleasesNothingAndKeepsTracking(t *testing.T) {
 	}
 
 	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
-		t.Error("dry-run sweep untracked a due jail — the real sweep would never release that member")
+		t.Error("dry-run sweep untracked a due jail; the real sweep would never release that member")
 	}
 	member, err := ops.GuildMember("g1", "u1")
 	if err != nil {
@@ -75,7 +75,7 @@ func TestConcurrentJailDoesNotOverwriteRoleSnapshot(t *testing.T) {
 		t.Fatalf("GetJail: %v (found=%v)", err, ok)
 	}
 	if len(rec.SnapshotRoleIDs) != 2 || rec.SnapshotRoleIDs[0] != "role-a" || rec.SnapshotRoleIDs[1] != "role-b" {
-		t.Errorf("snapshot is %v, want the pre-jail roles [role-a role-b] — the member's roles are unrecoverable", rec.SnapshotRoleIDs)
+		t.Errorf("snapshot is %v, want the pre-jail roles [role-a role-b]; the member's roles are unrecoverable", rec.SnapshotRoleIDs)
 	}
 	if rec.JailedBy != "mod1" {
 		t.Errorf("JailedBy = %q, want the winning call's actor", rec.JailedBy)

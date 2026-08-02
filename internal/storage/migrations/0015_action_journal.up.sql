@@ -7,14 +7,14 @@
 -- (archivedChannelOrigin, replacement matching by name+category, jail's
 -- record-before-strip and its confused-deputy re-check); a second source of
 -- truth driving recovery in parallel with the first would be a new failure
--- mode — two mechanisms that can disagree — not a safety gain.
+-- mode (two mechanisms that can disagree), not a safety gain.
 --
 -- What it adds over audit_log is the attempt. audit_log records what
 -- succeeded, from the plugin's point of view, after the fact. This records
 -- that a call was made at all, and what came back, including the calls that
 -- never reached a plugin's audit path: refused by the rate cap, refused by
 -- the circuit breaker, or failed at the API. It answers "why did nothing
--- happen" — the question logs alone answer badly once they have rotated away.
+-- happen", the question logs alone answer badly once they have rotated away.
 CREATE TABLE action_journal (
     id         BIGSERIAL PRIMARY KEY,
     guild_id   TEXT NOT NULL,

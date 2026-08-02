@@ -62,8 +62,8 @@ func loadWith(t *testing.T, env map[string]string) *GlobalConfig {
 
 // The privileged GUILD_MEMBERS intent is now requested by default, and the
 // default changed because the opt-in was itself the bug: enabling "Server
-// Members Intent" in the Developer Portal — the only step that looks like it
-// should matter — changed nothing, because the bot never asked for the
+// Members Intent" in the Developer Portal (the only step that looks like it
+// should matter) changed nothing, because the bot never asked for the
 // intent. A jailed member who left and rejoined kept full access until the
 // next sweep, and nothing anywhere reported the mismatch.
 func TestGuildMembersIntentDefaultsOn(t *testing.T) {

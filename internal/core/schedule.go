@@ -6,7 +6,7 @@ import (
 )
 
 // Schedule computes a recurring job's next due instant, strictly after a
-// given anchor (typically its last successful run) — always an absolute,
+// given anchor (typically its last successful run), always an absolute,
 // fixed-clock instant, never a countdown recomputed from "time remaining."
 // This is what lets internal/scheduler support both flat intervals ("every
 // 3 days") and calendar-anchored recurrences ("daily at 17:00 UTC", "weekly
@@ -20,21 +20,21 @@ type Schedule interface {
 	// immediate refire on the same tick).
 	Next(after time.Time) time.Time
 	// String renders the schedule for user-facing display (/rotation list,
-	// audit messages) — every Schedule is self-describing so display code
+	// audit messages). Every Schedule is self-describing so display code
 	// never needs a type switch either.
 	String() string
 	// Validate reports whether the schedule's own parameters make sense
-	// (e.g. a positive interval, an hour in 0-23) — checked once at
+	// (e.g. a positive interval, an hour in 0-23), checked once at
 	// Scheduler.Register time, not on every due-check.
 	Validate() error
 	// TypicalPeriod is a representative recurrence period used only to
 	// scale down the Scheduler's anti-thundering-herd jitter for schedules
-	// shorter than it (see jitterFor in internal/scheduler) — never used
+	// shorter than it (see jitterFor in internal/scheduler), never used
 	// for the actual due-check.
 	TypicalPeriod() time.Duration
 }
 
-// IntervalSchedule recurs a fixed duration after the previous occurrence —
+// IntervalSchedule recurs a fixed duration after the previous occurrence,
 // the schedule this bot has always supported ("every 24h", "every 3 days").
 type IntervalSchedule struct {
 	Interval time.Duration
@@ -51,7 +51,7 @@ func (s IntervalSchedule) Validate() error {
 	return nil
 }
 
-// CalendarSchedule recurs at a fixed time of day, in UTC — either every day
+// CalendarSchedule recurs at a fixed time of day, in UTC: either every day
 // (Weekday == nil) or once a week on a specific day (Weekday set). Unlike
 // IntervalSchedule, occurrences are anchored to wall-clock time rather than
 // "N units since the last run," so a late or missed tick never drifts
@@ -66,7 +66,7 @@ type CalendarSchedule struct {
 // UTC on the target day (every day, or the target weekday). Walks forward
 // one day at a time rather than computing a closed-form offset: this runs
 // at most once per job registration, never in a hot loop, so obviously
-// correct beats clever here — worst case is 8 iterations (7 to land on the
+// correct beats clever here. Worst case is 8 iterations (7 to land on the
 // right weekday, plus 1 for the strictly-after check).
 func (s CalendarSchedule) Next(after time.Time) time.Time {
 	after = after.UTC()

@@ -9,7 +9,7 @@ import (
 
 // TestRetentionNoticeDescribesRetentionNotInterval is a regression for a
 // false public statement. The notice used to be handed rc.IntervalMinutes and
-// tell members "nothing posted here roosts longer than [interval]" — the
+// tell members "nothing posted here roosts longer than [interval]", the
 // rotation cadence presented as the deletion policy, when the two are
 // independent settings. This bot's whole justification is being able to point
 // at what it actually does, so an inaccurate retention claim is worse than
@@ -29,7 +29,7 @@ func TestRetentionNoticeDescribesRetentionNotInterval(t *testing.T) {
 
 // TestRetentionNoticeOnKeepForeverPromisesNoDeletion covers the worst case of
 // the old behavior: retention unset means archives are kept indefinitely, but
-// the notice still announced a deletion window derived from the interval —
+// the notice still announced a deletion window derived from the interval,
 // telling members their content would be erased when nothing would erase it.
 func TestRetentionNoticeOnKeepForeverPromisesNoDeletion(t *testing.T) {
 	notice := retentionNotice(settings.RotationChannel{IntervalMinutes: 24 * 60, RetentionHours: nil})
@@ -46,7 +46,7 @@ func TestRetentionNoticeOnKeepForeverPromisesNoDeletion(t *testing.T) {
 
 // TestRotationSummaryNeverPrintsAPointer is the audit-trail regression. The
 // audit line interpolated the *int RetentionHours with %v, so a real record
-// in production reads "retention=0x55c4509432e8" — the one irreversible
+// in production reads "retention=0x55c4509432e8", the one irreversible
 // setting in this plugin was unreadable in the exact place someone looks
 // after a channel has been permanently deleted.
 func TestRotationSummaryNeverPrintsAPointer(t *testing.T) {

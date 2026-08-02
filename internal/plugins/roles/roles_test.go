@@ -163,7 +163,7 @@ func TestForgetJailRoleAllowsRecreation(t *testing.T) {
 }
 
 // TestSyncGuildIsIdempotentAcrossRepeatedCalls guards the registration path
-// cmd/bot/main.go drives on every GuildCreate — Discord re-sends those on
+// cmd/bot/main.go drives on every GuildCreate; Discord re-sends those on
 // every reconnect, and the Scheduler rejects a duplicate job key, so a
 // second call must be a no-op rather than an error storm.
 func TestSyncGuildIsIdempotentAcrossRepeatedCalls(t *testing.T) {

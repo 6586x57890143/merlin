@@ -3,7 +3,7 @@
 // permission whitelists aren't owned by any single feature plugin, so they
 // live here rather than being duplicated per plugin. Every other
 // plugin-specific setting (rotation intervals, sticky content, ...) is
-// configured through that plugin's own top-level command instead — see
+// configured through that plugin's own top-level command instead. See
 // internal/plugins/rotation/configure.go for the pattern.
 package adminconfig
 
@@ -23,7 +23,7 @@ import (
 
 // SettingsAdmin is the narrow slice of internal/settings.Store this plugin
 // mutates, so unit tests can use an in-memory fake instead of a live
-// Postgres — mirrors the seams already used elsewhere in this codebase.
+// Postgres. Mirrors the seams already used elsewhere in this codebase.
 type SettingsAdmin interface {
 	GuildSettings(guildID string) settings.GuildSettings
 	Overrides(guildID string) []settings.ActionOverride
@@ -68,7 +68,7 @@ type Plugin struct {
 }
 
 // New constructs Plugin. legacyConfigPath is the path /config import reads
-// from — the same file the bootstrap loader reads (config.yaml by default),
+// from: the same file the bootstrap loader reads (config.yaml by default),
 // kept only for one-time migration/disaster-recovery, per spec.MD §4a.
 func New(settingsStore SettingsAdmin, legacyConfigPath string, db DBHealth, jobs JobHealth) *Plugin {
 	return &Plugin{settings: settingsStore, legacyPath: legacyConfigPath, db: db, jobs: jobs}
@@ -90,7 +90,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	}
 	actionOpt := &discordgo.ApplicationCommandOption{
 		Type: discordgo.ApplicationCommandOptionString, Name: "action",
-		Description: "The command action to customize, e.g. rotation.configure — see /config permissions list",
+		Description: "The command action to customize, e.g. rotation.configure. See /config permissions list",
 		Required:    true, Autocomplete: true,
 	}
 	tierOpt := &discordgo.ApplicationCommandOption{
@@ -104,7 +104,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	}
 	pluginOpt := &discordgo.ApplicationCommandOption{
 		Type: discordgo.ApplicationCommandOptionString, Name: "plugin",
-		Description: "Plugin name — see /config plugins list",
+		Description: "Plugin name. See /config plugins list",
 		Required:    true, Autocomplete: true,
 	}
 	enabledOpt := func(desc string) *discordgo.ApplicationCommandOption {
@@ -306,8 +306,8 @@ func (p *Plugin) handleModRolesAdd(ctx context.Context, s *discordgo.Session, i 
 
 // grantModRoleChannelAccess gives roleID VIEW_CHANNEL on whichever of the
 // guild's audit-log/status channels are currently configured. Called
-// whenever a role becomes (or already is) a mod role — from here and from
-// the setup wizard — so mods can actually see the moderation trail they're
+// whenever a role becomes (or already is) a mod role, from here and from
+// the setup wizard, so mods can actually see the moderation trail they're
 // meant to have access to; the channels themselves only deny @everyone by
 // default (see core.DenyEveryoneExceptBot), they don't proactively grant mod
 // roles, since a mod role may not exist yet at channel-creation time.
@@ -377,7 +377,7 @@ func (p *Plugin) handlePermissionsSetTier(ctx context.Context, s *discordgo.Sess
 // tier invariant this bot relies on. Today that's exactly one: config.mutate
 // governs /config admins add, mod-roles, permission grants, and the plugin
 // toggle, so lowering it to Admins+Mods would let any mod run
-// `/config admins add @themselves` — a one-command collapse of the whole
+// `/config admins add @themselves`, a one-command collapse of the whole
 // model, and precisely the escalation the tiers exist to prevent.
 //
 // Refused for the same reason adminconfig can't disable itself via
@@ -387,7 +387,7 @@ func (p *Plugin) handlePermissionsSetTier(ctx context.Context, s *discordgo.Sess
 func validateTierChange(action string, tier core.PermTier) error {
 	if action == actionMutate && tier != core.TierAdmin {
 		return fmt.Errorf(
-			"`%s` controls who can add admins, mod roles, and permission grants — leaving it below **Admins only** "+
+			"`%s` controls who can add admins, mod roles, and permission grants. Leaving it below **Admins only** "+
 				"would let any mod grant themselves admin. Grant a specific person or role instead: "+
 				"`/config permissions allow action:%s`", actionMutate, actionMutate)
 	}
@@ -405,7 +405,7 @@ func (p *Plugin) handlePermissionsClearTier(ctx context.Context, s *discordgo.Se
 }
 
 // handlePermissionsAllow grants (enabled:true) or revokes (enabled:false) an
-// additive per-action whitelist entry for a role/user — grant and revoke are
+// additive per-action whitelist entry for a role/user. Grant and revoke are
 // the same underlying toggle (settings.GrantOverride/RevokeOverride), so
 // consolidating them into one command with an enabled flag halves the
 // number of near-identical "action+role+user" commands this group had.
@@ -436,7 +436,7 @@ func (p *Plugin) handlePermissionsAllow(ctx context.Context, s *discordgo.Sessio
 }
 
 // handlePermissionsDeny blocks (enabled:true) or unblocks (enabled:false) a
-// role/user from an action — same consolidation rationale as
+// role/user from an action, same consolidation rationale as
 // handlePermissionsAllow above, for the deny-list's own toggle pair.
 func (p *Plugin) handlePermissionsDeny(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	opts := core.LeafArgs(i)
@@ -499,7 +499,7 @@ func permissionOverrideLines(overrides []settings.ActionOverride) []string {
 		if o.RequiredTier.IsSet() {
 			tier = o.RequiredTier.String()
 		}
-		lines = append(lines, fmt.Sprintf("`%s` — tier: %s, allow: roles=%v users=%v, block: roles=%v users=%v",
+		lines = append(lines, fmt.Sprintf("`%s` · tier: %s, allow: roles=%v users=%v, block: roles=%v users=%v",
 			o.Action, tier, o.RoleIDs, o.UserIDs, o.DenyRoleIDs, o.DenyUserIDs))
 	}
 	return lines
@@ -525,13 +525,13 @@ func (p *Plugin) handlePluginsList(ctx context.Context, s *discordgo.Session, i 
 		if disabled[name] {
 			status = "disabled"
 		}
-		fmt.Fprintf(&b, "- `%s` — %s\n", name, status)
+		fmt.Fprintf(&b, "- `%s`: %s\n", name, status)
 	}
 	core.RespondInfo(s, i, "Plugins", b.String())
 }
 
 // handlePluginsSet enables (enabled:true) or disables (enabled:false) a
-// whole plugin for this guild — consolidated from separate enable/disable
+// whole plugin for this guild, consolidated from separate enable/disable
 // commands for the same "grant/revoke toggle" reason as
 // handlePermissionsAllow/Deny above. Disabling adminconfig itself is
 // rejected before ever touching settings, not left as a doc-only warning:
@@ -544,7 +544,7 @@ func (p *Plugin) handlePluginsSet(ctx context.Context, s *discordgo.Session, i *
 
 	if !enabled && name == p.Name() {
 		core.RespondErr(s, i, "Can't disable this", fmt.Errorf(
-			"%s can't be disabled — doing so would permanently lock this server out of ever re-enabling anything", p.Name()))
+			"%s can't be disabled: doing so would permanently lock this server out of ever re-enabling anything", p.Name()))
 		return
 	}
 
@@ -562,7 +562,7 @@ func (p *Plugin) handlePluginsSet(ctx context.Context, s *discordgo.Session, i *
 		return
 	}
 	p.audit(ctx, i, "config.plugin_disabled", "", name)
-	core.RespondOK(s, i, "Plugin disabled", fmt.Sprintf("`%s` is disabled for this server — nobody, including admins, can use its commands here until re-enabled.", name))
+	core.RespondOK(s, i, "Plugin disabled", fmt.Sprintf("`%s` is disabled for this server. Nobody, including admins, can use its commands here until re-enabled.", name))
 }
 
 // handlePause is the in-Discord emergency stop. It is TierAdmin like every
@@ -590,8 +590,8 @@ func (p *Plugin) handlePause(ctx context.Context, s *discordgo.Session, i *disco
 
 // handleDryRun turns on rehearsal mode: rotation, sweep, and jail make their
 // full decision and write their audit trail but touch nothing in Discord.
-// This exists because the operations it covers have no undo — a permanently
-// deleted archive channel is gone — so there needs to be a way to watch a
+// This exists because the operations it covers have no undo (a permanently
+// deleted archive channel is gone), so there needs to be a way to watch a
 // real guild's real schedule play out once before trusting it.
 func (p *Plugin) handleDryRun(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	enabled := core.LeafArgs(i)["enabled"].BoolValue()
@@ -644,19 +644,19 @@ func optionalID(opts map[string]*discordgo.ApplicationCommandInteractionDataOpti
 // NudgeIfUnconfigured DMs a fresh guild's owner pointing at /config setup,
 // once, if the guild hasn't configured anything yet and hasn't already been
 // nudged. Called from cmd/bot/main.go's GuildCreate handler, right after the
-// settings cache is refreshed for gc — but only if command registration for
+// settings cache is refreshed for gc, but only if command registration for
 // this guild actually succeeded (see main.go); telling someone to run a
 // command that isn't registered yet would be actively misleading, and
 // worse, would burn the one-time nudge for nothing.
 //
 // DMs the owner rather than posting publicly: Discord's API has no way to
 // find out who actually invited the bot, and guild.OwnerID is the best
-// available, always-present proxy — the owner always implicitly holds
+// available, always-present proxy: the owner always implicitly holds
 // Discord's Administrator permission, so once they receive this they can run
 // /config setup immediately (see core.Permissions.Authorize's Administrator
 // path). If the owner has DMs closed or blocks the bot, this logs and
 // returns without marking the nudge as sent, so it retries on the next
-// restart — no public fallback, by design, since a private nudge was the
+// restart. No public fallback, by design, since a private nudge was the
 // whole point.
 func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCreate) {
 	gs := p.settings.GuildSettings(gc.ID)
@@ -676,7 +676,7 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 	}
 
 	embed := core.NewLandmarkEmbed(core.ColorInfo, "Thanks for adding Merlin!",
-		fmt.Sprintf("Run **/config setup** in **%s** to get started — it walks you through an audit-log channel, "+
+		fmt.Sprintf("Run **/config setup** in **%s** to get started. It walks you through an audit-log channel, "+
 			"a status channel, a mod role, and admins, one step at a time. It only ever changes what you pick on each "+
 			"step, and it's safe to re-run any time.", gc.Name))
 	_, err = p.session.ChannelMessageSendComplex(dmChannel.ID, &discordgo.MessageSend{

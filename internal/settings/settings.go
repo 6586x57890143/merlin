@@ -35,10 +35,10 @@ type GuildSettings struct {
 	AuditLogChannelID     string
 	StatusChannelID       string
 	OnboardingNudgeSentAt *time.Time // nil until adminconfig's one-time "run /config setup" nudge has actually been posted
-	DisabledPlugins       []string   // plugin Name()s disabled in this guild — see core.PluginGate
+	DisabledPlugins       []string   // plugin Name()s disabled in this guild (see core.PluginGate)
 
 	// JailAllowedChannelIDs is which channels stay visible to a jailed
-	// member (internal/plugins/roles) — every other channel gets a deny
+	// member (internal/plugins/roles). Every other channel gets a deny
 	// overwrite for the shared "Jailed" role. Empty means jail denies every
 	// channel until a mod configures exceptions.
 	JailAllowedChannelIDs []string
@@ -53,7 +53,7 @@ type GuildSettings struct {
 	WritesDryRun bool
 }
 
-// IsConfigured reports whether a guild has begun any real configuration —
+// IsConfigured reports whether a guild has begun any real configuration,
 // used to decide whether the onboarding nudge (adminconfig.NudgeIfUnconfigured)
 // still needs to fire, and to drive /config setup's own "what's still
 // missing" guidance.
@@ -76,7 +76,7 @@ type ActionOverride struct {
 // RotationChannel is one guild's configured rotating channel (spec.MD §6),
 // the DB-backed replacement for config.yaml's rotating_channels[] entries.
 // ID is a stable identity for this configured rotation slot, independent of
-// ChannelID — rotation.rotate retargets ChannelID onto the new live channel
+// ChannelID. rotation.rotate retargets ChannelID onto the new live channel
 // after every successful rotation, but the Scheduler job tracking this
 // slot's interval must key off something that never changes, or its
 // persisted "last run" state resets every cycle (see migration 0009).
@@ -101,7 +101,7 @@ type guildCache struct {
 }
 
 // Store is the DB-backed settings store, with an in-memory read cache
-// refreshed on every mutation and on demand (Refresh) — mirrors
+// refreshed on every mutation and on demand (Refresh). Mirrors
 // config.Loader's own reload-into-RWMutex-guarded-snapshot pattern, just
 // sourced from Postgres instead of a YAML file, so it can be written to by
 // running commands.
@@ -112,7 +112,7 @@ type Store struct {
 	mu    sync.RWMutex
 	cache map[string]*guildCache // by guild ID
 	// stale holds guilds whose cache entry was dropped because a refresh
-	// failed. RetryStale works through them in the background — without it,
+	// failed. RetryStale works through them in the background. Without it,
 	// nothing would ever re-read them and the guild would stay locked into
 	// fail-closed defaults until the next mutation or restart.
 	stale map[string]bool
@@ -201,7 +201,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 //
 // Leaving it was a quiet fail-open. Every mutator writes to Postgres and
 // then refreshes; if that refresh failed, the row had already changed but
-// the cache still answered with the old values, and nothing ever retried —
+// the cache still answered with the old values, and nothing ever retried,
 // so a /config permissions deny could be committed to the database and go on
 // being ignored by Authorize indefinitely, with the only evidence a single
 // error return the admin may well have read as "it didn't work."
@@ -228,7 +228,7 @@ func (s *Store) invalidate(guildID string) {
 // could not load to the retry loop instead of dropping it.
 func (s *Store) MarkStale(guildID string) { s.invalidate(guildID) }
 
-// Forget drops guildID from the cache entirely, without marking it stale —
+// Forget drops guildID from the cache entirely, without marking it stale,
 // for when the bot has left the guild and there is nothing to retry. The
 // Postgres rows are deliberately left alone: being removed from a server is
 // often temporary (a kick and re-invite, a permissions mistake), and
@@ -262,7 +262,7 @@ func (s *Store) RetryStale(ctx context.Context) int {
 		// unreadable every consumer saw fail-closed defaults, and plugins that
 		// derive registered work from settings (rotation.reconcile) acted on
 		// them. They rebuild from EventConfigChanged, and nothing else is going
-		// to publish one — a successful retry is not a mutation. Without this a
+		// to publish one: a successful retry is not a mutation. Without this a
 		// guild recovered its settings but kept whatever job set it had
 		// computed while it had none.
 		s.publishChanged(ctx, guildID)
@@ -305,7 +305,7 @@ func (s *Store) guild(guildID string) *guildCache {
 func (s *Store) ModRoleIDs(guildID string) []string   { return s.guild(guildID).settings.ModRoleIDs }
 func (s *Store) AdminUserIDs(guildID string) []string { return s.guild(guildID).settings.AdminUserIDs }
 
-// JailAllowedChannelIDs satisfies roles.JailChannelConfig — the narrow view
+// JailAllowedChannelIDs satisfies roles.JailChannelConfig, the narrow view
 // internal/plugins/roles depends on for its jail channel-visibility
 // allowlist.
 func (s *Store) JailAllowedChannelIDs(guildID string) []string {
@@ -355,7 +355,7 @@ func (s *Store) WritesDryRun(guildID string) bool {
 
 func (s *Store) GuildSettings(guildID string) GuildSettings { return s.guild(guildID).settings }
 
-// AuditLogChannelID is the narrow accessor internal/audit needs — it only
+// AuditLogChannelID is the narrow accessor internal/audit needs: it only
 // ever wants this one field of a guild's settings.
 func (s *Store) AuditLogChannelID(guildID string) string {
 	return s.guild(guildID).settings.AuditLogChannelID
@@ -392,7 +392,7 @@ func (s *Store) RotationChannel(guildID, channelID string) (RotationChannel, boo
 }
 
 // RotationChannelByID looks up a rotation config by its stable ID rather
-// than its current (mutable) ChannelID — used by rotation's Scheduler job
+// than its current (mutable) ChannelID, used by rotation's Scheduler job
 // closures, which must keep re-resolving the same logical rotation slot
 // across retargets. A guild's rotation count is always small, so a linear
 // scan over the already-cached slice needs no dedicated index.
@@ -410,7 +410,7 @@ func (s *Store) RotationChannelByID(guildID string, id int64) (RotationChannel, 
 // Every mutation writes to Postgres, calls Refresh so the cache reflects it
 // immediately, and publishes core.EventConfigChanged so any other
 // in-process subscriber (none yet; wired for future plugins) knows to
-// re-derive its own view — spec.MD Design Principle 4, "config changes are
+// re-derive its own view. This is spec.MD Design Principle 4, "config changes are
 // audited, not silent." Callers (adminconfig, rotation command handlers) are
 // responsible for the actual audit-log write via Deps.Audit, since only they
 // know the human-readable old/new values worth recording.
@@ -451,7 +451,7 @@ func (s *Store) RemoveModRole(ctx context.Context, guildID, roleID string) error
 }
 
 // AddJailAllowedChannel and RemoveJailAllowedChannel mirror Add/RemoveModRole
-// exactly — same upsert-or-append / array_remove shape, just a different
+// exactly: same upsert-or-append / array_remove shape, just a different
 // column.
 func (s *Store) AddJailAllowedChannel(ctx context.Context, guildID, channelID string) error {
 	if _, err := s.pool.Exec(ctx, `
@@ -548,7 +548,7 @@ func (s *Store) SetStatusChannel(ctx context.Context, guildID, channelID string)
 // MarkOnboardingNudgeSent records that adminconfig's one-time "run /config
 // setup" nudge has actually been posted for guildID, so NudgeIfUnconfigured
 // never re-sends it. Callers should only call this after a successful
-// channel post — leaving it unmarked on failure lets a transient permission
+// channel post. Leaving it unmarked on failure lets a transient permission
 // issue self-heal on the bot's next restart instead of silently giving up.
 func (s *Store) MarkOnboardingNudgeSent(ctx context.Context, guildID string) error {
 	if _, err := s.pool.Exec(ctx, `
@@ -566,7 +566,7 @@ func (s *Store) MarkOnboardingNudgeSent(ctx context.Context, guildID string) err
 }
 
 // GrantOverride adds roleID and/or userID (either may be empty) to action's
-// whitelist. TierAdmin-only at the command layer — see
+// whitelist. TierAdmin-only at the command layer, see
 // internal/plugins/adminconfig.
 func (s *Store) GrantOverride(ctx context.Context, guildID, action, roleID, userID string) error {
 	if _, err := s.pool.Exec(ctx, `
@@ -613,7 +613,7 @@ func (s *Store) RevokeOverride(ctx context.Context, guildID, action, roleID, use
 // SetActionTier sets a per-guild override of action's required tier,
 // replacing the command's own compiled-in PermSpec.Tier for that action in
 // this guild only (core.Permissions.Authorize applies it). tier must be
-// core.TierMod or core.TierAdmin — TierAdmin-only at the command layer, see
+// core.TierMod or core.TierAdmin. TierAdmin-only at the command layer, see
 // internal/plugins/adminconfig.
 func (s *Store) SetActionTier(ctx context.Context, guildID, action string, tier core.PermTier) error {
 	if _, err := s.pool.Exec(ctx, `
@@ -649,7 +649,7 @@ func (s *Store) ClearActionTier(ctx context.Context, guildID, action string) err
 }
 
 // DenyOverride adds roleID and/or userID (either may be empty) to action's
-// deny-list — see core.Permissions.Authorize for why deny always wins over
+// deny-list. See core.Permissions.Authorize for why deny always wins over
 // tier/Administrator-bit/allow. TierAdmin-only at the command layer.
 func (s *Store) DenyOverride(ctx context.Context, guildID, action, roleID, userID string) error {
 	if _, err := s.pool.Exec(ctx, `
@@ -694,10 +694,10 @@ func (s *Store) UndenyOverride(ctx context.Context, guildID, action, roleID, use
 }
 
 // DisablePlugin/EnablePlugin toggle a whole plugin off/on for guildID (see
-// core.PluginGate) — coarser than any per-action policy, checked by
+// core.PluginGate). Coarser than any per-action policy, checked by
 // core.CommandRouter before a disabled plugin's commands are even
 // authorized. internal/plugins/adminconfig itself must never be passed here
-// (enforced at the command layer, not here) — disabling it would
+// (enforced at the command layer, not here): disabling it would
 // permanently lock a guild out of ever re-enabling anything.
 func (s *Store) DisablePlugin(ctx context.Context, guildID, pluginName string) error {
 	if _, err := s.pool.Exec(ctx, `
@@ -743,7 +743,7 @@ func (s *Store) SetWritesDryRun(ctx context.Context, guildID string, dryRun bool
 }
 
 // setWriteControl takes the column name from its two callers above, never
-// from user input — the value is the only parameterized part, and no path
+// from user input. The value is the only parameterized part, and no path
 // reaches here with an attacker-influenced column.
 func (s *Store) setWriteControl(ctx context.Context, guildID, column string, value bool) error {
 	sql := fmt.Sprintf(`
@@ -761,13 +761,13 @@ func (s *Store) setWriteControl(ctx context.Context, guildID, column string, val
 }
 
 // UpsertRotationChannel inserts or fully replaces one rotating channel's
-// config — callers read-modify-write via RotationChannel/RotationChannels
+// config. Callers read-modify-write via RotationChannel/RotationChannels
 // above, then call this with the whole updated struct (mirrors the simple
 // full-replace pattern already used by internal/plugins/rotation's other
 // state, not a field-by-field setter for every option).
 func (s *Store) UpsertRotationChannel(ctx context.Context, rc RotationChannel) error {
 	// A nil Go slice binds as SQL NULL via pgx, which every array column here
-	// rejects (NOT NULL DEFAULT '{}') — the DEFAULT only applies when a
+	// rejects (NOT NULL DEFAULT '{}'). The DEFAULT only applies when a
 	// column is omitted entirely, not when NULL is explicitly passed, and
 	// this INSERT always lists every column. Callers building a
 	// RotationChannel from scratch (e.g. rotation's /rotation configure add,
@@ -820,7 +820,7 @@ func (s *Store) RemoveRotationChannel(ctx context.Context, guildID, channelID st
 
 // RetargetRotationChannel repoints a rotation config from oldChannelID to
 // newChannelID in place, preserving every other column (interval, archive
-// settings, sticky messages, ...) — used by rotation.rotate immediately
+// settings, sticky messages, ...), used by rotation.rotate immediately
 // after a successful swap, since oldChannelID has just become an archived
 // channel and must never be looked up again as a live rotation target.
 // (guild_id, channel_id) is the row's key, so this is a plain UPDATE rather

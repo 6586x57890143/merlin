@@ -24,11 +24,11 @@ const (
 )
 
 // makeRotationJob returns the Scheduler job function for one guild's one
-// configured rotation slot, identified by rotationID (settings.RotationChannel.ID
-// — stable across retargets, unlike ChannelID; see rotation.go's reconcile).
+// configured rotation slot, identified by rotationID (settings.RotationChannel.ID,
+// stable across retargets, unlike ChannelID; see rotation.go's reconcile).
 // It re-fetches the slot's current settings at execution time (not at
 // registration time) so edits made via /rotation configure take effect on
-// the very next run without needing a job re-register — only IntervalMinutes
+// the very next run without needing a job re-register. Only IntervalMinutes
 // needs that (see reconcile in rotation.go), since it drives the Scheduler's
 // own due-check.
 func (p *Plugin) makeRotationJob(guildID string, rotationID int64) func(ctx context.Context) error {
@@ -64,7 +64,7 @@ func (p *Plugin) makeRotationJob(guildID string, rotationID int64) func(ctx cont
 // new channel is created (hidden) and fully populated BEFORE the old
 // channel is touched at all, then both are flipped new-first. This
 // eliminates any window where the guild has zero live channel matching the
-// configured name — see the Milestone 3 plan for the full rationale.
+// configured name. See the Milestone 3 plan for the full rationale.
 func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.RotationChannel) error {
 	// Dry-run is checked here rather than left to discordguard's per-call
 	// refusal because this is a multi-step flow: each step below re-derives
@@ -81,7 +81,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 
 	// 1&2. Preflight fetch + capacity-check listing, run concurrently: these
 	// are two independent reads (one channel by ID, one full guild channel
-	// list) with no data dependency on each other — only the processing
+	// list) with no data dependency on each other. Only the processing
 	// below needs both results. Fetch-channel's error takes priority if
 	// both fail, matching the original sequential short-circuit order.
 	var oldChannel *discordgo.Channel
@@ -107,7 +107,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	if oldChannel.GuildID != guildID {
 		return fmt.Errorf("rotation: channel %s does not belong to guild %s", rc.ChannelID, guildID)
 	}
-	// Capacity check — fail loud and clean, not with a raw Discord error.
+	// Capacity check: fail loud and clean, not with a raw Discord error.
 	if listErr != nil {
 		return fmt.Errorf("rotation: list channels for guild %s: %w", guildID, listErr)
 	}
@@ -121,26 +121,26 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	// 4. Idempotency check / create new (hidden). Three retry cases, each
 	// recognized from live state rather than in-memory progress:
 	//   - a prior run completed the whole flip and failed afterwards (while
-	//     recording the archive, or retargeting the config) — the "old"
+	//     recording the archive, or retargeting the config): the "old"
 	//     channel is by now sitting in the archive category under an archive
 	//     name, so its original name has to be recovered from that name
 	//     before anything else can be matched against it. Without this the
 	//     retry recognizes nothing, rotates a second time, and leaves the
 	//     guild with a duplicate replacement channel;
 	//   - a prior run already revealed the replacement but failed before
-	//     archiving the old channel — found by the original name, excluding
+	//     archiving the old channel, found by the original name, excluding
 	//     the old channel itself, since both legitimately share a name at
 	//     that point;
 	//   - a prior run created the hidden staging channel but failed before
-	//     reveal — found by its deterministic temp name.
+	//     reveal, found by its deterministic temp name.
 	// Otherwise, this is a fresh run: create it.
 	originalName, alreadyArchived := archivedChannelOrigin(oldChannel, rc.ArchiveCategoryID)
 
 	// Discord allows duplicate channel names, so matching on name alone can
 	// find an unrelated channel and make this rotation archive a live
 	// channel and retarget itself onto a stranger's. A genuine replacement
-	// also sits outside the archive category and — until the old channel is
-	// archived and moved — in the same category as the channel it replaces.
+	// also sits outside the archive category and, until the old channel is
+	// archived and moved, in the same category as the channel it replaces.
 	newChannel := findChannel(channels, func(c *discordgo.Channel) bool {
 		return c.Name == originalName && c.ID != oldChannel.ID &&
 			c.ParentID != rc.ArchiveCategoryID &&
@@ -153,7 +153,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	if newChannel == nil {
 		// Normally the replacement belongs wherever the channel it replaces
 		// lives. When resuming after the flip already happened, though, that
-		// is the archive category by now — creating the replacement there
+		// is the archive category by now. Creating the replacement there
 		// would bury the live channel inside the archive. The original
 		// category isn't recoverable, so it lands uncategorized, where it's
 		// plainly visible for a mod to move.
@@ -168,7 +168,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		}
 	}
 
-	// 3. Capture active threads — visibility only, logged/audited, no
+	// 3. Capture active threads: visibility only, logged/audited, no
 	// gating logic (Milestone 3 decision: no per-thread "keep active"
 	// exemption for v1). Only on a fresh run: if a prior attempt already
 	// got past reveal (alreadyRevealed), the old channel's threads were
@@ -180,12 +180,12 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 
 		// 5. Populate the still-hidden channel: sticky repost + pin, then
 		// the transparency notice. Any failure here leaves the OLD channel
-		// completely untouched and still live — zero member-visible impact.
+		// completely untouched and still live, with zero member-visible impact.
 		if err := p.populateIfNeeded(newChannel.ID, rc); err != nil {
 			return fmt.Errorf("rotation: populate staging channel: %w", err)
 		}
 
-		// 6. Flip — new first: reveal it under the final name. Past this
+		// 6. Flip (new first): reveal it under the final name. Past this
 		// point there is a live channel matching the configured name.
 		//
 		// Deliberately NOT parallelized with the archive step below, even
@@ -193,7 +193,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// IDs with no Go-level data dependency: the whole point of this
 		// ordering is that there is *always* at least one live channel
 		// bearing the configured name. Running both concurrently would
-		// race against Discord's own response timing — if archive's PATCH
+		// race against Discord's own response timing: if archive's PATCH
 		// lands before reveal's, there'd be a window where *neither*
 		// channel has the right name, which is strictly worse than today's
 		// accepted "both visible" window. The realistic time saved (well
@@ -205,7 +205,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 			// own by now (@everyone denied), and copying those onto the
 			// replacement would hide the channel that's meant to be live.
 			// The originals aren't recoverable, so fall back to guild
-			// defaults — revealNewChannel's empty-overwrites path — which is
+			// defaults (revealNewChannel's empty-overwrites path), which is
 			// what a typical rotating channel had to begin with.
 			overwrites = nil
 		}
@@ -214,7 +214,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		}
 	}
 
-	// 7. Flip — archive old, unless a previous attempt already did (which
+	// 7. Flip: archive old, unless a previous attempt already did (which
 	// would otherwise re-stamp the archive with a fresh timestamp in its
 	// name on every retry).
 	now := p.now()
@@ -228,7 +228,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// 7b. Put the replacement exactly where the original sat in the
 		// sidebar. Only after the archive: until the old channel leaves the
 		// category, both occupy it, and Discord resolves the collision by
-		// pushing one of them down — so a position set at create time is
+		// pushing one of them down, so a position set at create time is
 		// re-flowed out from under us the moment the old channel moves. Doing
 		// it here, with the slot genuinely free, is the only ordering that
 		// lands the channel where members expect to find it.
@@ -258,8 +258,8 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	}
 
 	// 8a. Retarget the rotation config itself onto the new channel. Without
-	// this, rc.ChannelID keeps pointing at what is now an archived channel —
-	// the next scheduled fire would refetch it by that stale ID and try to
+	// this, rc.ChannelID keeps pointing at what is now an archived channel.
+	// The next scheduled fire would refetch it by that stale ID and try to
 	// "rotate" the archive (wrong name, wrong parent category) instead of
 	// the live replacement. RetargetRotationChannel publishes
 	// core.EventConfigChanged, which reconcile (subscribed in Init) picks up
@@ -274,7 +274,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 			"channel", oldChannel.ID, "threads", strings.Join(threadNames, ", "))
 	}
 	// The rotation itself has already fully succeeded by this point (rename,
-	// archive, new channel live, archive record persisted) — an audit-embed
+	// archive, new channel live, archive record persisted). An audit-embed
 	// failure (e.g. #bird-audit-log not yet configured, or deleted) must not
 	// mark this job as failed, or the scheduler would retry an already-done
 	// rotation and eventually false-alarm #bird-status after
@@ -306,8 +306,8 @@ func (p *Plugin) captureThreadNames(guildID, channelID string) []string {
 
 // stagingChannelBotAllow is what the bot needs on the hidden staging
 // channel: enough to read/post while checking/populating it. Deliberately
-// does NOT include PermissionManageMessages (which pinning would need) —
-// the bot's own Discord role only holds Manage Channels + Manage Roles
+// does NOT include PermissionManageMessages (which pinning would need).
+// The bot's own Discord role only holds Manage Channels + Manage Roles
 // (least privilege, spec.MD §4), and core.DenyEveryoneExceptBot's overwrite
 // grant fails the entire channel-creation request (403 Missing Permissions)
 // if it tries to grant a bit the bot doesn't actually hold. Pinning is
@@ -333,7 +333,7 @@ func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Chann
 
 // populateIfNeeded posts sticky messages (pinned if the bot happens to hold
 // Manage Messages, best-effort otherwise) and the transparency notice into
-// the staging channel, unless it already has messages — which only happens
+// the staging channel, unless it already has messages, which only happens
 // on a retry after a prior run got this far, and reposting would duplicate
 // content in what will shortly become a very-visible channel.
 func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel) error {
@@ -351,7 +351,7 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 			return fmt.Errorf("post sticky message: %w", err)
 		}
 		// Pinning needs Manage Messages, which the bot's invite scope
-		// doesn't currently request — treat it as a nice-to-have, not a
+		// doesn't currently request, so treat it as a nice-to-have, not a
 		// reason to fail the whole rotation. The sticky message itself
 		// still posted successfully either way.
 		if err := p.ops(rc.GuildID).ChannelMessagePin(channelID, sent.ID); err != nil {
@@ -368,18 +368,18 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 }
 
 // revealNewChannel restores the old channel's original permission overwrites
-// onto the new one — the "copy permissions exactly, swap only the visibility"
+// onto the new one, the "copy permissions exactly, swap only the visibility"
 // contract this whole feature promises.
 //
 // If the old channel had zero explicit overwrites (the common case for a
 // fully public channel like general chat: @everyone sees it purely via
 // guild-level role permissions, no channel-specific entry needed), that's an
-// empty slice here — but discordgo's ChannelEdit.PermissionOverwrites is
+// empty slice here, but discordgo's ChannelEdit.PermissionOverwrites is
 // `json:"...,omitempty"`, so an empty/nil slice is dropped from the outgoing
 // PATCH entirely rather than sent as `[]`. Discord then leaves the channel's
 // existing overwrites untouched, which at this point are still
 // createHiddenChannel's staging ones (@everyone denied, only the bot
-// allowed) — permanently locking everyone but the bot out of what's meant to
+// allowed), permanently locking everyone but the bot out of what's meant to
 // become the fully public replacement. An explicit no-op @everyone overwrite
 // (zero Allow/Deny) is functionally identical to no overwrite at all, but as
 // a non-empty slice it actually reaches the API and replaces the staging
@@ -406,7 +406,7 @@ func (p *Plugin) revealNewChannel(channelID, finalName, guildID string, original
 // rotation. Everything that makes a rotation *correct* has already happened by
 // the time this runs: the replacement is live under the right name and the old
 // channel is archived. Returning an error would hand the Scheduler a failed
-// job, and its retry re-enters rotate() — which, finding the configured
+// job, and its retry re-enters rotate(), which, finding the configured
 // channel already rotated, would rotate again and create a second replacement.
 // Trading a channel in the wrong sidebar position for a duplicate channel every
 // retry is a bad trade, so this logs and moves on, exactly like the
@@ -438,8 +438,8 @@ func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, gu
 // archiveOverwrites builds a permission-overwrite set denying @everyone,
 // keeping the bot itself able to read it (needed later by sweep.go's
 // rescue-hatch check and eventual delete) via core.DenyEveryoneExceptBot,
-// always allowing the guild's configured mod roles, and — when
-// rc.ArchiveVisibility is "whitelist" — additionally allowing
+// always allowing the guild's configured mod roles, and, when
+// rc.ArchiveVisibility is "whitelist", additionally allowing
 // rc.ArchiveWhitelistRoleIDs/ArchiveWhitelistUserIDs (spec.MD §6's
 // "archive_visibility: mod_only | whitelist").
 func archiveOverwrites(guildID, botUserID string, modRoleIDs []string, rc settings.RotationChannel) []*discordgo.PermissionOverwrite {
@@ -500,8 +500,8 @@ func archiveChannelName(originalName string, at time.Time) string {
 var archiveNamePattern = regexp.MustCompile(`^(.+)-archive-\d{4}-\d{2}-\d{2}-\d{4}$`)
 
 // archivedChannelOrigin reports whether ch has already been archived by an
-// earlier attempt at this rotation — it carries an archive name *and* sits
-// in the configured archive category, neither alone being conclusive — and
+// earlier attempt at this rotation (it carries an archive name *and* sits
+// in the configured archive category, neither alone being conclusive) and
 // returns the name it had before that. For a channel that hasn't been
 // archived, its current name is its original name.
 func archivedChannelOrigin(ch *discordgo.Channel, archiveCategoryID string) (originalName string, archived bool) {

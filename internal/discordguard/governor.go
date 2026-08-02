@@ -26,7 +26,7 @@ var (
 // reaches. Rotation creates one channel per rotating channel per interval
 // (hours apart), and the sweep deletes archives that are days old. Jail
 // edits one member at a time. A guild bumping any of these is a bug, a bad
-// config, or someone driving the bot maliciously — spec.MD §4 asks for this
+// config, or someone driving the bot maliciously. spec.MD §4 asks for this
 // specifically so none of those can get the whole application rate-limited
 // or banned by Discord.
 //
@@ -64,7 +64,7 @@ const (
 // a burst by staying quiet until :59.
 const capWindow = time.Hour
 
-// bucket is a token bucket refilled lazily on read — no background
+// bucket is a token bucket refilled lazily on read, with no background
 // goroutine, which is fine because this bot is single-instance by design and
 // nothing needs to observe the level except the call being decided.
 type bucket struct {
@@ -106,7 +106,7 @@ type breaker struct {
 }
 
 // allowRate applies the token bucket and the circuit breaker to one
-// operation. Callers must have already passed the pause and dry-run checks —
+// operation. Callers must have already passed the pause and dry-run checks:
 // a paused guild never reaches here, so it neither spends budget nor trips
 // the breaker on calls it never made.
 func (g *Guard) allowRate(guildID, op string, now time.Time) error {
@@ -126,7 +126,7 @@ func (g *Guard) allowRate(guildID, op string, now time.Time) error {
 	capacity, ok := opCaps[op]
 	if !ok {
 		// An operation class with no cap is a programming oversight, not a
-		// licence to run unbounded — the whole point is that nothing
+		// licence to run unbounded: the whole point is that nothing
 		// destructive is unmetered.
 		return fmt.Errorf("discordguard: no rate cap defined for %q", op)
 	}
@@ -168,8 +168,8 @@ func (g *Guard) recordResult(guildID string, now time.Time, err error) {
 	}
 }
 
-// isTransient reports whether err looks like Discord being unwell — a 5xx or
-// a rate-limit response — rather than this request being wrong. Mirrors the
+// isTransient reports whether err looks like Discord being unwell (a 5xx or
+// a rate-limit response) rather than this request being wrong. Mirrors the
 // status-vs-code reasoning in core.IsUnknownResource; duplicated rather than
 // imported so this package doesn't depend on core, which would put a cycle
 // between the guard and everything that wants to use it.
@@ -183,7 +183,7 @@ func isTransient(err error) bool {
 	}
 	var restErr *discordgo.RESTError
 	if !errors.As(err, &restErr) {
-		// Not an HTTP response at all — connection refused, timeout, DNS.
+		// Not an HTTP response at all: connection refused, timeout, DNS.
 		// The most transient thing there is.
 		return true
 	}

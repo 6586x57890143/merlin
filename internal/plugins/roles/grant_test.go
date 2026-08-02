@@ -32,7 +32,7 @@ func TestRevokeGrantRemovesRoleAndUntracks(t *testing.T) {
 
 // TestRevokeGrantConfusedDeputyRescue mirrors releaseJail's safeguard: if a
 // mod already manually removed the granted role, revokeGrant must not call
-// GuildMemberRoleRemove again — just stop tracking it.
+// GuildMemberRoleRemove again, just stop tracking it.
 func TestRevokeGrantConfusedDeputyRescue(t *testing.T) {
 	ops := newFakeOps()
 	ops.setMember("g1", "u1", []string{}) // role already gone
@@ -110,7 +110,7 @@ func TestRevokeGrantKeepsTrackingOnTransientFetchFailure(t *testing.T) {
 		t.Fatal("expected revokeGrant to report the transient fetch failure")
 	}
 	if _, ok, _ := p.store.GetGrant(context.Background(), "g1", "u1", "role-a"); !ok {
-		t.Fatal("grant record was dropped on a transient error — the role would never expire")
+		t.Fatal("grant record was dropped on a transient error; the role would never expire")
 	}
 
 	ops.memberFetchErr = nil

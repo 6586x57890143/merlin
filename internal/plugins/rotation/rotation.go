@@ -7,7 +7,7 @@
 // policy.
 //
 // Configuration is entirely DB-backed (internal/settings) and mutated via
-// this plugin's own /rotation configure commands (spec.MD §4a) — never
+// this plugin's own /rotation configure commands (spec.MD §4a), never
 // config.yaml. Because a guild's set of rotating channels can change at
 // runtime, Scheduler job registration isn't a one-time Init-time loop: it's
 // reconciled against current settings every time a guild becomes known
@@ -30,14 +30,14 @@ import (
 )
 
 // sweepInterval is how often each guild's archive-deletion sweep runs.
-// Retention is denominated in hours — retention_hours is documented as a
+// Retention is denominated in hours, and retention_hours is documented as a
 // minimum, not an exact-to-the-second promise, so hourly sweep slop against
 // even a 1-hour retention window is acceptable.
 const sweepInterval = time.Hour
 
 // SettingsProvider is the narrow slice of internal/settings.Store this
 // plugin depends on, so unit tests can use an in-memory fake instead of a
-// live Postgres — mirrors the DiscordChannelOps/ArchiveStore seams already
+// live Postgres. Mirrors the DiscordChannelOps/ArchiveStore seams already
 // used in this package.
 type SettingsProvider interface {
 	ModRoleIDs(guildID string) []string
@@ -51,7 +51,7 @@ type SettingsProvider interface {
 
 // Plugin implements core.Plugin. It registers slash commands through
 // core.CommandRouter and reconciles Scheduler jobs against
-// internal/settings' current state — see the package doc for why job
+// internal/settings' current state. See the package doc for why job
 // registration isn't a static Init-time loop.
 type Plugin struct {
 	ops      OpsProvider
@@ -74,14 +74,14 @@ type Plugin struct {
 }
 
 // New constructs Plugin. settingsStore is passed directly rather than
-// through core.Deps — it's a cross-cutting dependency only a couple of
+// through core.Deps: it's a cross-cutting dependency only a couple of
 // plugins need (rotation, adminconfig), unlike Deps' fields which every
 // plugin gets, mirroring how internal/scheduler and internal/audit already
 // take their own narrow settings-derived interfaces as constructor params.
 // OpsProvider yields the Discord ops view for one guild. It is a per-guild
 // lookup rather than a single shared value because internal/discordguard
-// binds each view to the guild whose pause/dry-run settings govern it —
-// most destructive Discord calls are channel-scoped and carry no guild of
+// binds each view to the guild whose pause/dry-run settings govern it.
+// Most destructive Discord calls are channel-scoped and carry no guild of
 // their own, so the guild has to come from the caller, which always knows it.
 type OpsProvider func(guildID string) DiscordChannelOps
 
@@ -120,8 +120,8 @@ func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 
 // getBotUserID resolves the bot's own user ID, fetched once via the REST
 // "@me" endpoint and cached for the process lifetime (it can't change while
-// running). Not resolved at Init time — the session isn't open yet then
-// (spec.MD's Plugin lifecycle: no gateway/REST calls in Init) — deferred
+// running). Not resolved at Init time, since the session isn't open yet then
+// (spec.MD's Plugin lifecycle: no gateway/REST calls in Init). Deferred
 // until the first rotation actually needs it, well after Open() succeeds.
 // A failed attempt is retried on the next call rather than cached, in case
 // of a transient API error.
@@ -140,8 +140,8 @@ func (p *Plugin) getBotUserID(guildID string) (string, error) {
 }
 
 // SyncGuild reconciles guildID's Scheduler jobs against its current
-// settings. Call once per guild right after internal/settings.Store.Refresh
-// — at startup for every guild the bot is already in, and again whenever
+// settings. Call once per guild right after internal/settings.Store.Refresh:
+// at startup for every guild the bot is already in, and again whenever
 // the bot joins a new one (both driven by discordgo's GuildCreate event; see
 // cmd/bot/main.go).
 func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
@@ -151,8 +151,8 @@ func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
 // HandleChannelDeleted reports that a channel this guild rotates was deleted
 // out from under the configuration.
 //
-// The rotation job for it will now fail on every run — the channel it is
-// configured against no longer exists — and the Scheduler's own backoff and
+// The rotation job for it will now fail on every run, because the channel it is
+// configured against no longer exists, and the Scheduler's own backoff and
 // consecutive-failure alert will eventually say so. But that alert arrives
 // after five failures and names a job key, not a channel, and by then
 // whoever deleted the channel has long since moved on. Saying it once,
@@ -162,7 +162,7 @@ func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
 // The configuration is deliberately left in place. Removing a rotation slot
 // discards the archive retention it promised, and this event can't
 // distinguish "we're done with this channel" from "someone deleted the wrong
-// thing and wants it back" — that call belongs to an admin, via
+// thing and wants it back". That call belongs to an admin, via
 // /rotation configure remove.
 func (p *Plugin) HandleChannelDeleted(ctx context.Context, guildID, channelID string) {
 	if _, ok := p.settings.RotationChannel(guildID, channelID); !ok {
@@ -197,7 +197,7 @@ func (p *Plugin) ForgetGuild(guildID string) {
 // so a channel a mod just added to rotation waits a full interval before its
 // first real rotation instead of firing on the Scheduler's very next tick.
 // A brand-new job has no persisted last-run state, and the Scheduler treats
-// that as immediately due — correct for jobs like rotation-sweep that should
+// that as immediately due: correct for jobs like rotation-sweep that should
 // start working right away, wrong here (a channel that was just configured
 // shouldn't rotate before its interval has even elapsed once).
 //
@@ -205,13 +205,13 @@ func (p *Plugin) ForgetGuild(guildID string) {
 // reconcile itself: reconcile also runs on every restart for channels that
 // already have real run history, and seeding those would incorrectly reset
 // an overdue rotation's clock. Only the caller that just inserted a brand
-// new row knows that distinction — reconcile alone can't tell "never
+// new row knows that distinction. reconcile alone can't tell "never
 // registered in this process" apart from "genuinely never run."
 //
 // This runs after UpsertRotationChannel's own synchronous EventConfigChanged
 // publish has already registered the job (Init's bus subscription calls
-// reconcile), so there's a narrow window — bounded by the Scheduler's 30s
-// tick — where a tick could fire before this seed lands. Accepting that tiny
+// reconcile), so there's a narrow window, bounded by the Scheduler's 30s
+// tick, where a tick could fire before this seed lands. Accepting that tiny
 // window over adding cross-package plumbing to close it matches this
 // package's existing tolerance for narrow timing windows (see rotate's
 // dual-visible-channel window and its rationale).
@@ -231,7 +231,7 @@ func (p *Plugin) deferFirstRotation(ctx context.Context, guildID, channelID stri
 //
 // This job permanently deletes channels, so it deliberately does not exist by
 // default: it used to be registered for every guild the bot could see, the
-// moment it saw it, whether or not that guild had ever configured rotation —
+// moment it saw it, whether or not that guild had ever configured rotation:
 // a deletion job armed in servers that never opted into one, and (since a job
 // with no run history is immediately due) firing within one Scheduler tick of
 // startup. It was harmless only by accident, because the table it reads
@@ -241,7 +241,7 @@ func (p *Plugin) deferFirstRotation(ctx context.Context, guildID, channelID stri
 // remove explicitly promises existing archives are left untouched, so a guild
 // with no rotating channels can still have archives whose retention windows
 // are still owed. Pending archives therefore keep the job alive on their own.
-// A failed lookup leaves the current registration exactly as it is — neither
+// A failed lookup leaves the current registration exactly as it is, neither
 // arming a sweep we can't justify nor dropping one that's still owed work.
 func (p *Plugin) reconcileSweepJob(ctx context.Context, guildID string, hasRotation bool) {
 	registered := p.sweepRegistered[guildID]
@@ -278,7 +278,7 @@ func (p *Plugin) reconcileSweepJob(ctx context.Context, guildID string, hasRotat
 }
 
 // reconcile registers a Scheduler job for every currently-configured
-// rotating channel that doesn't have one yet (or whose interval changed —
+// rotating channel that doesn't have one yet (or whose interval changed:
 // Unregister+Register, since the Scheduler has no in-place spec update),
 // unregisters jobs for channels no longer configured, and ensures exactly
 // one archive-sweep job per guild.
@@ -295,7 +295,7 @@ func (p *Plugin) reconcile(ctx context.Context, guildID string) {
 		// Keyed by rc.ID, NOT rc.ChannelID: ChannelID gets retargeted onto
 		// the new live channel after every successful rotation (execute.go),
 		// but the Scheduler persists this job's last-run/interval state under
-		// this exact key string — if the key changed every rotation too,
+		// this exact key string. If the key changed every rotation too,
 		// that state would reset every cycle, and a job with no run history
 		// is immediately due again on the Scheduler's very next tick. This
 		// was a real bug: it looped, rotating (and archiving) every ~30s
@@ -308,7 +308,7 @@ func (p *Plugin) reconcile(ctx context.Context, guildID string) {
 			if existingInterval == interval {
 				continue
 			}
-			// Interval changed since registration — the Scheduler has no
+			// Interval changed since registration: the Scheduler has no
 			// in-place spec update, so drop and re-add.
 			if err := p.sched.Unregister(jobKey); err != nil {
 				p.log.Error("rotation: unregister job for interval change", "job", jobKey, "err", err)

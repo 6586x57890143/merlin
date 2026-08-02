@@ -15,8 +15,8 @@ func enableDryRun(p *Plugin) {
 	p.dryRun = func(string) bool { return true }
 }
 
-// A dry-run rotation must leave Discord completely untouched — no staging
-// channel created, no channel renamed or moved — while still saying so in
+// A dry-run rotation must leave Discord completely untouched (no staging
+// channel created, no channel renamed or moved) while still saying so in
 // the audit trail. This is the pre-launch rehearsal the whole feature is
 // meant to be verified with, so "it quietly rotated anyway" is the one
 // outcome that would make the rehearsal worse than useless.
@@ -64,7 +64,7 @@ func TestRotateDryRunTouchesNothing(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("dry-run rotation wrote no audit record — the rehearsal left no evidence")
+		t.Error("dry-run rotation wrote no audit record; the rehearsal left no evidence")
 	}
 }
 

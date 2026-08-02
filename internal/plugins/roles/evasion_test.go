@@ -27,7 +27,7 @@ func newEvasionPlugin(t *testing.T, ops *fakeOps, store *fakeStore) *Plugin {
 }
 
 // The evasion itself: a jailed member leaves, and Discord drops every role
-// they held — including the Jailed marker whose overwrites were the only
+// they held, including the Jailed marker whose overwrites were the only
 // thing restricting them. They rejoin with full access while the bot's own
 // record still says "jailed". The sweep has to put the marker back.
 func TestSweepReJailsMemberWhoLeftAndRejoined(t *testing.T) {
@@ -55,8 +55,8 @@ func TestSweepReJailsMemberWhoLeftAndRejoined(t *testing.T) {
 }
 
 // The snapshot is the only record of what the member held before being
-// jailed. Re-applying must not overwrite it with what they hold now —
-// nothing, having just rejoined — or their eventual release restores nothing,
+// jailed. Re-applying must not overwrite it with what they hold now
+// (nothing, having just rejoined), or their eventual release restores nothing,
 // exactly the way the concurrent-jail race used to destroy it.
 func TestReJailPreservesSnapshotAndReleaseTime(t *testing.T) {
 	ops := newFakeOps()
@@ -78,7 +78,7 @@ func TestReJailPreservesSnapshotAndReleaseTime(t *testing.T) {
 		t.Fatalf("GetJail: %v (found=%v)", err, ok)
 	}
 	if !slices.Equal(rec.SnapshotRoleIDs, []string{"role-a", "role-b"}) {
-		t.Errorf("snapshot is %v, want [role-a role-b] — the member's real roles are now unrecoverable", rec.SnapshotRoleIDs)
+		t.Errorf("snapshot is %v, want [role-a role-b]; the member's real roles are now unrecoverable", rec.SnapshotRoleIDs)
 	}
 	// Leaving the server neither serves the sentence nor extends it.
 	if !rec.ReleaseAt.Equal(*original.ReleaseAt) {
@@ -117,7 +117,7 @@ func TestSweepDoesNotFightAManualRelease(t *testing.T) {
 	}
 }
 
-// A member still serving their jail normally must not be touched — no
+// A member still serving their jail normally must not be touched: no
 // pointless role edit, no audit noise, once a minute, forever.
 func TestSweepLeavesAnOrdinaryJailAlone(t *testing.T) {
 	ops := newFakeOps()
@@ -178,7 +178,7 @@ func TestEvasionCheckKeepsRecordForAbsentMember(t *testing.T) {
 		t.Fatalf("an absent member is not an error: %v", err)
 	}
 	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
-		t.Error("dropped the jail record for a member who merely left — they would return unjailed")
+		t.Error("dropped the jail record for a member who merely left; they would return unjailed")
 	}
 }
 
@@ -227,7 +227,7 @@ func TestHandleMemberJoinReJailsImmediately(t *testing.T) {
 }
 
 // Someone whose jail expired while they were away has served it. Rejoining
-// must not re-jail them — the ordinary sweep closes the record out instead.
+// must not re-jail them: the ordinary sweep closes the record out instead.
 func TestHandleMemberJoinIgnoresAnExpiredJail(t *testing.T) {
 	ops := newFakeOps()
 	ops.setMemberJoined("g1", "u1", nil, fixedNow.Add(-time.Minute))

@@ -130,7 +130,7 @@ func (f fakeGate) WritesPaused(guildID string) bool { return f.paused[guildID] }
 func (f fakeGate) WritesDryRun(guildID string) bool { return f.dryRun[guildID] }
 
 // callEveryWrite exercises every gated method so a newly added one can't
-// quietly skip the check — if someone adds a write that forgets allow(), the
+// quietly skip the check: if someone adds a write that forgets allow(), the
 // write counter here goes up while the test expects zero.
 func callEveryWrite(o *GuildOps) []error {
 	var errs []error
@@ -239,7 +239,7 @@ func TestReadsAreNeverGated(t *testing.T) {
 		t.Errorf("User: %v", err)
 	}
 	if sess.reads != 7 {
-		t.Errorf("reads = %d, want 7 — a read was gated", sess.reads)
+		t.Errorf("reads = %d, want 7; a read was gated", sess.reads)
 	}
 }
 

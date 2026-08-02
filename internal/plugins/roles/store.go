@@ -3,7 +3,7 @@
 // restoring them later, automatically or on demand) and single-role timed
 // grants. Mirrors internal/plugins/rotation's shape end to end: a
 // plugin-owned Postgres store for runtime state (pending reversals aren't
-// guild configuration, so they don't belong in internal/settings.Store —
+// guild configuration, so they don't belong in internal/settings.Store;
 // see rotation.ArchiveStore for the precedent), a per-guild Scheduler sweep
 // job that finds due work and re-derives idempotency from live Discord
 // state rather than trusting stored assumptions, and full audit logging.
@@ -21,7 +21,7 @@ import (
 
 // ErrAlreadyJailed reports that a jail record for this member already
 // existed, so this attempt wrote nothing. It means the caller lost a race
-// with a concurrent jail, and must not go on to strip the member's roles —
+// with a concurrent jail, and must not go on to strip the member's roles:
 // the winning call already did, and the snapshot on record is the one taken
 // before that happened.
 var ErrAlreadyJailed = errors.New("roles: member is already jailed")
@@ -55,17 +55,17 @@ type GrantRecord struct {
 }
 
 // Store is the narrow persistence seam for this plugin's own runtime
-// state — mirrors rotation.ArchiveStore's role: pending future actions
+// state, mirroring rotation.ArchiveStore's role: pending future actions
 // tracked here, not in internal/settings (guild configuration only).
 type Store interface {
 	// InsertJail returns ErrAlreadyJailed if the member already has a jail
-	// record — the caller lost a race with a concurrent jail, and must not
+	// record: the caller lost a race with a concurrent jail, and must not
 	// treat that as success.
 	InsertJail(ctx context.Context, rec JailRecord) error
 	GetJail(ctx context.Context, guildID, userID string) (JailRecord, bool, error)
 	DeleteJail(ctx context.Context, guildID, userID string) error
 	DueJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
-	// ActiveJails returns jails still in force (not yet due, or indefinite) —
+	// ActiveJails returns jails still in force (not yet due, or indefinite):
 	// the ones a member could still be trying to escape by leaving and
 	// rejoining. Bounded; see maxActiveJailChecks.
 	ActiveJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
@@ -95,7 +95,7 @@ func (s *pgStore) InsertJail(ctx context.Context, rec JailRecord) error {
 	// first, but that check and this write are not atomic, and the gap is
 	// destructive: two concurrent /roles jail calls on the same member both
 	// pass the check, the first strips the member down to the marker role,
-	// and the second then overwrites snapshot_role_ids with what it read —
+	// and the second then overwrites snapshot_role_ids with what it read:
 	// the marker alone. The member's original roles are gone from the only
 	// place they were recorded, and releasing them restores nothing.
 	//

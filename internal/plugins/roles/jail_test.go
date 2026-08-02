@@ -42,7 +42,7 @@ func TestReleaseJailRestoresSnapshotFilteredToExistingRoles(t *testing.T) {
 // TestReleaseJailConfusedDeputyRescue verifies the safeguard central to this
 // plugin's design: if a mod already manually removed the jail marker role
 // before the scheduled/explicit release ran, releaseJail must not fight
-// that override — no restore write, just stop tracking.
+// that override: no restore write, just stop tracking.
 func TestReleaseJailConfusedDeputyRescue(t *testing.T) {
 	ops := newFakeOps()
 	ops.setMember("g1", "u1", []string{"some-other-role"}) // jail-role no longer present
@@ -110,7 +110,7 @@ func TestJailRolesStripsEverythingItCan(t *testing.T) {
 	}
 }
 
-// TestJailRolesOnRolelessMember covers a member holding no roles at all —
+// TestJailRolesOnRolelessMember covers a member holding no roles at all,
 // the marker still has to be applied, and an empty roles list must not read
 // as "strip nothing."
 func TestJailRolesOnRolelessMember(t *testing.T) {
@@ -147,7 +147,7 @@ func TestSweepReleasesDueJailsAndSkipsNotYetDue(t *testing.T) {
 
 // TestReleaseJailKeepsTrackingOnTransientFetchFailure is the counterpart to
 // TestReleaseJailMemberGoneCleansUpRecord. releaseJail used to read *any*
-// member-fetch error as "they left the guild" and drop the tracking row —
+// member-fetch error as "they left the guild" and drop the tracking row,
 // so a rate limit or a 5xx during the sweep left the member jailed forever,
 // with nothing left to ever release them and no error surfaced afterwards.
 // Only Discord's own "unknown member" may untrack.
@@ -167,7 +167,7 @@ func TestReleaseJailKeepsTrackingOnTransientFetchFailure(t *testing.T) {
 		t.Fatal("expected releaseJail to report the transient fetch failure")
 	}
 	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); !ok {
-		t.Fatal("jail record was dropped on a transient error — the member would stay jailed forever")
+		t.Fatal("jail record was dropped on a transient error; the member would stay jailed forever")
 	}
 
 	// Discord recovers: the next sweep releases them properly.
@@ -282,7 +282,7 @@ func TestApplyJailNeverStripsRolesWithoutTrackingThem(t *testing.T) {
 	}
 
 	if len(ops.memberEditCalls["u1"]) != 0 {
-		t.Fatalf("roles were stripped even though the jail could not be recorded — the member would stay jailed forever, got %v", ops.memberEditCalls["u1"])
+		t.Fatalf("roles were stripped even though the jail could not be recorded; the member would stay jailed forever, got %v", ops.memberEditCalls["u1"])
 	}
 	m, _ := ops.GuildMember("g1", "u1")
 	if len(m.Roles) != 2 {

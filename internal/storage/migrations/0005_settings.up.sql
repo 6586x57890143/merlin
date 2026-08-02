@@ -23,7 +23,7 @@ CREATE TABLE settings_permission_overrides (
     PRIMARY KEY (guild_id, action)
 );
 
--- Replaces config.yaml's rotating_channels[] — one row per configured
+-- Replaces config.yaml's rotating_channels[]: one row per configured
 -- rotating channel. Sticky message text lives here directly (not a separate
 -- named-template table) since each rotating channel owns its own content.
 CREATE TABLE settings_rotation_channels (

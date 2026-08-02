@@ -10,7 +10,7 @@ import (
 )
 
 // testClock lets the governor's time-based behavior be exercised without
-// sleeping — mirrors the fake clock the Scheduler's own tests use.
+// sleeping, mirroring the fake clock the Scheduler's own tests use.
 type testClock struct{ t time.Time }
 
 func (c *testClock) Now() time.Time          { return c.t }
@@ -153,7 +153,7 @@ func TestCircuitBreakerOpensOnSustained5xxAndRecovers(t *testing.T) {
 	}
 }
 
-// A 4xx means this request was wrong — a deleted channel, a role above the
+// A 4xx means this request was wrong: a deleted channel, a role above the
 // bot. Letting those open the breaker would stop every unrelated write in the
 // guild because one misconfigured rotation kept failing.
 func TestCircuitBreakerIgnoresClientErrors(t *testing.T) {
@@ -169,7 +169,7 @@ func TestCircuitBreakerIgnoresClientErrors(t *testing.T) {
 }
 
 // A paused guild is checked before the governor, so it neither spends budget
-// nor trips the breaker on calls it never made — otherwise unpausing could
+// nor trips the breaker on calls it never made, or unpausing could
 // land straight in a rate limit earned entirely by refusals.
 func TestPauseDoesNotConsumeRateBudget(t *testing.T) {
 	sess := &fakeSession{}
@@ -189,7 +189,7 @@ func TestPauseDoesNotConsumeRateBudget(t *testing.T) {
 	gate.paused["g1"] = false
 	for i := range limit {
 		if _, err := g.For("g1").ChannelDelete("c"); err != nil {
-			t.Fatalf("call %d after unpausing was refused: %v — the pause spent real budget", i+1, err)
+			t.Fatalf("call %d after unpausing was refused: %v; the pause spent real budget", i+1, err)
 		}
 	}
 }

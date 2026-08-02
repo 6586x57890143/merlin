@@ -22,7 +22,7 @@ func (s stubJobs) JobHealth(ctx context.Context, guildID string) (int, int, erro
 	return s.total, s.failing, s.err
 }
 
-// settingsWith returns a SettingsAdmin whose GuildSettings is gs — enough for
+// settingsWith returns a SettingsAdmin whose GuildSettings is gs, enough for
 // the status lines that don't touch Discord.
 type stubSettings struct {
 	fakeSettingsAdmin

@@ -17,7 +17,7 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
-    # A leak or runaway in the bot must not take Postgres down with it — the
+    # A leak or runaway in the bot must not take Postgres down with it; the
     # database is the only thing here holding state that can't be rebuilt.
     mem_limit: 512m
     cpus: 1.0
