@@ -1,6 +1,11 @@
 services:
   bot:
-    image: ghcr.io/6586x57890143/merlin:latest
+    # Pinned to the exact commit CI built, not :latest. Rolling back is then
+    # editing one line in deployed-tag.env and re-running compose, instead of
+    # hoping a mutable tag still points where you think it does. The default
+    # keeps a hand-run `docker compose up` working on a host that has never
+    # been deployed to. See README's Runbook.
+    image: ghcr.io/6586x57890143/merlin:${MERLIN_IMAGE_TAG:-latest}
     read_only: true
     cap_drop:
       - ALL
@@ -12,6 +17,15 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # A leak or runaway in the bot must not take Postgres down with it — the
+    # database is the only thing here holding state that can't be rebuilt.
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   postgres:
     image: postgres:16-alpine
@@ -27,6 +41,72 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Daily pg_dump to a host directory outside the pgdata volume, so a
+  # corrupted or accidentally removed volume is recoverable. Everything the
+  # bot knows that isn't reconstructible from Discord lives in Postgres:
+  # rotation config, permission policy, jail records and their role
+  # snapshots, and the audit trail. Losing it means jailed members whose
+  # original roles nobody can restore.
+  #
+  # Deliberately a plain loop rather than a scheduler image: one less
+  # dependency, and the failure mode (container exits, restart policy brings
+  # it back) is easier to reason about at 3am than a cron daemon's.
+  pgbackup:
+    image: postgres:16-alpine
+    env_file:
+      - .env
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        while true; do
+          stamp=$$(date -u +%Y%m%d-%H%M%S)
+          if pg_dump -h postgres -U "$$POSTGRES_USER" -d merlin -Fc \
+               -f "/backups/merlin-$$stamp.dump.tmp"; then
+            mv "/backups/merlin-$$stamp.dump.tmp" "/backups/merlin-$$stamp.dump"
+            echo "pgbackup: wrote merlin-$$stamp.dump"
+          else
+            # Never delete anything after a failed dump: pruning on a day the
+            # backup did not run is how a backup directory quietly empties
+            # itself out over a long outage.
+            rm -f "/backups/merlin-$$stamp.dump.tmp"
+            echo "pgbackup: dump FAILED, keeping existing backups" >&2
+            sleep 3600
+            continue
+          fi
+          # Keep 14 days. Sorted by name, which is chronological because the
+          # timestamp is fixed-width and UTC. Counted explicitly rather than
+          # with `head -n -14`: this image's shell is BusyBox ash, whose head
+          # does not accept a negative count, and the failure would be a
+          # prune step that silently never runs.
+          count=$$(ls -1 /backups/merlin-*.dump 2>/dev/null | wc -l)
+          if [ "$$count" -gt 14 ]; then
+            ls -1 /backups/merlin-*.dump | sort | head -n $$((count - 14)) | \
+              while read -r old; do rm -f "$$old" && echo "pgbackup: pruned $$old"; done
+          fi
+          sleep 86400
+        done
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   pgdata:

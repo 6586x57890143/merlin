@@ -65,6 +65,12 @@ func (fakeSettingsAdmin) ImportFromLegacyYAML(ctx context.Context, path string) 
 func (fakeSettingsAdmin) MarkOnboardingNudgeSent(ctx context.Context, guildID string) error {
 	return nil
 }
+func (fakeSettingsAdmin) SetWritesPaused(ctx context.Context, guildID string, paused bool) error {
+	return nil
+}
+func (fakeSettingsAdmin) SetWritesDryRun(ctx context.Context, guildID string, dryRun bool) error {
+	return nil
+}
 
 // fakeAuthData/fakeGate are minimal core.GuildAuthData/core.PluginGate
 // implementations — Init doesn't exercise authorization, but
@@ -97,7 +103,7 @@ func TestInitRegistersAFullyWiredCommandTree(t *testing.T) {
 	perms := core.NewPermissions(nil, fakeAuthData{}, "")
 	router := core.NewCommandRouter(perms, fakeGate{}, log)
 
-	p := New(fakeSettingsAdmin{}, "config.yaml")
+	p := New(fakeSettingsAdmin{}, "config.yaml", nil, nil)
 	deps := core.Deps{Commands: router, Logger: log, Session: &discordgo.Session{}}
 	if err := p.Init(deps); err != nil {
 		t.Fatalf("Init: %v", err)

@@ -3,9 +3,11 @@ package rotation
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
@@ -15,7 +17,16 @@ import (
 // covers every rotating channel's archives in that guild.
 func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		return p.sweep(ctx, guildID)
+		// See makeRotationJob: a paused guild is a deliberate state, not a
+		// failing job, and must not consume the failure budget.
+		if err := p.sweep(ctx, guildID); err != nil {
+			if discordguard.Skipped(err) {
+				p.log.Info("rotation sweep: skipped, writes paused", "guild", guildID)
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
 }
 
@@ -70,6 +81,24 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 		return p.settings.RotationChannelByID(guildID, id)
 	}
 
+	// Dry-run is checked for the sweep as a whole, not per row: sweepOne also
+	// drops its own tracking row as bookkeeping, and a rehearsal that quietly
+	// forgot which archives it was still watching would leave the real sweep
+	// unable to do the thing it was rehearsing.
+	if p.dryRun(guildID) {
+		var due []string
+		for _, rec := range archives {
+			if deadline := archiveDeadline(rec, lookup); deadline != nil && !deadline.After(now) {
+				due = append(due, rec.ChannelID)
+			}
+		}
+		p.log.Info("rotation sweep: dry-run, skipping deletion", "guild", guildID, "due", due)
+		if err := p.audit.Record(ctx, guildID, "system", "archive.dryrun", strings.Join(due, ","), "would have been deleted now"); err != nil {
+			p.log.Error("rotation sweep: audit dry-run", "guild", guildID, "err", err)
+		}
+		return nil
+	}
+
 	var firstErr error
 	for _, rec := range archives {
 		deadline := archiveDeadline(rec, lookup)
@@ -87,7 +116,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 }
 
 func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord) error {
-	ch, err := p.ops.Channel(rec.ChannelID)
+	ch, err := p.ops(guildID).Channel(rec.ChannelID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			// Already gone (e.g. manually deleted) — nothing left to sweep.
@@ -122,7 +151,7 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 		return p.archives.Delete(ctx, rec.ChannelID)
 	}
 
-	if _, err := p.ops.ChannelDelete(rec.ChannelID); err != nil {
+	if _, err := p.ops(guildID).ChannelDelete(rec.ChannelID); err != nil {
 		return fmt.Errorf("delete channel %s: %w", rec.ChannelID, err)
 	}
 	if err := p.audit.Record(ctx, guildID, "system", "archive.deleted", rec.ChannelID, ""); err != nil {

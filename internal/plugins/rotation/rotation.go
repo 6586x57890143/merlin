@@ -54,7 +54,8 @@ type SettingsProvider interface {
 // internal/settings' current state — see the package doc for why job
 // registration isn't a static Init-time loop.
 type Plugin struct {
-	ops      DiscordChannelOps
+	ops      OpsProvider
+	dryRun   func(guildID string) bool
 	archives ArchiveStore
 	settings SettingsProvider
 	audit    core.AuditWriter
@@ -77,9 +78,18 @@ type Plugin struct {
 // plugins need (rotation, adminconfig), unlike Deps' fields which every
 // plugin gets, mirroring how internal/scheduler and internal/audit already
 // take their own narrow settings-derived interfaces as constructor params.
-func New(settingsStore SettingsProvider) *Plugin {
+// OpsProvider yields the Discord ops view for one guild. It is a per-guild
+// lookup rather than a single shared value because internal/discordguard
+// binds each view to the guild whose pause/dry-run settings govern it —
+// most destructive Discord calls are channel-scoped and carry no guild of
+// their own, so the guild has to come from the caller, which always knows it.
+type OpsProvider func(guildID string) DiscordChannelOps
+
+func New(settingsStore SettingsProvider, ops OpsProvider, dryRun func(guildID string) bool) *Plugin {
 	return &Plugin{
 		settings:        settingsStore,
+		ops:             ops,
+		dryRun:          dryRun,
 		now:             func() time.Time { return time.Now().UTC() },
 		sweepRegistered: make(map[string]bool),
 		registeredJobs:  make(map[string]time.Duration),
@@ -89,7 +99,6 @@ func New(settingsStore SettingsProvider) *Plugin {
 func (p *Plugin) Name() string { return "rotation" }
 
 func (p *Plugin) Init(deps core.Deps) error {
-	p.ops = deps.Session
 	p.audit = deps.Audit
 	p.bus = deps.Bus
 	p.log = deps.Logger
@@ -116,13 +125,13 @@ func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 // until the first rotation actually needs it, well after Open() succeeds.
 // A failed attempt is retried on the next call rather than cached, in case
 // of a transient API error.
-func (p *Plugin) getBotUserID() (string, error) {
+func (p *Plugin) getBotUserID(guildID string) (string, error) {
 	p.botUserIDMu.Lock()
 	defer p.botUserIDMu.Unlock()
 	if p.botUserID != "" {
 		return p.botUserID, nil
 	}
-	me, err := p.ops.User("@me")
+	me, err := p.ops(guildID).User("@me")
 	if err != nil {
 		return "", fmt.Errorf("rotation: resolve bird user ID: %w", err)
 	}
@@ -137,6 +146,51 @@ func (p *Plugin) getBotUserID() (string, error) {
 // cmd/bot/main.go).
 func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
 	p.reconcile(ctx, guildID)
+}
+
+// HandleChannelDeleted reports that a channel this guild rotates was deleted
+// out from under the configuration.
+//
+// The rotation job for it will now fail on every run — the channel it is
+// configured against no longer exists — and the Scheduler's own backoff and
+// consecutive-failure alert will eventually say so. But that alert arrives
+// after five failures and names a job key, not a channel, and by then
+// whoever deleted the channel has long since moved on. Saying it once,
+// immediately, in the audit log, is the difference between "a mod deleted
+// #general-chat this morning" and an unexplained wedged job.
+//
+// The configuration is deliberately left in place. Removing a rotation slot
+// discards the archive retention it promised, and this event can't
+// distinguish "we're done with this channel" from "someone deleted the wrong
+// thing and wants it back" — that call belongs to an admin, via
+// /rotation configure remove.
+func (p *Plugin) HandleChannelDeleted(ctx context.Context, guildID, channelID string) {
+	if _, ok := p.settings.RotationChannel(guildID, channelID); !ok {
+		return
+	}
+	p.log.Warn("rotation: configured rotating channel was deleted", "guild", guildID, "channel", channelID)
+	if err := p.audit.Record(ctx, guildID, "system", "rotation.channel_deleted", channelID,
+		"the channel this rotation is configured against was deleted; rotation will fail until it is reconfigured with /rotation configure"); err != nil {
+		p.log.Error("rotation: audit deleted channel", "guild", guildID, "err", err)
+	}
+}
+
+// ForgetGuild drops guildID's job-registration bookkeeping after the bot has
+// been removed from it. The Scheduler jobs themselves are unregistered by the
+// caller (cmd/bot/main.go's GuildDelete handler); this clears the maps that
+// track what *is* registered, so that if the bot is later re-added, reconcile
+// sees an empty slate and registers everything again rather than believing
+// jobs it no longer has are still in place.
+func (p *Plugin) ForgetGuild(guildID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.sweepRegistered, guildID)
+	prefix := scheduler.JobKey(guildID, "")
+	for jobKey := range p.registeredJobs {
+		if strings.HasPrefix(jobKey, prefix) {
+			delete(p.registeredJobs, jobKey)
+		}
+	}
 }
 
 // deferFirstRotation seeds channelID's rotation job as if it had just run,

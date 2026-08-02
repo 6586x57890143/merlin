@@ -252,6 +252,32 @@ func (s *Scheduler) Unregister(jobKey string) error {
 	return nil
 }
 
+// UnregisterGuild removes every job belonging to guildID and returns how
+// many were dropped. Called when the bot is removed from a guild: without
+// it, that guild's rotation and sweep jobs keep ticking forever against a
+// server the bot can no longer see, failing every REST call until they trip
+// the consecutive-failure alert — which then tries to post to a status
+// channel in the same unreachable guild.
+//
+// Persisted last-run state is deliberately left in Postgres. It is small,
+// and keeping it means a guild that re-adds the bot resumes its old
+// schedule instead of treating every job as never-run and therefore
+// immediately due — which for rotation would mean rotating on the first
+// tick after rejoining.
+func (s *Scheduler) UnregisterGuild(guildID string) int {
+	prefix := JobKey(guildID, "")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for key := range s.jobs {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.jobs, key)
+			n++
+		}
+	}
+	return n
+}
+
 // RunNow executes jobKey immediately, regardless of due-ness, and persists
 // its result exactly like a normal scheduled run. Fails if the job is
 // already running (per-job lock) or unknown.
@@ -454,6 +480,33 @@ func (s *Scheduler) handleListPage(ctx context.Context, sess *discordgo.Session,
 	if err := core.UpdateEmbedWithComponents(sess, i, embed, components); err != nil {
 		s.log.Error("scheduler: list page update failed", "err", err)
 	}
+}
+
+// JobHealth summarizes guildID's registered jobs for /config status: how
+// many exist, and how many have failed at least once in a row.
+//
+// A separate, deliberately coarse view from jobLines, which is for a mod
+// reading job-by-job detail. This answers the only question an operator has
+// during an incident — "is anything wedged?" — in one number, so it can sit
+// alongside database reachability and pause state in a single embed.
+func (s *Scheduler) JobHealth(ctx context.Context, guildID string) (total, failing int, err error) {
+	jobs := s.jobsForGuild(guildID)
+	for _, j := range jobs {
+		total++
+		st, stErr := s.store.Get(ctx, j.key)
+		if stErr != nil {
+			// Can't read the state, so can't claim the job is healthy.
+			// Counting it as failing is the fail-closed answer for a
+			// health check.
+			failing++
+			err = stErr
+			continue
+		}
+		if st.ConsecutiveFailures > 0 {
+			failing++
+		}
+	}
+	return total, failing, err
 }
 
 // jobLines formats one line per guildID job, newest logic unchanged from

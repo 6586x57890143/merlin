@@ -11,6 +11,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
@@ -37,7 +38,19 @@ func (p *Plugin) makeRotationJob(guildID string, rotationID int64) func(ctx cont
 			p.log.Info("rotation: job fired for a rotation slot no longer configured, skipping", "guild", guildID, "rotation_id", rotationID)
 			return nil
 		}
-		return p.rotate(ctx, guildID, rc)
+		// A paused guild is an operator's deliberate choice, not a fault.
+		// Reported as failure it would burn down this job's
+		// consecutive-failure budget and alert #bird-status about the very
+		// state the operator just asked for. The job stays due, so it runs
+		// for real on the first tick after the pause is lifted.
+		if err := p.rotate(ctx, guildID, rc); err != nil {
+			if discordguard.Skipped(err) {
+				p.log.Info("rotation: skipped, writes paused", "guild", guildID, "channel", rc.ChannelID)
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
 }
 
@@ -53,6 +66,19 @@ func (p *Plugin) makeRotationJob(guildID string, rotationID int64) func(ctx cont
 // eliminates any window where the guild has zero live channel matching the
 // configured name — see the Milestone 3 plan for the full rationale.
 func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.RotationChannel) error {
+	// Dry-run is checked here rather than left to discordguard's per-call
+	// refusal because this is a multi-step flow: each step below re-derives
+	// its state from the previous step's real effects, so refusing calls
+	// one at a time would produce an incoherent half-rehearsal rather than
+	// an honest "here is what a rotation would do".
+	if p.dryRun(guildID) {
+		p.log.Info("rotation: dry-run, skipping rotation", "guild", guildID, "channel", rc.ChannelID)
+		if err := p.audit.Record(ctx, guildID, "system", "rotation.dryrun", rc.ChannelID, "would have rotated now"); err != nil {
+			p.log.Error("rotation: audit dry-run", "guild", guildID, "err", err)
+		}
+		return nil
+	}
+
 	// 1&2. Preflight fetch + capacity-check listing, run concurrently: these
 	// are two independent reads (one channel by ID, one full guild channel
 	// list) with no data dependency on each other — only the processing
@@ -65,11 +91,11 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		oldChannel, channelErr = p.ops.Channel(rc.ChannelID)
+		oldChannel, channelErr = p.ops(guildID).Channel(rc.ChannelID)
 	}()
 	go func() {
 		defer wg.Done()
-		channels, listErr = p.ops.GuildChannels(guildID)
+		channels, listErr = p.ops(guildID).GuildChannels(guildID)
 	}()
 	wg.Wait()
 
@@ -150,7 +176,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	// again on a retry is a pure wasted call.
 	var threadNames []string
 	if !alreadyRevealed {
-		threadNames = p.captureThreadNames(rc.ChannelID)
+		threadNames = p.captureThreadNames(guildID, rc.ChannelID)
 
 		// 5. Populate the still-hidden channel: sticky repost + pin, then
 		// the transparency notice. Any failure here leaves the OLD channel
@@ -257,8 +283,8 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	return nil
 }
 
-func (p *Plugin) captureThreadNames(channelID string) []string {
-	list, err := p.ops.ThreadsActive(channelID)
+func (p *Plugin) captureThreadNames(guildID, channelID string) []string {
+	list, err := p.ops(guildID).ThreadsActive(channelID)
 	if err != nil || list == nil {
 		return nil
 	}
@@ -280,11 +306,11 @@ func (p *Plugin) captureThreadNames(channelID string) []string {
 const stagingChannelBotAllow = discordgo.PermissionViewChannel | discordgo.PermissionSendMessages
 
 func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Channel, tempName, parentID string) (*discordgo.Channel, error) {
-	botUserID, err := p.getBotUserID()
+	botUserID, err := p.getBotUserID(guildID)
 	if err != nil {
 		return nil, err
 	}
-	return p.ops.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+	return p.ops(guildID).GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
 		Name:                 tempName,
 		Type:                 oldChannel.Type,
 		Topic:                oldChannel.Topic,
@@ -302,7 +328,7 @@ func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Chann
 // on a retry after a prior run got this far, and reposting would duplicate
 // content in what will shortly become a very-visible channel.
 func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel) error {
-	existing, err := p.ops.ChannelMessages(channelID, 1, "", "", "")
+	existing, err := p.ops(rc.GuildID).ChannelMessages(channelID, 1, "", "", "")
 	if err != nil {
 		return fmt.Errorf("check existing messages: %w", err)
 	}
@@ -311,7 +337,7 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 	}
 
 	for _, msg := range resolveSticky(rc) {
-		sent, err := p.ops.ChannelMessageSend(channelID, msg)
+		sent, err := p.ops(rc.GuildID).ChannelMessageSend(channelID, msg)
 		if err != nil {
 			return fmt.Errorf("post sticky message: %w", err)
 		}
@@ -319,12 +345,12 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 		// doesn't currently request — treat it as a nice-to-have, not a
 		// reason to fail the whole rotation. The sticky message itself
 		// still posted successfully either way.
-		if err := p.ops.ChannelMessagePin(channelID, sent.ID); err != nil {
+		if err := p.ops(rc.GuildID).ChannelMessagePin(channelID, sent.ID); err != nil {
 			p.log.Warn("rotation: pin sticky message failed, continuing without pin", "channel", channelID, "err", err)
 		}
 	}
 
-	if _, err := p.ops.ChannelMessageSendEmbed(channelID, &discordgo.MessageEmbed{
+	if _, err := p.ops(rc.GuildID).ChannelMessageSendEmbed(channelID, &discordgo.MessageEmbed{
 		Description: retentionNotice(rc),
 	}); err != nil {
 		return fmt.Errorf("post retention notice: %w", err)
@@ -357,7 +383,7 @@ func (p *Plugin) revealNewChannel(channelID, finalName, guildID string, original
 			Type: discordgo.PermissionOverwriteTypeRole,
 		}}
 	}
-	_, err := p.ops.ChannelEditComplex(channelID, &discordgo.ChannelEdit{
+	_, err := p.ops(guildID).ChannelEditComplex(channelID, &discordgo.ChannelEdit{
 		Name:                 finalName,
 		PermissionOverwrites: overwrites,
 	})
@@ -365,11 +391,11 @@ func (p *Plugin) revealNewChannel(channelID, finalName, guildID string, original
 }
 
 func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, guildID string, modRoleIDs []string, rc settings.RotationChannel) error {
-	botUserID, err := p.getBotUserID()
+	botUserID, err := p.getBotUserID(guildID)
 	if err != nil {
 		return err
 	}
-	_, err = p.ops.ChannelEditComplex(channelID, &discordgo.ChannelEdit{
+	_, err = p.ops(guildID).ChannelEditComplex(channelID, &discordgo.ChannelEdit{
 		Name:                 archiveName,
 		ParentID:             archiveCategoryID,
 		PermissionOverwrites: archiveOverwrites(guildID, botUserID, modRoleIDs, rc),

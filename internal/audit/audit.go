@@ -7,6 +7,7 @@ package audit
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -20,6 +21,20 @@ import (
 type channelResolver interface {
 	AuditLogChannelID(guildID string) string
 }
+
+// Retention for audit_log. The table had none and grew without bound.
+//
+// A year is deliberately long: this is the moderation trail spec.MD Design
+// Principle 4 exists to keep, and the whole point of channel rotation is that
+// the *content* is gone — the record of what the bot did, and who told it to,
+// is what remains. It is also small (one row per config change or automated
+// action), so a year of it is nothing next to the cost of not being able to
+// answer "who changed the retention window in March."
+const (
+	auditRetention     = 365 * 24 * time.Hour
+	retentionInterval  = 6 * time.Hour
+	retentionOpTimeout = 60 * time.Second
+)
 
 // Writer implements core.AuditWriter.
 type Writer struct {
@@ -63,11 +78,16 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 			{Name: "Actor", Value: actorID, Inline: true},
 		},
 	}
+	// Truncated because an embed field over 1024 bytes doesn't get trimmed by
+	// Discord, it fails the entire message — so a single long value (a sweep
+	// listing many channel IDs, a rotation config with a long sticky) would
+	// silently cost the guild its live audit notification for that action.
+	// The durable row above is already written in full and is unaffected.
 	if oldValue != "" {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Old", Value: oldValue, Inline: true})
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Old", Value: core.TruncateEmbedField(oldValue), Inline: true})
 	}
 	if newValue != "" {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "New", Value: newValue, Inline: true})
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "New", Value: core.TruncateEmbedField(newValue), Inline: true})
 	}
 
 	if _, err := w.session.ChannelMessageSendEmbed(channelID, embed); err != nil {
@@ -75,3 +95,63 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 	}
 	return nil
 }
+
+// StartRetention prunes audit_log past auditRetention until ctx is
+// cancelled, and prunes anything else passed in (the action journal) on the
+// same tick.
+//
+// Housekeeping runs on its own goroutine rather than as a Scheduler job:
+// these tables are process-wide, not per guild, and the Scheduler's job keys,
+// failure alerting, and persisted last-run state are all built around a guild
+// that this work doesn't have. Missing a tick is harmless — the next one
+// prunes the same rows.
+func (w *Writer) StartRetention(ctx context.Context, log *slog.Logger, extra ...Pruner) {
+	go func() {
+		ticker := time.NewTicker(retentionInterval)
+		defer ticker.Stop()
+		for {
+			w.pruneOnce(ctx, log, extra)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// Pruner is anything with its own age-based retention to enforce —
+// implemented by discordguard's action journal.
+type Pruner interface {
+	PruneBefore(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+func (w *Writer) pruneOnce(ctx context.Context, log *slog.Logger, extra []Pruner) {
+	opCtx, cancel := context.WithTimeout(ctx, retentionOpTimeout)
+	defer cancel()
+
+	cutoff := time.Now().UTC().Add(-auditRetention)
+	tag, err := w.pool.Exec(opCtx, `DELETE FROM audit_log WHERE created_at < $1`, cutoff)
+	if err != nil {
+		log.Error("audit: retention prune failed", "err", err)
+	} else if n := tag.RowsAffected(); n > 0 {
+		log.Info("audit: pruned expired audit rows", "rows", n, "older_than", auditRetention)
+	}
+
+	for _, p := range extra {
+		n, err := p.PruneBefore(opCtx, time.Now().UTC().Add(-journalRetention))
+		if err != nil {
+			log.Error("audit: journal prune failed", "err", err)
+			continue
+		}
+		if n > 0 {
+			log.Info("audit: pruned expired journal rows", "rows", n, "older_than", journalRetention)
+		}
+	}
+}
+
+// journalRetention is much shorter than the audit trail's: the action journal
+// is diagnostic — "what did the bot try to do, and what came back" — and is
+// useful for reconstructing a recent incident, not for answering questions
+// about last spring.
+const journalRetention = 30 * 24 * time.Hour

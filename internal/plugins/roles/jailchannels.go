@@ -54,7 +54,7 @@ func jailDenyFor(t discordgo.ChannelType) int64 {
 // configuration change, so a config edit costs exactly one Discord API
 // call, never a full-guild resync.
 func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string) error {
-	ch, err := p.ops.Channel(channelID)
+	ch, err := p.ops(guildID).Channel(channelID)
 	if err != nil {
 		return fmt.Errorf("roles: fetch channel %s: %w", channelID, err)
 	}
@@ -71,12 +71,12 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 	}
 
 	if allowed {
-		if err := p.ops.ChannelPermissionDelete(channelID, jailRoleID); err != nil {
+		if err := p.ops(guildID).ChannelPermissionDelete(channelID, jailRoleID); err != nil {
 			return fmt.Errorf("roles: clear jail overwrite on %s: %w", channelID, err)
 		}
 		return nil
 	}
-	if err := p.ops.ChannelPermissionSet(channelID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(ch.Type)); err != nil {
+	if err := p.ops(guildID).ChannelPermissionSet(channelID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(ch.Type)); err != nil {
 		return fmt.Errorf("roles: set jail overwrite on %s: %w", channelID, err)
 	}
 	return nil
@@ -94,7 +94,7 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 // One row's failure is logged and doesn't abort the rest, matching
 // rotation.sweep's policy.
 func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error {
-	channels, err := p.ops.GuildChannels(guildID)
+	channels, err := p.ops(guildID).GuildChannels(guildID)
 	if err != nil {
 		return fmt.Errorf("roles: list guild channels: %w", err)
 	}
@@ -110,9 +110,9 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 		}
 		var err error
 		if allowed[ch.ID] {
-			err = p.ops.ChannelPermissionDelete(ch.ID, jailRoleID)
+			err = p.ops(guildID).ChannelPermissionDelete(ch.ID, jailRoleID)
 		} else {
-			err = p.ops.ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(ch.Type))
+			err = p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(ch.Type))
 		}
 		if err != nil {
 			p.log.Error("roles: sync jail overwrite failed", "guild", guildID, "channel", ch.ID, "err", err)

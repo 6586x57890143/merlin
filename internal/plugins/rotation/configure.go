@@ -235,7 +235,7 @@ func (p *Plugin) resolveArchiveCategory(guildID string, opts map[string]*discord
 	if v, ok := opts["archive_category"]; ok {
 		return v.Value.(string), nil
 	}
-	channels, err := p.ops.GuildChannels(guildID)
+	channels, err := p.ops(guildID).GuildChannels(guildID)
 	if err != nil {
 		return "", fmt.Errorf("list channels: %w", err)
 	}
@@ -244,7 +244,7 @@ func (p *Plugin) resolveArchiveCategory(guildID string, opts map[string]*discord
 			return ch.ID, nil
 		}
 	}
-	created, err := p.ops.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+	created, err := p.ops(guildID).GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
 		Name: defaultArchiveCategoryName,
 		Type: discordgo.ChannelTypeGuildCategory,
 	})

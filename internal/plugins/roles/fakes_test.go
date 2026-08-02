@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -86,6 +87,24 @@ func (f *fakeOps) setMember(guildID, userID string, roleIDs []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.members[memberKey(guildID, userID)] = &discordgo.Member{User: &discordgo.User{ID: userID}, GuildID: guildID, Roles: roleIDs}
+}
+
+// setMemberJoined is setMember plus a JoinedAt, which is what distinguishes a
+// member who left and came back from one who never left — see
+// rejoinedSinceJail.
+func (f *fakeOps) setMemberJoined(guildID, userID string, roleIDs []string, joinedAt time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.members[memberKey(guildID, userID)] = &discordgo.Member{
+		User:     &discordgo.User{ID: userID},
+		GuildID:  guildID,
+		Roles:    roleIDs,
+		JoinedAt: joinedAt,
+	}
+}
+
+func memberWithJoinedAt(joinedAt time.Time) *discordgo.Member {
+	return &discordgo.Member{User: &discordgo.User{ID: "u1"}, JoinedAt: joinedAt}
 }
 
 func (f *fakeOps) GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error) {
@@ -228,7 +247,14 @@ func (f *fakeStore) InsertJail(ctx context.Context, rec JailRecord) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.jails[jailKey(rec.GuildID, rec.UserID)] = rec
+	// Mirrors the real store's ON CONFLICT DO NOTHING: an existing jail is
+	// never overwritten, so a lost race can't destroy the role snapshot the
+	// winning call recorded.
+	key := jailKey(rec.GuildID, rec.UserID)
+	if _, exists := f.jails[key]; exists {
+		return fmt.Errorf("fake store: insert jail for %s: %w", rec.UserID, ErrAlreadyJailed)
+	}
+	f.jails[key] = rec
 	return nil
 }
 
@@ -255,6 +281,23 @@ func (f *fakeStore) DueJails(ctx context.Context, guildID string, now time.Time)
 			out = append(out, rec)
 		}
 	}
+	return out, nil
+}
+
+// ActiveJails mirrors the real store's "still in force" predicate: not yet
+// due, or indefinite. Sorted by user ID rather than the real store's
+// jailed_at DESC purely so test output is stable — the ordering only exists
+// there to decide what falls off the LIMIT, which this fake has no need for.
+func (f *fakeStore) ActiveJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []JailRecord
+	for _, rec := range f.jails {
+		if rec.GuildID == guildID && (rec.ReleaseAt == nil || rec.ReleaseAt.After(now)) {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
 	return out, nil
 }
 

@@ -44,6 +44,8 @@ type SettingsAdmin interface {
 	EnablePlugin(ctx context.Context, guildID, pluginName string) error
 	ImportFromLegacyYAML(ctx context.Context, path string) ([]string, error)
 	MarkOnboardingNudgeSent(ctx context.Context, guildID string) error
+	SetWritesPaused(ctx context.Context, guildID string, paused bool) error
+	SetWritesDryRun(ctx context.Context, guildID string, dryRun bool) error
 }
 
 const (
@@ -58,13 +60,18 @@ type Plugin struct {
 	commands    *core.CommandRouter
 	log         *slog.Logger
 	legacyPath  string
+	// db and jobs back /config status. Narrow interfaces taken as
+	// constructor parameters rather than pulled off core.Deps, so this
+	// plugin can be tested without a database or a live Scheduler.
+	db   DBHealth
+	jobs JobHealth
 }
 
 // New constructs Plugin. legacyConfigPath is the path /config import reads
 // from — the same file the bootstrap loader reads (config.yaml by default),
 // kept only for one-time migration/disaster-recovery, per spec.MD §4a.
-func New(settingsStore SettingsAdmin, legacyConfigPath string) *Plugin {
-	return &Plugin{settings: settingsStore, legacyPath: legacyConfigPath}
+func New(settingsStore SettingsAdmin, legacyConfigPath string, db DBHealth, jobs JobHealth) *Plugin {
+	return &Plugin{settings: settingsStore, legacyPath: legacyConfigPath, db: db, jobs: jobs}
 }
 
 func (p *Plugin) Name() string { return "adminconfig" }
@@ -171,6 +178,24 @@ func (p *Plugin) Init(deps core.Deps) error {
 				},
 			},
 			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "status",
+				Description: "Health check: database, scheduled jobs, pause/dry-run state, configured channels",
+			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "pause",
+				Description: "Emergency stop: refuse every destructive action (rotation, sweep, jail) in this server",
+				Options: []*discordgo.ApplicationCommandOption{
+					{Type: discordgo.ApplicationCommandOptionBoolean, Name: "paused", Description: "true to stop all destructive actions, false to resume", Required: true},
+				},
+			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "dryrun",
+				Description: "Rehearsal mode: log and audit what rotation/sweep/jail would do, without doing it",
+				Options: []*discordgo.ApplicationCommandOption{
+					{Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled", Description: "true to rehearse only, false to act for real", Required: true},
+				},
+			},
+			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "setup",
 				Description: "Guided setup: walk through the audit log, status channel, mod role, and admins",
 			},
@@ -195,6 +220,9 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.commands.Handle("config", "permissions/list", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handlePermissionsList)
 	p.commands.Handle("config", "plugins/list", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handlePluginsList)
 	p.commands.Handle("config", "plugins/set", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handlePluginsSet)
+	p.commands.Handle("config", "status", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatus)
+	p.commands.Handle("config", "pause", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handlePause)
+	p.commands.Handle("config", "dryrun", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleDryRun)
 	p.commands.Handle("config", "setup", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleSetup)
 	p.commands.Handle("config", "import", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleImport)
 	p.commands.Autocomplete("config", "permissions/set-tier", p.autocompleteAction)
@@ -535,6 +563,50 @@ func (p *Plugin) handlePluginsSet(ctx context.Context, s *discordgo.Session, i *
 	}
 	p.audit(ctx, i, "config.plugin_disabled", "", name)
 	core.RespondOK(s, i, "Plugin disabled", fmt.Sprintf("`%s` is disabled for this server — nobody, including admins, can use its commands here until re-enabled.", name))
+}
+
+// handlePause is the in-Discord emergency stop. It is TierAdmin like every
+// other setting that changes what the bot may do, and deliberately does not
+// touch command dispatch: read and inspect commands keep working while
+// paused, so whoever pulled the lever can still see what the bot believes is
+// going on. The process-wide equivalent is MERLIN_PAUSE_ALL_WRITES, which
+// exists for when the database itself is the problem.
+func (p *Plugin) handlePause(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	paused := core.LeafArgs(i)["paused"].BoolValue()
+	if err := p.settings.SetWritesPaused(ctx, i.GuildID, paused); err != nil {
+		core.RespondErr(s, i, "Failed to change pause state", err)
+		return
+	}
+	if paused {
+		p.audit(ctx, i, "config.writes_paused", "", "true")
+		core.RespondWarn(s, i, "Destructive actions paused",
+			"Merlin will refuse every channel rotation, archive deletion, jail, and role change in this server until you run `/config pause paused:false`. Scheduled jobs stay due and resume where they left off.")
+		return
+	}
+	p.audit(ctx, i, "config.writes_paused", "", "false")
+	core.RespondOK(s, i, "Destructive actions resumed",
+		"Merlin will act normally again. Anything that came due while paused runs on its next scheduled tick.")
+}
+
+// handleDryRun turns on rehearsal mode: rotation, sweep, and jail make their
+// full decision and write their audit trail but touch nothing in Discord.
+// This exists because the operations it covers have no undo — a permanently
+// deleted archive channel is gone — so there needs to be a way to watch a
+// real guild's real schedule play out once before trusting it.
+func (p *Plugin) handleDryRun(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	enabled := core.LeafArgs(i)["enabled"].BoolValue()
+	if err := p.settings.SetWritesDryRun(ctx, i.GuildID, enabled); err != nil {
+		core.RespondErr(s, i, "Failed to change dry-run state", err)
+		return
+	}
+	if enabled {
+		p.audit(ctx, i, "config.writes_dry_run", "", "true")
+		core.RespondWarn(s, i, "Dry-run enabled",
+			"Rotations, archive sweeps, and jails will be logged to the audit channel as what they *would* have done, and nothing will actually change. Turn it off with `/config dryrun enabled:false`.")
+		return
+	}
+	p.audit(ctx, i, "config.writes_dry_run", "", "false")
+	core.RespondOK(s, i, "Dry-run disabled", "Merlin is acting for real again.")
 }
 
 func (p *Plugin) handleImport(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {

@@ -28,7 +28,8 @@ const jailRoleName = "Jailed"
 // Plugin implements core.Plugin: temporary role management (jail + timed
 // grants). See the package doc comment (store.go) for the overall design.
 type Plugin struct {
-	ops               DiscordMemberOps
+	ops               OpsProvider
+	dryRun            func(guildID string) bool
 	store             Store
 	jailChannelConfig JailChannelConfig
 	perms             RoleManager
@@ -45,16 +46,23 @@ type Plugin struct {
 	jailRoleID map[string]string // guild ID -> resolved jail role ID, cached per process
 }
 
+// OpsProvider yields the Discord ops view for one guild — see
+// rotation.OpsProvider for why the guild is bound explicitly rather than
+// inferred at call time.
+type OpsProvider func(guildID string) DiscordMemberOps
+
 // New constructs Plugin. store and jailChannelConfig are passed directly
 // rather than through core.Deps: store is plugin-owned runtime state
 // (mirrors rotation's ArchiveStore precedent), jailChannelConfig is a narrow
 // slice of internal/settings.Store (mirrors rotation's own SettingsProvider
 // parameter) for the one piece of guild configuration this plugin has —
 // jail's channel-visibility allowlist.
-func New(store Store, jailChannelConfig JailChannelConfig) *Plugin {
+func New(store Store, jailChannelConfig JailChannelConfig, ops OpsProvider, dryRun func(guildID string) bool) *Plugin {
 	return &Plugin{
 		store:             store,
 		jailChannelConfig: jailChannelConfig,
+		ops:               ops,
+		dryRun:            dryRun,
 		now:               func() time.Time { return time.Now().UTC() },
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),
@@ -64,7 +72,6 @@ func New(store Store, jailChannelConfig JailChannelConfig) *Plugin {
 func (p *Plugin) Name() string { return "roles" }
 
 func (p *Plugin) Init(deps core.Deps) error {
-	p.ops = deps.Session
 	p.perms = deps.Perms
 	p.audit = deps.Audit
 	p.log = deps.Logger
@@ -97,6 +104,19 @@ func (p *Plugin) SyncGuild(guildID string) {
 	p.sweepRegistered[guildID] = true
 }
 
+// ForgetGuild drops guildID's sweep-registration bookkeeping and its cached
+// jail role after the bot has been removed from it, so a later re-add
+// re-registers the sweep and re-resolves the role rather than trusting state
+// from a membership that has since ended. Jail and grant rows in Postgres are
+// left alone — they hold the role snapshots needed to restore members, and a
+// kick-and-re-invite must not be what silently discards them.
+func (p *Plugin) ForgetGuild(guildID string) {
+	p.mu.Lock()
+	delete(p.sweepRegistered, guildID)
+	p.mu.Unlock()
+	p.forgetJailRole(guildID)
+}
+
 // resolveJailRole returns guildID's jail marker role ID, creating one named
 // jailRoleName if none exists yet — mirrors rotation.resolveArchiveCategory's
 // find-by-name-or-create-if-missing pattern, so a mod never has to go create
@@ -111,7 +131,7 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 		return id, nil
 	}
 
-	rolesList, err := p.ops.GuildRoles(guildID)
+	rolesList, err := p.ops(guildID).GuildRoles(guildID)
 	if err != nil {
 		return "", fmt.Errorf("roles: list guild roles: %w", err)
 	}
@@ -125,7 +145,7 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	perms := int64(0)
 	hoist := false
 	mentionable := false
-	role, err := p.ops.GuildRoleCreate(guildID, &discordgo.RoleParams{
+	role, err := p.ops(guildID).GuildRoleCreate(guildID, &discordgo.RoleParams{
 		Name:        jailRoleName,
 		Permissions: &perms,
 		Hoist:       &hoist,

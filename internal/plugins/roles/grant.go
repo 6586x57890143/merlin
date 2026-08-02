@@ -38,7 +38,7 @@ func (p *Plugin) handleGrant(ctx context.Context, s *discordgo.Session, i *disco
 		durationLabel = "for " + core.FormatDuration(duration)
 	}
 
-	if err := p.ops.GuildMemberRoleAdd(i.GuildID, userID, roleID); err != nil {
+	if err := p.ops(i.GuildID).GuildMemberRoleAdd(i.GuildID, userID, roleID); err != nil {
 		core.RespondErr(s, i, "Failed to grant role", err)
 		return
 	}
@@ -89,7 +89,7 @@ func (p *Plugin) handleRevoke(ctx context.Context, s *discordgo.Session, i *disc
 // mod already manually removed the role, there's nothing left to revoke —
 // just stop tracking it.
 func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor string) error {
-	member, err := p.ops.GuildMember(guildID, userID)
+	member, err := p.ops(guildID).GuildMember(guildID, userID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			// Member left the guild — the grant left with them.
@@ -101,7 +101,7 @@ func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor
 	}
 
 	if slices.Contains(member.Roles, roleID) {
-		if err := p.ops.GuildMemberRoleRemove(guildID, userID, roleID); err != nil {
+		if err := p.ops(guildID).GuildMemberRoleRemove(guildID, userID, roleID); err != nil {
 			return fmt.Errorf("roles: remove granted role %s from %s: %w", roleID, userID, err)
 		}
 	}

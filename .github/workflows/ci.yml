@@ -112,15 +112,33 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: deploy
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: GHCR_TOKEN,GHCR_USER
+          envs: GHCR_TOKEN,GHCR_USER,IMAGE_TAG
           script: |
             set -e
             cd /home/deploy/merlin
+            mkdir -p backups
+
+            # Record the tag being deployed before deploying it, and keep the
+            # one it replaces. Rolling back is then reading a file, not
+            # digging through GHCR or CI logs to work out what was running.
+            if [ -f deployed-tag.env ]; then
+              cp deployed-tag.env previous-tag.env
+            fi
+            echo "MERLIN_IMAGE_TAG=$IMAGE_TAG" > deployed-tag.env
+
+            set -a
+            . ./deployed-tag.env
+            set +a
+
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
-            docker image prune -f
+            # Prune dangling layers only. A bare `docker image prune -f` on a
+            # host that has just retagged images can remove the previous
+            # release, which is the one thing a rollback needs to still exist.
+            docker image prune -f --filter "until=168h"
             docker logout ghcr.io
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
+          IMAGE_TAG: ${{ github.sha }}

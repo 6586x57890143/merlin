@@ -19,6 +19,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrAlreadyJailed reports that a jail record for this member already
+// existed, so this attempt wrote nothing. It means the caller lost a race
+// with a concurrent jail, and must not go on to strip the member's roles —
+// the winning call already did, and the snapshot on record is the one taken
+// before that happened.
+var ErrAlreadyJailed = errors.New("roles: member is already jailed")
+
 // JailRecord tracks one member currently jailed in a guild: the roles they
 // held before being stripped (so release can restore exactly what was
 // removed), and the marker role applied in their place.
@@ -51,10 +58,17 @@ type GrantRecord struct {
 // state — mirrors rotation.ArchiveStore's role: pending future actions
 // tracked here, not in internal/settings (guild configuration only).
 type Store interface {
+	// InsertJail returns ErrAlreadyJailed if the member already has a jail
+	// record — the caller lost a race with a concurrent jail, and must not
+	// treat that as success.
 	InsertJail(ctx context.Context, rec JailRecord) error
 	GetJail(ctx context.Context, guildID, userID string) (JailRecord, bool, error)
 	DeleteJail(ctx context.Context, guildID, userID string) error
 	DueJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
+	// ActiveJails returns jails still in force (not yet due, or indefinite) —
+	// the ones a member could still be trying to escape by leaving and
+	// rejoining. Bounded; see maxActiveJailChecks.
+	ActiveJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
 
 	InsertGrant(ctx context.Context, rec GrantRecord) error
 	GetGrant(ctx context.Context, guildID, userID, roleID string) (GrantRecord, bool, error)
@@ -77,14 +91,26 @@ func (s *pgStore) InsertJail(ctx context.Context, rec JailRecord) error {
 	if rec.SnapshotRoleIDs == nil {
 		rec.SnapshotRoleIDs = []string{}
 	}
-	_, err := s.pool.Exec(ctx, `
+	// DO NOTHING, not DO UPDATE. handleJail checks for an existing jail
+	// first, but that check and this write are not atomic, and the gap is
+	// destructive: two concurrent /roles jail calls on the same member both
+	// pass the check, the first strips the member down to the marker role,
+	// and the second then overwrites snapshot_role_ids with what it read —
+	// the marker alone. The member's original roles are gone from the only
+	// place they were recorded, and releasing them restores nothing.
+	//
+	// Losing the race is reported rather than swallowed so the second caller
+	// is told the member is already jailed instead of believing it succeeded.
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO role_jails (guild_id, user_id, snapshot_role_ids, jail_role_id, jailed_at, release_at, jailed_by, reason)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		ON CONFLICT (guild_id, user_id) DO UPDATE SET
-			snapshot_role_ids = $3, jail_role_id = $4, jailed_at = $5, release_at = $6, jailed_by = $7, reason = $8
+		ON CONFLICT (guild_id, user_id) DO NOTHING
 	`, rec.GuildID, rec.UserID, rec.SnapshotRoleIDs, rec.JailRoleID, rec.JailedAt, rec.ReleaseAt, rec.JailedBy, rec.Reason)
 	if err != nil {
 		return fmt.Errorf("roles store: insert jail: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("roles store: insert jail for %s: %w", rec.UserID, ErrAlreadyJailed)
 	}
 	return nil
 }
@@ -131,6 +157,41 @@ func (s *pgStore) DueJails(ctx context.Context, guildID string, now time.Time) (
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("roles store: iterate due jails: %w", err)
+	}
+	return out, nil
+}
+
+// maxActiveJailChecks bounds how many jails one evasion pass examines, since
+// each costs a REST member fetch. Ordered newest-first because a jail handed
+// out minutes ago is the one someone is plausibly trying to duck; a jail from
+// three days ago whose subject already left is not coming back mid-sentence.
+// A guild with more simultaneous jails than this has a raid on its hands and
+// a bigger problem than the tail of the list.
+const maxActiveJailChecks = 200
+
+func (s *pgStore) ActiveJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id, snapshot_role_ids, jail_role_id, jailed_at, release_at, jailed_by, reason
+		FROM role_jails
+		WHERE guild_id = $1 AND (release_at IS NULL OR release_at > $2)
+		ORDER BY jailed_at DESC
+		LIMIT $3
+	`, guildID, now, maxActiveJailChecks)
+	if err != nil {
+		return nil, fmt.Errorf("roles store: active jails: %w", err)
+	}
+	defer rows.Close()
+
+	var out []JailRecord
+	for rows.Next() {
+		rec := JailRecord{GuildID: guildID}
+		if err := rows.Scan(&rec.UserID, &rec.SnapshotRoleIDs, &rec.JailRoleID, &rec.JailedAt, &rec.ReleaseAt, &rec.JailedBy, &rec.Reason); err != nil {
+			return nil, fmt.Errorf("roles store: scan active jail: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("roles store: iterate active jails: %w", err)
 	}
 	return out, nil
 }

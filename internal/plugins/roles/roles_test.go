@@ -45,7 +45,8 @@ func (f *fakeScheduler) Seed(ctx context.Context, jobKey string, at time.Time) e
 
 func newTestPlugin(ops *fakeOps, store *fakeStore, settings *fakeSettings, audit *fakeAudit, perms *fakePerms, sched *fakeScheduler) *Plugin {
 	return &Plugin{
-		ops:               ops,
+		ops:               func(string) DiscordMemberOps { return ops },
+		dryRun:            func(string) bool { return false },
 		store:             store,
 		jailChannelConfig: settings,
 		perms:             perms,

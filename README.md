@@ -42,9 +42,19 @@ just links to it rather than repeating it.
   model and `/config`'s subcommands. Who counts as "mod"/"admin" is
   configured via `/config mod-roles`/`/config admins` — see "First-time
   setup" below.
-- **Gateway intents**: `GUILDS` only. `GUILD_MEMBERS` and `MESSAGE_CONTENT`
-  are privileged intents requiring Discord approval at scale, and neither is
-  requested until a specific plugin genuinely needs it.
+- **Gateway intents**: `GUILDS` by default. `MESSAGE_CONTENT` is never
+  requested. `GUILD_MEMBERS` is **optional**, off unless you set
+  `MERLIN_ENABLE_GUILD_MEMBERS_INTENT=1`:
+  - Without it, a member who leaves and rejoins to shed their Jailed role is
+    re-jailed by the next `roles-sweep` tick — at most one minute later.
+    Jail survives a rejoin either way; this is not a gap you have to opt out
+    of.
+  - With it, the re-jail happens as they walk back in. Enable it only if that
+    minute matters to you: it is a privileged intent, which means also
+    ticking "Server Members Intent" for the application in Discord's
+    Developer Portal (a self-serve toggle below 100 servers; Discord approval
+    above that). If the env var is set and the portal toggle isn't, the
+    gateway refuses the connection at startup.
 
 ## Local development
 
@@ -91,7 +101,9 @@ triggers two more CI jobs:
    `docker compose -f docker-compose.prod.yml pull && up -d` over SSH
    (`VPS_HOST`/`VPS_SSH_KEY` repo secrets), logging into GHCR with the same
    short-lived `GITHUB_TOKEN` so no long-lived registry credential is ever
-   stored on the VPS.
+   stored on the VPS. It pins the deployed image to the commit SHA in
+   `deployed-tag.env` and keeps the tag it replaced in `previous-tag.env`,
+   which is what makes the rollback in the Runbook a one-liner.
 
 `docker-compose.prod.yml` differs from the local `docker-compose.yml` only in
 that `bot` pulls the prebuilt GHCR image instead of building from source.
@@ -106,6 +118,143 @@ cp config.example.yaml config.yaml    # bootstrap-only (log_level) — see "Firs
 
 The `deploy` SSH user must be able to run `docker`/`docker compose` without an
 interactive sudo prompt (e.g. a member of the `docker` group).
+
+## Runbook
+
+Four things go wrong in production. Each has one procedure.
+
+### 1. The bot is doing something destructive and must stop now
+
+Fastest first — each is stronger and slower than the one above it.
+
+```
+/config pause paused:true
+```
+Refuses every rotation, archive deletion, jail, and role change in that
+server. Takes effect on the next attempted action, no restart. Read and
+inspect commands keep working, so you can still see what it thinks is going
+on. Scheduled jobs stay *due* — nothing is skipped permanently, it runs on
+the first tick after you unpause. Reverse with `paused:false`.
+
+If Discord itself is unreachable or the database is the problem, do it on the
+host instead:
+
+```sh
+cd /home/deploy/merlin
+echo 'MERLIN_PAUSE_ALL_WRITES=1' >> .env
+docker compose -f docker-compose.prod.yml up -d bot
+```
+Same stop, process-wide, every guild, independent of the database. Remove the
+line and restart to release it.
+
+Last resort, if the above can't be reached: `docker compose -f
+docker-compose.prod.yml stop bot`. This also stops the scheduler, so anything
+that comes due while it's down fires on the next tick after it comes back.
+
+### 2. A bad deploy went out
+
+Deploys are pinned to the commit SHA, and the previous one is kept on the
+host.
+
+```sh
+cd /home/deploy/merlin
+cat deployed-tag.env      # what's running now
+cat previous-tag.env      # what it replaced
+
+cp previous-tag.env deployed-tag.env
+set -a; . ./deployed-tag.env; set +a
+docker compose -f docker-compose.prod.yml up -d
+```
+
+To go back further, any commit SHA on `main` that CI built is a valid tag:
+`echo MERLIN_IMAGE_TAG=<sha> > deployed-tag.env` and re-run the last two
+lines. Note this rolls back *code only* — a deploy that ran a migration has
+already changed the schema, and Go builds don't un-apply it. Check whether
+the range you're rolling back over touched `internal/storage/migrations/`
+before assuming a code rollback is sufficient.
+
+### 3. The database is lost or corrupted
+
+`pgbackup` writes a daily `pg_dump` to `/home/deploy/merlin/backups/`,
+keeping 14 days, outside the `pgdata` volume. Everything the bot knows that
+isn't reconstructible from Discord lives there: rotation config, permission
+policy, jail records with the role snapshots needed to restore members, and
+the audit trail.
+
+```sh
+cd /home/deploy/merlin
+ls -la backups/                                   # newest last
+
+docker compose -f docker-compose.prod.yml stop bot
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_restore -U "$POSTGRES_USER" -d merlin --clean --if-exists \
+  < backups/merlin-YYYYMMDD-HHMMSS.dump
+docker compose -f docker-compose.prod.yml start bot
+```
+
+Stop the bot first: restoring under a running bot races the scheduler against
+a half-restored schema. Migrations re-run automatically on the restart and
+are idempotent, so restoring an older dump and letting the bot catch the
+schema up is fine.
+
+**Rehearse this before you need it.** Restore a dump into a scratch database
+and confirm it comes back — an untested restore is not a backup.
+
+### 4. Something is wrong and you don't know what
+
+Start inside Discord:
+
+```
+/config status
+```
+One embed: is the database reachable, is any scheduled job failing, is the
+server paused or in dry-run, and do the configured audit-log/status channels
+and mod roles still exist. That last one matters because a deleted audit-log
+channel is otherwise silent — the audit trail just stops appearing.
+
+Then the logs:
+
+```sh
+docker compose -f docker-compose.prod.yml logs -f --tail=200 bot
+```
+
+To raise verbosity, set `LOG_LEVEL=debug` in `.env` and restart the bot
+(`docker compose -f docker-compose.prod.yml up -d bot`). It overrides
+`config.yaml`, which is mounted read-only.
+
+`/scheduler list` shows every registered job with last-run, next-due, and
+consecutive-failure count — usually the fastest way to tell "wedged job" from
+"nothing was due yet."
+
+For "the bot did something and I don't know why", the `action_journal` table
+records every destructive Discord call it attempted, including the ones
+refused by the rate cap or circuit breaker before any audit entry was
+written. Rows kept 30 days:
+
+```sh
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  psql -U "$POSTGRES_USER" -d merlin -c \
+  "SELECT started_at, op, target_id, state, error FROM action_journal
+   ORDER BY started_at DESC LIMIT 50;"
+```
+
+A row still `pending` long after `started_at` is a call that never returned —
+the process died mid-mutation. It's the first thing worth checking after an
+unexplained restart.
+
+### Rehearsing a rotation before trusting it
+
+Channel rotation and the archive sweep permanently delete channels. Before
+the first live rotation on a real server:
+
+```
+/config dryrun enabled:true
+```
+
+Rotations and sweeps then make their full decision and write to
+`#bird-audit-log` describing exactly what they *would* have done, and change
+nothing. Let a full rotation interval and a sweep window pass, read the audit
+log, then `/config dryrun enabled:false`.
 
 ## Scheduler
 
@@ -136,7 +285,18 @@ via one shared "Jailed" role's own permission overwrites rather than
 per-member overwrites, so jailing scales to any server size at a fixed
 Discord API cost.
 
-## Scheduler
+**Jail survives leaving and rejoining.** Discord drops every role a member
+holds when they leave, so without this a jailed member could shed the Jailed
+role — and with it every channel restriction — simply by leaving and coming
+back, while Merlin's own record still said they were jailed. The sweep
+compares each active jail against the member's `JoinedAt`: a join later than
+the jail began is a rejoin, and the marker goes back on. A member whose
+marker is gone *without* a later join is treated as a deliberate manual
+release by a mod, exactly as before. Re-applying never touches the stored
+role snapshot or the release time — leaving neither serves the sentence nor
+extends it.
+
+## Package layout
 
 - `internal/core` — plugin registry/lifecycle, event bus, tiered+whitelist
   permissions (`permissions.go`), the single command router/dispatcher
@@ -150,6 +310,9 @@ Discord API cost.
   `/config` and `/rotation configure` actually read/write.
 - `internal/storage` — Postgres connection pool, migration runner
   (`storage.Migrate`, applied automatically at startup), and SQL migrations.
+- `internal/discordguard` — the chokepoint every destructive Discord call
+  passes through, enforcing the pause and dry-run controls above. Plugins get
+  a guild-bound view of it in place of the raw session.
 - `internal/scheduler` — cron core (see above); itself a `core.Plugin` and
   the concrete implementation behind `Deps.Scheduler`.
 - `internal/audit` — minimal `core.AuditWriter`: DB insert + `#bird-audit-log`

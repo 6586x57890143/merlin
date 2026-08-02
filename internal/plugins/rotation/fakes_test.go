@@ -477,7 +477,8 @@ func newTestPlugin(ops *fakeOps, archives ArchiveStore, audit *fakeAudit, fs *fa
 	// core.NewEventBus wants a logger; the bus itself isn't asserted on in
 	// these tests, just exercised so Publish doesn't panic.
 	return &Plugin{
-		ops:      ops,
+		ops:      func(string) DiscordChannelOps { return ops },
+		dryRun:   func(string) bool { return false },
 		archives: archives,
 		settings: fs,
 		audit:    audit,
