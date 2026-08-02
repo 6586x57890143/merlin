@@ -482,6 +482,33 @@ func (s *Scheduler) handleListPage(ctx context.Context, sess *discordgo.Session,
 	}
 }
 
+// JobHealth summarizes guildID's registered jobs for /config status: how
+// many exist, and how many have failed at least once in a row.
+//
+// A separate, deliberately coarse view from jobLines, which is for a mod
+// reading job-by-job detail. This answers the only question an operator has
+// during an incident — "is anything wedged?" — in one number, so it can sit
+// alongside database reachability and pause state in a single embed.
+func (s *Scheduler) JobHealth(ctx context.Context, guildID string) (total, failing int, err error) {
+	jobs := s.jobsForGuild(guildID)
+	for _, j := range jobs {
+		total++
+		st, stErr := s.store.Get(ctx, j.key)
+		if stErr != nil {
+			// Can't read the state, so can't claim the job is healthy.
+			// Counting it as failing is the fail-closed answer for a
+			// health check.
+			failing++
+			err = stErr
+			continue
+		}
+		if st.ConsecutiveFailures > 0 {
+			failing++
+		}
+	}
+	return total, failing, err
+}
+
 // jobLines formats one line per guildID job, newest logic unchanged from
 // before pagination existed — just split out so both handleList and
 // handleListPage build from the same up-to-date source.

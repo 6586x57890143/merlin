@@ -60,13 +60,18 @@ type Plugin struct {
 	commands    *core.CommandRouter
 	log         *slog.Logger
 	legacyPath  string
+	// db and jobs back /config status. Narrow interfaces taken as
+	// constructor parameters rather than pulled off core.Deps, so this
+	// plugin can be tested without a database or a live Scheduler.
+	db   DBHealth
+	jobs JobHealth
 }
 
 // New constructs Plugin. legacyConfigPath is the path /config import reads
 // from — the same file the bootstrap loader reads (config.yaml by default),
 // kept only for one-time migration/disaster-recovery, per spec.MD §4a.
-func New(settingsStore SettingsAdmin, legacyConfigPath string) *Plugin {
-	return &Plugin{settings: settingsStore, legacyPath: legacyConfigPath}
+func New(settingsStore SettingsAdmin, legacyConfigPath string, db DBHealth, jobs JobHealth) *Plugin {
+	return &Plugin{settings: settingsStore, legacyPath: legacyConfigPath, db: db, jobs: jobs}
 }
 
 func (p *Plugin) Name() string { return "adminconfig" }
@@ -173,6 +178,10 @@ func (p *Plugin) Init(deps core.Deps) error {
 				},
 			},
 			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "status",
+				Description: "Health check: database, scheduled jobs, pause/dry-run state, configured channels",
+			},
+			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "pause",
 				Description: "Emergency stop: refuse every destructive action (rotation, sweep, jail) in this server",
 				Options: []*discordgo.ApplicationCommandOption{
@@ -211,6 +220,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.commands.Handle("config", "permissions/list", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handlePermissionsList)
 	p.commands.Handle("config", "plugins/list", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handlePluginsList)
 	p.commands.Handle("config", "plugins/set", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handlePluginsSet)
+	p.commands.Handle("config", "status", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatus)
 	p.commands.Handle("config", "pause", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handlePause)
 	p.commands.Handle("config", "dryrun", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleDryRun)
 	p.commands.Handle("config", "setup", core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleSetup)

@@ -192,6 +192,18 @@ and confirm it comes back — an untested restore is not a backup.
 
 ### 4. Something is wrong and you don't know what
 
+Start inside Discord:
+
+```
+/config status
+```
+One embed: is the database reachable, is any scheduled job failing, is the
+server paused or in dry-run, and do the configured audit-log/status channels
+and mod roles still exist. That last one matters because a deleted audit-log
+channel is otherwise silent — the audit trail just stops appearing.
+
+Then the logs:
+
 ```sh
 docker compose -f docker-compose.prod.yml logs -f --tail=200 bot
 ```
@@ -203,6 +215,22 @@ To raise verbosity, set `LOG_LEVEL=debug` in `.env` and restart the bot
 `/scheduler list` shows every registered job with last-run, next-due, and
 consecutive-failure count — usually the fastest way to tell "wedged job" from
 "nothing was due yet."
+
+For "the bot did something and I don't know why", the `action_journal` table
+records every destructive Discord call it attempted, including the ones
+refused by the rate cap or circuit breaker before any audit entry was
+written. Rows kept 30 days:
+
+```sh
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  psql -U "$POSTGRES_USER" -d merlin -c \
+  "SELECT started_at, op, target_id, state, error FROM action_journal
+   ORDER BY started_at DESC LIMIT 50;"
+```
+
+A row still `pending` long after `started_at` is a call that never returned —
+the process died mid-mutation. It's the first thing worth checking after an
+unexplained restart.
 
 ### Rehearsing a rotation before trusting it
 

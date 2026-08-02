@@ -39,6 +39,45 @@ func TestUnregisterGuildRemovesOnlyThatGuildsJobs(t *testing.T) {
 	}
 }
 
+// JobHealth is what /config status reads to answer "is anything wedged?"
+// without shell access, so it has to count a job with any consecutive
+// failures as failing — and count an unreadable job as failing too, since a
+// health check that can't see a job must not call it healthy.
+func TestJobHealthCountsFailingAndUnreadableJobs(t *testing.T) {
+	store := newFakeStore()
+	s := New(store, fakeSettings{}, testLogger())
+	noop := func(ctx context.Context) error { return nil }
+	spec := CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}
+
+	for _, name := range []string{"rotation:1", "rotation:2", "rotation-sweep"} {
+		if err := s.Register(JobKey("g1", name), spec, noop); err != nil {
+			t.Fatalf("Register(%s): %v", name, err)
+		}
+	}
+
+	total, failing, err := s.JobHealth(context.Background(), "g1")
+	if err != nil {
+		t.Fatalf("JobHealth: %v", err)
+	}
+	if total != 3 || failing != 0 {
+		t.Fatalf("healthy guild: total=%d failing=%d, want 3 and 0", total, failing)
+	}
+
+	// One job has started failing.
+	key := JobKey("g1", "rotation:1")
+	if _, err := store.RecordFailure(context.Background(), key, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+
+	total, failing, err = s.JobHealth(context.Background(), "g1")
+	if err != nil {
+		t.Fatalf("JobHealth: %v", err)
+	}
+	if total != 3 || failing != 1 {
+		t.Errorf("total=%d failing=%d, want 3 and 1", total, failing)
+	}
+}
+
 // A guild ID that is a prefix of another must not take the other's jobs with
 // it — the key separator is the only thing keeping "123" from matching
 // "1234:rotation:1".

@@ -106,7 +106,12 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	perms := core.NewPermissions(session, settingsStore, cfg.BootstrapAdminUserID)
 	commands := core.NewCommandRouter(perms, settingsStore, log)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
+	journal := discordguard.NewPostgresJournal(db.Pool)
 	auditWriter := audit.New(db.Pool, session, settingsStore)
+	// audit_log and action_journal both grow forever otherwise. Housekeeping,
+	// not a Scheduler job: neither table is per guild, and missing a tick just
+	// means the next one prunes the same rows.
+	auditWriter.StartRetention(ctx, log, journal)
 
 	deps := core.Deps{
 		Session:   session,
@@ -124,7 +129,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// /config pause (or MERLIN_PAUSE_ALL_WRITES) can stop the bot mutating
 	// anything without a redeploy. Bound per guild at each call site because
 	// most of those calls are channel-scoped and carry no guild themselves.
-	guard := discordguard.New(session, settingsStore, log, cfg.PauseAllWrites)
+	guard := discordguard.New(session, settingsStore, log, cfg.PauseAllWrites).WithJournal(journal)
 	if cfg.PauseAllWrites {
 		log.Warn("MERLIN_PAUSE_ALL_WRITES is set: every destructive Discord action is refused process-wide")
 	}
@@ -143,7 +148,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry.Register(ping.New())
 	registry.Register(rotationPlugin)
 	registry.Register(rolesPlugin)
-	adminconfigPlugin := adminconfig.New(settingsStore, configPath)
+	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
 	registry.Register(adminconfigPlugin)
 
 	if err := registry.InitAll(); err != nil {

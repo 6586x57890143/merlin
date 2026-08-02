@@ -103,7 +103,7 @@ func TestInitRegistersAFullyWiredCommandTree(t *testing.T) {
 	perms := core.NewPermissions(nil, fakeAuthData{}, "")
 	router := core.NewCommandRouter(perms, fakeGate{}, log)
 
-	p := New(fakeSettingsAdmin{}, "config.yaml")
+	p := New(fakeSettingsAdmin{}, "config.yaml", nil, nil)
 	deps := core.Deps{Commands: router, Logger: log, Session: &discordgo.Session{}}
 	if err := p.Init(deps); err != nil {
 		t.Fatalf("Init: %v", err)

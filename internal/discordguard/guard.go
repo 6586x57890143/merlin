@@ -92,6 +92,7 @@ type Guard struct {
 	gate    GuildGate
 	log     *slog.Logger
 	global  atomic.Bool
+	journal Journal
 	// now is injectable so the governor's time-based behavior (bucket refill,
 	// breaker cooldown) is testable without sleeping.
 	now func() time.Time
@@ -173,10 +174,11 @@ func (o *GuildOps) allow(op string) error {
 }
 
 // record feeds the outcome of a permitted call to the guild's circuit
-// breaker and passes the error straight through, so call sites stay a single
-// return statement.
-func (o *GuildOps) record(err error) error {
+// breaker and its journal entry, and passes the error straight through so
+// call sites stay a single return statement.
+func (o *GuildOps) record(journalID int64, err error) error {
 	o.guard.recordResult(o.guildID, o.guard.now(), err)
+	o.finishJournal(journalID, err)
 	return err
 }
 
@@ -216,89 +218,101 @@ func (o *GuildOps) GuildChannelCreateComplex(guildID string, data discordgo.Guil
 	if err := o.allow(opChannelCreate); err != nil {
 		return nil, err
 	}
+	jid := o.beginJournal(opChannelCreate, data.Name)
 	v, err := o.guard.session.GuildChannelCreateComplex(guildID, data, options...)
-	return v, o.record(err)
+	return v, o.record(jid, err)
 }
 
 func (o *GuildOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
 	if err := o.allow(opChannelEdit); err != nil {
 		return nil, err
 	}
+	jid := o.beginJournal(opChannelEdit, channelID)
 	v, err := o.guard.session.ChannelEditComplex(channelID, data, options...)
-	return v, o.record(err)
+	return v, o.record(jid, err)
 }
 
 func (o *GuildOps) ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
 	if err := o.allow(opChannelDelete); err != nil {
 		return nil, err
 	}
+	jid := o.beginJournal(opChannelDelete, channelID)
 	v, err := o.guard.session.ChannelDelete(channelID, options...)
-	return v, o.record(err)
+	return v, o.record(jid, err)
 }
 
 func (o *GuildOps) ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	if err := o.allow(opMessageSend); err != nil {
 		return nil, err
 	}
+	jid := o.beginJournal(opMessageSend, channelID)
 	v, err := o.guard.session.ChannelMessageSend(channelID, content, options...)
-	return v, o.record(err)
+	return v, o.record(jid, err)
 }
 
 func (o *GuildOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	if err := o.allow(opMessageSend); err != nil {
 		return nil, err
 	}
+	jid := o.beginJournal(opMessageSend, channelID)
 	v, err := o.guard.session.ChannelMessageSendEmbed(channelID, embed, options...)
-	return v, o.record(err)
+	return v, o.record(jid, err)
 }
 
 func (o *GuildOps) ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error {
 	if err := o.allow(opMessagePin); err != nil {
 		return err
 	}
-	return o.record(o.guard.session.ChannelMessagePin(channelID, messageID, options...))
+	jid := o.beginJournal(opMessagePin, channelID)
+	return o.record(jid, o.guard.session.ChannelMessagePin(channelID, messageID, options...))
 }
 
 func (o *GuildOps) ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error {
 	if err := o.allow(opChannelPermissions); err != nil {
 		return err
 	}
-	return o.record(o.guard.session.ChannelPermissionSet(channelID, targetID, targetType, allow, deny, options...))
+	jid := o.beginJournal(opChannelPermissions, channelID)
+	return o.record(jid, o.guard.session.ChannelPermissionSet(channelID, targetID, targetType, allow, deny, options...))
 }
 
 func (o *GuildOps) ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error {
 	if err := o.allow(opChannelPermissions); err != nil {
 		return err
 	}
-	return o.record(o.guard.session.ChannelPermissionDelete(channelID, targetID, options...))
+	jid := o.beginJournal(opChannelPermissions, channelID)
+	return o.record(jid, o.guard.session.ChannelPermissionDelete(channelID, targetID, options...))
 }
 
 func (o *GuildOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error) {
 	if err := o.allow(opMemberEdit); err != nil {
 		return nil, err
 	}
+	jid := o.beginJournal(opMemberEdit, userID)
 	v, err := o.guard.session.GuildMemberEdit(guildID, userID, data, options...)
-	return v, o.record(err)
+	return v, o.record(jid, err)
 }
 
 func (o *GuildOps) GuildMemberRoleAdd(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
 	if err := o.allow(opMemberRoleAdd); err != nil {
 		return err
 	}
-	return o.record(o.guard.session.GuildMemberRoleAdd(guildID, userID, roleID, options...))
+	jid := o.beginJournal(opMemberRoleAdd, userID)
+	return o.record(jid, o.guard.session.GuildMemberRoleAdd(guildID, userID, roleID, options...))
 }
 
 func (o *GuildOps) GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
 	if err := o.allow(opMemberRoleRemove); err != nil {
 		return err
 	}
-	return o.record(o.guard.session.GuildMemberRoleRemove(guildID, userID, roleID, options...))
+	jid := o.beginJournal(opMemberRoleRemove, userID)
+	return o.record(jid, o.guard.session.GuildMemberRoleRemove(guildID, userID, roleID, options...))
 }
 
 func (o *GuildOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
 	if err := o.allow(opRoleCreate); err != nil {
 		return nil, err
 	}
+	jid := o.beginJournal(opRoleCreate, data.Name)
 	v, err := o.guard.session.GuildRoleCreate(guildID, data, options...)
-	return v, o.record(err)
+	return v, o.record(jid, err)
 }
