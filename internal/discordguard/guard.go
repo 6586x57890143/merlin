@@ -27,7 +27,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -90,10 +92,24 @@ type Guard struct {
 	gate    GuildGate
 	log     *slog.Logger
 	global  atomic.Bool
+	// now is injectable so the governor's time-based behavior (bucket refill,
+	// breaker cooldown) is testable without sleeping.
+	now func() time.Time
+
+	rateMu   sync.Mutex
+	buckets  map[string]*bucket  // guildID:op -> token bucket
+	breakers map[string]*breaker // guildID -> circuit breaker
 }
 
 func New(session Session, gate GuildGate, log *slog.Logger, pauseAllWrites bool) *Guard {
-	g := &Guard{session: session, gate: gate, log: log}
+	g := &Guard{
+		session:  session,
+		gate:     gate,
+		log:      log,
+		now:      func() time.Time { return time.Now().UTC() },
+		buckets:  make(map[string]*bucket),
+		breakers: make(map[string]*breaker),
+	}
 	g.global.Store(pauseAllWrites)
 	return g
 }
@@ -140,6 +156,10 @@ type GuildOps struct {
 }
 
 // allow is the one place a destructive call is permitted or refused.
+//
+// Order matters: pause and dry-run are checked before the rate cap and
+// breaker, so a guild that is deliberately stopped neither spends its budget
+// nor trips the breaker on calls it never made.
 func (o *GuildOps) allow(op string) error {
 	if o.guard.Paused(o.guildID) {
 		o.guard.log.Warn("discordguard: refused write, paused", "guild", o.guildID, "op", op)
@@ -149,7 +169,15 @@ func (o *GuildOps) allow(op string) error {
 		o.guard.log.Info("discordguard: skipped write, dry-run", "guild", o.guildID, "op", op)
 		return fmt.Errorf("%s: %w", op, ErrDryRun)
 	}
-	return nil
+	return o.guard.allowRate(o.guildID, op, o.guard.now())
+}
+
+// record feeds the outcome of a permitted call to the guild's circuit
+// breaker and passes the error straight through, so call sites stay a single
+// return statement.
+func (o *GuildOps) record(err error) error {
+	o.guard.recordResult(o.guildID, o.guard.now(), err)
+	return err
 }
 
 // --- reads: never gated ---
@@ -185,85 +213,92 @@ func (o *GuildOps) GuildRoles(guildID string, options ...discordgo.RequestOption
 // --- writes: gated ---
 
 func (o *GuildOps) GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := o.allow("channel.create"); err != nil {
+	if err := o.allow(opChannelCreate); err != nil {
 		return nil, err
 	}
-	return o.guard.session.GuildChannelCreateComplex(guildID, data, options...)
+	v, err := o.guard.session.GuildChannelCreateComplex(guildID, data, options...)
+	return v, o.record(err)
 }
 
 func (o *GuildOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := o.allow("channel.edit"); err != nil {
+	if err := o.allow(opChannelEdit); err != nil {
 		return nil, err
 	}
-	return o.guard.session.ChannelEditComplex(channelID, data, options...)
+	v, err := o.guard.session.ChannelEditComplex(channelID, data, options...)
+	return v, o.record(err)
 }
 
 func (o *GuildOps) ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := o.allow("channel.delete"); err != nil {
+	if err := o.allow(opChannelDelete); err != nil {
 		return nil, err
 	}
-	return o.guard.session.ChannelDelete(channelID, options...)
+	v, err := o.guard.session.ChannelDelete(channelID, options...)
+	return v, o.record(err)
 }
 
 func (o *GuildOps) ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := o.allow("message.send"); err != nil {
+	if err := o.allow(opMessageSend); err != nil {
 		return nil, err
 	}
-	return o.guard.session.ChannelMessageSend(channelID, content, options...)
+	v, err := o.guard.session.ChannelMessageSend(channelID, content, options...)
+	return v, o.record(err)
 }
 
 func (o *GuildOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := o.allow("message.send"); err != nil {
+	if err := o.allow(opMessageSend); err != nil {
 		return nil, err
 	}
-	return o.guard.session.ChannelMessageSendEmbed(channelID, embed, options...)
+	v, err := o.guard.session.ChannelMessageSendEmbed(channelID, embed, options...)
+	return v, o.record(err)
 }
 
 func (o *GuildOps) ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error {
-	if err := o.allow("message.pin"); err != nil {
+	if err := o.allow(opMessagePin); err != nil {
 		return err
 	}
-	return o.guard.session.ChannelMessagePin(channelID, messageID, options...)
+	return o.record(o.guard.session.ChannelMessagePin(channelID, messageID, options...))
 }
 
 func (o *GuildOps) ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error {
-	if err := o.allow("channel.permissions"); err != nil {
+	if err := o.allow(opChannelPermissions); err != nil {
 		return err
 	}
-	return o.guard.session.ChannelPermissionSet(channelID, targetID, targetType, allow, deny, options...)
+	return o.record(o.guard.session.ChannelPermissionSet(channelID, targetID, targetType, allow, deny, options...))
 }
 
 func (o *GuildOps) ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error {
-	if err := o.allow("channel.permissions"); err != nil {
+	if err := o.allow(opChannelPermissions); err != nil {
 		return err
 	}
-	return o.guard.session.ChannelPermissionDelete(channelID, targetID, options...)
+	return o.record(o.guard.session.ChannelPermissionDelete(channelID, targetID, options...))
 }
 
 func (o *GuildOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error) {
-	if err := o.allow("member.edit"); err != nil {
+	if err := o.allow(opMemberEdit); err != nil {
 		return nil, err
 	}
-	return o.guard.session.GuildMemberEdit(guildID, userID, data, options...)
+	v, err := o.guard.session.GuildMemberEdit(guildID, userID, data, options...)
+	return v, o.record(err)
 }
 
 func (o *GuildOps) GuildMemberRoleAdd(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
-	if err := o.allow("member.role.add"); err != nil {
+	if err := o.allow(opMemberRoleAdd); err != nil {
 		return err
 	}
-	return o.guard.session.GuildMemberRoleAdd(guildID, userID, roleID, options...)
+	return o.record(o.guard.session.GuildMemberRoleAdd(guildID, userID, roleID, options...))
 }
 
 func (o *GuildOps) GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
-	if err := o.allow("member.role.remove"); err != nil {
+	if err := o.allow(opMemberRoleRemove); err != nil {
 		return err
 	}
-	return o.guard.session.GuildMemberRoleRemove(guildID, userID, roleID, options...)
+	return o.record(o.guard.session.GuildMemberRoleRemove(guildID, userID, roleID, options...))
 }
 
 func (o *GuildOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
-	if err := o.allow("role.create"); err != nil {
+	if err := o.allow(opRoleCreate); err != nil {
 		return nil, err
 	}
-	return o.guard.session.GuildRoleCreate(guildID, data, options...)
+	v, err := o.guard.session.GuildRoleCreate(guildID, data, options...)
+	return v, o.record(err)
 }
