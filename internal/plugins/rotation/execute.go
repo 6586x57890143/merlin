@@ -3,6 +3,7 @@ package rotation
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -89,25 +90,53 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 			guildID, len(channels), maxChannelsPerGuild, rc.ChannelID)
 	}
 
-	tempName := "rotating-" + rc.ChannelID
+	tempName := stagingChannelName(rc.ChannelID)
 
-	// 4. Idempotency check / create new (hidden). Two retry cases to
-	// recognize from live state, not in-memory progress:
-	//   - a prior run already revealed the replacement (renamed away from
-	//     tempName to oldChannel.Name) but crashed/failed before archiving
-	//     the old channel — found by name, excluding the old channel
-	//     itself, since both can legitimately share a name at this point;
-	//   - a prior run created the hidden staging channel but crashed/failed
-	//     before reveal — found by its deterministic temp name.
+	// 4. Idempotency check / create new (hidden). Three retry cases, each
+	// recognized from live state rather than in-memory progress:
+	//   - a prior run completed the whole flip and failed afterwards (while
+	//     recording the archive, or retargeting the config) — the "old"
+	//     channel is by now sitting in the archive category under an archive
+	//     name, so its original name has to be recovered from that name
+	//     before anything else can be matched against it. Without this the
+	//     retry recognizes nothing, rotates a second time, and leaves the
+	//     guild with a duplicate replacement channel;
+	//   - a prior run already revealed the replacement but failed before
+	//     archiving the old channel — found by the original name, excluding
+	//     the old channel itself, since both legitimately share a name at
+	//     that point;
+	//   - a prior run created the hidden staging channel but failed before
+	//     reveal — found by its deterministic temp name.
 	// Otherwise, this is a fresh run: create it.
-	newChannel := findOtherChannelByName(channels, oldChannel.Name, oldChannel.ID)
+	originalName, alreadyArchived := archivedChannelOrigin(oldChannel, rc.ArchiveCategoryID)
+
+	// Discord allows duplicate channel names, so matching on name alone can
+	// find an unrelated channel and make this rotation archive a live
+	// channel and retarget itself onto a stranger's. A genuine replacement
+	// also sits outside the archive category and — until the old channel is
+	// archived and moved — in the same category as the channel it replaces.
+	newChannel := findChannel(channels, func(c *discordgo.Channel) bool {
+		return c.Name == originalName && c.ID != oldChannel.ID &&
+			c.ParentID != rc.ArchiveCategoryID &&
+			(alreadyArchived || c.ParentID == oldChannel.ParentID)
+	})
 	alreadyRevealed := newChannel != nil
 	if newChannel == nil {
-		newChannel = findChannelByName(channels, tempName)
+		newChannel = findChannel(channels, func(c *discordgo.Channel) bool { return c.Name == tempName })
 	}
 	if newChannel == nil {
+		// Normally the replacement belongs wherever the channel it replaces
+		// lives. When resuming after the flip already happened, though, that
+		// is the archive category by now — creating the replacement there
+		// would bury the live channel inside the archive. The original
+		// category isn't recoverable, so it lands uncategorized, where it's
+		// plainly visible for a mod to move.
+		parentID := oldChannel.ParentID
+		if alreadyArchived {
+			parentID = ""
+		}
 		var err error
-		newChannel, err = p.createHiddenChannel(guildID, oldChannel, tempName)
+		newChannel, err = p.createHiddenChannel(guildID, oldChannel, tempName, parentID)
 		if err != nil {
 			return fmt.Errorf("rotation: create staging channel: %w", err)
 		}
@@ -143,32 +172,50 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// channel has the right name, which is strictly worse than today's
 		// accepted "both visible" window. The realistic time saved (well
 		// under a second) isn't worth trading away that guarantee.
-		if err := p.revealNewChannel(newChannel.ID, oldChannel.Name, guildID, oldChannel.PermissionOverwrites); err != nil {
+		overwrites := oldChannel.PermissionOverwrites
+		if alreadyArchived {
+			// Resuming after the flip already happened, with the replacement
+			// since deleted: the old channel's overwrites are the archive's
+			// own by now (@everyone denied), and copying those onto the
+			// replacement would hide the channel that's meant to be live.
+			// The originals aren't recoverable, so fall back to guild
+			// defaults — revealNewChannel's empty-overwrites path — which is
+			// what a typical rotating channel had to begin with.
+			overwrites = nil
+		}
+		if err := p.revealNewChannel(newChannel.ID, originalName, guildID, overwrites); err != nil {
 			return fmt.Errorf("rotation: reveal new channel: %w", err)
 		}
 	}
 
-	// 7. Flip — archive old. ChannelEditComplex is naturally idempotent
-	// (re-applying the same name/parent/overwrites on a retry is a no-op),
-	// so no separate "already archived" check is needed.
+	// 7. Flip — archive old, unless a previous attempt already did (which
+	// would otherwise re-stamp the archive with a fresh timestamp in its
+	// name on every retry).
 	now := p.now()
-	archiveName := archiveChannelName(oldChannel.Name, now)
-	modRoleIDs := p.settings.ModRoleIDs(guildID)
-	if err := p.archiveOldChannel(oldChannel.ID, archiveName, rc.ArchiveCategoryID, guildID, modRoleIDs, rc); err != nil {
-		return fmt.Errorf("rotation: archive old channel: %w", err)
+	if !alreadyArchived {
+		archiveName := archiveChannelName(originalName, now)
+		modRoleIDs := p.settings.ModRoleIDs(guildID)
+		if err := p.archiveOldChannel(oldChannel.ID, archiveName, rc.ArchiveCategoryID, guildID, modRoleIDs, rc); err != nil {
+			return fmt.Errorf("rotation: archive old channel: %w", err)
+		}
 	}
 
 	// 8. Record the archive for eventual sweep-based permanent deletion.
+	// DeleteAfter is the deadline as of right now; RotationID is what lets the
+	// sweep re-derive it from the live retention setting on every pass, so a
+	// later retention change applies to this archive too (see archiveDeadline).
 	var deleteAfter *time.Time
 	if rc.RetentionHours != nil {
 		t := now.Add(time.Duration(*rc.RetentionHours) * time.Hour)
 		deleteAfter = &t
 	}
+	rotationID := rc.ID
 	if err := p.archives.Insert(ctx, ArchiveRecord{
 		ChannelID:         oldChannel.ID,
 		GuildID:           guildID,
 		SourceChannelID:   rc.ChannelID,
 		ArchiveCategoryID: rc.ArchiveCategoryID,
+		RotationID:        &rotationID,
 		ArchivedAt:        now,
 		DeleteAfter:       deleteAfter,
 	}); err != nil {
@@ -232,7 +279,7 @@ func (p *Plugin) captureThreadNames(channelID string) []string {
 // attempted best-effort in populateIfNeeded instead of required here.
 const stagingChannelBotAllow = discordgo.PermissionViewChannel | discordgo.PermissionSendMessages
 
-func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Channel, tempName string) (*discordgo.Channel, error) {
+func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Channel, tempName, parentID string) (*discordgo.Channel, error) {
 	botUserID, err := p.getBotUserID()
 	if err != nil {
 		return nil, err
@@ -244,7 +291,7 @@ func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Chann
 		RateLimitPerUser:     oldChannel.RateLimitPerUser,
 		Position:             oldChannel.Position,
 		PermissionOverwrites: core.DenyEveryoneExceptBot(oldChannel.PermissionOverwrites, guildID, botUserID, stagingChannelBotAllow),
-		ParentID:             oldChannel.ParentID,
+		ParentID:             parentID,
 		NSFW:                 oldChannel.NSFW,
 	})
 }
@@ -366,27 +413,46 @@ func archiveOverwrites(guildID, botUserID string, modRoleIDs []string, rc settin
 	return out
 }
 
-func findChannelByName(channels []*discordgo.Channel, name string) *discordgo.Channel {
+func findChannel(channels []*discordgo.Channel, match func(*discordgo.Channel) bool) *discordgo.Channel {
 	for _, c := range channels {
-		if c.Name == name {
+		if match(c) {
 			return c
 		}
 	}
 	return nil
 }
 
-// findOtherChannelByName finds a channel matching name, excluding excludeID
-// — used to detect an already-revealed replacement channel (which shares
-// oldChannel.Name) without matching the old channel itself.
-func findOtherChannelByName(channels []*discordgo.Channel, name, excludeID string) *discordgo.Channel {
-	for _, c := range channels {
-		if c.Name == name && c.ID != excludeID {
-			return c
-		}
-	}
-	return nil
-}
+// stagingChannelName is the deterministic name a rotation's not-yet-revealed
+// replacement carries. Derived from the channel being replaced so a retry
+// can find the staging channel a previous attempt left behind, and so two
+// rotating channels can never collide on it.
+func stagingChannelName(channelID string) string { return "rotating-" + channelID }
+
+const archiveNameTimeLayout = "2006-01-02-1504"
 
 func archiveChannelName(originalName string, at time.Time) string {
-	return fmt.Sprintf("%s-archive-%s", originalName, at.Format("2006-01-02-1504"))
+	return fmt.Sprintf("%s-archive-%s", originalName, at.Format(archiveNameTimeLayout))
+}
+
+// archiveNamePattern matches what archiveChannelName produces, capturing the
+// name the channel had before it was archived. Greedy on purpose: a channel
+// legitimately named "foo-archive-bar" that gets archived yields
+// "foo-archive-bar-archive-2026-01-01-0000", and the longest prefix is the
+// right answer.
+var archiveNamePattern = regexp.MustCompile(`^(.+)-archive-\d{4}-\d{2}-\d{2}-\d{4}$`)
+
+// archivedChannelOrigin reports whether ch has already been archived by an
+// earlier attempt at this rotation — it carries an archive name *and* sits
+// in the configured archive category, neither alone being conclusive — and
+// returns the name it had before that. For a channel that hasn't been
+// archived, its current name is its original name.
+func archivedChannelOrigin(ch *discordgo.Channel, archiveCategoryID string) (originalName string, archived bool) {
+	if archiveCategoryID == "" || ch.ParentID != archiveCategoryID {
+		return ch.Name, false
+	}
+	m := archiveNamePattern.FindStringSubmatch(ch.Name)
+	if m == nil {
+		return ch.Name, false
+	}
+	return m[1], true
 }

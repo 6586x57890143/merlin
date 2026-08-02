@@ -140,10 +140,7 @@ func TestRotateFullCycle(t *testing.T) {
 		t.Fatalf("expected 2 messages (sticky + notice) in the new channel, got %d", len(msgs))
 	}
 
-	due, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.AddDate(0, 0, 8))
-	if err != nil {
-		t.Fatalf("DueForDeletion: %v", err)
-	}
+	due := archives.dueForDeletion("g1", fixedNow.AddDate(0, 0, 8))
 	if len(due) != 1 {
 		t.Fatalf("expected 1 due archive 8 days after a 7-day retention rotation, got %d", len(due))
 	}
@@ -305,10 +302,7 @@ func TestRotateForeverRetentionNeverDue(t *testing.T) {
 		t.Fatalf("rotate: %v", err)
 	}
 
-	due, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.AddDate(10, 0, 0))
-	if err != nil {
-		t.Fatalf("DueForDeletion: %v", err)
-	}
+	due := archives.dueForDeletion("g1", fixedNow.AddDate(10, 0, 0))
 	if len(due) != 0 {
 		t.Fatalf("expected a forever-retention archive to never be due, got %d due rows", len(due))
 	}
@@ -326,18 +320,12 @@ func TestRotateRetentionHourBoundaryIsPrecise(t *testing.T) {
 		t.Fatalf("rotate: %v", err)
 	}
 
-	notYetDue, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.Add(59*time.Minute))
-	if err != nil {
-		t.Fatalf("DueForDeletion (59m): %v", err)
-	}
+	notYetDue := archives.dueForDeletion("g1", fixedNow.Add(59*time.Minute))
 	if len(notYetDue) != 0 {
 		t.Fatalf("expected a 1-hour retention archive to NOT be due at 59 minutes, got %d due rows", len(notYetDue))
 	}
 
-	due, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.Add(61*time.Minute))
-	if err != nil {
-		t.Fatalf("DueForDeletion (61m): %v", err)
-	}
+	due := archives.dueForDeletion("g1", fixedNow.Add(61*time.Minute))
 	if len(due) != 1 {
 		t.Fatalf("expected a 1-hour retention archive to be due at 61 minutes, got %d due rows", len(due))
 	}
@@ -575,7 +563,7 @@ func TestReconcileJobKeyStableAcrossRetarget(t *testing.T) {
 		registeredJobs:  make(map[string]time.Duration),
 	}
 
-	p.reconcile("g1")
+	p.reconcile(context.Background(), "g1")
 
 	rc, ok := fs.RotationChannel("g1", "old1")
 	if !ok {
@@ -592,7 +580,7 @@ func TestReconcileJobKeyStableAcrossRetarget(t *testing.T) {
 	if err := fs.RetargetRotationChannel(context.Background(), "g1", "old1", "new1"); err != nil {
 		t.Fatalf("RetargetRotationChannel: %v", err)
 	}
-	p.reconcile("g1")
+	p.reconcile(context.Background(), "g1")
 
 	if sched.registerCalls[jobKey] != 1 {
 		t.Fatalf("expected the SAME job key to still be registered exactly once after retargeting, got %d registrations — "+
@@ -634,7 +622,7 @@ func TestDeferFirstRotationSeedsNewChannelJob(t *testing.T) {
 	// reconcile is called explicitly here to mirror what the real
 	// settings.Store's publishChanged would trigger synchronously in
 	// production before handleAdd calls deferFirstRotation.
-	p.reconcile("g1")
+	p.reconcile(context.Background(), "g1")
 
 	rc, ok := fs.RotationChannel("g1", "new1")
 	if !ok {
@@ -677,7 +665,7 @@ func TestReconcileAloneNeverSeeds(t *testing.T) {
 		registeredJobs:  make(map[string]time.Duration),
 	}
 
-	p.SyncGuild("g1")
+	p.SyncGuild(context.Background(), "g1")
 
 	if len(sched.seedCalls) != 0 {
 		t.Fatalf("expected reconcile/SyncGuild to never seed on its own, got seed calls: %v", sched.seedCalls)
@@ -695,5 +683,370 @@ func TestArchiveOverwritesGrantsBotViewAccess(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected the bot to retain VIEW_CHANNEL on the archived channel (needed later by sweep.go)")
+	}
+}
+
+// TestRotateRetryAfterArchiveRecordFailureDoesNotRotateTwice covers the
+// window that used to be unrecoverable: the flip fully succeeded (replacement
+// revealed, old channel renamed into the archive category) and only the
+// bookkeeping afterwards failed. On the retry the "old" channel no longer
+// carries its original name, so name-based matching found nothing and the
+// rotation ran a second time — leaving the guild with two replacement
+// channels, a doubly-archived original, and sticky messages posted twice.
+// rotate now recognizes an already-archived channel by its name and category
+// and resumes at the bookkeeping step instead.
+func TestRotateRetryAfterArchiveRecordFailureDoesNotRotateTwice(t *testing.T) {
+	ops, archives, _, p, rc := setupRotation(t, finiteRetentionRC())
+	archives.insertErr = errors.New("postgres unavailable")
+
+	if err := p.rotate(context.Background(), "g1", rc); err == nil {
+		t.Fatal("expected the first attempt to fail recording the archive")
+	}
+
+	archives.insertErr = nil
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("retry rotate: %v", err)
+	}
+
+	channels, err := ops.GuildChannels("g1")
+	if err != nil {
+		t.Fatalf("GuildChannels: %v", err)
+	}
+	var live, archived int
+	for _, c := range channels {
+		switch {
+		case c.Name == "general-chat":
+			live++
+		case strings.Contains(c.Name, "general-chat-archive-"):
+			archived++
+		}
+	}
+	if live != 1 {
+		t.Fatalf("expected exactly 1 live general-chat after the retry, got %d", live)
+	}
+	if archived != 1 {
+		t.Fatalf("expected exactly 1 archived channel after the retry, got %d", archived)
+	}
+	if len(archives.records) != 1 {
+		t.Fatalf("expected exactly 1 archive record, got %d", len(archives.records))
+	}
+
+	newCh := findOtherChannelByName(channels, "general-chat", "old1")
+	msgs, err := ops.ChannelMessages(newCh.ID, 10, "", "", "")
+	if err != nil {
+		t.Fatalf("ChannelMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected the replacement to still hold exactly 2 messages (no duplicate sticky/notice), got %d", len(msgs))
+	}
+}
+
+// TestRotateRetryAfterArchiveKeepsArchiveNameStable guards a subtler part of
+// the same resume path: re-archiving on every retry would re-stamp the
+// archive's name with a fresh timestamp, so a channel that failed bookkeeping
+// repeatedly would drift its own archived-at label away from when it was
+// actually archived.
+func TestRotateRetryAfterArchiveKeepsArchiveNameStable(t *testing.T) {
+	ops, archives, _, p, rc := setupRotation(t, finiteRetentionRC())
+	archives.insertErr = errors.New("postgres unavailable")
+	if err := p.rotate(context.Background(), "g1", rc); err == nil {
+		t.Fatal("expected the first attempt to fail")
+	}
+	archivedAfterFirst, err := ops.Channel("old1")
+	if err != nil {
+		t.Fatalf("Channel(old1): %v", err)
+	}
+
+	archives.insertErr = nil
+	p.now = func() time.Time { return fixedNow.Add(9 * time.Hour) }
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("retry rotate: %v", err)
+	}
+
+	archivedAfterRetry, err := ops.Channel("old1")
+	if err != nil {
+		t.Fatalf("Channel(old1): %v", err)
+	}
+	if archivedAfterRetry.Name != archivedAfterFirst.Name {
+		t.Fatalf("archive name changed on retry: %q -> %q", archivedAfterFirst.Name, archivedAfterRetry.Name)
+	}
+}
+
+// TestRotateIgnoresSameNamedChannelInAnotherCategory is the duplicate-name
+// guard. Discord allows two channels to share a name in different
+// categories, and the replacement-detection used to match on name alone —
+// so an unrelated #general elsewhere in the guild looked exactly like a
+// replacement a previous attempt had already revealed. Rotation would then
+// archive the live channel without creating anything, and retarget its own
+// config onto a channel it doesn't own.
+func TestRotateIgnoresSameNamedChannelInAnotherCategory(t *testing.T) {
+	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
+	ops.addChannel(&discordgo.Channel{ID: "unrelated1", GuildID: "g1", Name: "general-chat", ParentID: "some-other-category"})
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	unrelated, err := ops.Channel("unrelated1")
+	if err != nil {
+		t.Fatalf("Channel(unrelated1): %v", err)
+	}
+	if unrelated.ParentID != "some-other-category" || unrelated.Name != "general-chat" {
+		t.Fatalf("the unrelated same-named channel was modified: %+v", unrelated)
+	}
+	if rcNow, ok := p.settings.RotationChannel("g1", "unrelated1"); ok {
+		t.Fatalf("rotation retargeted itself onto the unrelated channel: %+v", rcNow)
+	}
+
+	channels, err := ops.GuildChannels("g1")
+	if err != nil {
+		t.Fatalf("GuildChannels: %v", err)
+	}
+	replacement := findChannel(channels, func(c *discordgo.Channel) bool {
+		return c.Name == "general-chat" && c.ID != "unrelated1" && c.ID != "old1"
+	})
+	if replacement == nil {
+		t.Fatal("expected a real replacement channel to have been created")
+	}
+	if _, ok := p.settings.RotationChannel("g1", replacement.ID); !ok {
+		t.Fatal("expected the rotation config to be retargeted onto the real replacement")
+	}
+}
+
+func TestArchivedChannelOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		channel      *discordgo.Channel
+		categoryID   string
+		wantOriginal string
+		wantArchived bool
+	}{
+		{
+			name:         "archive name in the archive category",
+			channel:      &discordgo.Channel{Name: "general-chat-archive-2026-01-01-0000", ParentID: "archivecat"},
+			categoryID:   "archivecat",
+			wantOriginal: "general-chat",
+			wantArchived: true,
+		},
+		{
+			name:         "archive name outside the archive category is someone else's channel",
+			channel:      &discordgo.Channel{Name: "general-chat-archive-2026-01-01-0000", ParentID: "cat0"},
+			categoryID:   "archivecat",
+			wantOriginal: "general-chat-archive-2026-01-01-0000",
+		},
+		{
+			name:         "ordinary channel that happens to sit in the archive category",
+			channel:      &discordgo.Channel{Name: "notes", ParentID: "archivecat"},
+			categoryID:   "archivecat",
+			wantOriginal: "notes",
+		},
+		{
+			name:         "a name already containing -archive- keeps its longest prefix",
+			channel:      &discordgo.Channel{Name: "war-archive-chat-archive-2026-01-01-0000", ParentID: "archivecat"},
+			categoryID:   "archivecat",
+			wantOriginal: "war-archive-chat",
+			wantArchived: true,
+		},
+		{
+			name:         "unconfigured archive category never matches",
+			channel:      &discordgo.Channel{Name: "general-chat-archive-2026-01-01-0000"},
+			wantOriginal: "general-chat-archive-2026-01-01-0000",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original, archived := archivedChannelOrigin(tc.channel, tc.categoryID)
+			if original != tc.wantOriginal || archived != tc.wantArchived {
+				t.Errorf("archivedChannelOrigin() = (%q, %v), want (%q, %v)", original, archived, tc.wantOriginal, tc.wantArchived)
+			}
+		})
+	}
+}
+
+// TestArchiveNameRoundTrips ties archiveChannelName and archivedChannelOrigin
+// together: whatever the archiver writes, the resume path must be able to
+// read back. They'd otherwise be free to drift apart silently, and the only
+// symptom would be duplicate channels after a mid-rotation failure.
+func TestArchiveNameRoundTrips(t *testing.T) {
+	for _, name := range []string{"general-chat", "off-topic", "a", "war-archive-chat", "channel-with-2026-in-it"} {
+		archived := &discordgo.Channel{Name: archiveChannelName(name, fixedNow), ParentID: "archivecat"}
+		got, ok := archivedChannelOrigin(archived, "archivecat")
+		if !ok || got != name {
+			t.Errorf("round trip of %q via %q = (%q, %v)", name, archived.Name, got, ok)
+		}
+	}
+}
+
+// TestRotateResumeRebuildsAReplacementDeletedAfterTheFlip is the worst
+// corner of the resume path: the flip completed, the bookkeeping failed, and
+// then someone deleted the replacement channel before the retry. The retry
+// has to rebuild a live channel — and must not build it inside the archive
+// category, which is where the "old" channel now lives and therefore what
+// its parent would otherwise be copied from.
+func TestRotateResumeRebuildsAReplacementDeletedAfterTheFlip(t *testing.T) {
+	ops, archives, _, p, rc := setupRotation(t, finiteRetentionRC())
+	archives.insertErr = errors.New("postgres unavailable")
+	if err := p.rotate(context.Background(), "g1", rc); err == nil {
+		t.Fatal("expected the first attempt to fail")
+	}
+
+	channels, err := ops.GuildChannels("g1")
+	if err != nil {
+		t.Fatalf("GuildChannels: %v", err)
+	}
+	revealed := findOtherChannelByName(channels, "general-chat", "old1")
+	if revealed == nil {
+		t.Fatal("expected a revealed replacement after the first attempt")
+	}
+	if _, err := ops.ChannelDelete(revealed.ID); err != nil {
+		t.Fatalf("ChannelDelete: %v", err)
+	}
+
+	archives.insertErr = nil
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("retry rotate: %v", err)
+	}
+
+	channels, err = ops.GuildChannels("g1")
+	if err != nil {
+		t.Fatalf("GuildChannels: %v", err)
+	}
+	rebuilt := findOtherChannelByName(channels, "general-chat", "old1")
+	if rebuilt == nil {
+		t.Fatal("expected the retry to rebuild a live general-chat")
+	}
+	if rebuilt.ParentID == "archivecat" {
+		t.Fatal("the rebuilt live channel was created inside the archive category")
+	}
+	if _, ok := p.settings.RotationChannel("g1", rebuilt.ID); !ok {
+		t.Fatal("expected the rotation config to be retargeted onto the rebuilt channel")
+	}
+
+	oldCh, err := ops.Channel("old1")
+	if err != nil {
+		t.Fatalf("Channel(old1): %v", err)
+	}
+	if !strings.Contains(oldCh.Name, "general-chat-archive-") || oldCh.ParentID != "archivecat" {
+		t.Fatalf("the already-archived channel should have been left alone, got %+v", oldCh)
+	}
+}
+
+// reconcileTestPlugin builds a Plugin wired only with what reconcile needs.
+func reconcileTestPlugin(fs *fakeSettings, sched *fakeScheduler, archives ArchiveStore) *Plugin {
+	return &Plugin{
+		settings:        fs,
+		archives:        archives,
+		sched:           sched,
+		log:             testLogger(),
+		bus:             core.NewEventBus(testLogger()),
+		now:             func() time.Time { return fixedNow },
+		sweepRegistered: make(map[string]bool),
+		registeredJobs:  make(map[string]time.Duration),
+	}
+}
+
+// TestSweepJobNotArmedForGuildsWithoutRotation: the sweep permanently deletes
+// channels, and it used to be registered for every guild the bot could see
+// the moment it saw it — whether or not that guild had ever configured
+// rotation, and (since a job with no run history is immediately due) firing
+// within one tick of startup. It was harmless only because the table it read
+// happened to be empty. A deletion job should not exist where nobody asked
+// for one.
+func TestSweepJobNotArmedForGuildsWithoutRotation(t *testing.T) {
+	sched := newFakeScheduler()
+	p := reconcileTestPlugin(newFakeSettings(), sched, newFakeArchiveStore())
+
+	p.reconcile(context.Background(), "g1")
+
+	sweepKey := scheduler.JobKey("g1", "rotation-sweep")
+	if sched.registered[sweepKey] {
+		t.Fatal("a guild that never configured rotation must not get an archive-deletion job")
+	}
+}
+
+// TestSweepJobArmedOnceRotationIsConfigured is the counterweight: the moment
+// a guild actually configures a rotating channel, the sweep has to exist, or
+// its retention window would never be enforced at all.
+func TestSweepJobArmedOnceRotationIsConfigured(t *testing.T) {
+	fs := newFakeSettings()
+	sched := newFakeScheduler()
+	p := reconcileTestPlugin(fs, sched, newFakeArchiveStore())
+
+	p.reconcile(context.Background(), "g1")
+	if err := fs.UpsertRotationChannel(context.Background(), finiteRetentionRC()); err != nil {
+		t.Fatalf("UpsertRotationChannel: %v", err)
+	}
+	p.reconcile(context.Background(), "g1")
+
+	sweepKey := scheduler.JobKey("g1", "rotation-sweep")
+	if !sched.registered[sweepKey] {
+		t.Fatal("expected the sweep job once the guild configured a rotating channel")
+	}
+	if sched.registerCalls[sweepKey] != 1 {
+		t.Fatalf("expected the sweep registered exactly once, got %d", sched.registerCalls[sweepKey])
+	}
+}
+
+// TestSweepJobSurvivesRemovalWhileArchivesArePending guards the direction
+// that would silently break a retention promise: /rotation configure remove
+// says existing archives are left untouched, so those archives still have a
+// deletion date owed. Dropping the sweep because the rotation slot is gone
+// would leave them alive forever with nothing to ever collect them.
+func TestSweepJobSurvivesRemovalWhileArchivesArePending(t *testing.T) {
+	fs := newFakeSettings()
+	sched := newFakeScheduler()
+	archives := newFakeArchiveStore()
+	p := reconcileTestPlugin(fs, sched, archives)
+
+	if err := fs.UpsertRotationChannel(context.Background(), finiteRetentionRC()); err != nil {
+		t.Fatalf("UpsertRotationChannel: %v", err)
+	}
+	p.reconcile(context.Background(), "g1")
+
+	archives.records["arch1"] = ArchiveRecord{
+		ChannelID: "arch1", GuildID: "g1", ArchiveCategoryID: "archivecat",
+		ArchivedAt: fixedNow, DeleteAfter: timePtr(fixedNow.AddDate(0, 0, 7)),
+	}
+	if err := fs.RemoveRotationChannel(context.Background(), "g1", "old1"); err != nil {
+		t.Fatalf("RemoveRotationChannel: %v", err)
+	}
+	p.reconcile(context.Background(), "g1")
+
+	sweepKey := scheduler.JobKey("g1", "rotation-sweep")
+	if !sched.registered[sweepKey] {
+		t.Fatal("sweep job was dropped while archives were still awaiting their retention deadline")
+	}
+
+	// Once nothing is pending, it goes away again.
+	delete(archives.records, "arch1")
+	p.reconcile(context.Background(), "g1")
+	if sched.registered[sweepKey] {
+		t.Fatal("expected the sweep job to be unregistered once no rotation and no archives remain")
+	}
+}
+
+// TestSweepJobRegistrationUnchangedOnArchiveLookupFailure: a transient DB
+// error must not decide either way — arming a deletion job we can't justify,
+// or dropping one that's still owed work, are both worse than leaving the
+// current state alone until the next reconcile.
+func TestSweepJobRegistrationUnchangedOnArchiveLookupFailure(t *testing.T) {
+	fs := newFakeSettings()
+	sched := newFakeScheduler()
+	archives := newFakeArchiveStore()
+	p := reconcileTestPlugin(fs, sched, archives)
+
+	if err := fs.UpsertRotationChannel(context.Background(), finiteRetentionRC()); err != nil {
+		t.Fatalf("UpsertRotationChannel: %v", err)
+	}
+	p.reconcile(context.Background(), "g1")
+	sweepKey := scheduler.JobKey("g1", "rotation-sweep")
+
+	if err := fs.RemoveRotationChannel(context.Background(), "g1", "old1"); err != nil {
+		t.Fatalf("RemoveRotationChannel: %v", err)
+	}
+	archives.listErr = transientErr()
+	p.reconcile(context.Background(), "g1")
+
+	if !sched.registered[sweepKey] {
+		t.Fatal("a failed archive lookup must not unregister an existing sweep job")
 	}
 }

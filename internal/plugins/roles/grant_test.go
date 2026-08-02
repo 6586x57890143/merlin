@@ -92,3 +92,33 @@ func TestSweepRevokesDueGrantsAndSkipsNotYetDue(t *testing.T) {
 		t.Fatal("expected not-yet-due grant left untouched")
 	}
 }
+
+// TestRevokeGrantKeepsTrackingOnTransientFetchFailure mirrors the jail case:
+// untracking a timed grant because Discord hiccuped would silently turn "for
+// 24 hours" into permanent, with no record left that it was ever temporary.
+func TestRevokeGrantKeepsTrackingOnTransientFetchFailure(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMember("g1", "u1", []string{"role-a"})
+	ops.memberFetchErr = transientErr()
+
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+	if err := p.store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "u1", RoleID: "role-a"}); err != nil {
+		t.Fatalf("InsertGrant: %v", err)
+	}
+
+	if err := p.revokeGrant(context.Background(), "g1", "u1", "role-a", "system"); err == nil {
+		t.Fatal("expected revokeGrant to report the transient fetch failure")
+	}
+	if _, ok, _ := p.store.GetGrant(context.Background(), "g1", "u1", "role-a"); !ok {
+		t.Fatal("grant record was dropped on a transient error — the role would never expire")
+	}
+
+	ops.memberFetchErr = nil
+	if err := p.revokeGrant(context.Background(), "g1", "u1", "role-a", "system"); err != nil {
+		t.Fatalf("retry revokeGrant: %v", err)
+	}
+	m, _ := ops.GuildMember("g1", "u1")
+	if len(m.Roles) != 0 {
+		t.Fatalf("expected the granted role removed on retry, got %v", m.Roles)
+	}
+}

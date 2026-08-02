@@ -37,6 +37,18 @@ jobs:
 
   secret-scan:
     runs-on: ubuntu-latest
+    # Scoped per-job rather than inheriting the workflow defaults: on a
+    # pull_request event gitleaks scans the PR's commits via
+    # GET /repos/{owner}/{repo}/pulls/{n}/commits, which needs
+    # pull-requests: read. Without it the job dies with a 403 "Resource not
+    # accessible by integration" and reports a red secret-scan that has
+    # nothing to do with any secret. It never showed up before because every
+    # earlier run was a push to main, where gitleaks reads git history
+    # directly and never calls that endpoint. Declaring the job's own
+    # permissions also drops the packages: write it inherited and never used.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:

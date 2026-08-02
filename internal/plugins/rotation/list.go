@@ -30,7 +30,7 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 		core.RespondInfo(s, i, "Rotating channels", "No channels are configured to rotate in this server. Use `/rotation configure add` to start.")
 		return
 	}
-	embed, components := p.renderListPage(channels, 0)
+	embed, components := p.renderListPage(i.GuildID, channels, 0)
 	if err := core.RespondEmbedWithComponents(s, i, embed, components); err != nil {
 		p.log.Error("rotation: list response failed", "err", err)
 	}
@@ -44,7 +44,7 @@ func (p *Plugin) handleListPage(ctx context.Context, s *discordgo.Session, i *di
 		p.log.Error("rotation: parse pagination page", "custom_id", customID, "err", err)
 		page = 0
 	}
-	embed, components := p.renderListPage(p.settings.RotationChannels(i.GuildID), page)
+	embed, components := p.renderListPage(i.GuildID, p.settings.RotationChannels(i.GuildID), page)
 	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
 		p.log.Error("rotation: list page update failed", "err", err)
 	}
@@ -89,20 +89,33 @@ func (p *Plugin) handleListBack(ctx context.Context, s *discordgo.Session, i *di
 	if err != nil {
 		page = 0
 	}
-	embed, components := p.renderListPage(p.settings.RotationChannels(i.GuildID), page)
+	embed, components := p.renderListPage(i.GuildID, p.settings.RotationChannels(i.GuildID), page)
 	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
 		p.log.Error("rotation: list back update failed", "err", err)
 	}
 }
 
 // renderListPage builds one page of the summary list plus its controls: a
-// select menu offering exactly this page's channels for drill-down (its
-// options need real channel names, not just IDs, so it costs one
-// p.ops.Channel call per row — cheap and only paid by mods actively
-// browsing this list, not on any hot path), and Prev/Next buttons if more
-// than one page exists at all.
-func (p *Plugin) renderListPage(channels []settings.RotationChannel, page int) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+// select menu offering exactly this page's channels for drill-down, and
+// Prev/Next buttons if more than one page exists at all.
+//
+// The select menu's options need real channel names (a mention renders as
+// raw text inside a select), which costs one guild-channel listing — a
+// single REST call for the whole page rather than one per row. Per-row
+// lookups blew the interaction's 3-second response budget on a page of ten,
+// and rotating channels change names on every rotation, so there's nothing
+// worth caching between renders either.
+func (p *Plugin) renderListPage(guildID string, channels []settings.RotationChannel, page int) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
 	pageChannels, clampedPage, totalPages := core.Paginate(channels, page)
+
+	names := make(map[string]string)
+	if guildChannels, err := p.ops.GuildChannels(guildID); err == nil {
+		for _, ch := range guildChannels {
+			names[ch.ID] = ch.Name
+		}
+	} else {
+		p.log.Error("rotation: list channel names unavailable, falling back to IDs", "guild", guildID, "err", err)
+	}
 
 	fields := make([]*discordgo.MessageEmbedField, 0, len(pageChannels))
 	options := make([]discordgo.SelectMenuOption, 0, len(pageChannels))
@@ -118,8 +131,8 @@ func (p *Plugin) renderListPage(channels []settings.RotationChannel, page int) (
 		})
 
 		label := rc.ChannelID
-		if ch, err := p.ops.Channel(rc.ChannelID); err == nil {
-			label = ch.Name
+		if name, ok := names[rc.ChannelID]; ok {
+			label = name
 		}
 		options = append(options, discordgo.SelectMenuOption{Label: "#" + label, Value: rc.ChannelID})
 	}

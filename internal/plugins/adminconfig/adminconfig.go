@@ -172,7 +172,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 			},
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "setup",
-				Description: "First-time setup: set up an audit log, a status channel, and a Merlin Mod role if missing",
+				Description: "Guided setup: walk through the audit log, status channel, mod role, and admins",
 			},
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "import",
@@ -203,10 +203,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.commands.Autocomplete("config", "permissions/deny", p.autocompleteAction)
 	p.commands.Autocomplete("config", "plugins/set", p.autocompletePlugin)
 	p.commands.HandleComponent(p.Name(), permissionsListComponentPrefix, core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handlePermissionsListPage)
-	p.commands.HandleComponent(p.Name(), setupAuditLogSelectCustomID, core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleSetupAuditLogSelect)
-	p.commands.HandleComponent(p.Name(), setupAuditLogCreateCustomID, core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleSetupAuditLogCreate)
-	p.commands.HandleComponent(p.Name(), setupStatusSelectCustomID, core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleSetupStatusSelect)
-	p.commands.HandleComponent(p.Name(), setupStatusCreateCustomID, core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}, p.handleSetupStatusCreate)
+	p.registerSetupComponents()
 	return nil
 }
 
@@ -282,10 +279,10 @@ func (p *Plugin) handleModRolesAdd(ctx context.Context, s *discordgo.Session, i 
 // grantModRoleChannelAccess gives roleID VIEW_CHANNEL on whichever of the
 // guild's audit-log/status channels are currently configured. Called
 // whenever a role becomes (or already is) a mod role — from here and from
-// handleSetup — so mods can actually see the moderation trail they're
+// the setup wizard — so mods can actually see the moderation trail they're
 // meant to have access to; the channels themselves only deny @everyone by
-// default (see botOverwrite), they don't proactively grant mod roles,
-// since a mod role may not exist yet at channel-creation time.
+// default (see core.DenyEveryoneExceptBot), they don't proactively grant mod
+// roles, since a mod role may not exist yet at channel-creation time.
 func (p *Plugin) grantModRoleChannelAccess(s *discordgo.Session, guildID, roleID string) {
 	gs := p.settings.GuildSettings(guildID)
 	for _, channelID := range []string{gs.AuditLogChannelID, gs.StatusChannelID} {
@@ -334,12 +331,39 @@ func (p *Plugin) handlePermissionsSetTier(ctx context.Context, s *discordgo.Sess
 		core.RespondErr(s, i, "Invalid tier", fmt.Errorf("tier must be one of the offered choices"))
 		return
 	}
+
+	if err := validateTierChange(action, tier); err != nil {
+		core.RespondErr(s, i, "Can't lower that action", err)
+		return
+	}
+
 	if err := p.settings.SetActionTier(ctx, i.GuildID, action, tier); err != nil {
 		core.RespondErr(s, i, "Failed to set tier", err)
 		return
 	}
 	p.audit(ctx, i, "config.permission_tier_set", "", fmt.Sprintf("action=%s tier=%s", action, tier))
 	core.RespondOK(s, i, "Tier updated", fmt.Sprintf("`%s` now requires **%s**.", action, tier))
+}
+
+// validateTierChange rejects a per-guild tier override that would break a
+// tier invariant this bot relies on. Today that's exactly one: config.mutate
+// governs /config admins add, mod-roles, permission grants, and the plugin
+// toggle, so lowering it to Admins+Mods would let any mod run
+// `/config admins add @themselves` — a one-command collapse of the whole
+// model, and precisely the escalation the tiers exist to prevent.
+//
+// Refused for the same reason adminconfig can't disable itself via
+// /config plugins set: it only ever reads as a mistake, and an invariant the
+// codebase states in prose is worth enforcing in code. A pure function so
+// the rule is testable without a Discord session, mirroring roles.jailRoles.
+func validateTierChange(action string, tier core.PermTier) error {
+	if action == actionMutate && tier != core.TierAdmin {
+		return fmt.Errorf(
+			"`%s` controls who can add admins, mod roles, and permission grants — leaving it below **Admins only** "+
+				"would let any mod grant themselves admin. Grant a specific person or role instead: "+
+				"`/config permissions allow action:%s`", actionMutate, actionMutate)
+	}
+	return nil
 }
 
 func (p *Plugin) handlePermissionsClearTier(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -513,198 +537,6 @@ func (p *Plugin) handlePluginsSet(ctx context.Context, s *discordgo.Session, i *
 	core.RespondOK(s, i, "Plugin disabled", fmt.Sprintf("`%s` is disabled for this server — nobody, including admins, can use its commands here until re-enabled.", name))
 }
 
-// Channel names /config setup creates when a mod chooses to let it, and the
-// component CustomIDs its two channel-picker prompts (select existing /
-// create new) use.
-const (
-	birdAuditLogChannelName = "bird-audit-log"
-	birdStatusChannelName   = "bird-status"
-
-	setupAuditLogSelectCustomID = "config:setup:auditlog:select"
-	setupAuditLogCreateCustomID = "config:setup:auditlog:create"
-	setupStatusSelectCustomID   = "config:setup:status:select"
-	setupStatusCreateCustomID   = "config:setup:status:create"
-)
-
-// handleSetup fills in whatever a guild is still missing. For the audit-log
-// and status channels specifically, it no longer silently creates one: it
-// prompts with a channel picker (pick something you already have) alongside
-// a button to have it created, since a guild that already keeps a
-// mod-only log channel around shouldn't be forced into a second,
-// bot-created duplicate. The mod role has no such ambiguity (there's
-// nothing to "already have" that's obviously the right pick), so it's still
-// auto-created same as before. Safe to re-run any time as a guided
-// "how's my setup going" check, not just once on first join.
-func (p *Plugin) handleSetup(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	gs := p.settings.GuildSettings(i.GuildID)
-	var created []string
-	var prompts []discordgo.MessageComponent
-
-	if gs.AuditLogChannelID == "" {
-		prompts = append(prompts, setupChannelPromptRows(
-			"Pick an existing channel for the audit log...", setupAuditLogSelectCustomID,
-			"Create #"+birdAuditLogChannelName+" for me", setupAuditLogCreateCustomID)...)
-	}
-	if gs.StatusChannelID == "" {
-		prompts = append(prompts, setupChannelPromptRows(
-			"Pick an existing channel for status alerts...", setupStatusSelectCustomID,
-			"Create #"+birdStatusChannelName+" for me", setupStatusCreateCustomID)...)
-	}
-
-	if len(gs.ModRoleIDs) == 0 {
-		mentionable := false
-		role, err := s.GuildRoleCreate(i.GuildID, &discordgo.RoleParams{Name: "Merlin Mod", Mentionable: &mentionable})
-		if err != nil {
-			core.RespondErr(s, i, "Setup failed", fmt.Errorf("create Merlin Mod role: %w", err))
-			return
-		}
-		if err := p.settings.AddModRole(ctx, i.GuildID, role.ID); err != nil {
-			core.RespondErr(s, i, "Setup failed", fmt.Errorf("merlin mod role created but not saved: %w", err))
-			return
-		}
-		gs.ModRoleIDs = append(gs.ModRoleIDs, role.ID)
-		created = append(created, "<@&"+role.ID+"> (mod role — assign it to your moderators)")
-	}
-
-	// Re-grant on every run, not just when something was just created: a
-	// mod role added before the audit/status channels existed (or vice
-	// versa) would otherwise never get access once the other half shows up.
-	// ChannelPermissionSet is a plain overwrite PUT, so repeating it for an
-	// already-granted role is a harmless no-op.
-	for _, roleID := range gs.ModRoleIDs {
-		p.grantModRoleChannelAccess(s, i.GuildID, roleID)
-	}
-
-	p.audit(ctx, i, "config.setup", "", strings.Join(created, ", "))
-
-	fields := []*discordgo.MessageEmbedField{{Name: "Current status", Value: fmt.Sprintf(
-		"Audit log: %s\nStatus channel: %s\nMod roles: %d configured\nAdmins: %d configured",
-		channelStatusText(gs.AuditLogChannelID), channelStatusText(gs.StatusChannelID), len(gs.ModRoleIDs), len(gs.AdminUserIDs),
-	)}}
-	if len(created) > 0 {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Created this run", Value: strings.Join(created, "\n")})
-	}
-	fields = append(fields, &discordgo.MessageEmbedField{Name: "Next steps", Value: strings.Join([]string{
-		"Assign the mod role to your actual moderators.",
-		"`/config admins add` for anyone who should always have standing admin access.",
-		"`/rotation configure add` to start rotating a channel.",
-		"Safe to re-run `/config setup` any time — it only creates what's still missing.",
-	}, "\n"), Inline: false})
-
-	desc := "Everything's already set up."
-	switch {
-	case len(prompts) > 0:
-		desc = "Pick a channel below for each prompt, or let me create one."
-	case len(created) > 0:
-		desc = "Filled in what was missing."
-	}
-	if err := core.RespondLandmarkEmbedWithComponents(s, i, core.NewEmbed(core.ColorSuccess, "Server setup", desc, fields...), prompts); err != nil {
-		p.log.Error("adminconfig: setup response failed", "err", err)
-	}
-}
-
-// channelStatusText renders a possibly-unset channel ID for the setup
-// status summary — "not yet configured" instead of a broken <#> mention
-// when there's nothing to link to.
-func channelStatusText(channelID string) string {
-	if channelID == "" {
-		return "not yet configured"
-	}
-	return fmt.Sprintf("<#%s>", channelID)
-}
-
-// setupChannelPromptRows builds the two rows offered for one missing
-// channel slot: a native Discord channel picker (existing text channels
-// only) and a button to have the bird create one instead. Two separate
-// ActionRows because Discord doesn't allow a select menu to share a row
-// with a button.
-func setupChannelPromptRows(placeholder, selectCustomID, createLabel, createCustomID string) []discordgo.MessageComponent {
-	return []discordgo.MessageComponent{
-		discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-			discordgo.SelectMenu{
-				MenuType:     discordgo.ChannelSelectMenu,
-				CustomID:     selectCustomID,
-				Placeholder:  placeholder,
-				ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText},
-			},
-		}},
-		discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-			discordgo.Button{Label: createLabel, Style: discordgo.PrimaryButton, CustomID: createCustomID},
-		}},
-	}
-}
-
-// handleSetupAuditLogSelect and its three siblings below back /config
-// setup's channel-picker prompts. Each edits the prompt message in place
-// with a plain confirmation (no leftover components — the prompt already
-// did its job) rather than re-rendering the full setup summary, since a mod
-// stepping through two prompts one at a time doesn't need the whole
-// picture re-stated after each pick.
-func (p *Plugin) handleSetupAuditLogSelect(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.handleSetupChannelPicked(ctx, s, i, "Audit log", p.settings.SetAuditLogChannel)
-}
-
-func (p *Plugin) handleSetupStatusSelect(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.handleSetupChannelPicked(ctx, s, i, "Status channel", p.settings.SetStatusChannel)
-}
-
-func (p *Plugin) handleSetupChannelPicked(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, label string, set func(ctx context.Context, guildID, channelID string) error) {
-	values := i.MessageComponentData().Values
-	if len(values) == 0 {
-		return
-	}
-	channelID := values[0]
-	if err := set(ctx, i.GuildID, channelID); err != nil {
-		_ = core.UpdateEmbedWithComponents(s, i, core.NewEmbed(core.ColorError, "Setup failed", err.Error()), nil)
-		return
-	}
-	for _, roleID := range p.settings.GuildSettings(i.GuildID).ModRoleIDs {
-		p.grantModRoleChannelAccess(s, i.GuildID, roleID)
-	}
-	p.audit(ctx, i, "config.setup", "", fmt.Sprintf("%s=<#%s> (existing)", label, channelID))
-	if err := core.UpdateEmbedWithComponents(s, i, core.NewEmbed(core.ColorSuccess, label+" set", fmt.Sprintf("Using <#%s>. Re-run `/config setup` to see the full picture.", channelID)), nil); err != nil {
-		p.log.Error("adminconfig: setup channel pick update failed", "err", err)
-	}
-}
-
-func (p *Plugin) handleSetupAuditLogCreate(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.handleSetupChannelCreate(ctx, s, i, "Audit log", birdAuditLogChannelName, p.settings.SetAuditLogChannel)
-}
-
-func (p *Plugin) handleSetupStatusCreate(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.handleSetupChannelCreate(ctx, s, i, "Status channel", birdStatusChannelName, p.settings.SetStatusChannel)
-}
-
-func (p *Plugin) handleSetupChannelCreate(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, label, channelName string, set func(ctx context.Context, guildID, channelID string) error) {
-	ch, err := s.GuildChannelCreateComplex(i.GuildID, discordgo.GuildChannelCreateData{
-		Name:                 channelName,
-		PermissionOverwrites: core.DenyEveryoneExceptBot(nil, i.GuildID, s.State.User.ID, botChannelAllow),
-	})
-	if err != nil {
-		_ = core.UpdateEmbedWithComponents(s, i, core.NewEmbed(core.ColorError, "Setup failed", fmt.Sprintf("create #%s: %v", channelName, err)), nil)
-		return
-	}
-	if err := set(ctx, i.GuildID, ch.ID); err != nil {
-		_ = core.UpdateEmbedWithComponents(s, i, core.NewEmbed(core.ColorError, "Setup failed", fmt.Sprintf("#%s created but not saved: %v", channelName, err)), nil)
-		return
-	}
-	for _, roleID := range p.settings.GuildSettings(i.GuildID).ModRoleIDs {
-		p.grantModRoleChannelAccess(s, i.GuildID, roleID)
-	}
-	p.audit(ctx, i, "config.setup", "", fmt.Sprintf("%s=<#%s> (created)", label, ch.ID))
-	if err := core.UpdateEmbedWithComponents(s, i, core.NewEmbed(core.ColorSuccess, label+" created", fmt.Sprintf("Created <#%s>. Re-run `/config setup` to see the full picture.", ch.ID)), nil); err != nil {
-		p.log.Error("adminconfig: setup channel create update failed", "err", err)
-	}
-}
-
-// botChannelAllow is what the bot needs on #bird-audit-log/#bird-status:
-// view/post/embed, all bits it already holds via @everyone's own guild
-// defaults in a typical guild — unlike rotation's staging channel, this
-// never needs Manage Messages, so there's no risk of Discord rejecting the
-// overwrite for granting a bit the bot doesn't actually hold (see
-// core.DenyEveryoneExceptBot's doc comment for why that matters).
-const botChannelAllow = discordgo.PermissionViewChannel | discordgo.PermissionSendMessages | discordgo.PermissionEmbedLinks
-
 func (p *Plugin) handleImport(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if _, err := os.Stat(p.legacyPath); err != nil {
 		core.RespondErr(s, i, "Import failed", fmt.Errorf("no legacy config file found at %s: %w", p.legacyPath, err))
@@ -772,8 +604,9 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 	}
 
 	embed := core.NewLandmarkEmbed(core.ColorInfo, "Thanks for adding Merlin!",
-		fmt.Sprintf("Run **/config setup** in **%s** to get started — it'll help you set up an audit-log channel, "+
-			"a status channel, and a default mod role. It's safe to re-run any time.", gc.Name))
+		fmt.Sprintf("Run **/config setup** in **%s** to get started — it walks you through an audit-log channel, "+
+			"a status channel, a mod role, and admins, one step at a time. It only ever changes what you pick on each "+
+			"step, and it's safe to re-run any time.", gc.Name))
 	_, err = p.session.ChannelMessageSendComplex(dmChannel.ID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{embed},
 		Files:  []*discordgo.File{core.AvatarFile(), core.BannerFile()},

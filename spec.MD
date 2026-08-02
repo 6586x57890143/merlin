@@ -239,7 +239,7 @@ Every plugin registers its own top-level slash command (`/rotation`, `/scheduler
 
 2\. On joining a guild with nothing configured yet, the bot DMs the guild owner once, pointing at `/config setup` — Discord has no API for "who invited the bot," so the owner (who always implicitly holds Administrator) is the best available proxy. No public fallback if the DM fails; it just retries on the bot's next restart.
 
-3\. The owner (via the Administrator bit) or the bootstrap identity runs `/config setup`, which creates `#bird-audit-log`, `#bird-status`, and a mod role for whatever's missing, and is safe to re-run any time as a status check.
+3\. The owner (via the Administrator bit) or the bootstrap identity runs `/config setup`, a paginated wizard over the audit-log channel, the status channel, the mod role, and admins. It creates nothing on its own: every step offers picking something the guild already has (a native channel/role/user picker) and, where a sensible default exists, a button to have `#bird-audit-log`/`#bird-status`/a `Merlin Mod` role created instead. Steps are skippable, state is re-read from the DB on every render (so there's no wizard session to expire), and it's safe to re-run any time as a status check.
 
 4\. `/config admins add`/`/config mod-roles add` bring in others; `/config permissions`/`/config plugins` fine-tune access from there.
 

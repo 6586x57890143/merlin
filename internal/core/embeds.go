@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -149,6 +150,62 @@ func RespondInfo(s *discordgo.Session, i *discordgo.InteractionCreate, title, ms
 // notice something — e.g. a partial success, or a deprecated option.
 func RespondWarn(s *discordgo.Session, i *discordgo.InteractionCreate, title, msg string) {
 	_ = RespondEmbed(s, i, NewEmbed(ColorWarning, title, msg))
+}
+
+// DeferResponse acknowledges an interaction immediately, before doing the
+// work it asked for. Discord gives a handler 3 seconds to respond at all,
+// then permanently fails the interaction with a user-visible "the
+// application did not respond" — even when the work itself went on to
+// succeed. Any handler that runs a job, walks a guild's channels, or makes
+// more than a REST call or two must defer first and finish with
+// FollowUpOK/FollowUpErr, which have 15 minutes to land instead of 3
+// seconds.
+func DeferResponse(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
+	})
+}
+
+// FollowUpOK and FollowUpErr replace a DeferResponse placeholder with the
+// real answer, matching RespondOK/RespondErr's styling exactly so a deferred
+// command is indistinguishable from an immediate one once it lands.
+func FollowUpOK(s *discordgo.Session, i *discordgo.InteractionCreate, title, msg string) error {
+	return followUp(s, i, NewEmbed(ColorSuccess, title, msg))
+}
+
+func FollowUpErr(s *discordgo.Session, i *discordgo.InteractionCreate, title string, err error) error {
+	return followUp(s, i, NewEmbed(ColorError, title, err.Error()))
+}
+
+func followUp(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Embeds: &[]*discordgo.MessageEmbed{embed},
+		Files:  []*discordgo.File{avatarFile()},
+	})
+	return err
+}
+
+// maxEmbedFieldValue is Discord's hard limit on one embed field's value.
+// Exceeding it doesn't truncate server-side — it rejects the whole message,
+// so a single over-long value (a guild's sticky messages, a long list) would
+// take out the entire response.
+const maxEmbedFieldValue = 1024
+
+// TruncateEmbedField clips s to what Discord will accept in an embed field
+// value, marking that it was cut rather than silently dropping the tail.
+func TruncateEmbedField(s string) string {
+	if len(s) <= maxEmbedFieldValue {
+		return s
+	}
+	const ellipsis = "\n… (truncated)"
+	// Cut on a rune boundary: slicing mid-rune yields invalid UTF-8, which
+	// Discord rejects outright.
+	cut := maxEmbedFieldValue - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
 }
 
 // AvatarFile and BannerFile let callers outside this package (e.g. a DM sent

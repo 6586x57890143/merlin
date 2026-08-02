@@ -5,10 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 func testLogger() *slog.Logger {
@@ -327,6 +331,166 @@ func TestRegisterDuplicateJobKeyFails(t *testing.T) {
 func TestRunNowUnknownJobFails(t *testing.T) {
 	s := New(newFakeStore(), fakeSettings{}, testLogger())
 	if err := s.RunNow(context.Background(), "g1:nope"); err == nil {
+		t.Fatal("expected RunNow on an unregistered job to fail")
+	}
+}
+
+// TestJitterSpreadsAcrossItsFullRange is a regression test for a silent
+// 32-bit overflow: jitterFor folded a uint32 hash into a nanosecond bound,
+// and nanoseconds outgrow uint32 at 4.3 seconds — so every job's jitter
+// landed in a ~4s window no matter how large maxJitter was, and the
+// thundering-herd spread it exists to provide barely existed. With a
+// 24h interval the bound is maxJitter (2 minutes), and a healthy spread must
+// reach well past those first four seconds.
+func TestJitterSpreadsAcrossItsFullRange(t *testing.T) {
+	const (
+		jobs        = 200
+		wantMinimum = 30 * time.Second // far beyond the ~4s the overflow allowed
+	)
+	var maxSeen time.Duration
+	buckets := make(map[int]bool)
+	for i := range jobs {
+		j := jitterFor(JobKey("guild"+strconv.Itoa(i), "rotation:1"), 24*time.Hour)
+		if j < 0 || j >= maxJitter {
+			t.Fatalf("jitter %v out of range [0, %v)", j, maxJitter)
+		}
+		maxSeen = max(maxSeen, j)
+		buckets[int(j/(10*time.Second))] = true
+	}
+	if maxSeen < wantMinimum {
+		t.Errorf("largest jitter across %d jobs was %v, want at least %v — the range is being truncated", jobs, maxSeen, wantMinimum)
+	}
+	if len(buckets) < 6 {
+		t.Errorf("jitter clustered into %d of 12 ten-second buckets, want it spread across the range", len(buckets))
+	}
+}
+
+// TestJitterZeroForShortIntervals keeps the bound's edge honest: an interval
+// too short to carve a tenth out of shouldn't produce a jitter at all,
+// rather than a modulo-by-zero panic.
+func TestJitterZeroForShortIntervals(t *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Hour, 5 * time.Nanosecond} {
+		if got := jitterFor("g1:job", interval); got != 0 {
+			t.Errorf("jitterFor(interval=%v) = %v, want 0", interval, got)
+		}
+	}
+}
+
+// TestExecuteRecordsFailureAfterJobTimeout covers the bookkeeping detach: a
+// job killed by its own timeout must still have that failure persisted.
+// Writing it through the expired context instead would drop it, leaving the
+// job looking permanently healthy — never backing off, never alerting, and
+// re-running into the same wall every tick.
+func TestExecuteRecordsFailureAfterJobTimeout(t *testing.T) {
+	store := newFakeStore()
+	clock := newTestClock()
+	s := New(store, fakeSettings{}, testLogger())
+	s.now = clock.Now
+
+	jobKey := JobKey("g1", "hangs")
+	if err := s.Register(jobKey, CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the job's context is already dead by the time it runs
+	if err := s.RunNow(ctx, jobKey); err == nil {
+		t.Fatal("expected the cancelled job to report an error")
+	}
+
+	st, err := store.Get(context.Background(), jobKey)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if st.ConsecutiveFailures != 1 {
+		t.Fatalf("expected the failure to be recorded despite the dead context, got %d consecutive failures", st.ConsecutiveFailures)
+	}
+}
+
+// TestAutocompleteJobCapsAtDiscordLimit guards a hard API limit: an
+// autocomplete response over 25 choices is rejected outright, so a guild
+// with many rotating channels would get no suggestions at all rather than a
+// truncated list.
+func TestAutocompleteJobCapsAtDiscordLimit(t *testing.T) {
+	s := New(newFakeStore(), fakeSettings{}, testLogger())
+	for i := range maxAutocompleteChoices + 10 {
+		key := JobKey("g1", "rotation:"+strconv.Itoa(i))
+		if err := s.Register(key, CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, func(ctx context.Context) error { return nil }); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+	}
+
+	choices := s.autocompleteJob(context.Background(), &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{GuildID: "g1"},
+	}, "job", "")
+	if len(choices) != maxAutocompleteChoices {
+		t.Fatalf("got %d autocomplete choices, want the Discord cap of %d", len(choices), maxAutocompleteChoices)
+	}
+}
+
+// TestJobsForGuildIsolatesGuilds guards the prefix matching every per-guild
+// view depends on — /scheduler list and run-now must never surface, or run,
+// another server's job.
+func TestJobsForGuildIsolatesGuilds(t *testing.T) {
+	s := New(newFakeStore(), fakeSettings{}, testLogger())
+	noop := func(ctx context.Context) error { return nil }
+	for _, key := range []string{
+		JobKey("g1", "rotation:1"),
+		JobKey("g1", "rotation-sweep"),
+		JobKey("g2", "rotation:1"),
+		JobKey("g10", "rotation:1"), // a guild ID that has g1 as a prefix
+	} {
+		if err := s.Register(key, CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, noop); err != nil {
+			t.Fatalf("Register(%s): %v", key, err)
+		}
+	}
+
+	got := s.jobsForGuild("g1")
+	if len(got) != 2 {
+		t.Fatalf("expected exactly g1's 2 jobs, got %d: %v", len(got), got)
+	}
+	for _, j := range got {
+		if !strings.HasPrefix(j.key, "g1:") {
+			t.Errorf("jobsForGuild(g1) returned %q", j.key)
+		}
+	}
+}
+
+// TestUnregisterStopsFutureRunsMidFlight documents the contract reconcile
+// depends on when a mod removes a rotating channel: an in-flight run
+// finishes untouched, but no later tick may pick the job up again.
+func TestUnregisterStopsFutureRunsMidFlight(t *testing.T) {
+	store := newFakeStore()
+	clock := newTestClock()
+	s := New(store, fakeSettings{}, testLogger())
+	s.now = clock.Now
+
+	jobKey := JobKey("g1", "removed")
+	var runs int32
+	if err := s.Register(jobKey, CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, func(ctx context.Context) error {
+		atomic.AddInt32(&runs, 1)
+		return nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	s.tick(context.Background())
+	waitForCount(t, &runs, 1)
+
+	if err := s.Unregister(jobKey); err != nil {
+		t.Fatalf("Unregister: %v", err)
+	}
+	clock.Advance(48 * time.Hour)
+	s.tick(context.Background())
+	time.Sleep(20 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&runs); got != 1 {
+		t.Fatalf("expected the unregistered job never to run again, got %d runs", got)
+	}
+	if err := s.RunNow(context.Background(), jobKey); err == nil {
 		t.Fatal("expected RunNow on an unregistered job to fail")
 	}
 }
