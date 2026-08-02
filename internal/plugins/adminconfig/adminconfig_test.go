@@ -65,6 +65,12 @@ func (fakeSettingsAdmin) ImportFromLegacyYAML(ctx context.Context, path string) 
 func (fakeSettingsAdmin) MarkOnboardingNudgeSent(ctx context.Context, guildID string) error {
 	return nil
 }
+func (fakeSettingsAdmin) SetWritesPaused(ctx context.Context, guildID string, paused bool) error {
+	return nil
+}
+func (fakeSettingsAdmin) SetWritesDryRun(ctx context.Context, guildID string, dryRun bool) error {
+	return nil
+}
 
 // fakeAuthData/fakeGate are minimal core.GuildAuthData/core.PluginGate
 // implementations — Init doesn't exercise authorization, but

@@ -3,6 +3,8 @@ package roles
 import (
 	"context"
 	"fmt"
+
+	"github.com/6586x57890143/merlin/internal/discordguard"
 )
 
 // makeSweepJob returns the Scheduler job function that releases due jails
@@ -10,7 +12,17 @@ import (
 // every sweepInterval (see roles.go).
 func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		return p.sweep(ctx, guildID)
+		// A paused guild is a deliberate operator state, not a failing job —
+		// see rotation.makeRotationJob for the full reasoning. Due jails stay
+		// due and are released on the first sweep after the pause is lifted.
+		if err := p.sweep(ctx, guildID); err != nil {
+			if discordguard.Skipped(err) {
+				p.log.Info("roles sweep: skipped, writes paused", "guild", guildID)
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
 }
 
@@ -18,6 +30,15 @@ func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 // failure is logged and doesn't abort the rest of the sweep — mirrors
 // rotation.sweep's "one bad row doesn't block the others" policy.
 func (p *Plugin) sweep(ctx context.Context, guildID string) error {
+	// Release and revoke both untrack their row as part of doing the work, so
+	// letting them run under dry-run would forget the jails and grants the
+	// real sweep still owes. Skipping wholesale keeps a rehearsing guild's
+	// pending work intact, and every jail stays due for whenever dry-run ends.
+	if p.dryRun(guildID) {
+		p.log.Info("roles sweep: dry-run, skipping release/revoke", "guild", guildID)
+		return nil
+	}
+
 	var firstErr error
 
 	dueJails, err := p.store.DueJails(ctx, guildID, p.now())

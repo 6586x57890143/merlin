@@ -109,7 +109,7 @@ func (p *Plugin) renderListPage(guildID string, channels []settings.RotationChan
 	pageChannels, clampedPage, totalPages := core.Paginate(channels, page)
 
 	names := make(map[string]string)
-	if guildChannels, err := p.ops.GuildChannels(guildID); err == nil {
+	if guildChannels, err := p.ops(guildID).GuildChannels(guildID); err == nil {
 		for _, ch := range guildChannels {
 			names[ch.ID] = ch.Name
 		}

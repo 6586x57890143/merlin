@@ -54,7 +54,8 @@ type SettingsProvider interface {
 // internal/settings' current state — see the package doc for why job
 // registration isn't a static Init-time loop.
 type Plugin struct {
-	ops      DiscordChannelOps
+	ops      OpsProvider
+	dryRun   func(guildID string) bool
 	archives ArchiveStore
 	settings SettingsProvider
 	audit    core.AuditWriter
@@ -77,9 +78,18 @@ type Plugin struct {
 // plugins need (rotation, adminconfig), unlike Deps' fields which every
 // plugin gets, mirroring how internal/scheduler and internal/audit already
 // take their own narrow settings-derived interfaces as constructor params.
-func New(settingsStore SettingsProvider) *Plugin {
+// OpsProvider yields the Discord ops view for one guild. It is a per-guild
+// lookup rather than a single shared value because internal/discordguard
+// binds each view to the guild whose pause/dry-run settings govern it —
+// most destructive Discord calls are channel-scoped and carry no guild of
+// their own, so the guild has to come from the caller, which always knows it.
+type OpsProvider func(guildID string) DiscordChannelOps
+
+func New(settingsStore SettingsProvider, ops OpsProvider, dryRun func(guildID string) bool) *Plugin {
 	return &Plugin{
 		settings:        settingsStore,
+		ops:             ops,
+		dryRun:          dryRun,
 		now:             func() time.Time { return time.Now().UTC() },
 		sweepRegistered: make(map[string]bool),
 		registeredJobs:  make(map[string]time.Duration),
@@ -89,7 +99,6 @@ func New(settingsStore SettingsProvider) *Plugin {
 func (p *Plugin) Name() string { return "rotation" }
 
 func (p *Plugin) Init(deps core.Deps) error {
-	p.ops = deps.Session
 	p.audit = deps.Audit
 	p.bus = deps.Bus
 	p.log = deps.Logger
@@ -116,13 +125,13 @@ func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 // until the first rotation actually needs it, well after Open() succeeds.
 // A failed attempt is retried on the next call rather than cached, in case
 // of a transient API error.
-func (p *Plugin) getBotUserID() (string, error) {
+func (p *Plugin) getBotUserID(guildID string) (string, error) {
 	p.botUserIDMu.Lock()
 	defer p.botUserIDMu.Unlock()
 	if p.botUserID != "" {
 		return p.botUserID, nil
 	}
-	me, err := p.ops.User("@me")
+	me, err := p.ops(guildID).User("@me")
 	if err != nil {
 		return "", fmt.Errorf("rotation: resolve bird user ID: %w", err)
 	}

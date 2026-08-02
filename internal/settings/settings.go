@@ -35,6 +35,15 @@ type GuildSettings struct {
 	// overwrite for the shared "Jailed" role. Empty means jail denies every
 	// channel until a mod configures exceptions.
 	JailAllowedChannelIDs []string
+
+	// WritesPaused and WritesDryRun are this guild's emergency controls over
+	// destructive Discord actions, enforced centrally by
+	// internal/discordguard. Paused refuses every mutating call; dry-run
+	// performs the full decision-making and audit trail but touches nothing.
+	// Neither affects read/inspect commands, so an admin can always still see
+	// what the bot thinks is going on while it is stopped.
+	WritesPaused bool
+	WritesDryRun bool
 }
 
 // IsConfigured reports whether a guild has begun any real configuration —
@@ -113,9 +122,9 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, writes_paused, writes_dry_run
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs); err {
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &gc.settings.WritesPaused, &gc.settings.WritesDryRun); err {
 	case nil, pgx.ErrNoRows:
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
@@ -216,6 +225,17 @@ func (s *Store) DisabledPlugins(guildID string) []string {
 // PluginEnabled satisfies core.PluginGate.
 func (s *Store) PluginEnabled(guildID, pluginName string) bool {
 	return !slices.Contains(s.DisabledPlugins(guildID), pluginName)
+}
+
+// WritesPaused and WritesDryRun together satisfy discordguard's GuildGate.
+// Both read through the same in-memory cache as every other setting, so a
+// pause takes effect on the next destructive call with no DB round trip.
+func (s *Store) WritesPaused(guildID string) bool {
+	return s.guild(guildID).settings.WritesPaused
+}
+
+func (s *Store) WritesDryRun(guildID string) bool {
+	return s.guild(guildID).settings.WritesDryRun
 }
 
 // --- read accessors beyond GuildAuthData ---
@@ -573,6 +593,34 @@ func (s *Store) EnablePlugin(ctx context.Context, guildID, pluginName string) er
 		WHERE guild_id = $1`,
 		guildID, pluginName); err != nil {
 		return fmt.Errorf("settings: enable plugin: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// SetWritesPaused and SetWritesDryRun toggle this guild's emergency controls
+// over destructive Discord actions. Both are TierAdmin-gated at the command
+// layer, like every other setting that changes what the bot is allowed to do.
+func (s *Store) SetWritesPaused(ctx context.Context, guildID string, paused bool) error {
+	return s.setWriteControl(ctx, guildID, "writes_paused", paused)
+}
+
+func (s *Store) SetWritesDryRun(ctx context.Context, guildID string, dryRun bool) error {
+	return s.setWriteControl(ctx, guildID, "writes_dry_run", dryRun)
+}
+
+// setWriteControl takes the column name from its two callers above, never
+// from user input — the value is the only parameterized part, and no path
+// reaches here with an attacker-influenced column.
+func (s *Store) setWriteControl(ctx context.Context, guildID, column string, value bool) error {
+	sql := fmt.Sprintf(`
+		INSERT INTO settings_guild (guild_id, %s, updated_at) VALUES ($1, $2, now())
+		ON CONFLICT (guild_id) DO UPDATE SET %s = $2, updated_at = now()`, column, column)
+	if _, err := s.pool.Exec(ctx, sql, guildID, value); err != nil {
+		return fmt.Errorf("settings: set %s: %w", column, err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		return err

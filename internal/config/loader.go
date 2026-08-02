@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/go-playground/validator/v10"
@@ -49,6 +50,7 @@ func (l *Loader) reload() error {
 	next.Discord.AppID = os.Getenv("DISCORD_APP_ID")
 	next.Database.DSN = os.Getenv("DATABASE_URL")
 	next.BootstrapAdminUserID = os.Getenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID")
+	next.PauseAllWrites = isTruthy(os.Getenv("MERLIN_PAUSE_ALL_WRITES"))
 	if next.Discord.Token == "" {
 		return errors.New("DISCORD_BOT_TOKEN not set")
 	}
@@ -60,6 +62,18 @@ func (l *Loader) reload() error {
 	l.cur = &next
 	l.mu.Unlock()
 	return nil
+}
+
+// isTruthy accepts the spellings an operator under pressure is likely to
+// reach for. Anything unrecognized — including a typo — leaves the pause
+// disengaged, so the emergency stop can only ever be turned on deliberately.
+func isTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // Global returns a snapshot of the full current configuration.

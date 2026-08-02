@@ -47,6 +47,17 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		}
 	}
 
+	// Checked before the tracking record is written, not left to
+	// discordguard's per-call refusal: applyJail deliberately records the
+	// jail before stripping roles, so a refusal at the strip would leave a
+	// jail record for a member who was never actually jailed.
+	if p.dryRun(i.GuildID) {
+		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server — <@%s> was not jailed. Turn it off with `/config dryrun clear`.", userID)); err != nil {
+			p.log.Error("roles: jail dry-run follow-up failed", "guild", i.GuildID, "err", err)
+		}
+		return
+	}
+
 	if _, ok, err := p.store.GetJail(ctx, i.GuildID, userID); err != nil {
 		fail("Failed to check existing jail", err)
 		return
@@ -55,7 +66,7 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		return
 	}
 
-	member, err := p.ops.GuildMember(i.GuildID, userID)
+	member, err := p.ops(i.GuildID).GuildMember(i.GuildID, userID)
 	if err != nil {
 		fail("Failed to fetch member", err)
 		return
@@ -132,7 +143,7 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 		return nil, fmt.Errorf("roles: save jail record for %s: %w", userID, err)
 	}
 
-	if _, err := p.ops.GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles}); err != nil {
+	if _, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles}); err != nil {
 		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownRole) {
 			// The cached Jailed role was deleted in Discord. Forget it so the
 			// next attempt resolves or recreates one instead of retrying
@@ -197,7 +208,7 @@ func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *dis
 // handled" — stop tracking, don't fight the manual override, matching
 // rotation.sweepOne's rescue-hatch precedent.
 func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec JailRecord) error {
-	member, err := p.ops.GuildMember(guildID, userID)
+	member, err := p.ops(guildID).GuildMember(guildID, userID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			// Member left the guild — nothing left to restore.
@@ -215,7 +226,7 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 		return p.store.DeleteJail(ctx, guildID, userID)
 	}
 
-	guildRoles, err := p.ops.GuildRoles(guildID)
+	guildRoles, err := p.ops(guildID).GuildRoles(guildID)
 	if err != nil {
 		return fmt.Errorf("roles: list guild roles for release: %w", err)
 	}
@@ -230,7 +241,7 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 		}
 	}
 
-	if _, err := p.ops.GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &restore}); err != nil {
+	if _, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &restore}); err != nil {
 		return fmt.Errorf("roles: restore roles for %s: %w", userID, err)
 	}
 

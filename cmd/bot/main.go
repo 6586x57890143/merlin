@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/audit"
 	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
@@ -27,19 +29,38 @@ import (
 )
 
 func main() {
-	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// Set from config once it's loaded; until then everything logs at Info.
+	// A LevelVar rather than a rebuilt handler so the level can move without
+	// invalidating the logger already handed to every plugin.
+	level := new(slog.LevelVar)
+	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
 	// Loaded in dev only; in the container, env comes from Docker secrets /
 	// the platform's secret manager, and .env won't exist — that's fine.
 	_ = godotenv.Load()
 
-	if err := run(log); err != nil {
+	if err := runGuarded(log, level); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger) error {
+// runGuarded turns a panic outside any of the recovered call sites (plugin
+// lifecycle, command dispatch, bus subscribers, scheduler jobs) into a
+// logged fatal rather than a bare runtime trace on stderr. Those traces are
+// the one failure mode that leaves no evidence in the log aggregator an
+// operator actually reads.
+func runGuarded(log *slog.Logger, level *slog.LevelVar) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic", "value", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	return run(log, level)
+}
+
+func run(log *slog.Logger, level *slog.LevelVar) error {
 	configPath := os.Getenv("MERLIN_CONFIG_PATH")
 	if configPath == "" {
 		configPath = "config.yaml"
@@ -56,6 +77,7 @@ func run(log *slog.Logger) error {
 	cfgLoader.Watch(ctx)
 
 	cfg := cfgLoader.Global()
+	level.Set(cfg.Level())
 
 	if cfg.Database.DSN == "" {
 		return errors.New("DATABASE_URL not set: Postgres is a hard runtime requirement (scheduler and settings persist state there)")
@@ -94,8 +116,23 @@ func run(log *slog.Logger) error {
 		Scheduler: sched,
 	}
 
-	rotationPlugin := rotation.New(settingsStore)
-	rolesPlugin := roles.New(roles.NewPostgresStore(db.Pool), settingsStore)
+	// Every destructive Discord call the plugins make goes through guard, so
+	// /config pause (or MERLIN_PAUSE_ALL_WRITES) can stop the bot mutating
+	// anything without a redeploy. Bound per guild at each call site because
+	// most of those calls are channel-scoped and carry no guild themselves.
+	guard := discordguard.New(session, settingsStore, log, cfg.PauseAllWrites)
+	if cfg.PauseAllWrites {
+		log.Warn("MERLIN_PAUSE_ALL_WRITES is set: every destructive Discord action is refused process-wide")
+	}
+
+	rotationPlugin := rotation.New(settingsStore,
+		func(guildID string) rotation.DiscordChannelOps { return guard.For(guildID) },
+		guard.DryRun,
+	)
+	rolesPlugin := roles.New(roles.NewPostgresStore(db.Pool), settingsStore,
+		func(guildID string) roles.DiscordMemberOps { return guard.For(guildID) },
+		guard.DryRun,
+	)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
