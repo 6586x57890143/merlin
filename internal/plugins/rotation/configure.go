@@ -218,6 +218,10 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 	// published core.EventConfigChanged synchronously, which p.reconcile is
 	// subscribed to (rotation.go's Init) — calling SyncGuild here too would
 	// just re-run the identical, already-current reconcile a second time.
+	// The reconcile it just triggered registered this channel's job with no
+	// run history, which the Scheduler treats as immediately due — defer
+	// that first fire by one interval since this channel was *just* added.
+	p.deferFirstRotation(ctx, i.GuildID, rc.ChannelID)
 	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> interval=%s", rc.ChannelID, core.FormatDuration(interval)))
 	core.RespondOK(s, i, "Rotation configured", fmt.Sprintf("<#%s> will now rotate every %s.", rc.ChannelID, humanDuration(interval)))
 }

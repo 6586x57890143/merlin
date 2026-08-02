@@ -364,6 +364,7 @@ type fakeScheduler struct {
 	registered      map[string]bool
 	registerCalls   map[string]int
 	unregisterCalls map[string]int
+	seedCalls       map[string]time.Time
 }
 
 func newFakeScheduler() *fakeScheduler {
@@ -371,6 +372,7 @@ func newFakeScheduler() *fakeScheduler {
 		registered:      make(map[string]bool),
 		registerCalls:   make(map[string]int),
 		unregisterCalls: make(map[string]int),
+		seedCalls:       make(map[string]time.Time),
 	}
 }
 
@@ -395,6 +397,13 @@ func (f *fakeScheduler) Unregister(jobKey string) error {
 
 func (f *fakeScheduler) RunNow(ctx context.Context, jobKey string) error {
 	return fmt.Errorf("fakeScheduler: RunNow not supported in this test double")
+}
+
+func (f *fakeScheduler) Seed(ctx context.Context, jobKey string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seedCalls[jobKey] = at
+	return nil
 }
 
 func newTestPlugin(ops *fakeOps, archives ArchiveStore, audit *fakeAudit, fs *fakeSettings, at time.Time) *Plugin {

@@ -407,6 +407,8 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 
 | 8 | Export (future) | Archived channel export to JSON/HTML before deletion, if still wanted |
 
+| 9 | Role Management (delivered ahead of Factions/Reporting) | `internal/plugins/roles` — jail (snapshot-and-strip + channel-visibility deny via a shared marker role) and timed single-role grants, Scheduler-driven automatic release/revoke, `Permissions.CanManageRole` role-hierarchy safeguard wired up for the first time, full audit logging |
+
 
 
 \---

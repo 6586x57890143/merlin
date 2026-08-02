@@ -29,6 +29,12 @@ type GuildSettings struct {
 	StatusChannelID       string
 	OnboardingNudgeSentAt *time.Time // nil until adminconfig's one-time "run /config setup" nudge has actually been posted
 	DisabledPlugins       []string   // plugin Name()s disabled in this guild — see core.PluginGate
+
+	// JailAllowedChannelIDs is which channels stay visible to a jailed
+	// member (internal/plugins/roles) — every other channel gets a deny
+	// overwrite for the shared "Jailed" role. Empty means jail denies every
+	// channel until a mod configures exceptions.
+	JailAllowedChannelIDs []string
 }
 
 // IsConfigured reports whether a guild has begun any real configuration —
@@ -107,9 +113,9 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins); err {
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs); err {
 	case nil, pgx.ErrNoRows:
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
@@ -176,6 +182,13 @@ func (s *Store) guild(guildID string) *guildCache {
 
 func (s *Store) ModRoleIDs(guildID string) []string   { return s.guild(guildID).settings.ModRoleIDs }
 func (s *Store) AdminUserIDs(guildID string) []string { return s.guild(guildID).settings.AdminUserIDs }
+
+// JailAllowedChannelIDs satisfies roles.JailChannelConfig — the narrow view
+// internal/plugins/roles depends on for its jail channel-visibility
+// allowlist.
+func (s *Store) JailAllowedChannelIDs(guildID string) []string {
+	return s.guild(guildID).settings.JailAllowedChannelIDs
+}
 
 // ActionPolicy satisfies core.GuildAuthData: guildID's customization of
 // action (tier override, allow-list, deny-list), or the zero value if the
@@ -294,6 +307,38 @@ func (s *Store) RemoveModRole(ctx context.Context, guildID, roleID string) error
 		UPDATE settings_guild SET mod_role_ids = array_remove(mod_role_ids, $2), updated_at = now()
 		WHERE guild_id = $1`, guildID, roleID); err != nil {
 		return fmt.Errorf("settings: remove mod role: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// AddJailAllowedChannel and RemoveJailAllowedChannel mirror Add/RemoveModRole
+// exactly — same upsert-or-append / array_remove shape, just a different
+// column.
+func (s *Store) AddJailAllowedChannel(ctx context.Context, guildID, channelID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, jail_allowed_channel_ids, updated_at) VALUES ($1, ARRAY[$2], now())
+		ON CONFLICT (guild_id) DO UPDATE SET
+			jail_allowed_channel_ids = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.jail_allowed_channel_ids || $2) AS r),
+			updated_at = now()`,
+		guildID, channelID); err != nil {
+		return fmt.Errorf("settings: add jail allowed channel: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+func (s *Store) RemoveJailAllowedChannel(ctx context.Context, guildID, channelID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_guild SET jail_allowed_channel_ids = array_remove(jail_allowed_channel_ids, $2), updated_at = now()
+		WHERE guild_id = $1`, guildID, channelID); err != nil {
+		return fmt.Errorf("settings: remove jail allowed channel: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		return err

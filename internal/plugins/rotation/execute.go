@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -51,31 +52,42 @@ func (p *Plugin) makeRotationJob(guildID string, rotationID int64) func(ctx cont
 // eliminates any window where the guild has zero live channel matching the
 // configured name — see the Milestone 3 plan for the full rationale.
 func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.RotationChannel) error {
-	// 1. Preflight: re-fetch old channel, confirm guild ownership
-	// (confused-deputy check, spec.MD §4) rather than trusting rc.ChannelID
-	// blindly.
-	oldChannel, err := p.ops.Channel(rc.ChannelID)
-	if err != nil {
-		return fmt.Errorf("rotation: fetch channel %s: %w", rc.ChannelID, err)
+	// 1&2. Preflight fetch + capacity-check listing, run concurrently: these
+	// are two independent reads (one channel by ID, one full guild channel
+	// list) with no data dependency on each other — only the processing
+	// below needs both results. Fetch-channel's error takes priority if
+	// both fail, matching the original sequential short-circuit order.
+	var oldChannel *discordgo.Channel
+	var channels []*discordgo.Channel
+	var channelErr, listErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		oldChannel, channelErr = p.ops.Channel(rc.ChannelID)
+	}()
+	go func() {
+		defer wg.Done()
+		channels, listErr = p.ops.GuildChannels(guildID)
+	}()
+	wg.Wait()
+
+	// Confused-deputy check (spec.MD §4): confirm guild ownership rather
+	// than trusting rc.ChannelID blindly.
+	if channelErr != nil {
+		return fmt.Errorf("rotation: fetch channel %s: %w", rc.ChannelID, channelErr)
 	}
 	if oldChannel.GuildID != guildID {
 		return fmt.Errorf("rotation: channel %s does not belong to guild %s", rc.ChannelID, guildID)
 	}
-
-	// 2. Capacity check — fail loud and clean, not with a raw Discord error.
-	channels, err := p.ops.GuildChannels(guildID)
-	if err != nil {
-		return fmt.Errorf("rotation: list channels for guild %s: %w", guildID, err)
+	// Capacity check — fail loud and clean, not with a raw Discord error.
+	if listErr != nil {
+		return fmt.Errorf("rotation: list channels for guild %s: %w", guildID, listErr)
 	}
 	if len(channels) >= maxChannelsPerGuild-channelCapHeadroom {
 		return fmt.Errorf("rotation: guild %s at %d/%d channels, skipping rotation for %s",
 			guildID, len(channels), maxChannelsPerGuild, rc.ChannelID)
 	}
-
-	// 3. Capture active threads — visibility only, logged/audited, no
-	// gating logic (Milestone 3 decision: no per-thread "keep active"
-	// exemption for v1).
-	threadNames := p.captureThreadNames(rc.ChannelID)
 
 	tempName := "rotating-" + rc.ChannelID
 
@@ -94,13 +106,23 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		newChannel = findChannelByName(channels, tempName)
 	}
 	if newChannel == nil {
+		var err error
 		newChannel, err = p.createHiddenChannel(guildID, oldChannel, tempName)
 		if err != nil {
 			return fmt.Errorf("rotation: create staging channel: %w", err)
 		}
 	}
 
+	// 3. Capture active threads — visibility only, logged/audited, no
+	// gating logic (Milestone 3 decision: no per-thread "keep active"
+	// exemption for v1). Only on a fresh run: if a prior attempt already
+	// got past reveal (alreadyRevealed), the old channel's threads were
+	// already captured and logged in that attempt, so re-fetching them
+	// again on a retry is a pure wasted call.
+	var threadNames []string
 	if !alreadyRevealed {
+		threadNames = p.captureThreadNames(rc.ChannelID)
+
 		// 5. Populate the still-hidden channel: sticky repost + pin, then
 		// the transparency notice. Any failure here leaves the OLD channel
 		// completely untouched and still live — zero member-visible impact.
@@ -110,6 +132,17 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 
 		// 6. Flip — new first: reveal it under the final name. Past this
 		// point there is a live channel matching the configured name.
+		//
+		// Deliberately NOT parallelized with the archive step below, even
+		// though the two ChannelEditComplex calls target disjoint channel
+		// IDs with no Go-level data dependency: the whole point of this
+		// ordering is that there is *always* at least one live channel
+		// bearing the configured name. Running both concurrently would
+		// race against Discord's own response timing — if archive's PATCH
+		// lands before reveal's, there'd be a window where *neither*
+		// channel has the right name, which is strictly worse than today's
+		// accepted "both visible" window. The realistic time saved (well
+		// under a second) isn't worth trading away that guarantee.
 		if err := p.revealNewChannel(newChannel.ID, oldChannel.Name, guildID, oldChannel.PermissionOverwrites); err != nil {
 			return fmt.Errorf("rotation: reveal new channel: %w", err)
 		}

@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS role_grants;
+DROP TABLE IF EXISTS role_jails;

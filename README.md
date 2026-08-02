@@ -15,11 +15,13 @@ just links to it rather than repeating it.
   the same invite link later updates that role in place, no need to
   remove/re-add the bot):
   - `Manage Channels` (bit `16`) — create/rename/move/delete channels and
-    edit permission overwrites, needed for channel rotation (Milestone 3).
+    edit permission overwrites, needed for channel rotation (Milestone 3)
+    and for `/roles`'s per-channel jail-visibility overwrites (Milestone 9).
   - `Manage Roles` (bit `268435456`) — needed for `/config setup`
     (Milestone 4) to create a default "Merlin Mod" role when a guild has
-    none configured yet; also required for any future faction-role
-    assignment (Milestone 5).
+    none configured yet; also used by `/roles` (Milestone 9) to create/
+    reuse a shared "Jailed" marker role and to strip/restore/grant/revoke
+    member roles — no new bit needed, this one already covers it.
   - Least-privilege, per spec.MD §4: never `Administrator`; this list only
     grows when a landed milestone genuinely needs a new bit, and this
     section (plus the invite link below) is updated in the same PR.
@@ -122,7 +124,19 @@ trail. Configured per guild via `/rotation configure add|edit|remove|sticky`
 and inspected with `/rotation list` — see spec.MD §6 for the full rotation
 process, visibility/retention semantics, and archive sweep behavior.
 
-## Architecture
+## Role management
+
+`internal/plugins/roles` implements jail (snapshot-and-strip a member's
+roles and channel access for a period, then restore both automatically or on
+demand — `/roles jail|release`) and timed single-role grants
+(`/roles grant|revoke`), with `/roles list` to inspect a member's active
+jail/grants. Jail denies every channel except a guild-configured allowlist
+(`/roles configure allow-channel|disallow-channel|list-channels`), enforced
+via one shared "Jailed" role's own permission overwrites rather than
+per-member overwrites, so jailing scales to any server size at a fixed
+Discord API cost.
+
+## Scheduler
 
 - `internal/core` — plugin registry/lifecycle, event bus, tiered+whitelist
   permissions (`permissions.go`), the single command router/dispatcher
@@ -142,6 +156,7 @@ process, visibility/retention semantics, and archive sweep behavior.
   embed, behind `Deps.Audit`.
 - `internal/plugins/ping` — reference plugin exercising the full lifecycle.
 - `internal/plugins/rotation` — channel rotation (see above).
+- `internal/plugins/roles` — jail + timed role grants (see above).
 - `internal/plugins/adminconfig` — the cross-cutting `/config` command tree
   (admins/mod-roles/permissions/setup/import) — the one exception to "one
   top-level command per plugin," since these concepts don't belong to any

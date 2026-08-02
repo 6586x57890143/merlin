@@ -21,12 +21,12 @@ type AuditWriter interface {
 	Record(ctx context.Context, guildID, actorID, action, oldValue, newValue string) error
 }
 
-// CronSpec describes a recurring job's schedule. Interval-based, not a cron
-// expression: restart-safety comes from persisting last-run state and
-// computing next-due = last-run + interval ourselves, which a bare cron
+// CronSpec describes a recurring job's schedule via a Schedule (see
+// schedule.go) — restart-safety comes from persisting last-run state and
+// computing next-due = Schedule.Next(last-run) ourselves, which a bare cron
 // expression can't do on its own (spec.MD §5).
 type CronSpec struct {
-	Interval time.Duration
+	Schedule Schedule
 }
 
 // Scheduler is the narrow interface plugins depend on to register recurring
@@ -47,6 +47,14 @@ type Scheduler interface {
 	// RunNow executes the named job immediately, bypassing its normal
 	// schedule, and updates its persisted state as a normal run would.
 	RunNow(ctx context.Context, jobKey string) error
+	// Seed marks jobKey as having just completed successfully at "at",
+	// without actually invoking its function. A job the Scheduler has never
+	// seen before is otherwise treated as immediately due (correct for a job
+	// like rotation's archive sweep, which should start working right away);
+	// Seed lets a caller that just registered a job representing something a
+	// user freshly configured — e.g. rotation's /rotation configure add —
+	// defer its first real fire by one full schedule period instead.
+	Seed(ctx context.Context, jobKey string, at time.Time) error
 }
 
 // Plugin is the interface every feature module implements. Plugins are

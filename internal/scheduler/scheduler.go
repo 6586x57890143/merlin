@@ -26,6 +26,11 @@ import (
 // second, incompatible definition.
 type CronSpec = core.CronSpec
 
+// IntervalSchedule is an alias for core.IntervalSchedule, so tests and
+// callers in this package can write IntervalSchedule{...} without an extra
+// import of internal/core just for this one type.
+type IntervalSchedule = core.IntervalSchedule
+
 // JobFunc is the work a registered job performs. Its error return drives
 // retry/backoff and, past the failure threshold, a status-channel alert.
 type JobFunc func(ctx context.Context) error
@@ -180,14 +185,17 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Register adds a job under jobKey. Returns an error if spec.Interval isn't
-// positive or jobKey is already registered.
+// Register adds a job under jobKey. Returns an error if spec.Schedule is nil
+// or fails its own Validate, or jobKey is already registered.
 func (s *Scheduler) Register(jobKey string, spec CronSpec, fn func(ctx context.Context) error) error {
 	if jobKey == "" {
 		return errors.New("scheduler: job key must not be empty")
 	}
-	if spec.Interval <= 0 {
-		return errors.New("scheduler: interval must be positive")
+	if spec.Schedule == nil {
+		return errors.New("scheduler: schedule must not be nil")
+	}
+	if err := spec.Schedule.Validate(); err != nil {
+		return fmt.Errorf("scheduler: invalid schedule: %w", err)
 	}
 	if fn == nil {
 		return errors.New("scheduler: job function must not be nil")
@@ -202,7 +210,7 @@ func (s *Scheduler) Register(jobKey string, spec CronSpec, fn func(ctx context.C
 		key:    jobKey,
 		spec:   spec,
 		fn:     fn,
-		jitter: jitterFor(jobKey, spec.Interval),
+		jitter: jitterFor(jobKey, spec.Schedule.TypicalPeriod()),
 	}
 	return nil
 }
@@ -235,6 +243,17 @@ func (s *Scheduler) RunNow(ctx context.Context, jobKey string) error {
 	return s.execute(ctx, j)
 }
 
+// Seed marks jobKey as having just completed successfully at "at" (see
+// core.Scheduler's doc comment for why a caller would want this) — a plain
+// passthrough to the same store.RecordSuccess a normal run would call, so a
+// job seeded this way is indistinguishable from one that just genuinely ran.
+func (s *Scheduler) Seed(ctx context.Context, jobKey string, at time.Time) error {
+	if err := s.store.RecordSuccess(ctx, jobKey, at); err != nil {
+		return fmt.Errorf("scheduler: seed job %q: %w", jobKey, err)
+	}
+	return nil
+}
+
 func (s *Scheduler) tick(ctx context.Context) {
 	s.mu.Lock()
 	jobs := make([]*registeredJob, 0, len(s.jobs))
@@ -264,18 +283,19 @@ func (s *Scheduler) tick(ctx context.Context) {
 // isDue decides whether j should run now, given its persisted state:
 //   - never attempted: due immediately.
 //   - failing, below the alert threshold: backoff since the last attempt.
-//   - otherwise (healthy, or failing at/above threshold): the normal
-//     interval+jitter since the last success, or since the last attempt if
-//     there has never been a success (avoids a hot loop at the threshold).
+//   - otherwise (healthy, or failing at/above threshold): the schedule's own
+//     next-due instant (plus jitter) since the last success, or since the
+//     last attempt if there has never been a success (avoids a hot loop at
+//     the threshold).
 func (s *Scheduler) isDue(ctx context.Context, j *registeredJob) (bool, error) {
 	st, err := s.store.Get(ctx, j.key)
 	if err != nil {
 		return false, err
 	}
-	return jobIsDue(st, j.spec.Interval, j.jitter, s.now()), nil
+	return jobIsDue(st, j.spec.Schedule, j.jitter, s.now()), nil
 }
 
-func jobIsDue(st JobState, interval, jitter time.Duration, now time.Time) bool {
+func jobIsDue(st JobState, sched core.Schedule, jitter time.Duration, now time.Time) bool {
 	switch {
 	case st.ConsecutiveFailures == 0 && !st.HasLastRun:
 		return true
@@ -286,14 +306,14 @@ func jobIsDue(st JobState, interval, jitter time.Duration, now time.Time) bool {
 		if st.HasLastRun {
 			anchor = st.LastRun
 		}
-		return !now.Before(anchor.Add(interval).Add(jitter))
+		return !now.Before(sched.Next(anchor).Add(jitter))
 	}
 }
 
 // nextDue estimates when j will next become due, for /scheduler list's
 // benefit — an estimate, not a promise: a currently-failing job's real next
 // attempt depends on backoff, which resets on the next success.
-func nextDue(st JobState, interval, jitter time.Duration) (time.Time, bool) {
+func nextDue(st JobState, sched core.Schedule, jitter time.Duration) (time.Time, bool) {
 	if st.ConsecutiveFailures == 0 && !st.HasLastRun {
 		return time.Time{}, false // due now
 	}
@@ -304,7 +324,7 @@ func nextDue(st JobState, interval, jitter time.Duration) (time.Time, bool) {
 	if st.HasLastRun {
 		anchor = st.LastRun
 	}
-	return anchor.Add(interval).Add(jitter), true
+	return sched.Next(anchor).Add(jitter), true
 }
 
 func (s *Scheduler) execute(ctx context.Context, j *registeredJob) error {
@@ -418,7 +438,7 @@ func (s *Scheduler) jobLines(ctx context.Context, guildID string) []string {
 			last = st.LastRun.Format(time.RFC3339)
 		}
 		next := "due now"
-		if due, ok := nextDue(st, j.spec.Interval, j.jitter); ok {
+		if due, ok := nextDue(st, j.spec.Schedule, j.jitter); ok {
 			next = due.Format(time.RFC3339)
 		}
 		lines = append(lines, fmt.Sprintf("`%s` — last run: %s, next due: %s, consecutive failures: %d", name, last, next, st.ConsecutiveFailures))

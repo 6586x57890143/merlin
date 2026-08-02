@@ -30,9 +30,9 @@ import (
 )
 
 // sweepInterval is how often each guild's archive-deletion sweep runs.
-// Retention is denominated in days, so hourly slop against a day-scale
-// window is a non-issue — retention_days is documented as a minimum, not
-// an exact-to-the-second promise.
+// Retention is denominated in hours — retention_hours is documented as a
+// minimum, not an exact-to-the-second promise, so hourly sweep slop against
+// even a 1-hour retention window is acceptable.
 const sweepInterval = time.Hour
 
 // SettingsProvider is the narrow slice of internal/settings.Store this
@@ -139,6 +139,39 @@ func (p *Plugin) SyncGuild(guildID string) {
 	p.reconcile(guildID)
 }
 
+// deferFirstRotation seeds channelID's rotation job as if it had just run,
+// so a channel a mod just added to rotation waits a full interval before its
+// first real rotation instead of firing on the Scheduler's very next tick.
+// A brand-new job has no persisted last-run state, and the Scheduler treats
+// that as immediately due — correct for jobs like rotation-sweep that should
+// start working right away, wrong here (a channel that was just configured
+// shouldn't rotate before its interval has even elapsed once).
+//
+// Must be called only for a channel just added via handleAdd, never from
+// reconcile itself: reconcile also runs on every restart for channels that
+// already have real run history, and seeding those would incorrectly reset
+// an overdue rotation's clock. Only the caller that just inserted a brand
+// new row knows that distinction — reconcile alone can't tell "never
+// registered in this process" apart from "genuinely never run."
+//
+// This runs after UpsertRotationChannel's own synchronous EventConfigChanged
+// publish has already registered the job (Init's bus subscription calls
+// reconcile), so there's a narrow window — bounded by the Scheduler's 30s
+// tick — where a tick could fire before this seed lands. Accepting that tiny
+// window over adding cross-package plumbing to close it matches this
+// package's existing tolerance for narrow timing windows (see rotate's
+// dual-visible-channel window and its rationale).
+func (p *Plugin) deferFirstRotation(ctx context.Context, guildID, channelID string) {
+	rc, ok := p.settings.RotationChannel(guildID, channelID)
+	if !ok {
+		return
+	}
+	jobKey := scheduler.JobKey(guildID, "rotation:"+strconv.FormatInt(rc.ID, 10))
+	if err := p.sched.Seed(ctx, jobKey, p.now()); err != nil {
+		p.log.Error("rotation: defer first run for new channel", "job", jobKey, "err", err)
+	}
+}
+
 // reconcile registers a Scheduler job for every currently-configured
 // rotating channel that doesn't have one yet (or whose interval changed —
 // Unregister+Register, since the Scheduler has no in-place spec update),
@@ -150,7 +183,7 @@ func (p *Plugin) reconcile(guildID string) {
 
 	sweepKey := scheduler.JobKey(guildID, "rotation-sweep")
 	if !p.sweepRegistered[guildID] {
-		if err := p.sched.Register(sweepKey, core.CronSpec{Interval: sweepInterval}, p.makeSweepJob(guildID)); err != nil {
+		if err := p.sched.Register(sweepKey, core.CronSpec{Schedule: core.IntervalSchedule{Interval: sweepInterval}}, p.makeSweepJob(guildID)); err != nil {
 			p.log.Error("rotation: register sweep job", "guild", guildID, "err", err)
 		} else {
 			p.sweepRegistered[guildID] = true
@@ -185,7 +218,7 @@ func (p *Plugin) reconcile(guildID string) {
 		}
 
 		rotationID := rc.ID
-		if err := p.sched.Register(jobKey, core.CronSpec{Interval: interval}, p.makeRotationJob(guildID, rotationID)); err != nil {
+		if err := p.sched.Register(jobKey, core.CronSpec{Schedule: core.IntervalSchedule{Interval: interval}}, p.makeRotationJob(guildID, rotationID)); err != nil {
 			p.log.Error("rotation: register job", "job", jobKey, "err", err)
 			continue
 		}

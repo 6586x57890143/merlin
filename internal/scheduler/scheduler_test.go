@@ -100,7 +100,7 @@ func TestTickRunsJobOnlyWhenDue(t *testing.T) {
 	jobKey := JobKey("g1", "test")
 	interval := time.Hour
 	var runs int32
-	if err := s.Register(jobKey, CronSpec{Interval: interval}, func(ctx context.Context) error {
+	if err := s.Register(jobKey, CronSpec{Schedule: IntervalSchedule{Interval: interval}}, func(ctx context.Context) error {
 		atomic.AddInt32(&runs, 1)
 		return nil
 	}); err != nil {
@@ -141,7 +141,7 @@ func TestPersistedLastRunSurvivesRestart(t *testing.T) {
 
 	s1 := New(store, fakeSettings{}, testLogger())
 	s1.now = clock.Now
-	if err := s1.Register(jobKey, CronSpec{Interval: time.Hour}, func(ctx context.Context) error { return nil }); err != nil {
+	if err := s1.Register(jobKey, CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, func(ctx context.Context) error { return nil }); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if err := s1.RunNow(context.Background(), jobKey); err != nil {
@@ -152,7 +152,7 @@ func TestPersistedLastRunSurvivesRestart(t *testing.T) {
 	// same backing store must not treat the job as never-attempted.
 	s2 := New(store, fakeSettings{}, testLogger())
 	s2.now = clock.Now
-	if err := s2.Register(jobKey, CronSpec{Interval: time.Hour}, func(ctx context.Context) error { return nil }); err != nil {
+	if err := s2.Register(jobKey, CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, func(ctx context.Context) error { return nil }); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -193,7 +193,7 @@ func TestThresholdFailuresAlertOnce(t *testing.T) {
 
 	jobKey := JobKey("g1", "failing")
 	boom := errors.New("boom")
-	if err := s.Register(jobKey, CronSpec{Interval: time.Hour}, func(ctx context.Context) error { return boom }); err != nil {
+	if err := s.Register(jobKey, CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, func(ctx context.Context) error { return boom }); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestPerJobLockPreventsConcurrentDoubleRun(t *testing.T) {
 	release := make(chan struct{})
 	var concurrent int32
 
-	if err := s.Register(jobKey, CronSpec{Interval: time.Hour}, func(ctx context.Context) error {
+	if err := s.Register(jobKey, CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, func(ctx context.Context) error {
 		if atomic.AddInt32(&concurrent, 1) > 1 {
 			t.Error("job ran concurrently with itself")
 		}
@@ -262,7 +262,7 @@ func TestRunNowIgnoresScheduleAndUpdatesLastRun(t *testing.T) {
 
 	jobKey := JobKey("g1", "manual")
 	var runs int32
-	if err := s.Register(jobKey, CronSpec{Interval: 24 * time.Hour}, func(ctx context.Context) error {
+	if err := s.Register(jobKey, CronSpec{Schedule: IntervalSchedule{Interval: 24 * time.Hour}}, func(ctx context.Context) error {
 		atomic.AddInt32(&runs, 1)
 		return nil
 	}); err != nil {
@@ -295,11 +295,11 @@ func TestRegisterValidation(t *testing.T) {
 		fn      func(ctx context.Context) error
 		wantErr bool
 	}{
-		{"empty key", "", CronSpec{Interval: time.Hour}, noop, true},
+		{"empty key", "", CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, noop, true},
 		{"zero interval", "g1:job", CronSpec{}, noop, true},
-		{"negative interval", "g1:job", CronSpec{Interval: -time.Hour}, noop, true},
-		{"nil fn", "g1:job", CronSpec{Interval: time.Hour}, nil, true},
-		{"valid", "g1:job", CronSpec{Interval: time.Hour}, noop, false},
+		{"negative interval", "g1:job", CronSpec{Schedule: IntervalSchedule{Interval: -time.Hour}}, noop, true},
+		{"nil fn", "g1:job", CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, nil, true},
+		{"valid", "g1:job", CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, noop, false},
 	}
 
 	for _, tt := range tests {
@@ -316,10 +316,10 @@ func TestRegisterValidation(t *testing.T) {
 func TestRegisterDuplicateJobKeyFails(t *testing.T) {
 	s := New(newFakeStore(), fakeSettings{}, testLogger())
 	noop := func(ctx context.Context) error { return nil }
-	if err := s.Register("g1:job", CronSpec{Interval: time.Hour}, noop); err != nil {
+	if err := s.Register("g1:job", CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, noop); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
-	if err := s.Register("g1:job", CronSpec{Interval: time.Hour}, noop); err == nil {
+	if err := s.Register("g1:job", CronSpec{Schedule: IntervalSchedule{Interval: time.Hour}}, noop); err == nil {
 		t.Fatal("expected duplicate registration to fail")
 	}
 }

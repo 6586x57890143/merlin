@@ -19,6 +19,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
+	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/settings"
@@ -94,11 +95,13 @@ func run(log *slog.Logger) error {
 	}
 
 	rotationPlugin := rotation.New(settingsStore)
+	rolesPlugin := roles.New(roles.NewPostgresStore(db.Pool), settingsStore)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New())
 	registry.Register(rotationPlugin)
+	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath)
 	registry.Register(adminconfigPlugin)
 
@@ -138,6 +141,7 @@ func run(log *slog.Logger) error {
 			commandsRegistered = false
 		}
 		rotationPlugin.SyncGuild(gc.ID)
+		rolesPlugin.SyncGuild(gc.ID)
 		if commandsRegistered {
 			// Only nudge toward /config setup if it was actually registered
 			// here — otherwise the nudge would point at a command that

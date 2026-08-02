@@ -42,6 +42,14 @@ func foreverRetentionRC() settings.RotationChannel {
 	}
 }
 
+func hourRetentionRC() settings.RotationChannel {
+	return settings.RotationChannel{
+		GuildID: "g1", ChannelID: "old1", IntervalHours: 24,
+		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
+		RetentionHours: intPtr(1),
+	}
+}
+
 var fixedNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func setupRotation(t *testing.T, rc settings.RotationChannel) (*fakeOps, *fakeArchiveStore, *fakeAudit, *Plugin, settings.RotationChannel) {
@@ -306,6 +314,35 @@ func TestRotateForeverRetentionNeverDue(t *testing.T) {
 	}
 }
 
+// TestRotateRetentionHourBoundaryIsPrecise is a regression test for
+// retention moving from day-granular to hour-granular storage (migration
+// 0010): a 1-hour retention window must become due right at the 1-hour
+// mark, not rounded up to a day boundary the way the old
+// time.AddDate(0,0,days) arithmetic would have.
+func TestRotateRetentionHourBoundaryIsPrecise(t *testing.T) {
+	_, archives, _, p, rc := setupRotation(t, hourRetentionRC())
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	notYetDue, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.Add(59*time.Minute))
+	if err != nil {
+		t.Fatalf("DueForDeletion (59m): %v", err)
+	}
+	if len(notYetDue) != 0 {
+		t.Fatalf("expected a 1-hour retention archive to NOT be due at 59 minutes, got %d due rows", len(notYetDue))
+	}
+
+	due, err := archives.DueForDeletion(context.Background(), "g1", fixedNow.Add(61*time.Minute))
+	if err != nil {
+		t.Fatalf("DueForDeletion (61m): %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected a 1-hour retention archive to be due at 61 minutes, got %d due rows", len(due))
+	}
+}
+
 func TestRotateFailureLeavesNoLaterStepApplied(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -343,6 +380,53 @@ func TestRotateFailureLeavesNoLaterStepApplied(t *testing.T) {
 				t.Fatalf("expected no audit record on this failure, got %d", len(audit.records))
 			}
 		})
+	}
+}
+
+// TestRotateConcurrentFetchFailurePrioritizesChannelError guards the
+// parallelized preflight fetch (Channel + GuildChannels now run
+// concurrently via goroutines, see execute.go's rotate): when both fail
+// simultaneously, the channel-fetch error must still win, matching the
+// priority the original sequential code had (it never even reached
+// GuildChannels if Channel failed first).
+func TestRotateConcurrentFetchFailurePrioritizesChannelError(t *testing.T) {
+	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
+	ops.failOnCall["Channel"] = 1
+	ops.failOnCall["GuildChannels"] = 1
+
+	err := p.rotate(context.Background(), "g1", rc)
+	if err == nil {
+		t.Fatal("expected rotate to return an error")
+	}
+	if !strings.Contains(err.Error(), "fetch channel") {
+		t.Fatalf("expected the channel-fetch error to take priority when both preflight reads fail, got: %v", err)
+	}
+}
+
+// TestRotateSkipsThreadCaptureOnAlreadyRevealedRetry is a regression test
+// for the thread-capture reordering in execute.go's rotate: capturing
+// active threads only matters (and only happens) on a fresh run, not when
+// a retry finds the new channel already revealed — re-fetching them again
+// would just be a wasted ThreadsActive call, since the first attempt
+// already captured and logged them.
+func TestRotateSkipsThreadCaptureOnAlreadyRevealedRetry(t *testing.T) {
+	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
+	// Fail archiving old (2nd ChannelEditComplex call) on the first attempt
+	// only — reveal succeeds, so the retry finds alreadyRevealed == true.
+	ops.failOnCall["ChannelEditComplex"] = 2
+
+	if err := p.rotate(context.Background(), "g1", rc); err == nil {
+		t.Fatal("expected the first attempt to fail while archiving old")
+	}
+	if got := ops.callCounts["ThreadsActive"]; got != 1 {
+		t.Fatalf("expected ThreadsActive called exactly once on the fresh-run first attempt, got %d", got)
+	}
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("retry rotate: %v", err)
+	}
+	if got := ops.callCounts["ThreadsActive"]; got != 1 {
+		t.Fatalf("expected ThreadsActive still called exactly once after the already-revealed retry (skipped, not re-fetched), got %d", got)
 	}
 }
 
@@ -517,6 +601,86 @@ func TestReconcileJobKeyStableAcrossRetarget(t *testing.T) {
 	}
 	if sched.unregisterCalls[jobKey] != 0 {
 		t.Fatalf("expected the job to never be unregistered across a retarget, got %d unregister calls", sched.unregisterCalls[jobKey])
+	}
+}
+
+// TestDeferFirstRotationSeedsNewChannelJob verifies handleAdd's fix for a
+// real reported bug: adding a brand-new rotation channel used to rotate it
+// on the Scheduler's very next tick, since a freshly-registered job with no
+// run history is otherwise treated as immediately due. deferFirstRotation
+// (called from handleAdd right after the channel is saved) must seed that
+// job's persisted state so its first real rotation waits a full interval.
+func TestDeferFirstRotationSeedsNewChannelJob(t *testing.T) {
+	fs := newFakeSettings()
+	fs.modRoles["g1"] = []string{"modrole1"}
+	_ = fs.UpsertRotationChannel(context.Background(), settings.RotationChannel{
+		GuildID: "g1", ChannelID: "new1", IntervalHours: 24,
+		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
+	})
+
+	sched := newFakeScheduler()
+	p := &Plugin{
+		settings:        fs,
+		sched:           sched,
+		log:             testLogger(),
+		bus:             core.NewEventBus(testLogger()),
+		now:             func() time.Time { return fixedNow },
+		sweepRegistered: make(map[string]bool),
+		registeredJobs:  make(map[string]time.Duration),
+	}
+
+	// fs.UpsertRotationChannel doesn't publish core.EventConfigChanged (the
+	// fake mirrors the store's write path, not its event side effect), so
+	// reconcile is called explicitly here to mirror what the real
+	// settings.Store's publishChanged would trigger synchronously in
+	// production before handleAdd calls deferFirstRotation.
+	p.reconcile("g1")
+
+	rc, ok := fs.RotationChannel("g1", "new1")
+	if !ok {
+		t.Fatal("expected the seeded rotation config to be findable")
+	}
+	jobKey := scheduler.JobKey("g1", "rotation:"+strconv.FormatInt(rc.ID, 10))
+
+	p.deferFirstRotation(context.Background(), "g1", "new1")
+
+	seededAt, ok := sched.seedCalls[jobKey]
+	if !ok {
+		t.Fatalf("expected deferFirstRotation to seed job %q, but it never called Seed", jobKey)
+	}
+	if !seededAt.Equal(fixedNow) {
+		t.Fatalf("expected job seeded at %v, got %v", fixedNow, seededAt)
+	}
+}
+
+// TestReconcileAloneNeverSeeds guards the other half of the same fix: a
+// restart calls SyncGuild (-> reconcile) for every already-configured
+// channel, including ones with real run history. reconcile must never seed
+// on its own — only handleAdd's explicit deferFirstRotation call may do
+// that — or a restart would incorrectly reset an overdue rotation's clock.
+func TestReconcileAloneNeverSeeds(t *testing.T) {
+	fs := newFakeSettings()
+	fs.modRoles["g1"] = []string{"modrole1"}
+	_ = fs.UpsertRotationChannel(context.Background(), settings.RotationChannel{
+		GuildID: "g1", ChannelID: "existing1", IntervalHours: 24,
+		ArchiveCategoryID: "archivecat", ArchiveVisibility: "mod_only",
+	})
+
+	sched := newFakeScheduler()
+	p := &Plugin{
+		settings:        fs,
+		sched:           sched,
+		log:             testLogger(),
+		bus:             core.NewEventBus(testLogger()),
+		now:             func() time.Time { return fixedNow },
+		sweepRegistered: make(map[string]bool),
+		registeredJobs:  make(map[string]time.Duration),
+	}
+
+	p.SyncGuild("g1")
+
+	if len(sched.seedCalls) != 0 {
+		t.Fatalf("expected reconcile/SyncGuild to never seed on its own, got seed calls: %v", sched.seedCalls)
 	}
 }
 
