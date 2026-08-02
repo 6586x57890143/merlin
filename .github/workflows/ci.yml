@@ -57,6 +57,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  prose:
+    runs-on: ubuntu-latest
+    # Em dashes, ellipsis characters and curly quotes are the punctuation
+    # nobody types on a keyboard, so they read as machine written wherever
+    # they appear: command responses, embeds, docs, code comments. They were
+    # removed once in bulk; without something watching, the next feature just
+    # reintroduces them a few at a time. Cheap enough to run on its own job so
+    # a prose failure reports separately from a compile or test failure.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: No generated-text punctuation
+        run: |
+          # Patterns are written as UTF-8 byte escapes, not literal
+          # characters, so this file does not trip its own check. Octal
+          # rather than $'\uXXXX' because \u needs bash 4.2+ and silently
+          # passes the literal text "\u2014" through as the pattern on shells
+          # without it, which matches nothing real and quietly disarms the
+          # guard. -I skips binaries so the embedded brand PNGs, whose
+          # compressed bytes contain these sequences by chance, never match.
+          # spec.MD is exempt: it is the original hand-written design
+          # document, not generated prose, and is treated as fixed history.
+          em=$'\342\200\224' ell=$'\342\200\246'
+          ldq=$'\342\200\234' rdq=$'\342\200\235'
+          if grep -rnI --exclude-dir=.git --exclude=spec.MD \
+               -e "$em" -e "$ell" -e "$ldq" -e "$rdq" . ; then
+            echo "::error::Found em dashes, ellipsis characters or curly quotes at the locations above. Use plain punctuation: a colon, comma, full stop, or parentheses, whichever the sentence actually wants."
+            exit 1
+          fi
+
   docker-build:
     runs-on: ubuntu-latest
     steps:
