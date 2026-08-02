@@ -325,7 +325,7 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 	}
 
 	if _, err := p.ops.ChannelMessageSendEmbed(channelID, &discordgo.MessageEmbed{
-		Description: retentionNotice(rc.IntervalHours),
+		Description: retentionNotice(rc),
 	}); err != nil {
 		return fmt.Errorf("post retention notice: %w", err)
 	}

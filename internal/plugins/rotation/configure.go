@@ -222,7 +222,7 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 	// run history, which the Scheduler treats as immediately due — defer
 	// that first fire by one interval since this channel was *just* added.
 	p.deferFirstRotation(ctx, i.GuildID, rc.ChannelID)
-	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> interval=%s", rc.ChannelID, core.FormatDuration(interval)))
+	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> %s", rc.ChannelID, rotationSummary(rc)))
 	core.RespondOK(s, i, "Rotation configured", fmt.Sprintf("<#%s> will now rotate every %s.", rc.ChannelID, humanDuration(interval)))
 }
 
@@ -281,7 +281,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 		core.RespondErr(s, i, "Not rotating", fmt.Errorf("that channel isn't configured to rotate — use `/rotation configure add` first"))
 		return
 	}
-	before := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionHours, rc.ArchiveVisibility)
+	before := rotationSummary(rc)
 
 	if v, ok := opts["interval"]; ok {
 		interval, err := core.ParseFlexibleDuration(v.StringValue())
@@ -316,7 +316,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 	}
 	// UpsertRotationChannel already triggered reconcile via
 	// core.EventConfigChanged — see the comment in handleAdd above.
-	after := fmt.Sprintf("interval=%dh retention=%v visibility=%s", rc.IntervalHours, rc.RetentionHours, rc.ArchiveVisibility)
+	after := rotationSummary(rc)
 	p.auditConfigChange(ctx, i, "rotation.edit", before, after)
 	core.RespondOK(s, i, "Rotation updated", fmt.Sprintf("Updated <#%s>.", channelID))
 }
@@ -352,6 +352,29 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 	}
 	p.auditConfigChange(ctx, i, "rotation.sticky", "", fmt.Sprintf("channel=<#%s> enabled=%v messages=%d", channelID, rc.StickyEnabled, len(rc.StickyMessages)))
 	core.RespondOK(s, i, "Sticky updated", fmt.Sprintf("Sticky settings for <#%s> updated.", channelID))
+}
+
+// rotationSummary renders the settings that decide how long content survives,
+// for the audit trail. Retention gets its own formatting because it is a
+// *int: the audit line used to interpolate it with %v, which prints the
+// pointer address ("retention=0x55c4509432e8") rather than the value — so the
+// audit record for the one irreversible setting in this plugin was
+// unreadable, in the exact place someone would look after a channel was
+// permanently deleted.
+func rotationSummary(rc settings.RotationChannel) string {
+	return fmt.Sprintf("interval=%s retention=%s visibility=%s",
+		core.FormatDuration(time.Duration(rc.IntervalHours)*time.Hour),
+		formatRetention(rc.RetentionHours),
+		rc.ArchiveVisibility)
+}
+
+// formatRetention renders a retention window, distinguishing "kept forever"
+// (nil) from any finite window. Never prints a pointer.
+func formatRetention(hours *int) string {
+	if hours == nil {
+		return "forever"
+	}
+	return core.FormatDuration(time.Duration(*hours) * time.Hour)
 }
 
 func (p *Plugin) auditConfigChange(ctx context.Context, i *discordgo.InteractionCreate, action, oldValue, newValue string) {
