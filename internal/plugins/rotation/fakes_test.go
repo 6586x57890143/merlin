@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -18,10 +19,22 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// findOtherChannelByName locates a channel by name, ignoring excludeID —
+// a test-side assertion helper for "did the replacement channel end up
+// where it should", deliberately looser than rotate's own replacement
+// matching so a test can catch a replacement that landed in the wrong
+// category instead of silently failing to find it.
+func findOtherChannelByName(channels []*discordgo.Channel, name, excludeID string) *discordgo.Channel {
+	return findChannel(channels, func(c *discordgo.Channel) bool { return c.Name == name && c.ID != excludeID })
+}
+
 // fakeOps is an in-memory DiscordChannelOps used to unit test the rotation
 // state machine without a live Discord session. failOnCall lets a test
 // inject an error on a specific (1-indexed) call to a named method, so
 // step-sequencing and idempotency-on-retry can be tested precisely.
+// failWith is failOnCall's counterpart for tests that care about the *kind*
+// of failure rather than which call fails: it fails every call to a named
+// method with a specific error, until the test removes the entry.
 type fakeOps struct {
 	mu         sync.Mutex
 	channels   map[string]*discordgo.Channel
@@ -29,6 +42,7 @@ type fakeOps struct {
 	nextID     int
 	callCounts map[string]int
 	failOnCall map[string]int
+	failWith   map[string]error
 }
 
 func newFakeOps() *fakeOps {
@@ -37,6 +51,7 @@ func newFakeOps() *fakeOps {
 		messages:   make(map[string][]*discordgo.Message),
 		callCounts: make(map[string]int),
 		failOnCall: make(map[string]int),
+		failWith:   make(map[string]error),
 		nextID:     1000,
 	}
 }
@@ -47,10 +62,37 @@ func (f *fakeOps) addChannel(ch *discordgo.Channel) {
 	f.channels[ch.ID] = ch
 }
 
+// unknownChannelErr mirrors what discordgo returns for a channel that no
+// longer exists — a *discordgo.RESTError carrying Discord's own 10003 code —
+// rather than a bare error string. Callers distinguish that case from a
+// transient failure (core.IsUnknownResource), so a fake that returned an
+// undifferentiated error would let "gone" and "try again later" test
+// identically, which is precisely the bug that distinction exists to catch.
+func unknownChannelErr(channelID string) error {
+	return &discordgo.RESTError{
+		Response:     &http.Response{StatusCode: http.StatusNotFound},
+		ResponseBody: []byte(`{"code":10003,"message":"Unknown Channel"}`),
+		Message:      &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownChannel, Message: "Unknown Channel: " + channelID},
+	}
+}
+
+// transientErr is a retryable Discord failure (a 500), the counterpart to
+// unknownChannelErr.
+func transientErr() error {
+	return &discordgo.RESTError{
+		Response:     &http.Response{StatusCode: http.StatusInternalServerError},
+		ResponseBody: []byte(`{"code":0,"message":"500: Internal Server Error"}`),
+		Message:      &discordgo.APIErrorMessage{Code: 0, Message: "500: Internal Server Error"},
+	}
+}
+
 func (f *fakeOps) shouldFail(method string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.callCounts[method]++
+	if err, ok := f.failWith[method]; ok {
+		return err
+	}
 	if n, ok := f.failOnCall[method]; ok && f.callCounts[method] == n {
 		return fmt.Errorf("injected failure: %s call #%d", method, n)
 	}
@@ -65,7 +107,7 @@ func (f *fakeOps) Channel(channelID string, _ ...discordgo.RequestOption) (*disc
 	defer f.mu.Unlock()
 	ch, ok := f.channels[channelID]
 	if !ok {
-		return nil, fmt.Errorf("fakeOps: channel %s not found", channelID)
+		return nil, unknownChannelErr(channelID)
 	}
 	cp := *ch
 	return &cp, nil
@@ -125,7 +167,7 @@ func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEd
 	defer f.mu.Unlock()
 	ch, ok := f.channels[channelID]
 	if !ok {
-		return nil, fmt.Errorf("fakeOps: channel %s not found", channelID)
+		return nil, unknownChannelErr(channelID)
 	}
 	if data.Name != "" {
 		ch.Name = data.Name
@@ -154,7 +196,7 @@ func (f *fakeOps) ChannelDelete(channelID string, _ ...discordgo.RequestOption) 
 	defer f.mu.Unlock()
 	ch, ok := f.channels[channelID]
 	if !ok {
-		return nil, fmt.Errorf("fakeOps: channel %s not found", channelID)
+		return nil, unknownChannelErr(channelID)
 	}
 	delete(f.channels, channelID)
 	return ch, nil

@@ -3,6 +3,8 @@ package rotation
 import (
 	"context"
 	"fmt"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // makeSweepJob returns the Scheduler job function that permanently deletes
@@ -39,8 +41,16 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord) error {
 	ch, err := p.ops.Channel(rec.ChannelID)
 	if err != nil {
-		// Already gone (e.g. manually deleted) — nothing left to sweep.
-		return p.archives.Delete(ctx, rec.ChannelID)
+		if core.IsUnknownResource(err) {
+			// Already gone (e.g. manually deleted) — nothing left to sweep.
+			return p.archives.Delete(ctx, rec.ChannelID)
+		}
+		// Anything else (rate limit, 5xx, network blip) is transient.
+		// Dropping the row here would leave the archived channel alive with
+		// nothing left tracking it — a silently broken retention promise,
+		// which is the exact failure this whole feature exists to prevent.
+		// Fail loudly instead and let the next hourly sweep retry.
+		return fmt.Errorf("fetch archived channel %s: %w", rec.ChannelID, err)
 	}
 	if ch.GuildID != guildID {
 		// Confused-deputy guard: this row no longer describes a channel in

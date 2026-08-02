@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -31,6 +32,11 @@ type fakeOps struct {
 	nextRoleID int
 	overwrites map[overwriteKey]struct{ allow, deny int64 }
 
+	// memberFetchErr, when set, fails every GuildMember call with it — for
+	// tests that care about how a *kind* of failure is handled rather than
+	// which call fails.
+	memberFetchErr error
+
 	roleAddCalls    []string // "guildID:userID:roleID"
 	roleRemoveCalls []string
 	memberEditCalls map[string][]string // userID -> Roles set on each GuildMemberEdit call
@@ -48,6 +54,32 @@ func newFakeOps() *fakeOps {
 
 func memberKey(guildID, userID string) string { return guildID + ":" + userID }
 
+// unknownMemberErr mirrors what discordgo returns for a member who has left
+// the guild — a *discordgo.RESTError carrying Discord's own 10007 code.
+// Callers distinguish that from a transient failure (core.IsUnknownResource)
+// before deciding to stop tracking a jail or grant, so an undifferentiated
+// error here would make "they left" and "Discord hiccuped" test identically.
+func unknownMemberErr(guildID, userID string) error {
+	return &discordgo.RESTError{
+		Response:     &http.Response{StatusCode: http.StatusNotFound},
+		ResponseBody: []byte(`{"code":10007,"message":"Unknown Member"}`),
+		Message: &discordgo.APIErrorMessage{
+			Code:    discordgo.ErrCodeUnknownMember,
+			Message: fmt.Sprintf("Unknown Member: %s in %s", userID, guildID),
+		},
+	}
+}
+
+// transientErr is a retryable Discord failure (a 500), the counterpart to
+// unknownMemberErr.
+func transientErr() error {
+	return &discordgo.RESTError{
+		Response:     &http.Response{StatusCode: http.StatusInternalServerError},
+		ResponseBody: []byte(`{"code":0,"message":"500: Internal Server Error"}`),
+		Message:      &discordgo.APIErrorMessage{Message: "500: Internal Server Error"},
+	}
+}
+
 func (f *fakeOps) setMember(guildID, userID string, roleIDs []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -57,9 +89,12 @@ func (f *fakeOps) setMember(guildID, userID string, roleIDs []string) {
 func (f *fakeOps) GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.memberFetchErr != nil {
+		return nil, f.memberFetchErr
+	}
 	m, ok := f.members[memberKey(guildID, userID)]
 	if !ok {
-		return nil, fmt.Errorf("fakeOps: unknown member %s in guild %s", userID, guildID)
+		return nil, unknownMemberErr(guildID, userID)
 	}
 	cp := *m
 	cp.Roles = append([]string(nil), m.Roles...)
@@ -71,7 +106,7 @@ func (f *fakeOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildM
 	defer f.mu.Unlock()
 	m, ok := f.members[memberKey(guildID, userID)]
 	if !ok {
-		return nil, fmt.Errorf("fakeOps: unknown member %s in guild %s", userID, guildID)
+		return nil, unknownMemberErr(guildID, userID)
 	}
 	if data.Roles != nil {
 		m.Roles = append([]string(nil), (*data.Roles)...)
@@ -176,7 +211,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{jails: make(map[string]JailRecord), grants: make(map[string]GrantRecord)}
 }
 
-func jailKey(guildID, userID string) string        { return guildID + ":" + userID }
+func jailKey(guildID, userID string) string          { return guildID + ":" + userID }
 func grantKey(guildID, userID, roleID string) string { return guildID + ":" + userID + ":" + roleID }
 
 func (f *fakeStore) InsertJail(ctx context.Context, rec JailRecord) error {

@@ -106,12 +106,29 @@ func RespondEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCr
 // that's re-rendering the same list/detail view the user is already
 // looking at.
 func UpdateEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
+	return updateEmbed(s, i, embed, components, []*discordgo.File{avatarFile()})
+}
+
+// UpdateLandmarkEmbedWithComponents is UpdateEmbedWithComponents for a
+// NewLandmarkEmbed — also re-uploads the banner file its Image references.
+func UpdateLandmarkEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
+	return updateEmbed(s, i, embed, components, []*discordgo.File{avatarFile(), bannerFile()})
+}
+
+func updateEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent, files []*discordgo.File) error {
+	// Empty (not omitted) attachments means "keep none of what's already on
+	// the message" — the newly uploaded files are the whole set afterwards.
+	// Omitting it instead retains the old ones and appends these, so a view
+	// edited repeatedly (a paginated list, /config setup's wizard) would
+	// accumulate a duplicate avatar per click until the embed's
+	// attachment:// references stopped resolving to the right file.
 	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
-			Embeds:     []*discordgo.MessageEmbed{embed},
-			Components: components,
-			Files:      []*discordgo.File{avatarFile()},
+			Embeds:      []*discordgo.MessageEmbed{embed},
+			Components:  components,
+			Files:       files,
+			Attachments: &[]*discordgo.MessageAttachment{},
 		},
 	})
 }

@@ -47,6 +47,19 @@ const (
 	backoffBase            = 1 * time.Minute
 	backoffMax             = 30 * time.Minute
 	maxJitter              = 2 * time.Minute
+
+	// jobTimeout bounds a single run. Without it, one wedged call (a REST
+	// request that never returns, a query behind a lock) holds the job's
+	// per-job lock forever: the job silently never runs again, and never
+	// fails either, so it never trips the failure alert — a stall that looks
+	// exactly like "nothing was due." Generous enough that no legitimate
+	// rotation or sweep comes close.
+	jobTimeout = 10 * time.Minute
+
+	// stateWriteTimeout bounds the last-run/failure bookkeeping that follows
+	// a run, which deliberately outlives the run's own cancelled context —
+	// see execute.
+	stateWriteTimeout = 10 * time.Second
 )
 
 // JobKey namespaces a job name to a guild, matching the "guild + job name"
@@ -98,6 +111,12 @@ type Scheduler struct {
 	cron *cron.Cron
 	now  func() time.Time
 	wg   sync.WaitGroup
+
+	// baseCtx is the parent of every scheduled run, cancelled by Shutdown so
+	// in-flight jobs stop promptly instead of holding the process open for
+	// their full jobTimeout. Set in Start; nil until then.
+	baseCtx    context.Context
+	cancelJobs context.CancelFunc
 
 	mu   sync.Mutex
 	jobs map[string]*registeredJob
@@ -159,7 +178,11 @@ func (s *Scheduler) Init(deps core.Deps) error {
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
-	if _, err := s.cron.AddFunc("@every "+tickInterval.String(), func() { s.tick(context.Background()) }); err != nil {
+	// Deliberately not derived from ctx: Start's ctx bounds startup, not the
+	// scheduler's whole lifetime, and a job inheriting it would be cancelled
+	// the instant startup finished.
+	s.baseCtx, s.cancelJobs = context.WithCancel(context.Background())
+	if _, err := s.cron.AddFunc("@every "+tickInterval.String(), func() { s.tick(s.baseCtx) }); err != nil {
 		return fmt.Errorf("scheduler: schedule tick: %w", err)
 	}
 	s.cron.Start()
@@ -171,6 +194,9 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	select {
 	case <-stopCtx.Done():
 	case <-ctx.Done():
+	}
+	if s.cancelJobs != nil {
+		s.cancelJobs()
 	}
 
 	done := make(chan struct{})
@@ -275,7 +301,9 @@ func (s *Scheduler) tick(ctx context.Context) {
 		go func(j *registeredJob) {
 			defer s.wg.Done()
 			defer j.unlock()
-			_ = s.execute(ctx, j) // errors already logged inside execute
+			runCtx, cancel := context.WithTimeout(ctx, jobTimeout)
+			defer cancel()
+			_ = s.execute(runCtx, j) // errors already logged inside execute
 		}(j)
 	}
 }
@@ -330,18 +358,27 @@ func nextDue(st JobState, sched core.Schedule, jitter time.Duration) (time.Time,
 func (s *Scheduler) execute(ctx context.Context, j *registeredJob) error {
 	err := safeRun(ctx, j.fn)
 	now := s.now()
+
+	// The outcome has to be persisted even when ctx is exactly what ended
+	// the run (jobTimeout expiring, shutdown cancelling it) — writing
+	// through the dead context would drop the failure, so the job would keep
+	// looking healthy, never back off, and never alert. Detached, with its
+	// own bound so a wedged database can't hold the run open indefinitely.
+	stateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWriteTimeout)
+	defer cancel()
+
 	if err != nil {
 		s.log.Error("scheduler: job failed", "job", j.key, "err", err)
-		count, ferr := s.store.RecordFailure(ctx, j.key, now)
+		count, ferr := s.store.RecordFailure(stateCtx, j.key, now)
 		if ferr != nil {
 			s.log.Error("scheduler: record failure", "job", j.key, "err", ferr)
 		}
 		if count >= maxConsecutiveFailures {
-			s.alert(ctx, j.key, fmt.Sprintf("job %q has failed %d consecutive times: %v", j.key, count, err))
+			s.alert(stateCtx, j.key, fmt.Sprintf("job %q has failed %d consecutive times: %v", j.key, count, err))
 		}
 		return err
 	}
-	if serr := s.store.RecordSuccess(ctx, j.key, now); serr != nil {
+	if serr := s.store.RecordSuccess(stateCtx, j.key, now); serr != nil {
 		s.log.Error("scheduler: record success", "job", j.key, "err", serr)
 	}
 	return nil
@@ -452,21 +489,43 @@ func (s *Scheduler) renderJobsPage(lines []string, page int) (*discordgo.Message
 	return embed, core.PaginationRow(schedulerListComponentPrefix, clampedPage, totalPages)
 }
 
+// handleRunNow defers before running: a rotation walks a guild's channels and
+// posts several messages, which comfortably outlives Discord's 3-second
+// response deadline. Responding only after the job finished meant a job that
+// ran perfectly still surfaced as "the application did not respond."
 func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {
 	var jobName string
 	if opt, ok := core.LeafArgs(i)["job"]; ok {
 		jobName = opt.StringValue()
 	}
 
-	runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	jobKey := JobKey(i.GuildID, jobName)
-	if err := s.RunNow(runCtx, jobKey); err != nil {
-		core.RespondErr(sess, i, fmt.Sprintf("Failed to run %q", jobName), err)
+	if err := core.DeferResponse(sess, i); err != nil {
+		s.log.Error("scheduler: defer run-now response failed", "job", jobName, "err", err)
 		return
 	}
-	core.RespondOK(sess, i, "Job run", fmt.Sprintf("Ran `%s`.", jobName))
+
+	// Deliberately not the interaction's own ctx: that's cancelled as soon
+	// as this handler returns, which would kill a job the moment it was
+	// handed off. jobTimeout bounds it instead, same as a scheduled run.
+	runCtx, cancel := context.WithTimeout(context.Background(), jobTimeout)
+	defer cancel()
+
+	var err error
+	if runErr := s.RunNow(runCtx, JobKey(i.GuildID, jobName)); runErr != nil {
+		err = core.FollowUpErr(sess, i, fmt.Sprintf("Failed to run %q", jobName), runErr)
+	} else {
+		err = core.FollowUpOK(sess, i, "Job run", fmt.Sprintf("Ran `%s`.", jobName))
+	}
+	if err != nil {
+		s.log.Error("scheduler: run-now follow-up failed", "job", jobName, "err", err)
+	}
 }
+
+// maxAutocompleteChoices is Discord's hard limit on an autocomplete
+// response. Exceeding it doesn't truncate — the whole response is rejected
+// and the user sees no suggestions at all, so a guild with many rotating
+// channels would lose autocomplete entirely.
+const maxAutocompleteChoices = 25
 
 func (s *Scheduler) autocompleteJob(ctx context.Context, i *discordgo.InteractionCreate, focusedOption, focusedValue string) []*discordgo.ApplicationCommandOptionChoice {
 	var choices []*discordgo.ApplicationCommandOptionChoice
@@ -476,6 +535,9 @@ func (s *Scheduler) autocompleteJob(ctx context.Context, i *discordgo.Interactio
 			continue
 		}
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: name, Value: name})
+		if len(choices) == maxAutocompleteChoices {
+			break
+		}
 	}
 	return choices
 }
@@ -492,14 +554,19 @@ func safeRun(ctx context.Context, fn JobFunc) (err error) {
 // jitterFor deterministically derives a small, stable per-job offset from
 // jobKey so many guilds sharing the same interval don't all fire on the same
 // tick — computed once at Register time, never re-randomized.
+//
+// The hash must be 64-bit: a duration in nanoseconds outgrows uint32 at just
+// 4.3 seconds, so folding a 32-bit hash into the bound silently capped every
+// job's jitter at ~4s regardless of maxJitter, leaving the thundering-herd
+// spread this exists to provide almost entirely absent.
 func jitterFor(jobKey string, interval time.Duration) time.Duration {
-	max := min(interval/10, maxJitter)
-	if max <= 0 {
+	bound := min(interval/10, maxJitter)
+	if bound <= 0 {
 		return 0
 	}
-	h := fnv.New32a()
+	h := fnv.New64a()
 	_, _ = h.Write([]byte(jobKey))
-	return time.Duration(h.Sum32() % uint32(max))
+	return time.Duration(h.Sum64() % uint64(bound))
 }
 
 func backoffFor(consecutiveFailures int) time.Duration {

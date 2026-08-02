@@ -168,3 +168,39 @@ func TestSweepContinuesAfterPerRowFailure(t *testing.T) {
 		t.Fatalf("expected exactly 1 of 2 channels deleted despite the per-row failure, got %d", deletedCount)
 	}
 }
+
+// TestSweepKeepsTrackingArchiveOnTransientFetchFailure is the counterpart to
+// TestSweepHandlesAlreadyDeletedChannel: sweepOne used to treat *any* error
+// fetching the archived channel as "already gone" and drop the tracking row.
+// A rate limit or a 5xx would then leave the channel alive with nothing left
+// to ever sweep it — a retention promise silently broken, which is the exact
+// failure this feature exists to prevent. Only Discord's own "unknown
+// channel" may untrack; everything else must fail and be retried.
+func TestSweepKeepsTrackingArchiveOnTransientFetchFailure(t *testing.T) {
+	ops, archives, _, p := setupSweep(t)
+	ops.addChannel(&discordgo.Channel{ID: "arch1", GuildID: "g1", Name: "general-chat-archive-x", ParentID: "archivecat"})
+	archives.records["arch1"] = ArchiveRecord{
+		ChannelID: "arch1", GuildID: "g1", SourceChannelID: "old1", ArchiveCategoryID: "archivecat",
+		ArchivedAt: fixedNow.AddDate(0, 0, -8), DeleteAfter: timePtr(fixedNow.AddDate(0, 0, -1)),
+	}
+	ops.failWith["Channel"] = transientErr()
+
+	if err := p.sweep(context.Background(), "g1"); err == nil {
+		t.Fatal("expected sweep to report the transient fetch failure")
+	}
+	if _, ok := archives.records["arch1"]; !ok {
+		t.Fatal("archive row was dropped on a transient error — the channel would now never be swept")
+	}
+
+	// The next sweep, with Discord healthy again, finishes the job.
+	delete(ops.failWith, "Channel")
+	if err := p.sweep(context.Background(), "g1"); err != nil {
+		t.Fatalf("retry sweep: %v", err)
+	}
+	if _, ok := archives.records["arch1"]; ok {
+		t.Fatal("expected the archive to be swept on retry")
+	}
+	if _, err := ops.Channel("arch1"); err == nil {
+		t.Fatal("expected the archived channel to be deleted on retry")
+	}
+}

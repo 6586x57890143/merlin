@@ -136,7 +136,7 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	}
 	p.jailRoleID[guildID] = role.ID
 
-	// A freshly-created jail role starts deny-by-default on every channel
+	// A freshly created jail role starts deny-by-default on every channel
 	// (the allowlist is almost always empty at this point) — otherwise a
 	// mod's very first /roles jail would strip roles but leave every
 	// channel visible, until someone thought to run sync-channels by hand.
@@ -144,4 +144,15 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 		p.log.Error("roles: initial jail channel overwrite sync failed", "guild", guildID, "err", err)
 	}
 	return role.ID, nil
+}
+
+// forgetJailRole drops guildID's cached jail role ID so the next
+// resolveJailRole looks it up (or recreates it) from scratch. Called when
+// Discord reports the cached role no longer exists — someone deleted it —
+// which would otherwise keep every jail in that guild failing against a dead
+// ID until the process restarted.
+func (p *Plugin) forgetJailRole(guildID string) {
+	p.jailRoleMu.Lock()
+	defer p.jailRoleMu.Unlock()
+	delete(p.jailRoleID, guildID)
 }

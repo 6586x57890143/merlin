@@ -1,6 +1,7 @@
 package roles
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -161,7 +162,7 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 		core.RespondErr(s, i, "Failed to list grants", err)
 		return
 	}
-	slices.SortFunc(grants, func(a, b GrantRecord) int { return int(a.ID - b.ID) })
+	slices.SortFunc(grants, func(a, b GrantRecord) int { return cmp.Compare(a.ID, b.ID) })
 	for _, g := range grants {
 		expiry := "permanent"
 		if g.ExpiresAt != nil {
@@ -233,15 +234,29 @@ func (p *Plugin) handleListChannels(ctx context.Context, s *discordgo.Session, i
 	core.RespondInfo(s, i, "Channels visible while jailed", strings.Join(lines, "\n"))
 }
 
+// handleSyncChannels is the one deliberately O(channels) command here: it
+// writes an overwrite per managed channel, so a large guild takes far longer
+// than Discord's 3-second response deadline allows. It defers first and
+// answers with a follow-up.
 func (p *Plugin) handleSyncChannels(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if err := core.DeferResponse(s, i); err != nil {
+		p.log.Error("roles: defer sync-channels response failed", "guild", i.GuildID, "err", err)
+		return
+	}
+
+	var followUpErr error
 	jailRoleID, err := p.resolveJailRole(i.GuildID)
-	if err != nil {
-		core.RespondErr(s, i, "Failed to resolve jail role", err)
-		return
+	switch {
+	case err != nil:
+		followUpErr = core.FollowUpErr(s, i, "Failed to resolve jail role", err)
+	default:
+		if syncErr := p.syncAllJailChannelOverwrites(i.GuildID, jailRoleID); syncErr != nil {
+			followUpErr = core.FollowUpErr(s, i, "Sync completed with errors", syncErr)
+		} else {
+			followUpErr = core.FollowUpOK(s, i, "Channels synced", "Every channel's jail visibility now matches the current allowlist.")
+		}
 	}
-	if err := p.syncAllJailChannelOverwrites(i.GuildID, jailRoleID); err != nil {
-		core.RespondErr(s, i, "Sync completed with errors", err)
-		return
+	if followUpErr != nil {
+		p.log.Error("roles: sync-channels follow-up failed", "guild", i.GuildID, "err", followUpErr)
 	}
-	core.RespondOK(s, i, "Channels synced", "Every channel's jail visibility now matches the current allowlist.")
 }

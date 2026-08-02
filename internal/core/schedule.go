@@ -42,7 +42,7 @@ type IntervalSchedule struct {
 
 func (s IntervalSchedule) Next(after time.Time) time.Time { return after.Add(s.Interval) }
 func (s IntervalSchedule) String() string                 { return FormatDuration(s.Interval) }
-func (s IntervalSchedule) TypicalPeriod() time.Duration    { return s.Interval }
+func (s IntervalSchedule) TypicalPeriod() time.Duration   { return s.Interval }
 
 func (s IntervalSchedule) Validate() error {
 	if s.Interval <= 0 {

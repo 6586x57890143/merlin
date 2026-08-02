@@ -32,36 +32,48 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		reason = v.StringValue()
 	}
 
+	// Deferred because the first jail in a guild is the expensive one: it
+	// creates the Jailed role and writes a deny overwrite to every channel,
+	// which in a large server runs well past Discord's 3-second response
+	// deadline. Every path below therefore answers with FollowUp*.
+	if err := core.DeferResponse(s, i); err != nil {
+		p.log.Error("roles: defer jail response failed", "guild", i.GuildID, "err", err)
+		return
+	}
+	fail := func(title string, err error) {
+		if ferr := core.FollowUpErr(s, i, title, err); ferr != nil {
+			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", ferr)
+		}
+	}
+
 	if _, ok, err := p.store.GetJail(ctx, i.GuildID, userID); err != nil {
-		core.RespondErr(s, i, "Failed to check existing jail", err)
+		fail("Failed to check existing jail", err)
 		return
 	} else if ok {
-		core.RespondErr(s, i, "Already jailed", fmt.Errorf("<@%s> is already jailed — use `/roles release` first", userID))
+		fail("Already jailed", fmt.Errorf("<@%s> is already jailed — use `/roles release` first", userID))
 		return
 	}
 
 	member, err := p.ops.GuildMember(i.GuildID, userID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to fetch member", err)
+		fail("Failed to fetch member", err)
 		return
 	}
 	jailRoleID, err := p.resolveJailRole(i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to resolve jail role", err)
+		fail("Failed to resolve jail role", err)
 		return
 	}
 
-	var unmanageable []string
-	newRoles := []string{jailRoleID}
-	for _, r := range member.Roles {
-		if err := p.perms.CanManageRole(i.GuildID, r); err != nil {
-			unmanageable = append(unmanageable, r)
-			newRoles = append(newRoles, r)
-		}
-	}
-
+	newRoles, unmanageable := jailRoles(p.perms, i.GuildID, jailRoleID, member.Roles)
 	if _, err := p.ops.GuildMemberEdit(i.GuildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles}); err != nil {
-		core.RespondErr(s, i, "Failed to update roles", err)
+		if core.IsUnknownResource(err) {
+			// Most likely the cached Jailed role was deleted in Discord.
+			// Forget it so the next attempt recreates one instead of
+			// retrying against an ID that no longer exists until restart.
+			p.forgetJailRole(i.GuildID)
+		}
+		fail("Failed to update roles", err)
 		return
 	}
 
@@ -77,7 +89,7 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		JailedBy:        actorID(i),
 		Reason:          reason,
 	}); err != nil {
-		core.RespondErr(s, i, "Failed to save jail record", err)
+		fail("Failed to save jail record", err)
 		return
 	}
 
@@ -89,7 +101,26 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 	if len(unmanageable) > 0 {
 		msg += fmt.Sprintf(" %d role(s) could not be stripped (positioned at/above Merlin's own top role).", len(unmanageable))
 	}
-	core.RespondOK(s, i, "Member jailed", msg)
+	if err := core.FollowUpOK(s, i, "Member jailed", msg); err != nil {
+		p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+	}
+}
+
+// jailRoles decides what a jailed member ends up holding: the marker role,
+// plus every role the bot structurally can't manage (positioned at or above
+// its own top role — spec.MD §4 item 4), which stay put and are returned
+// separately so the mod is told the jail was partial rather than left to
+// discover it. A pure function of the member's current roles, so the rule
+// stays testable without a Discord session.
+func jailRoles(perms RoleManager, guildID, jailRoleID string, current []string) (newRoles, unmanageable []string) {
+	newRoles = []string{jailRoleID}
+	for _, r := range current {
+		if err := perms.CanManageRole(guildID, r); err != nil {
+			unmanageable = append(unmanageable, r)
+			newRoles = append(newRoles, r)
+		}
+	}
+	return newRoles, unmanageable
 }
 
 func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -123,9 +154,15 @@ func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *dis
 func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec JailRecord) error {
 	member, err := p.ops.GuildMember(guildID, userID)
 	if err != nil {
-		// Member left the guild (or another fetch error) — nothing left to
-		// restore. Drop the tracking row rather than error forever.
-		return p.store.DeleteJail(ctx, guildID, userID)
+		if core.IsUnknownResource(err) {
+			// Member left the guild — nothing left to restore.
+			return p.store.DeleteJail(ctx, guildID, userID)
+		}
+		// Any other failure is transient. Dropping the row here would strand
+		// the member in jail permanently with nothing left tracking them —
+		// the worst outcome this plugin can produce, and invisible until
+		// somebody complains. Fail so the next sweep (a minute later) retries.
+		return fmt.Errorf("roles: fetch member %s for release: %w", userID, err)
 	}
 
 	if !slices.Contains(member.Roles, rec.JailRoleID) {

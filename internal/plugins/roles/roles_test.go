@@ -127,3 +127,52 @@ func TestSyncGuildRegistersSweepJobOnce(t *testing.T) {
 		t.Fatalf("expected exactly one registered job, got %d", len(sched.registered))
 	}
 }
+
+// TestForgetJailRoleAllowsRecreation covers recovery from a mod deleting the
+// Jailed role in Discord. The resolved ID is cached for the process
+// lifetime, so without invalidation every subsequent jail in that guild
+// would keep failing against a dead role ID until the bot restarted.
+func TestForgetJailRoleAllowsRecreation(t *testing.T) {
+	ops := newFakeOps()
+	ops.roles["g1"] = []*discordgo.Role{{ID: "existing-jail", Name: jailRoleName}}
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	first, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole: %v", err)
+	}
+	if first != "existing-jail" {
+		t.Fatalf("expected the existing role to be reused, got %q", first)
+	}
+
+	// The mod deletes it in Discord, and the bot is told so.
+	ops.roles["g1"] = nil
+	p.forgetJailRole("g1")
+
+	second, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole after invalidation: %v", err)
+	}
+	if second == first {
+		t.Fatal("expected a fresh jail role to be created after the cache was invalidated")
+	}
+	if second == "" {
+		t.Fatal("expected a non-empty recreated jail role ID")
+	}
+}
+
+// TestSyncGuildIsIdempotentAcrossRepeatedCalls guards the registration path
+// cmd/bot/main.go drives on every GuildCreate — Discord re-sends those on
+// every reconnect, and the Scheduler rejects a duplicate job key, so a
+// second call must be a no-op rather than an error storm.
+func TestSyncGuildIsIdempotentAcrossRepeatedCalls(t *testing.T) {
+	sched := newFakeScheduler()
+	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), sched)
+
+	for range 3 {
+		p.SyncGuild("g1")
+	}
+	if len(sched.registered) != 1 {
+		t.Fatalf("expected exactly 1 registered job across repeated SyncGuild calls, got %v", sched.registered)
+	}
+}

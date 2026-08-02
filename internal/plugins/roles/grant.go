@@ -91,7 +91,13 @@ func (p *Plugin) handleRevoke(ctx context.Context, s *discordgo.Session, i *disc
 func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor string) error {
 	member, err := p.ops.GuildMember(guildID, userID)
 	if err != nil {
-		return p.store.DeleteGrant(ctx, guildID, userID, roleID)
+		if core.IsUnknownResource(err) {
+			// Member left the guild — the grant left with them.
+			return p.store.DeleteGrant(ctx, guildID, userID, roleID)
+		}
+		// Transient: untracking here would leave a timed grant in place
+		// forever, silently turning "for 24 hours" into permanent.
+		return fmt.Errorf("roles: fetch member %s for revoke: %w", userID, err)
 	}
 
 	if slices.Contains(member.Roles, roleID) {
