@@ -676,8 +676,8 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 	}
 
 	embed := core.NewLandmarkEmbed(core.ColorInfo, "Thanks for adding Merlin!",
-		fmt.Sprintf("Run **/config setup** in **%s** to get started. It walks you through an audit-log channel, "+
-			"a status channel, a mod role, and admins, one step at a time. It only ever changes what you pick on each "+
+		fmt.Sprintf("Run **/config setup** in **%s** and I'll walk you through it: an audit-log channel, "+
+			"a status channel, a mod role, and admins, one step at a time. I only ever change what you pick on each "+
 			"step, and it's safe to re-run any time.", gc.Name))
 	_, err = p.session.ChannelMessageSendComplex(dmChannel.ID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{embed},

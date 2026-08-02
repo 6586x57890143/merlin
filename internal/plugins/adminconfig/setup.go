@@ -125,13 +125,13 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 	switch step {
 	case setupStepWelcome:
 		title = "Server setup"
-		desc = "Four things are worth setting before putting the bird to work. I'll walk you through them one at a time.\n\n" +
-			"Nothing gets created or changed unless you ask for it on the step itself. Every step offers what this server already has first, " +
+		desc = "Four things worth setting before I get to work. I'll walk you through them one at a time.\n\n" +
+			"I won't create or change anything unless you ask for it on the step itself. Every step offers what this server already has first, " +
 			"and skipping a step is fine; you can come back to it whenever.\n\nHit **Next** to start."
 
 	case setupStepAuditLog:
 		title = "Audit log channel"
-		desc = fmt.Sprintf("Where config changes, rotations, and moderation actions get recorded. Mod roles are given access to it automatically.\n\nCurrently: **%s**",
+		desc = fmt.Sprintf("Where I write down config changes, rotations, and moderation actions. Your mod roles get access automatically.\n\nCurrently: **%s**",
 			channelStatusText(gs.AuditLogChannelID))
 		prompts = []discordgo.MessageComponent{
 			setupChannelSelectRow(setupAuditLogSelectCustomID, "Pick an existing channel for the audit log..."),
@@ -140,7 +140,7 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 
 	case setupStepStatus:
 		title = "Status channel"
-		desc = fmt.Sprintf("Where the bird posts operational alerts: a scheduled job failing repeatedly, a rotation it couldn't complete. Quiet when nothing's wrong.\n\nCurrently: **%s**",
+		desc = fmt.Sprintf("Where I flag operational trouble: a scheduled job failing over and over, a rotation I couldn't finish. Quiet when nothing's wrong.\n\nCurrently: **%s**",
 			channelStatusText(gs.StatusChannelID))
 		prompts = []discordgo.MessageComponent{
 			setupChannelSelectRow(setupStatusSelectCustomID, "Pick an existing channel for status alerts..."),
@@ -159,15 +159,15 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 
 	case setupStepAdmins:
 		title = "Admins"
-		desc = fmt.Sprintf("Who can change the bird's own configuration: permissions, plugins, rotation settings. "+
-			"Anyone holding Discord's **Administrator** permission already counts, so this list is only for people who should have admin access without it.\n\nCurrently: **%s**",
+		desc = fmt.Sprintf("Who can change my own configuration: permissions, plugins, rotation settings. "+
+			"Anyone holding Discord's **Administrator** permission already counts, so this list is just for people who should have admin access without it.\n\nCurrently: **%s**",
 			userListText(gs.AdminUserIDs))
 		prompts = []discordgo.MessageComponent{setupUserSelectRow(setupAdminsSelectCustomID, "Pick who should have standing admin access...")}
 
 	case setupStepDone:
 		color = core.ColorSuccess
 		title = "Setup complete"
-		desc = "That's everything worth setting up front. Anything you skipped can be filled in later. `/config setup` picks up exactly where this left off."
+		desc = "That's everything worth setting up front. Anything you skipped can be filled in later; `/config setup` picks up exactly where this left off."
 	}
 
 	fields := []*discordgo.MessageEmbedField{{Name: "Setup so far", Value: setupChecklist(gs)}}
