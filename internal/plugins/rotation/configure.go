@@ -86,6 +86,14 @@ func (p *Plugin) registerCommands() {
 			Required:    required,
 		}
 	}
+	// "whitelist" is deliberately not offered. archiveOverwrites implements
+	// it, but nothing except /config import's legacy YAML path has ever
+	// populated archive_whitelist_role_ids/user_ids, so choosing it from
+	// here produced a mode that behaved exactly like mod_only. Guilds that
+	// carry it from an import keep it, and validateRotationChannel still
+	// accepts it; see the comment there. spec.MD §6 lists it as a mode, so
+	// this is a deliberate narrowing of the command surface rather than a
+	// removal of the feature.
 	visibilityOpt := func(required bool) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionString,
@@ -94,7 +102,6 @@ func (p *Plugin) registerCommands() {
 			Required:    required,
 			Choices: []*discordgo.ApplicationCommandOptionChoice{
 				{Name: "Mods only", Value: "mod_only"},
-				{Name: "Mods + whitelist", Value: "whitelist"},
 			},
 		}
 	}
@@ -128,6 +135,7 @@ func (p *Plugin) registerCommands() {
 							},
 							durationOpt("retention", "Keep the archive this long before PERMANENT deletion. Needs a unit: \"30d\", \"72h\". Omit = forever.", false),
 							noticeOpt(),
+							disclosureOpt(),
 							visibilityOpt(false),
 						},
 					},
@@ -151,7 +159,14 @@ func (p *Plugin) registerCommands() {
 								Description: "Set true to keep archives forever instead of a fixed retention",
 							},
 							noticeOpt(),
+							disclosureOpt(),
 							visibilityOpt(false),
+							{
+								Type:         discordgo.ApplicationCommandOptionChannel,
+								Name:         "archive_category",
+								Description:  "Move future archives into a different hidden category",
+								ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildCategory},
+							},
 						},
 					},
 					{
@@ -237,6 +252,11 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 	} else {
 		rc.NoticeLeadMinutes = defaultNoticeLeadMinutes
 	}
+	if v, ok := opts["disclosure"]; ok {
+		rc.Disclosure = settings.Disclosure(v.StringValue())
+	} else {
+		rc.Disclosure = settings.DisclosureFull
+	}
 
 	if err := validateRotationChannel(rc); err != nil {
 		core.RespondErr(s, i, "Invalid configuration", err)
@@ -260,7 +280,25 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 	// that first fire by one interval since this channel was *just* added.
 	p.deferFirstRotation(ctx, i.GuildID, rc.ChannelID)
 	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> %s", rc.ChannelID, rotationSummary(rc)))
-	core.RespondOK(s, i, "Rotation configured", fmt.Sprintf("<#%s> will now rotate every %s.", rc.ChannelID, humanDuration(interval)))
+	core.RespondOK(s, i, "Rotation configured",
+		fmt.Sprintf("<#%s> will now rotate every %s.%s", rc.ChannelID, humanDuration(interval), genericDisclosureNote(rc)))
+}
+
+// genericDisclosureNote explains the one place the disclosure mode reaches
+// beyond the post-rotation notice, and is empty for every other mode.
+//
+// The heads-up and the disclosure mode are deliberately separate switches:
+// notice lead controls whether the channel is warned, disclosure controls how
+// much it is told. Generic is the one combination where they interact, since
+// a countdown *is* the rotation schedule. An admin who set generic to stop
+// publishing that schedule has not obviously realised the warning still
+// posts, so the response says both what changed and how to go further.
+func genericDisclosureNote(rc settings.RotationChannel) string {
+	if rc.Disclosure.Resolve() != settings.DisclosureGeneric || rc.NoticeLeadMinutes <= 0 {
+		return ""
+	}
+	return "\n\nOn generic disclosure the pre-rotation heads-up still posts, but without a countdown. " +
+		"Set `notice:off` to silence it entirely."
 }
 
 // resolveArchiveCategory returns the archive_category option's channel ID
@@ -350,6 +388,18 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 	if v, ok := opts["visibility"]; ok {
 		rc.ArchiveVisibility = v.StringValue()
 	}
+	if v, ok := opts["disclosure"]; ok {
+		rc.Disclosure = settings.Disclosure(v.StringValue())
+	}
+	// Editable rather than add-only, because the alternative was remove and
+	// re-add: that mints a fresh settings_rotation_channels.id, and the
+	// sweep re-derives each archive's deadline through rotation_id
+	// (migration 0013), so every existing archive would silently fall back
+	// to its frozen delete_after and stop tracking the guild's live
+	// retention setting.
+	if v, ok := opts["archive_category"]; ok {
+		rc.ArchiveCategoryID = v.Value.(string)
+	}
 
 	if err := validateRotationChannel(rc); err != nil {
 		core.RespondErr(s, i, "Invalid configuration", err)
@@ -363,7 +413,8 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 	// core.EventConfigChanged, see the comment in handleAdd above.
 	after := rotationSummary(rc)
 	p.auditConfigChange(ctx, i, "rotation.edit", before, after)
-	core.RespondOK(s, i, "Rotation updated", fmt.Sprintf("Updated <#%s>.", channelID))
+	core.RespondOK(s, i, "Rotation updated",
+		fmt.Sprintf("Updated <#%s>.%s", channelID, genericDisclosureNote(rc)))
 }
 
 func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -407,11 +458,12 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 // unreadable, in the exact place someone would look after a channel was
 // permanently deleted.
 func rotationSummary(rc settings.RotationChannel) string {
-	return fmt.Sprintf("interval=%s retention=%s visibility=%s notice=%s",
+	return fmt.Sprintf("interval=%s retention=%s visibility=%s notice=%s disclosure=%s",
 		core.FormatDuration(time.Duration(rc.IntervalMinutes)*time.Minute),
 		formatRetention(rc.RetentionHours),
 		rc.ArchiveVisibility,
-		formatNoticeLead(rc.NoticeLeadMinutes))
+		formatNoticeLead(rc.NoticeLeadMinutes),
+		rc.Disclosure.Resolve())
 }
 
 // formatNoticeLead renders the heads-up lead, distinguishing "off" from any
@@ -449,10 +501,19 @@ func validateRotationChannel(rc settings.RotationChannel) error {
 	if rc.ChannelID == rc.ArchiveCategoryID {
 		return fmt.Errorf("a channel can't be its own archive category")
 	}
+	// "whitelist" is still accepted, even though visibilityOpt no longer
+	// offers it: archiveOverwrites implements it, and legacy guilds carry it
+	// from /config import. Rejecting it here would break /rotation configure
+	// edit for exactly those guilds, since edit is a read-modify-write of the
+	// whole struct and would fail validation on a field the admin never
+	// touched.
 	switch rc.ArchiveVisibility {
 	case "mod_only", "whitelist":
 	default:
 		return fmt.Errorf("visibility must be mod_only or whitelist, got %q", rc.ArchiveVisibility)
+	}
+	if !rc.Disclosure.Resolve().Valid() {
+		return fmt.Errorf("disclosure must be one of full, cadence, retention, or generic, got %q", rc.Disclosure)
 	}
 	if rc.RetentionHours != nil && *rc.RetentionHours < 1 {
 		return fmt.Errorf("retention must be at least 1 hour if set (omit it entirely for forever)")
@@ -482,6 +543,27 @@ func validateRotationChannel(rc settings.RotationChannel) error {
 // short enough that people who were not around when it posted are not
 // reading a stale countdown.
 const defaultNoticeLeadMinutes = 10
+
+// disclosureOpt is the shared "how much does the channel get told" option.
+//
+// Fixed Choices rather than autocomplete: spec.MD §4a's autocomplete rule is
+// about options whose valid values come from bot state (job keys, action
+// names), which cannot be enumerated at compile time. This is a closed
+// four-value enum, so Discord can render the whole set as a picker and there
+// is nothing to discover.
+func disclosureOpt() *discordgo.ApplicationCommandOption {
+	return &discordgo.ApplicationCommandOption{
+		Type:        discordgo.ApplicationCommandOptionString,
+		Name:        "disclosure",
+		Description: "How much the channel is told about its own rotation (default: everything)",
+		Choices: []*discordgo.ApplicationCommandOptionChoice{
+			{Name: "Everything (rotation schedule + archive window)", Value: string(settings.DisclosureFull)},
+			{Name: "Rotation schedule only", Value: string(settings.DisclosureCadence)},
+			{Name: "Archive window only", Value: string(settings.DisclosureRetention)},
+			{Name: "Just that it rotated", Value: string(settings.DisclosureGeneric)},
+		},
+	}
+}
 
 // noticeOpt is the shared "how long before the wipe to warn" option.
 func noticeOpt() *discordgo.ApplicationCommandOption {

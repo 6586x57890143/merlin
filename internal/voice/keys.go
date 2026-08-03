@@ -7,14 +7,34 @@ package voice
 type Key string
 
 const (
-	// KeyRotationIntroKept is the notice posted into a freshly rotated
-	// channel when the guild keeps archives for a bounded window.
-	KeyRotationIntroKept Key = "rotation.intro.kept"
-	// KeyRotationIntroForever is the same notice where archives are kept
+	// The six notices posted into a freshly rotated channel, one per
+	// combination of the guild's chosen settings.Disclosure and whether it
+	// keeps archives for a bounded window. rotation.introKey picks between
+	// them; the required placeholders below are what stop a mode publishing
+	// a fact the guild chose to withhold.
+	//
+	// KeyRotationIntroFull states the cadence and the deletion window.
+	KeyRotationIntroFull Key = "rotation.intro.full"
+	// KeyRotationIntroFullForever states the cadence where archives are kept
 	// indefinitely, so there is no deletion window to state.
-	KeyRotationIntroForever Key = "rotation.intro.forever"
+	KeyRotationIntroFullForever Key = "rotation.intro.full_forever"
+	// KeyRotationIntroCadence states only how often the channel resets.
+	KeyRotationIntroCadence Key = "rotation.intro.cadence"
+	// KeyRotationIntroRetention states only how long the archive survives.
+	KeyRotationIntroRetention Key = "rotation.intro.retention"
+	// KeyRotationIntroRetentionForever is the retention-only notice where
+	// archives are kept indefinitely: nothing is deleted, it moves out of
+	// reach. No numbers to state, so no placeholders.
+	KeyRotationIntroRetentionForever Key = "rotation.intro.retention_forever"
+	// KeyRotationIntroGeneric states only that the channel rotated.
+	KeyRotationIntroGeneric Key = "rotation.intro.generic"
+
 	// KeyRotationHeadsUp warns the channel that is about to be rotated.
 	KeyRotationHeadsUp Key = "rotation.headsup"
+	// KeyRotationHeadsUpGeneric is the same warning without the countdown,
+	// for a channel on generic disclosure: naming the remaining minutes
+	// would hand over the rotation schedule the guild chose not to publish.
+	KeyRotationHeadsUpGeneric Key = "rotation.headsup.generic"
 
 	// KeyJailNotice and KeyReleaseNotice are DMs to the member concerned,
 	// never channel posts.
@@ -75,6 +95,14 @@ type spec struct {
 	required []string
 	// optional placeholders may appear. Anything outside required plus
 	// optional is a typo ({cadance}) and fails the build.
+	//
+	// No spec sets this, and that emptiness is load bearing rather than an
+	// oversight. It is what makes the rotation disclosure modes enforceable:
+	// because a placeholder outside required-plus-optional is rejected, a
+	// line that slipped {retention} into rotation.intro.cadence fails to
+	// boot instead of publishing a deletion window the guild deliberately
+	// withheld. Adding a placeholder here weakens that guarantee for the key
+	// it is added to, so do it knowingly.
 	optional []string
 	maxLen   int
 	// fallback is compiled in, and is what gets said if the catalog somehow
@@ -87,7 +115,7 @@ type spec struct {
 // specs is the whole contract, in one table, on purpose. Reading this
 // should tell you everything Merlin can say and what each line owes.
 var specs = map[Key]spec{
-	KeyRotationIntroKept: {
+	KeyRotationIntroFull: {
 		register: RegisterPlayful,
 		// Both of these are the actual published retention policy. spec.MD
 		// section 6 step 7 exists to make this statement, and the code has
@@ -99,17 +127,54 @@ var specs = map[Key]spec{
 		maxLen:   maxEmbedDescription,
 		fallback: "this channel resets every {cadence}. anything archived is kept {retention} and then permanently deleted.",
 	},
-	KeyRotationIntroForever: {
+	KeyRotationIntroFullForever: {
 		register: RegisterPlayful,
 		required: []string{"cadence"},
 		maxLen:   maxEmbedDescription,
 		fallback: "this channel resets every {cadence}. the old channel is archived where only the moderators can reach it.",
 	},
+	// The narrower disclosure modes rely on the *other* half of the
+	// placeholder contract: loadCatalog rejects any placeholder a key does
+	// not require, so a line that slipped {retention} into a cadence-only
+	// key fails the build rather than publishing a deletion window the guild
+	// deliberately withheld. The omission is the feature here, so it is
+	// enforced exactly as hard as the inclusion is above.
+	KeyRotationIntroCadence: {
+		register: RegisterPlayful,
+		required: []string{"cadence"},
+		maxLen:   maxEmbedDescription,
+		fallback: "this channel resets every {cadence}.",
+	},
+	KeyRotationIntroRetention: {
+		register: RegisterPlayful,
+		required: []string{"retention"},
+		maxLen:   maxEmbedDescription,
+		fallback: "anything archived from this channel is kept {retention} and then permanently deleted.",
+	},
+	KeyRotationIntroRetentionForever: {
+		register: RegisterPlayful,
+		maxLen:   maxEmbedDescription,
+		fallback: "the old channel is archived where only the moderators can reach it, and nothing on it is deleted.",
+	},
+	KeyRotationIntroGeneric: {
+		register: RegisterPlayful,
+		maxLen:   maxEmbedDescription,
+		fallback: "this channel has rotated. this is the new one.",
+	},
+
 	KeyRotationHeadsUp: {
 		register: RegisterPlayful,
 		required: []string{"when"},
-		maxLen:   maxMessageContent,
+		// maxEmbedDescription rather than maxMessageContent: the heads-up is
+		// posted as an embed description now, matching the intro notice it
+		// precedes in the same channel.
+		maxLen:   maxEmbedDescription,
 		fallback: "heads up: this channel resets in {when}.",
+	},
+	KeyRotationHeadsUpGeneric: {
+		register: RegisterPlayful,
+		maxLen:   maxEmbedDescription,
+		fallback: "heads up: this channel resets shortly.",
 	},
 
 	KeyJailNotice: {
@@ -121,7 +186,7 @@ var specs = map[Key]spec{
 		// fall back on the occasions it is missing, which is the worst of
 		// both: the variety disappears exactly when the message matters
 		// most, and nothing says why.
-		maxLen: maxEmbedDescription,
+		maxLen:   maxEmbedDescription,
 		fallback: "you have been jailed in {guild}. your roles are saved and come back {until}.",
 	},
 	KeyReleaseNotice: {

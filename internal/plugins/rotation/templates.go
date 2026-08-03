@@ -44,40 +44,95 @@ func resolveSticky(rc settings.RotationChannel) []string {
 // That history is why the placeholder requirement is enforced by the build
 // rather than left to whoever writes the next line.
 func (p *Plugin) retentionNotice(ctx context.Context, rc settings.RotationChannel) string {
-	cadence := humanDuration(time.Duration(rc.IntervalMinutes) * time.Minute)
-
-	var line string
-	if rc.RetentionHours == nil {
-		line = p.voice.Line(ctx, rc.GuildID, voice.KeyRotationIntroForever, map[string]string{
-			"cadence": cadence,
-		})
-	} else {
-		line = p.voice.Line(ctx, rc.GuildID, voice.KeyRotationIntroKept, map[string]string{
-			"cadence":   cadence,
-			"retention": humanDuration(time.Duration(*rc.RetentionHours) * time.Hour),
-		})
-	}
-	if line != "" {
+	key, vars := introKey(rc)
+	if line := p.voice.Line(ctx, rc.GuildID, key, vars); line != "" {
 		return line
 	}
 
-	// Unreachable given the catalog validates at startup and this, its only
-	// caller, supplies exactly the placeholders the spec requires. Kept
+	// Unreachable given the catalog validates at startup and introKey
+	// supplies exactly the placeholders each key's spec requires. Kept
 	// anyway because of what is at stake: this notice is the server's
 	// published retention policy, and returning nothing would quietly
 	// remove it from a channel two thousand people read. A plain sentence
 	// beats a silent gap.
-	return plainRetentionNotice(rc, cadence)
+	return plainRetentionNotice(rc)
+}
+
+// introKey picks the notice for rc's disclosure mode and builds exactly the
+// placeholders that key requires.
+//
+// The key and its variables are returned together, deliberately, rather than
+// selected in one place and populated in another. Every one of these six keys
+// requires a different subset of {cadence}/{retention}, and voice.Line
+// silently falls back when a required placeholder is missing, so a mapping
+// split across two switch statements would degrade to the compiled-in
+// fallback the first time somebody edited one of them.
+//
+// The empty disclosure value resolves to full, matching what every channel
+// did before migration 0018, and any value that is neither empty nor one of
+// the four known modes falls through to full as well. That is the right
+// direction for an unreadable setting: over-disclosing is a wording problem,
+// while under-disclosing on a corrupt row would silently retract a retention
+// promise the guild believes it is still making.
+func introKey(rc settings.RotationChannel) (voice.Key, map[string]string) {
+	cadence := humanDuration(time.Duration(rc.IntervalMinutes) * time.Minute)
+	forever := rc.RetentionHours == nil
+	var retention string
+	if !forever {
+		retention = humanDuration(time.Duration(*rc.RetentionHours) * time.Hour)
+	}
+
+	switch rc.Disclosure.Resolve() {
+	case settings.DisclosureCadence:
+		return voice.KeyRotationIntroCadence, map[string]string{"cadence": cadence}
+	case settings.DisclosureRetention:
+		if forever {
+			return voice.KeyRotationIntroRetentionForever, nil
+		}
+		return voice.KeyRotationIntroRetention, map[string]string{"retention": retention}
+	case settings.DisclosureGeneric:
+		return voice.KeyRotationIntroGeneric, nil
+	default:
+		if forever {
+			return voice.KeyRotationIntroFullForever, map[string]string{"cadence": cadence}
+		}
+		return voice.KeyRotationIntroFull, map[string]string{"cadence": cadence, "retention": retention}
+	}
 }
 
 // plainRetentionNotice is the no-personality version, reached only if the
 // voice catalog produces nothing at all.
-func plainRetentionNotice(rc settings.RotationChannel, cadence string) string {
-	if rc.RetentionHours == nil {
-		return fmt.Sprintf("this channel resets every %s. the previous channel is archived where only the moderators can reach it.", cadence)
+//
+// It respects the disclosure mode too. That is the whole reason this is a
+// switch rather than the two-line function it used to be: a catalog failure
+// falling back to the fully-disclosing sentence would publish the cadence and
+// the deletion window of a guild that had explicitly chosen to publish
+// neither, and it would do it at the one moment nobody is watching the logs.
+func plainRetentionNotice(rc settings.RotationChannel) string {
+	cadence := humanDuration(time.Duration(rc.IntervalMinutes) * time.Minute)
+	forever := rc.RetentionHours == nil
+	var retention string
+	if !forever {
+		retention = humanDuration(time.Duration(*rc.RetentionHours) * time.Hour)
 	}
-	return fmt.Sprintf("this channel resets every %s. anything archived is kept %s and then permanently deleted.",
-		cadence, humanDuration(time.Duration(*rc.RetentionHours)*time.Hour))
+
+	switch rc.Disclosure.Resolve() {
+	case settings.DisclosureCadence:
+		return fmt.Sprintf("this channel resets every %s.", cadence)
+	case settings.DisclosureRetention:
+		if forever {
+			return "the previous channel is archived where only the moderators can reach it, and nothing on it is deleted."
+		}
+		return fmt.Sprintf("anything archived from this channel is kept %s and then permanently deleted.", retention)
+	case settings.DisclosureGeneric:
+		return "this channel has rotated. this is the new one."
+	default:
+		if forever {
+			return fmt.Sprintf("this channel resets every %s. the previous channel is archived where only the moderators can reach it.", cadence)
+		}
+		return fmt.Sprintf("this channel resets every %s. anything archived is kept %s and then permanently deleted.",
+			cadence, retention)
+	}
 }
 
 // humanDuration renders d as a member-facing phrase ("3 days", "18 hours"),
@@ -85,6 +140,13 @@ func plainRetentionNotice(rc settings.RotationChannel, cadence string) string {
 // in command output, picking the same unit (whole days if it divides
 // evenly, otherwise hours) so both ends of this bot describe a given
 // interval/retention window the same way.
+//
+// The split is deliberate and worth keeping: core.FormatDuration is the
+// admin-surface formatter, read at a glance in a table by someone who wants
+// density, and humanDuration is the member-surface one, read mid-sentence in
+// a chat channel. Every member-facing duration goes through this function,
+// including the heads-up countdown, so the two messages rotation posts into
+// the same channel cannot describe time two different ways.
 func humanDuration(d time.Duration) string {
 	switch {
 	case d >= 24*time.Hour && d%(24*time.Hour) == 0:

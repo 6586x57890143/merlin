@@ -103,7 +103,7 @@ func TestEveryKeyRendersWithItsDeclaredVars(t *testing.T) {
 func TestEveryRotationIntroStatesItsRetentionFacts(t *testing.T) {
 	s := testSpeaker(t)
 
-	for i, line := range s.cat[KeyRotationIntroKept] {
+	for i, line := range s.cat[KeyRotationIntroFull] {
 		if !strings.Contains(line, "{cadence}") {
 			t.Errorf("rotation.intro.kept[%d] never states how often the channel resets: %q", i, line)
 		}
@@ -111,7 +111,7 @@ func TestEveryRotationIntroStatesItsRetentionFacts(t *testing.T) {
 			t.Errorf("rotation.intro.kept[%d] never states how long the archive survives: %q", i, line)
 		}
 	}
-	for i, line := range s.cat[KeyRotationIntroForever] {
+	for i, line := range s.cat[KeyRotationIntroFullForever] {
 		if !strings.Contains(line, "{cadence}") {
 			t.Errorf("rotation.intro.forever[%d] never states how often the channel resets: %q", i, line)
 		}
@@ -130,19 +130,19 @@ func TestValidateRejectsALineMissingItsFacts(t *testing.T) {
 	}{
 		{
 			name: "retention silently dropped",
-			key:  KeyRotationIntroKept,
+			key:  KeyRotationIntroFull,
 			line: "fresh channel, resets every {cadence} 🌿",
 			want: "missing required placeholder {retention}",
 		},
 		{
 			name: "placeholder typo",
-			key:  KeyRotationIntroForever,
+			key:  KeyRotationIntroFullForever,
 			line: "resets every {cadance}",
 			want: "unknown placeholder {cadance}",
 		},
 		{
 			name: "malformed placeholder posts a literal brace",
-			key:  KeyRotationIntroForever,
+			key:  KeyRotationIntroFullForever,
 			line: "resets every {cadence",
 			want: "unbalanced braces",
 		},
@@ -185,7 +185,7 @@ func TestValidateRejectsALineMissingItsFacts(t *testing.T) {
 // A valid line must actually pass, or the validator is just a way of
 // rejecting everything.
 func TestValidateAcceptsAGoodLine(t *testing.T) {
-	if problems := Validate(KeyRotationIntroKept,
+	if problems := Validate(KeyRotationIntroFull,
 		"clean slate. wipes every {cadence}, archives last {retention} and then they're gone"); len(problems) != 0 {
 		t.Errorf("Validate rejected a good line: %v", problems)
 	}
@@ -249,13 +249,13 @@ func TestLineNeverLeaksAPlaceholder(t *testing.T) {
 
 	// Missing retention: the fallback needs it too, so this is the
 	// say-nothing case rather than the fall-back case.
-	got := s.Line(ctx, "g1", KeyRotationIntroKept, map[string]string{"cadence": "24 hours"})
+	got := s.Line(ctx, "g1", KeyRotationIntroFull, map[string]string{"cadence": "24 hours"})
 	if strings.ContainsAny(got, "{}") {
 		t.Errorf("leaked a placeholder to the channel: %q", got)
 	}
 
 	// Fully supplied: a real line, no braces.
-	got = s.Line(ctx, "g1", KeyRotationIntroKept, sampleVars(KeyRotationIntroKept))
+	got = s.Line(ctx, "g1", KeyRotationIntroFull, sampleVars(KeyRotationIntroFull))
 	if got == "" || strings.ContainsAny(got, "{}") {
 		t.Errorf("expected a rendered line, got %q", got)
 	}

@@ -74,26 +74,31 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 	// clock Discord already draws on the message itself. The audit trail's
 	// real timestamp is the row written above, which is the copy that
 	// survives the channel being deleted.
-	embed := &discordgo.MessageEmbed{
-		Title: action,
-		Color: core.ColorSuccess,
-		Fields: []*discordgo.MessageEmbedField{
-			{Name: "Actor", Value: actorID, Inline: true},
-		},
-	}
-	// Truncated because an embed field over 1024 bytes doesn't get trimmed by
-	// Discord, it fails the entire message, so a single long value (a sweep
-	// listing many channel IDs, a rotation config with a long sticky) would
-	// silently cost the guild its live audit notification for that action.
-	// The durable row above is already written in full and is unaffected.
-	if oldValue != "" {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Old", Value: core.TruncateEmbedField(oldValue), Inline: true})
-	}
-	if newValue != "" {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "New", Value: core.TruncateEmbedField(newValue), Inline: true})
-	}
+	embed := buildEmbed(actorID, action, oldValue, newValue)
 
-	if _, err := w.session.ChannelMessageSendEmbed(channelID, embed); err != nil {
+	// Sent on the raw session rather than through discordguard, deliberately.
+	// The guard refuses writes when a guild is paused or in dry-run, which
+	// would mean the audit trail goes silent at exactly the moment somebody
+	// has hit the emergency stop and most wants to know what the bot is
+	// doing. Worse, the rotation.dryrun and archive.dryrun records exist
+	// *because* the guild is in dry-run, so routing them through the guard
+	// would guarantee they were never posted. This is a record of what
+	// happened, not an action, and it is not the guard's to refuse.
+	//
+	// AllowedMentions is therefore zeroed here rather than inherited, the
+	// same way scheduler.alert does it and for the same reason: old/new
+	// values interpolate guild-supplied text (channel names, sticky content,
+	// jail reasons) and now carry mentions by design. Mentions inside an
+	// embed do not notify anyone in any case, so this is belt and braces on
+	// a policy the codebase states absolutely.
+	//
+	// Files carries the mood thumbnail core.NewEmbed attached; without it the
+	// attachment:// URL points at nothing and renders as a broken frame.
+	if _, err := w.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Embed:           embed,
+		Files:           core.EmbedFiles(embed),
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	}); err != nil {
 		return fmt.Errorf("audit: post embed: %w", err)
 	}
 	return nil

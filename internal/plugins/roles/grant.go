@@ -56,7 +56,7 @@ func (p *Plugin) handleGrant(ctx context.Context, s *discordgo.Session, i *disco
 		return
 	}
 
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.grant", "", fmt.Sprintf("user=%s role=%s reason=%q", userID, roleID, reason)); err != nil {
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.grant", "", fmt.Sprintf("user=%s role=%s reason=%q", core.MentionUser(userID), core.MentionRole(roleID), reason)); err != nil {
 		p.log.Error("roles: audit grant failed", "guild", i.GuildID, "user", userID, "err", err)
 	}
 
@@ -106,7 +106,7 @@ func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor
 		}
 	}
 
-	if err := p.audit.Record(ctx, guildID, actor, "roles.grant", fmt.Sprintf("user=%s role=%s", userID, roleID), ""); err != nil {
+	if err := p.audit.Record(ctx, guildID, actor, "roles.grant", fmt.Sprintf("user=%s role=%s", core.MentionUser(userID), core.MentionRole(roleID)), ""); err != nil {
 		p.log.Error("roles: audit revoke failed", "guild", guildID, "user", userID, "role", roleID, "err", err)
 	}
 

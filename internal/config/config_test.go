@@ -205,3 +205,27 @@ func TestOnReloadHookCanReadTheLoader(t *testing.T) {
 		t.Fatal("reload deadlocked: hooks are running while the write lock is held")
 	}
 }
+
+// The onboarding DM is off unless an operator asks for it, which is the
+// opposite default from the GUILD_MEMBERS intent above and deliberately so:
+// this is a message Merlin originates unprompted to a person who has not
+// interacted with her, not a capability whose absence breaks a feature.
+func TestOnboardingDMIsOffUnlessAskedFor(t *testing.T) {
+	if cfg := loadWith(t, nil); cfg.OnboardingDM {
+		t.Error("the onboarding DM is on by default; a single-server deploy would DM the owner unasked")
+	}
+
+	cases := map[string]bool{
+		"1": true, "true": true, "yes": true, "on": true,
+		"": false, "0": false, "false": false,
+		// A typo leaves it off, matching the direction every other
+		// unrecognized value in this loader falls.
+		"ture": false,
+	}
+	for value, want := range cases {
+		cfg := loadWith(t, map[string]string{"MERLIN_ENABLE_ONBOARDING_DM": value})
+		if cfg.OnboardingDM != want {
+			t.Errorf("MERLIN_ENABLE_ONBOARDING_DM=%q gave OnboardingDM=%v, want %v", value, cfg.OnboardingDM, want)
+		}
+	}
+}

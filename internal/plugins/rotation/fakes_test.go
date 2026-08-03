@@ -271,15 +271,24 @@ func (f *fakeOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.Mes
 
 // ChannelMessageSendComplex records the whole payload, not just that a send
 // happened, so a test can check the retention notice actually carries the
-// file its footer icon references. Kept under the "ChannelMessageSendEmbed"
-// failure key: callers that inject a failure are simulating "the notice
-// could not be posted", and which discordgo method carries it is an
-// implementation detail they should not have to track.
+// file its thumbnail references.
+//
+// It honours the failure keys of *both* plainer send methods, because
+// callers that inject a failure are simulating "this message could not be
+// posted" and which discordgo method carries it is an implementation detail
+// they should not have to track. That is not hypothetical: the pre-rotation
+// heads-up moved from ChannelMessageSend to this method when it became an
+// embed, and its two claim-handling tests inject under the old key.
 func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
 	if err := f.shouldFail("ChannelMessageSendEmbed"); err != nil {
 		return nil, err
 	}
+	if err := f.shouldFail("ChannelMessageSend"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
 	f.complexSends = append(f.complexSends, data)
+	f.mu.Unlock()
 	content := ""
 	if data != nil {
 		content = data.Content

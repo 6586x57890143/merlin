@@ -1,6 +1,7 @@
 package rotation
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -90,5 +91,67 @@ func TestResolveArchiveCategoryCreatesArchiveCategoryWhenMissing(t *testing.T) {
 	}
 	if created.Name != defaultArchiveCategoryName || created.Type != discordgo.ChannelTypeGuildCategory {
 		t.Fatalf("expected a category named %q, got name=%q type=%v", defaultArchiveCategoryName, created.Name, created.Type)
+	}
+}
+
+// Disclosure decides what a channel publishes about itself, so a typo has to
+// fail at the point of mutation rather than being stored and silently read as
+// some other mode.
+func TestValidateRejectsAnUnknownDisclosure(t *testing.T) {
+	base := settings.RotationChannel{
+		ChannelID: "c1", ArchiveCategoryID: "cat1", ArchiveVisibility: "mod_only",
+		IntervalMinutes: 24 * 60, NoticeLeadMinutes: 10,
+	}
+
+	for _, d := range []settings.Disclosure{
+		settings.DisclosureFull, settings.DisclosureCadence,
+		settings.DisclosureRetention, settings.DisclosureGeneric,
+		// Unset is today's behaviour, so it has to keep validating: every
+		// in-memory RotationChannel literal leaves it empty.
+		"",
+	} {
+		rc := base
+		rc.Disclosure = d
+		if err := validateRotationChannel(rc); err != nil {
+			t.Errorf("disclosure %q was rejected: %v", d, err)
+		}
+	}
+
+	rc := base
+	rc.Disclosure = "everything"
+	if err := validateRotationChannel(rc); err == nil {
+		t.Error("an unknown disclosure mode was accepted")
+	}
+}
+
+// The whitelist visibility is no longer offered by /rotation configure, but
+// guilds carry it from /config import and archiveOverwrites still implements
+// it. Rejecting it here would lock those guilds out of editing the channel at
+// all, since edit is a read-modify-write of the whole struct: an admin
+// changing only the interval would be refused over a field they never touched
+// and can no longer even select.
+func TestLegacyWhitelistVisibilityStillValidates(t *testing.T) {
+	rc := settings.RotationChannel{
+		ChannelID: "c1", ArchiveCategoryID: "cat1", ArchiveVisibility: "whitelist",
+		IntervalMinutes: 24 * 60, NoticeLeadMinutes: 10,
+	}
+	if err := validateRotationChannel(rc); err != nil {
+		t.Errorf("a legacy imported whitelist slot can no longer be edited: %v", err)
+	}
+}
+
+// The audit trail is where somebody looks after a channel published something
+// unexpected, so it has to record which mode was in force.
+func TestRotationSummaryRecordsTheDisclosure(t *testing.T) {
+	got := rotationSummary(settings.RotationChannel{
+		IntervalMinutes: 24 * 60, ArchiveVisibility: "mod_only", Disclosure: settings.DisclosureCadence,
+	})
+	if !strings.Contains(got, "disclosure=cadence") {
+		t.Errorf("audit summary does not record the disclosure mode: %s", got)
+	}
+	// Unset has to render as what it actually means, not as an empty value.
+	got = rotationSummary(settings.RotationChannel{IntervalMinutes: 60, ArchiveVisibility: "mod_only"})
+	if !strings.Contains(got, "disclosure=full") {
+		t.Errorf("an unset disclosure did not render as its effective value: %s", got)
 	}
 }

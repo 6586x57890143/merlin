@@ -189,7 +189,7 @@ func (p *Plugin) HandleChannelDeleted(ctx context.Context, guildID, channelID st
 		return
 	}
 	p.log.Warn("rotation: configured rotating channel was deleted", "guild", guildID, "channel", channelID)
-	if err := p.audit.Record(ctx, guildID, "system", "rotation.channel_deleted", channelID,
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "rotation.channel_deleted", core.MentionChannel(channelID),
 		"the channel this rotation is configured against was deleted; rotation will fail until it is reconfigured with /rotation configure"); err != nil {
 		p.log.Error("rotation: audit deleted channel", "guild", guildID, "err", err)
 	}

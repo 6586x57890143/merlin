@@ -62,6 +62,9 @@ func (l *Loader) reload() error {
 	// asking for regardless, and one that doesn't gets it too, which was the
 	// entire point of changing the default.
 	next.GuildMembersIntent = !isTruthy(os.Getenv("MERLIN_DISABLE_GUILD_MEMBERS_INTENT"))
+	// Opt-in, unlike the intent above. See GlobalConfig.OnboardingDM for why
+	// the defaults point in opposite directions.
+	next.OnboardingDM = isTruthy(os.Getenv("MERLIN_ENABLE_ONBOARDING_DM"))
 	// LOG_LEVEL overrides the YAML value when set. On a deployed host .env is
 	// already the file an operator edits; config.yaml is a read-only mount,
 	// so requiring a file change to raise verbosity mid-incident would be the

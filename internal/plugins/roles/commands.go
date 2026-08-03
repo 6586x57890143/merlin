@@ -217,7 +217,7 @@ func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i
 		return
 	}
 	p.syncOneChannelBestEffort(s, i, channelID)
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", fmt.Sprintf("allow=%s", channelID)); err != nil {
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "allow="+core.MentionChannel(channelID)); err != nil {
 		p.log.Error("roles: audit allow-channel failed", "guild", i.GuildID, "err", err)
 	}
 	core.RespondOK(s, i, "Channel allowed", fmt.Sprintf("<#%s> will stay visible to jailed members.", channelID))
@@ -230,7 +230,7 @@ func (p *Plugin) handleDisallowChannel(ctx context.Context, s *discordgo.Session
 		return
 	}
 	p.syncOneChannelBestEffort(s, i, channelID)
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", fmt.Sprintf("allow=%s", channelID), ""); err != nil {
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "allow="+core.MentionChannel(channelID), ""); err != nil {
 		p.log.Error("roles: audit disallow-channel failed", "guild", i.GuildID, "err", err)
 	}
 	core.RespondOK(s, i, "Channel hidden", fmt.Sprintf("<#%s> is hidden from jailed members again.", channelID))

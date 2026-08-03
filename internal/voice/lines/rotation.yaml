@@ -1,11 +1,26 @@
 # What Merlin says in a channel that has just rotated, and in one that is
 # about to.
 #
-# Every rotation.intro line MUST state both the reset cadence and, where
-# archives are kept for a bounded window, how long they survive. That is not
-# a style rule: it is the server's published retention policy, and dropping
-# half of it is how the code got this wrong once before. Startup validation
-# enforces it, so a line missing {cadence} or {retention} fails the build.
+# The intro keys come in a family of six, one per combination of the guild's
+# chosen disclosure mode (settings.Disclosure, /rotation configure) and
+# whether archives are kept for a bounded window. Which facts a line states
+# is decided by the key, never by the writing:
+#
+#   rotation.intro.full              {cadence} and {retention}
+#   rotation.intro.full_forever      {cadence}, archives kept indefinitely
+#   rotation.intro.cadence           {cadence} only, silent on the archive
+#   rotation.intro.retention         {retention} only, silent on the cadence
+#   rotation.intro.retention_forever archives kept indefinitely, no numbers
+#   rotation.intro.generic           no numbers at all
+#
+# Startup validation enforces this in both directions. A line missing its
+# key's required placeholder fails the build, which is how the published
+# retention policy survives someone adding a line they thought was funnier.
+# A line carrying a placeholder its key does not require also fails the
+# build, which is how a guild that chose "cadence only" cannot have its
+# deletion window published by a later edit. Getting this wrong has real
+# consequences: the code has already reported the rotation cadence as though
+# it were the deletion window once (see rotation/templates.go).
 #
 # Each key deliberately spans a range rather than settling on one tone. Some
 # lines are calm, some are funny, a couple are blunt. Merlin lives in a
@@ -14,7 +29,7 @@
 # escalates the room, though: she is the cleaner-spoken of the two birds, so
 # the edge stays dry rather than crude.
 
-rotation.intro.kept:
+rotation.intro.full:
   # calm
   - "quiet reset. this channel empties every {cadence}, the archive holds it {retention}, and then there is nothing left. that is the whole policy, no small print 🍵"
   - "fresh start, no ceremony. every {cadence} this place clears, the archive keeps it {retention}, and after that it is genuinely gone"
@@ -34,7 +49,7 @@ rotation.intro.kept:
   - "empty channel, as scheduled. it does this every {cadence}, archives get {retention} and no more. post it and forget it exists ✨"
   - "wiped. every {cadence}. the archive holds the wreckage {retention} and then shreds it. say something stupid, it has an expiry date 🔥"
 
-rotation.intro.forever:
+rotation.intro.full_forever:
   # calm
   - "and we go again. every {cadence} this channel starts fresh, and the old one is kept safe out of view rather than thrown away 🍵"
   - "new page every {cadence}. the previous one is filed away for the mods, and nothing on it is deleted"
@@ -51,6 +66,85 @@ rotation.intro.forever:
   - "blank slate. happens every {cadence}. the old channel is kept out of sight for the mods rather than wiped"
   # blunt
   - "cleared. every {cadence}. the old one is archived, not destroyed, which does mean it is still readable. by them, not by you"
+
+# Cadence only. These lines say how often the channel resets and deliberately
+# say nothing whatsoever about what becomes of the old one, because a guild
+# on this mode has chosen not to publish that.
+rotation.intro.cadence:
+  # calm
+  - "fresh channel. this one starts over every {cadence} 🍵"
+  - "clean slate, as it will be every {cadence}. carry on"
+  - "consider this a fresh nest. it empties every {cadence}, that's the whole rhythm 🪶"
+  # neutral
+  - "reset done. this place clears itself every {cadence}"
+  - "starting again from nothing, the way it does every {cadence} 🌿"
+  - "new perch, no history. every {cadence}, like clockwork"
+  # witty
+  - "the channel has been reincarnated. it does that every {cadence}, so don't get attached 😌"
+  - "new channel smell. enjoy it, it wears off every {cadence}"
+  - "everything you're about to say has a shelf life of {cadence}. spend it well"
+  # blunt
+  - "empty channel, as scheduled. it does this every {cadence}. post accordingly ✨"
+  - "cleared. happens every {cadence} whether you were finished talking or not 🔥"
+
+# Retention only. These state how long the archived copy survives and
+# deliberately never mention the rotation schedule.
+rotation.intro.retention:
+  # calm
+  - "fresh channel. the previous one sits in the archive for {retention} and is then permanently deleted 🍵"
+  - "clean slate. whatever was here is kept {retention} in the archive, and after that it's genuinely gone"
+  - "new nest. the old one is held {retention} and then there is nothing left of it at all 🪶"
+  # neutral
+  - "reset done. the archived copy survives {retention} and is then deleted for real, not the fake kind of deleted"
+  - "starting over in here. anything that landed in the archive only lasts {retention} before it goes 🌿"
+  - "new perch. the old channel is archived for {retention}, purely so the mods can deal with anything that needs dealing with, and then it goes too"
+  # witty
+  - "the channel has been reincarnated. its previous life gets {retention} in the archive and then even that ends. very freeing honestly 😌"
+  - "whatever you posted before this has {retention} left in the archive. the clock is running"
+  - "the old channel is in the archive on a {retention} lease. there are no renewals"
+  # blunt
+  - "wiped. the archive holds the wreckage {retention} and then shreds it ✨"
+  - "cleared out. archives get {retention} and no more, then it's properly gone 🔥"
+
+# Retention only, where archives are kept indefinitely. No numbers to state,
+# so these say what actually happens instead: nothing is deleted, it moves
+# out of reach.
+rotation.intro.retention_forever:
+  # calm
+  - "fresh channel. nothing here is deleted, the old one just moves somewhere quieter 🍵"
+  - "clean slate. the previous version is archived rather than thrown away"
+  - "new nest. what was here is kept safe out of view rather than destroyed 🪶"
+  # neutral
+  - "reset done. the old channel is filed away where only the mods can reach it"
+  - "starting over. nothing is deleted in here, it's archived and kept 🌿"
+  - "new perch. the previous one still exists, just somewhere you can't get to"
+  # witty
+  - "channel's been rehoused. the last one still exists, it just lives behind a door you don't have a key to 😌"
+  - "reset. nothing is actually deleted here, so if you were hoping something vanished, it didn't. the mods just moved it"
+  - "the old channel is archived, not erased. it's having a quiet retirement somewhere"
+  # blunt
+  - "cleared. the old one is archived, not destroyed, which does mean it's still readable. by them, not by you"
+  - "wiped from here, kept over there, permanently. plan accordingly 🔥"
+
+# No numbers at all. A guild on this mode has chosen to publish neither its
+# rotation schedule nor its retention window, so these lines state only that
+# the channel has rotated.
+rotation.intro.generic:
+  # calm
+  - "fresh channel. same room, new page 🍵"
+  - "clean slate. pick up wherever you left off"
+  - "consider this a fresh nest, no history 🪶"
+  # neutral
+  - "reset done. this is the new one"
+  - "starting over in here 🌿"
+  - "new perch. the old one has been put away"
+  # witty
+  - "the channel has been reincarnated. it's handling it well 😌"
+  - "new channel smell. make the most of it"
+  - "everything that was here is somewhere else now, and this is its replacement"
+  # blunt
+  - "wiped. begin again ✨"
+  - "cleared out. off you go 🔥"
 
 rotation.headsup:
   # calm
@@ -71,3 +165,24 @@ rotation.headsup:
   # blunt
   - "{when}. then it's gone. you know how this works by now"
   - "{when} until the whole channel gets flattened. tie up whatever you were doing 💀"
+
+# The heads-up for a channel on generic disclosure. Same courtesy warning,
+# without the countdown, because publishing "12 minutes" would hand over the
+# rotation schedule the guild chose not to publish.
+rotation.headsup.generic:
+  # calm
+  - "gentle warning: this channel resets shortly. nothing you need to do"
+  - "a reset is coming up. if you're mid-conversation, no rush, it picks up in the new one"
+  - "heads up, this one clears soon. carry on as you were"
+  # neutral
+  - "this channel resets shortly 🕊️"
+  - "rotating soon. if there's anything in here you actually want, now is the moment"
+  - "clearing out shortly 🍃"
+  - "not long left on this one, then it starts again from nothing ⏳"
+  # witty
+  - "the wipe is close. screenshot your best work or let it die with dignity"
+  - "this channel is running out of time. it's taking it well"
+  - "say your goodbyes, this place is about to reset"
+  # blunt
+  - "reset incoming. you know how this works by now"
+  - "this whole channel gets flattened shortly. tie up whatever you were doing 💀"

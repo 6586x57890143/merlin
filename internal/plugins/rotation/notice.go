@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
+
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/scheduler"
@@ -122,6 +124,17 @@ func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settin
 		quiet("the due instant has already passed", "due", due)
 		return nil
 	}
+	// Under a minute out, the countdown rounds to zero and the message reads
+	// "this channel resets in 0 minutes", which is both wrong and obviously
+	// broken to anyone who sees it. Same reasoning as the overdue case above:
+	// the rotation is about to fire on the next tick anyway, so a warning
+	// buys nobody anything, and staying quiet is the failure mode this
+	// feature already prefers. Deliberately checked before the claim, so the
+	// window is not spent on a message that is never sent.
+	if remaining < time.Minute {
+		quiet("the rotation is under a minute away, a countdown would round to zero", "due", due)
+		return nil
+	}
 
 	// Claim before posting. The alternative, posting and then recording,
 	// double-warns whenever the record fails, and being told twice that a
@@ -136,14 +149,40 @@ func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settin
 		return nil
 	}
 
-	line := p.voice.Line(ctx, guildID, voice.KeyRotationHeadsUp, map[string]string{
-		"when": core.FormatDuration(remaining.Round(time.Minute)),
-	})
+	// A channel on generic disclosure gets the same courtesy warning without
+	// the countdown. Naming the remaining minutes would hand over the
+	// rotation schedule the guild chose not to publish, and doing it in the
+	// message that immediately precedes the deliberately vague intro notice
+	// would make the setting pointless. Turning the heads-up off entirely is
+	// still a separate decision: notice_lead_minutes = 0, handled above.
+	key, vars := voice.KeyRotationHeadsUp, map[string]string{
+		// humanDuration, not core.FormatDuration: this is a member-facing
+		// message and its sibling intro notice in the same channel says
+		// "18 hours", so saying "18h" here would have the same bot describe
+		// the same window two different ways minutes apart.
+		"when": humanDuration(remaining.Round(time.Minute)),
+	}
+	if rc.Disclosure.Resolve() == settings.DisclosureGeneric {
+		key, vars = voice.KeyRotationHeadsUpGeneric, nil
+	}
+
+	line := p.voice.Line(ctx, guildID, key, vars)
 	if line == "" {
 		quiet("voice returned nothing to say")
 		return nil
 	}
-	if _, err := p.ops(guildID).ChannelMessageSend(rc.ChannelID, line); err != nil {
+	// An embed rather than bare content, matching the intro notice posted
+	// into this same channel when the rotation actually lands. ColorWarning
+	// (moodForColor -> MoodWarn) rather than the intro's ColorPrimary
+	// (MoodNotice) on purpose: this one is asking people to wrap up now,
+	// and the pair reads as escalate-then-settle.
+	notice := core.NewEmbed(core.ColorWarning, "", line)
+	if _, err := p.ops(guildID).ChannelMessageSendComplex(rc.ChannelID, &discordgo.MessageSend{
+		Embed: notice,
+		// Without the files the thumbnail URL points at an attachment that
+		// was never uploaded, which Discord renders as a broken frame.
+		Files: core.EmbedFiles(notice),
+	}); err != nil {
 		// A guard skip is the one failure where we know for certain that
 		// Discord was never called: allow returns before touching the
 		// session. Keeping the claim there would spend the window on a

@@ -60,6 +60,13 @@ just links to it rather than repeating it.
     was a trap: ticking the portal toggle looked like it should be enough,
     changed nothing on its own, and nothing reported the mismatch. That
     variable is no longer read.
+- **Owner onboarding DM**: off unless `MERLIN_ENABLE_ONBOARDING_DM=1`. When
+  on, Merlin DMs the owner of a server nobody has configured yet, once,
+  pointing at `/config setup`. Deliberately opt-in rather than opt-out (see
+  `.env.example`): it is unsolicited outbound contact rather than a
+  capability, and nothing is broken while it is off, since an owner who never
+  gets the DM simply runs `/config setup`. Enabling it later nudges every
+  still-unconfigured guild on the next restart.
 
 ## Local development
 

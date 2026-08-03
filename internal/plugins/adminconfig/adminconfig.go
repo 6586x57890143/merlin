@@ -266,7 +266,7 @@ func (p *Plugin) handleAdminsAdd(ctx context.Context, s *discordgo.Session, i *d
 		core.RespondErr(s, i, "Failed to add admin", err)
 		return
 	}
-	p.audit(ctx, i, "config.admin_added", "", userID)
+	p.audit(ctx, i, "config.admin_added", "", core.MentionUser(userID))
 	core.RespondOK(s, i, "Admin added", fmt.Sprintf("<@%s> is now an admin.", userID))
 }
 
@@ -276,7 +276,7 @@ func (p *Plugin) handleAdminsRemove(ctx context.Context, s *discordgo.Session, i
 		core.RespondErr(s, i, "Failed to remove admin", err)
 		return
 	}
-	p.audit(ctx, i, "config.admin_removed", userID, "")
+	p.audit(ctx, i, "config.admin_removed", core.MentionUser(userID), "")
 	core.RespondOK(s, i, "Admin removed", fmt.Sprintf("<@%s> is no longer an admin.", userID))
 }
 
@@ -300,7 +300,7 @@ func (p *Plugin) handleModRolesAdd(ctx context.Context, s *discordgo.Session, i 
 		return
 	}
 	p.grantModRoleChannelAccess(s, i.GuildID, roleID)
-	p.audit(ctx, i, "config.mod_role_added", "", roleID)
+	p.audit(ctx, i, "config.mod_role_added", "", core.MentionRole(roleID))
 	core.RespondOK(s, i, "Mod role added", fmt.Sprintf("<@&%s> now counts as a mod role.", roleID))
 }
 
@@ -329,7 +329,7 @@ func (p *Plugin) handleModRolesRemove(ctx context.Context, s *discordgo.Session,
 		core.RespondErr(s, i, "Failed to remove mod role", err)
 		return
 	}
-	p.audit(ctx, i, "config.mod_role_removed", roleID, "")
+	p.audit(ctx, i, "config.mod_role_removed", core.MentionRole(roleID), "")
 	core.RespondOK(s, i, "Mod role removed", fmt.Sprintf("<@&%s> no longer counts as a mod role.", roleID))
 }
 
@@ -423,7 +423,7 @@ func (p *Plugin) handlePermissionsAllow(ctx context.Context, s *discordgo.Sessio
 			core.RespondErr(s, i, "Failed to grant", err)
 			return
 		}
-		p.audit(ctx, i, "config.permission_granted", "", fmt.Sprintf("action=%s role=%s user=%s", action, roleID, userID))
+		p.audit(ctx, i, "config.permission_granted", "", permissionTarget(action, roleID, userID))
 		core.RespondOK(s, i, "Permission granted", fmt.Sprintf("Granted `%s`.", action))
 		return
 	}
@@ -431,7 +431,7 @@ func (p *Plugin) handlePermissionsAllow(ctx context.Context, s *discordgo.Sessio
 		core.RespondErr(s, i, "Failed to revoke", err)
 		return
 	}
-	p.audit(ctx, i, "config.permission_revoked", fmt.Sprintf("action=%s role=%s user=%s", action, roleID, userID), "")
+	p.audit(ctx, i, "config.permission_revoked", permissionTarget(action, roleID, userID), "")
 	core.RespondOK(s, i, "Permission revoked", fmt.Sprintf("Revoked `%s`.", action))
 }
 
@@ -452,7 +452,7 @@ func (p *Plugin) handlePermissionsDeny(ctx context.Context, s *discordgo.Session
 			core.RespondErr(s, i, "Failed to block", err)
 			return
 		}
-		p.audit(ctx, i, "config.permission_blocked", "", fmt.Sprintf("action=%s role=%s user=%s", action, roleID, userID))
+		p.audit(ctx, i, "config.permission_blocked", "", permissionTarget(action, roleID, userID))
 		core.RespondOK(s, i, "Blocked", fmt.Sprintf("Blocked from `%s`. This wins over tier, Administrator, and any grant.", action))
 		return
 	}
@@ -460,7 +460,7 @@ func (p *Plugin) handlePermissionsDeny(ctx context.Context, s *discordgo.Session
 		core.RespondErr(s, i, "Failed to unblock", err)
 		return
 	}
-	p.audit(ctx, i, "config.permission_unblocked", fmt.Sprintf("action=%s role=%s user=%s", action, roleID, userID), "")
+	p.audit(ctx, i, "config.permission_unblocked", permissionTarget(action, roleID, userID), "")
 	core.RespondOK(s, i, "Unblocked", fmt.Sprintf("Unblocked from `%s`.", action))
 }
 
@@ -634,6 +634,26 @@ func (p *Plugin) audit(ctx context.Context, i *discordgo.InteractionCreate, acti
 	if err := p.auditWriter.Record(ctx, i.GuildID, actorID, action, oldValue, newValue); err != nil {
 		p.log.Error("adminconfig: audit record failed", "action", action, "err", err)
 	}
+}
+
+// permissionTarget renders who a permission grant or denial applies to, for
+// the audit trail.
+//
+// The four permission audit lines used to interpolate "action=%s role=%s
+// user=%s" unconditionally, and exactly one of role/user is ever set (the
+// command takes either), so every one of those records carried a dangling
+// "user=" or "role=" and two raw snowflakes for a reader to go and look up.
+// Skipping the empty half and rendering the other as a mention is the whole
+// difference between a row somebody can read and one they have to decode.
+func permissionTarget(action, roleID, userID string) string {
+	parts := []string{"action=" + action}
+	if roleID != "" {
+		parts = append(parts, "role="+core.MentionRole(roleID))
+	}
+	if userID != "" {
+		parts = append(parts, "user="+core.MentionUser(userID))
+	}
+	return strings.Join(parts, " ")
 }
 
 func optionalID(opts map[string]*discordgo.ApplicationCommandInteractionDataOption, name string) string {
