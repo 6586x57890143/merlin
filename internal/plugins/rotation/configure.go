@@ -121,6 +121,7 @@ func (p *Plugin) registerCommands() {
 								ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildCategory},
 							},
 							durationOpt("retention", "How long to keep the archive before permanent deletion, e.g. \"30d\" or \"72h\". Omit to keep forever.", false),
+							noticeOpt(),
 							visibilityOpt(false),
 						},
 					},
@@ -143,6 +144,7 @@ func (p *Plugin) registerCommands() {
 								Name:        "retention_forever",
 								Description: "Set true to keep archives forever instead of a fixed retention",
 							},
+							noticeOpt(),
 							visibilityOpt(false),
 						},
 					},
@@ -218,6 +220,16 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 		}
 		hours := int(retention / time.Hour)
 		rc.RetentionHours = &hours
+	}
+	if v, ok := opts["notice"]; ok {
+		minutes, err := parseNoticeLead(v.StringValue())
+		if err != nil {
+			core.RespondErr(s, i, "Invalid notice lead", err)
+			return
+		}
+		rc.NoticeLeadMinutes = minutes
+	} else {
+		rc.NoticeLeadMinutes = defaultNoticeLeadMinutes
 	}
 
 	if err := validateRotationChannel(rc); err != nil {
@@ -321,6 +333,14 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 		hours := int(retention / time.Hour)
 		rc.RetentionHours = &hours
 	}
+	if v, ok := opts["notice"]; ok {
+		minutes, err := parseNoticeLead(v.StringValue())
+		if err != nil {
+			core.RespondErr(s, i, "Invalid notice lead", err)
+			return
+		}
+		rc.NoticeLeadMinutes = minutes
+	}
 	if v, ok := opts["visibility"]; ok {
 		rc.ArchiveVisibility = v.StringValue()
 	}
@@ -381,10 +401,23 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 // unreadable, in the exact place someone would look after a channel was
 // permanently deleted.
 func rotationSummary(rc settings.RotationChannel) string {
-	return fmt.Sprintf("interval=%s retention=%s visibility=%s",
+	return fmt.Sprintf("interval=%s retention=%s visibility=%s notice=%s",
 		core.FormatDuration(time.Duration(rc.IntervalMinutes)*time.Minute),
 		formatRetention(rc.RetentionHours),
-		rc.ArchiveVisibility)
+		rc.ArchiveVisibility,
+		formatNoticeLead(rc.NoticeLeadMinutes))
+}
+
+// formatNoticeLead renders the heads-up lead, distinguishing "off" from any
+// real value. Same reasoning as formatRetention: an audit record showing
+// "notice=0" would leave a reader guessing whether that means disabled or
+// unset, and this is a record somebody reads when working out why a channel
+// did or did not warn people.
+func formatNoticeLead(minutes int) string {
+	if minutes <= 0 {
+		return "off"
+	}
+	return core.FormatDuration(time.Duration(minutes) * time.Minute)
 }
 
 // formatRetention renders a retention window, distinguishing "kept forever"
@@ -423,5 +456,47 @@ func validateRotationChannel(rc settings.RotationChannel) error {
 			core.FormatDuration(minRotationInterval),
 			core.FormatDuration(time.Duration(rc.IntervalMinutes)*time.Minute))
 	}
+	// A lead at or beyond the interval would mean the warning for the next
+	// rotation is already due the instant the previous one finishes, so the
+	// channel would carry a permanent "about to wipe" notice and the words
+	// would stop meaning anything.
+	if rc.NoticeLeadMinutes < 0 {
+		return fmt.Errorf("notice lead can't be negative (use 0 to turn the heads-up off)")
+	}
+	if rc.NoticeLeadMinutes >= rc.IntervalMinutes {
+		return fmt.Errorf("notice lead must be shorter than the rotation interval (lead %s, interval %s)",
+			core.FormatDuration(time.Duration(rc.NoticeLeadMinutes)*time.Minute),
+			core.FormatDuration(time.Duration(rc.IntervalMinutes)*time.Minute))
+	}
 	return nil
+}
+
+// defaultNoticeLeadMinutes is how long before a rotation a channel is
+// warned when nobody said otherwise. Long enough to finish a thought,
+// short enough that people who were not around when it posted are not
+// reading a stale countdown.
+const defaultNoticeLeadMinutes = 10
+
+// noticeOpt is the shared "how long before the wipe to warn" option.
+func noticeOpt() *discordgo.ApplicationCommandOption {
+	return &discordgo.ApplicationCommandOption{
+		Type:        discordgo.ApplicationCommandOptionString,
+		Name:        "notice",
+		Description: "Warn the channel this long before it rotates, e.g. \"10m\" or \"1h\". Use \"off\" for no warning.",
+	}
+}
+
+// parseNoticeLead accepts a duration or the word "off", which is the
+// spelling somebody reaches for when they want the message gone. Requiring
+// a literal 0 for that would be a small puzzle in a command people run once.
+func parseNoticeLead(v string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "off", "none", "0":
+		return 0, nil
+	}
+	d, err := core.ParseFlexibleDuration(v)
+	if err != nil {
+		return 0, err
+	}
+	return int(d / time.Minute), nil
 }

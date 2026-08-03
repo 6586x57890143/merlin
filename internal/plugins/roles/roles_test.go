@@ -39,6 +39,12 @@ func (f *fakeScheduler) Unregister(jobKey string) error {
 
 func (f *fakeScheduler) RunNow(ctx context.Context, jobKey string) error { return nil }
 
+// NextDue is unused by this plugin: roles has one fixed sweep and nothing
+// that counts down to it.
+func (f *fakeScheduler) NextDue(ctx context.Context, jobKey string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
 func (f *fakeScheduler) Seed(ctx context.Context, jobKey string, at time.Time) error {
 	f.seeded[jobKey] = at
 	return nil

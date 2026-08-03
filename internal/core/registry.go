@@ -55,6 +55,15 @@ type Scheduler interface {
 	// user freshly configured (e.g. rotation's /rotation configure add)
 	// defer its first real fire by one full schedule period instead.
 	Seed(ctx context.Context, jobKey string, at time.Time) error
+
+	// NextDue reports when jobKey is expected to fire next. ok is false when
+	// there is no future instant to count down to, which covers both "not
+	// registered" and "due right now". Added for rotation's pre-rotation
+	// notice, which has to tell members how long is left; reading the
+	// Scheduler's own answer rather than recomputing last-run plus interval
+	// is what stops the number in the message drifting from the moment the
+	// rotation actually happens.
+	NextDue(ctx context.Context, jobKey string) (time.Time, bool, error)
 }
 
 // Plugin is the interface every feature module implements. Plugins are

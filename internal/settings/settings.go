@@ -92,6 +92,12 @@ type RotationChannel struct {
 	RetentionHours          *int // nil = keep forever, never swept
 	StickyEnabled           bool
 	StickyMessages          []string
+	// NoticeLeadMinutes is how long before a rotation to warn the channel.
+	// 0 disables the notice for this slot. Validation keeps it strictly
+	// below the interval: a lead longer than the gap between rotations
+	// would mean the warning for the next one arrives before the previous
+	// one has happened.
+	NoticeLeadMinutes int
 }
 
 type guildCache struct {
@@ -170,7 +176,8 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 	rows.Close()
 
 	rcRows, err := s.pool.Query(ctx, `SELECT id, channel_id, interval_minutes, archive_category_id, archive_visibility,
-		archive_whitelist_role_ids, archive_whitelist_user_ids, retention_hours, sticky_enabled, sticky_messages
+		archive_whitelist_role_ids, archive_whitelist_user_ids, retention_hours, sticky_enabled, sticky_messages,
+		notice_lead_minutes
 		FROM settings_rotation_channels WHERE guild_id = $1`, guildID)
 	if err != nil {
 		return fmt.Errorf("settings: load rotation channels for %s: %w", guildID, err)
@@ -178,7 +185,8 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 	for rcRows.Next() {
 		rc := RotationChannel{GuildID: guildID}
 		if err := rcRows.Scan(&rc.ID, &rc.ChannelID, &rc.IntervalMinutes, &rc.ArchiveCategoryID, &rc.ArchiveVisibility,
-			&rc.ArchiveWhitelistRoleIDs, &rc.ArchiveWhitelistUserIDs, &rc.RetentionHours, &rc.StickyEnabled, &rc.StickyMessages); err != nil {
+			&rc.ArchiveWhitelistRoleIDs, &rc.ArchiveWhitelistUserIDs, &rc.RetentionHours, &rc.StickyEnabled, &rc.StickyMessages,
+			&rc.NoticeLeadMinutes); err != nil {
 			rcRows.Close()
 			return fmt.Errorf("settings: scan rotation channel for %s: %w", guildID, err)
 		}
@@ -832,14 +840,15 @@ func (s *Store) UpsertRotationChannel(ctx context.Context, rc RotationChannel) e
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO settings_rotation_channels (guild_id, channel_id, interval_minutes, archive_category_id,
 			archive_visibility, archive_whitelist_role_ids, archive_whitelist_user_ids, retention_hours,
-			sticky_enabled, sticky_messages, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+			sticky_enabled, sticky_messages, notice_lead_minutes, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
 		ON CONFLICT (guild_id, channel_id) DO UPDATE SET
 			interval_minutes = $3, archive_category_id = $4, archive_visibility = $5,
 			archive_whitelist_role_ids = $6, archive_whitelist_user_ids = $7, retention_hours = $8,
-			sticky_enabled = $9, sticky_messages = $10, updated_at = now()`,
+			sticky_enabled = $9, sticky_messages = $10, notice_lead_minutes = $11, updated_at = now()`,
 		rc.GuildID, rc.ChannelID, rc.IntervalMinutes, rc.ArchiveCategoryID, rc.ArchiveVisibility,
 		rc.ArchiveWhitelistRoleIDs, rc.ArchiveWhitelistUserIDs, rc.RetentionHours, rc.StickyEnabled, rc.StickyMessages,
+		rc.NoticeLeadMinutes,
 	); err != nil {
 		return fmt.Errorf("settings: upsert rotation channel: %w", err)
 	}

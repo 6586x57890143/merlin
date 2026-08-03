@@ -1,0 +1,291 @@
+package rotation
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/6586x57890143/merlin/internal/scheduler"
+	"github.com/6586x57890143/merlin/internal/settings"
+)
+
+// fakeNoticeStore is the in-memory NoticeStore. ClaimNotice keeps the real
+// one's contract exactly: first caller for a given (rotation, instant) wins,
+// everyone after gets false. That contract is the entire idempotency
+// mechanism, so a fake that always said true would test nothing.
+type fakeNoticeStore struct {
+	mu       sync.Mutex
+	claimed  map[string]bool
+	claimErr error
+	pruned   []time.Time
+}
+
+func newFakeNoticeStore() *fakeNoticeStore {
+	return &fakeNoticeStore{claimed: map[string]bool{}}
+}
+
+func (f *fakeNoticeStore) ClaimNotice(_ context.Context, rotationID int64, noticeFor time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claimErr != nil {
+		return false, f.claimErr
+	}
+	key := fmt.Sprintf("%d@%s", rotationID, noticeFor.UTC().Format(time.RFC3339Nano))
+	if f.claimed[key] {
+		return false, nil
+	}
+	f.claimed[key] = true
+	return true, nil
+}
+
+func (f *fakeNoticeStore) PruneNotices(_ context.Context, before time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pruned = append(f.pruned, before)
+	return nil
+}
+
+// noticeRC is a rotating channel configured to warn 10 minutes ahead of a
+// daily rotation.
+func noticeRC() settings.RotationChannel {
+	rc := finiteRetentionRC()
+	rc.ID = 1
+	rc.NoticeLeadMinutes = 10
+	return rc
+}
+
+// testClock is a movable now, so a test can walk through more than one
+// rotation cycle instead of only ever observing a single instant.
+type testClock struct{ t time.Time }
+
+func (c *testClock) now() time.Time          { return c.t }
+func (c *testClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+func setupNotice(t *testing.T, rc settings.RotationChannel) (*fakeOps, *fakeScheduler, *fakeNoticeStore, *Plugin) {
+	t.Helper()
+	fs := newFakeSettings()
+	if err := fs.UpsertRotationChannel(context.Background(), rc); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	ops := newFakeOps()
+	sched := newFakeScheduler()
+	notices := newFakeNoticeStore()
+	testNoticeClock = &testClock{t: fixedNow}
+
+	p := &Plugin{
+		ops:              func(string) DiscordChannelOps { return ops },
+		dryRun:           func(string) bool { return false },
+		settings:         fs,
+		sched:            sched,
+		notices:          notices,
+		log:              testLogger(),
+		voice:            testVoice(),
+		now:              testNoticeClock.now,
+		sweepRegistered:  map[string]bool{},
+		noticeRegistered: map[string]bool{},
+		registeredJobs:   map[string]time.Duration{},
+	}
+	return ops, sched, notices, p
+}
+
+// testNoticeClock is reset by every setupNotice call, so tests do not share
+// a clock between them.
+var testNoticeClock = &testClock{t: fixedNow}
+
+func rotationKey(rc settings.RotationChannel) string {
+	return scheduler.JobKey(rc.GuildID, rotationJobName(rc.ID))
+}
+
+// The heads-up fires once, inside the lead window, and says how long is
+// left. Members' first notice of a rotation used to be the channel already
+// being gone.
+func TestNoticeFiresInsideTheLeadWindow(t *testing.T) {
+	rc := noticeRC()
+	ops, sched, _, p := setupNotice(t, rc)
+	sched.nextDue[rotationKey(rc)] = fixedNow.Add(6 * time.Minute)
+
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("postDueNotices: %v", err)
+	}
+
+	msgs := ops.messages[rc.ChannelID]
+	if len(msgs) != 1 {
+		t.Fatalf("messages posted = %d, want 1", len(msgs))
+	}
+	if !strings.Contains(msgs[0].Content, "6m") {
+		t.Errorf("notice does not say how long is left: %q", msgs[0].Content)
+	}
+	if strings.ContainsAny(msgs[0].Content, "{}") {
+		t.Errorf("notice leaked a placeholder: %q", msgs[0].Content)
+	}
+}
+
+// The job runs every minute and the lead window is many minutes wide, so
+// without the claim every single tick inside the window would post again.
+// Being told six times that a channel is about to wipe reads as a broken
+// bot, and this is the check that makes it structurally impossible.
+func TestNoticeFiresOnlyOncePerRotation(t *testing.T) {
+	rc := noticeRC()
+	ops, sched, _, p := setupNotice(t, rc)
+	due := fixedNow.Add(8 * time.Minute)
+	sched.nextDue[rotationKey(rc)] = due
+
+	for range 5 {
+		if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+			t.Fatalf("postDueNotices: %v", err)
+		}
+	}
+
+	if got := len(ops.messages[rc.ChannelID]); got != 1 {
+		t.Errorf("posted %d notices for one rotation, want 1", got)
+	}
+}
+
+// A different rotation instant is a different notice, or the channel would
+// be warned once and then never again.
+func TestTheNextRotationGetsItsOwnNotice(t *testing.T) {
+	rc := noticeRC()
+	ops, sched, _, p := setupNotice(t, rc)
+
+	sched.nextDue[rotationKey(rc)] = fixedNow.Add(5 * time.Minute)
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("postDueNotices: %v", err)
+	}
+	// A day later, with the clock moved forward too, the next rotation is
+	// approaching. Moving only the due instant would put it outside the lead
+	// window and prove nothing.
+	testNoticeClock.advance(24 * time.Hour)
+	sched.nextDue[rotationKey(rc)] = testNoticeClock.now().Add(5 * time.Minute)
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("postDueNotices: %v", err)
+	}
+
+	if got := len(ops.messages[rc.ChannelID]); got != 2 {
+		t.Errorf("posted %d notices across two rotations, want 2", got)
+	}
+}
+
+func TestNoticeStaysQuietWhenItShould(t *testing.T) {
+	cases := []struct {
+		name    string
+		lead    int
+		nextDue func() (time.Time, bool)
+		why     string
+	}{
+		{
+			name:    "rotation is further out than the lead",
+			lead:    10,
+			nextDue: func() (time.Time, bool) { return fixedNow.Add(3 * time.Hour), true },
+			why:     "warning three hours early is not a warning, it is noise",
+		},
+		{
+			name: "no lead configured",
+			lead: 0,
+			// Deliberately inside what would be the window if a lead
+			// existed, so this can only pass by honouring the setting.
+			nextDue: func() (time.Time, bool) { return fixedNow.Add(2 * time.Minute), true },
+			why:     "0 means the admin turned the heads-up off",
+		},
+		{
+			name:    "rotation is overdue",
+			lead:    10,
+			nextDue: func() (time.Time, bool) { return time.Time{}, false },
+			why:     "an overdue job fires on the next tick, so a countdown would be wrong in the one direction that matters",
+		},
+		{
+			name:    "rotation already passed the due instant",
+			lead:    10,
+			nextDue: func() (time.Time, bool) { return fixedNow.Add(-time.Minute), true },
+			why:     "counting down to something in the past reads as a stuck bot",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rc := noticeRC()
+			rc.NoticeLeadMinutes = c.lead
+			ops, sched, _, p := setupNotice(t, rc)
+			if due, ok := c.nextDue(); ok {
+				sched.nextDue[rotationKey(rc)] = due
+			}
+
+			if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+				t.Fatalf("postDueNotices: %v", err)
+			}
+			if got := len(ops.messages[rc.ChannelID]); got != 0 {
+				t.Errorf("posted %d notices: %s", got, c.why)
+			}
+		})
+	}
+}
+
+// Claiming before posting means a storage failure costs a notice, not a
+// duplicate. The other order double-warns whenever the write fails.
+func TestAFailedClaimPostsNothing(t *testing.T) {
+	rc := noticeRC()
+	ops, sched, notices, p := setupNotice(t, rc)
+	sched.nextDue[rotationKey(rc)] = fixedNow.Add(5 * time.Minute)
+	notices.claimErr = errors.New("database is down")
+
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("a failed claim aborted the whole pass: %v", err)
+	}
+	if got := len(ops.messages[rc.ChannelID]); got != 0 {
+		t.Errorf("posted %d notices despite failing to claim one", got)
+	}
+}
+
+// A job that exists only where it has work, matching reconcileSweepJob.
+func TestNoticeJobExistsOnlyWhereALeadIsSet(t *testing.T) {
+	rc := noticeRC()
+	_, sched, _, p := setupNotice(t, rc)
+	key := scheduler.JobKey("g1", noticeJobName)
+
+	p.reconcileNoticeJob("g1")
+	if !sched.registered[key] {
+		t.Fatal("no notice job registered for a guild that wants notices")
+	}
+
+	// The admin turns it off.
+	rc.NoticeLeadMinutes = 0
+	if err := p.settings.(*fakeSettings).UpsertRotationChannel(context.Background(), rc); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	p.reconcileNoticeJob("g1")
+	if sched.registered[key] {
+		t.Error("notice job still registered after every lead was turned off")
+	}
+}
+
+// A lead at or beyond the interval would leave a permanent "about to wipe"
+// banner in the channel, at which point the words stop meaning anything.
+func TestNoticeLeadMustBeShorterThanTheInterval(t *testing.T) {
+	base := finiteRetentionRC()
+	base.IntervalMinutes = 60
+
+	for _, c := range []struct {
+		lead    int
+		wantErr bool
+	}{
+		{lead: 0, wantErr: false},
+		{lead: 10, wantErr: false},
+		{lead: 59, wantErr: false},
+		{lead: 60, wantErr: true},
+		{lead: 120, wantErr: true},
+		{lead: -1, wantErr: true},
+	} {
+		rc := base
+		rc.NoticeLeadMinutes = c.lead
+		err := validateRotationChannel(rc)
+		if c.wantErr && err == nil {
+			t.Errorf("lead of %d minutes against a 60 minute interval was accepted", c.lead)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("lead of %d minutes was rejected: %v", c.lead, err)
+		}
+	}
+}

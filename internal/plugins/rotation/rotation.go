@@ -70,9 +70,12 @@ type Plugin struct {
 	// this plugin knowing (see internal/voice).
 	voice voice.Source
 
-	mu              sync.Mutex
-	sweepRegistered map[string]bool          // guild ID -> sweep job registered
-	registeredJobs  map[string]time.Duration // rotation job key -> interval it was registered with
+	notices NoticeStore
+
+	mu               sync.Mutex
+	sweepRegistered  map[string]bool          // guild ID -> sweep job registered
+	noticeRegistered map[string]bool          // guild ID -> pre-rotation notice job registered
+	registeredJobs   map[string]time.Duration // rotation job key -> interval it was registered with
 
 	botUserIDMu sync.Mutex
 	botUserID   string // cached result of getBotUserID, fetched at most once
@@ -90,15 +93,25 @@ type Plugin struct {
 // their own, so the guild has to come from the caller, which always knows it.
 type OpsProvider func(guildID string) DiscordChannelOps
 
+// rotationJobName is the per-slot half of a rotation job's Scheduler key.
+// Keyed on the stable settings row ID, never the channel ID, because
+// rotate() retargets a slot's channel every cycle and a key that moved with
+// it would reset the job's persisted last-run state each time (migration
+// 0009).
+func rotationJobName(rotationID int64) string {
+	return "rotation:" + strconv.FormatInt(rotationID, 10)
+}
+
 func New(settingsStore SettingsProvider, ops OpsProvider, dryRun func(guildID string) bool, speaker voice.Source) *Plugin {
 	return &Plugin{
-		settings:        settingsStore,
-		ops:             ops,
-		dryRun:          dryRun,
-		voice:           speaker,
-		now:             func() time.Time { return time.Now().UTC() },
-		sweepRegistered: make(map[string]bool),
-		registeredJobs:  make(map[string]time.Duration),
+		settings:         settingsStore,
+		ops:              ops,
+		dryRun:           dryRun,
+		voice:            speaker,
+		now:              func() time.Time { return time.Now().UTC() },
+		sweepRegistered:  make(map[string]bool),
+		noticeRegistered: make(map[string]bool),
+		registeredJobs:   make(map[string]time.Duration),
 	}
 }
 
@@ -111,6 +124,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.sched = deps.Scheduler
 	p.commands = deps.Commands
 	p.archives = NewPostgresArchiveStore(deps.DB.Pool)
+	p.notices = NewPostgresNoticeStore(deps.DB.Pool)
 
 	p.registerCommands()
 
@@ -226,7 +240,7 @@ func (p *Plugin) deferFirstRotation(ctx context.Context, guildID, channelID stri
 	if !ok {
 		return
 	}
-	jobKey := scheduler.JobKey(guildID, "rotation:"+strconv.FormatInt(rc.ID, 10))
+	jobKey := scheduler.JobKey(guildID, rotationJobName(rc.ID))
 	if err := p.sched.Seed(ctx, jobKey, p.now()); err != nil {
 		p.log.Error("rotation: defer first run for new channel", "job", jobKey, "err", err)
 	}
@@ -294,6 +308,7 @@ func (p *Plugin) reconcile(ctx context.Context, guildID string) {
 
 	channels := p.settings.RotationChannels(guildID)
 	p.reconcileSweepJob(ctx, guildID, len(channels) > 0)
+	p.reconcileNoticeJob(guildID)
 
 	guildPrefix := scheduler.JobKey(guildID, "rotation:")
 	current := make(map[string]bool)
@@ -306,7 +321,7 @@ func (p *Plugin) reconcile(ctx context.Context, guildID string) {
 		// is immediately due again on the Scheduler's very next tick. This
 		// was a real bug: it looped, rotating (and archiving) every ~30s
 		// instead of once per interval_hours.
-		jobKey := scheduler.JobKey(guildID, "rotation:"+strconv.FormatInt(rc.ID, 10))
+		jobKey := scheduler.JobKey(guildID, rotationJobName(rc.ID))
 		interval := time.Duration(rc.IntervalMinutes) * time.Minute
 		current[jobKey] = true
 

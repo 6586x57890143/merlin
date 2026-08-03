@@ -522,6 +522,34 @@ func (s *Scheduler) JobHealth(ctx context.Context, guildID string) (total, faili
 // jobLines formats one line per guildID job, newest logic unchanged from
 // before pagination existed, just split out so both handleList and
 // handleListPage build from the same up-to-date source.
+// NextDue reports when jobKey is expected to fire next.
+//
+// ok is false when the job is due right now (never run, or overdue), and
+// when jobKey is not registered at all. Both mean "there is no future
+// instant to count down to", which is the only thing the caller can act on.
+//
+// Exported for rotation's pre-rotation notice, which has to know how long
+// is left before a channel wipes. It reads the same state and applies the
+// same jitter the tick loop does, rather than recomputing "last run plus
+// interval" independently, so the number a member is told and the moment
+// the rotation actually happens cannot drift apart. It is an estimate for
+// the same reason /scheduler list's is: a currently-failing job's real next
+// attempt depends on backoff.
+func (s *Scheduler) NextDue(ctx context.Context, jobKey string) (time.Time, bool, error) {
+	s.mu.Lock()
+	j, registered := s.jobs[jobKey]
+	s.mu.Unlock()
+	if !registered {
+		return time.Time{}, false, nil
+	}
+	st, err := s.store.Get(ctx, jobKey)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	due, ok := nextDue(st, j.spec.Schedule, j.jitter)
+	return due, ok, nil
+}
+
 func (s *Scheduler) jobLines(ctx context.Context, guildID string) []string {
 	jobs := s.jobsForGuild(guildID)
 	prefix := guildID + ":"

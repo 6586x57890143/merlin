@@ -479,6 +479,12 @@ type fakeScheduler struct {
 	registerCalls   map[string]int
 	unregisterCalls map[string]int
 	seedCalls       map[string]time.Time
+
+	// nextDue is what NextDue answers per job key. Absent means "no future
+	// instant", which is how both an unregistered job and an already-overdue
+	// one look to a caller.
+	nextDue    map[string]time.Time
+	nextDueErr error
 }
 
 func newFakeScheduler() *fakeScheduler {
@@ -486,6 +492,7 @@ func newFakeScheduler() *fakeScheduler {
 		registered:      make(map[string]bool),
 		registerCalls:   make(map[string]int),
 		unregisterCalls: make(map[string]int),
+		nextDue:         make(map[string]time.Time),
 		seedCalls:       make(map[string]time.Time),
 	}
 }
@@ -507,6 +514,16 @@ func (f *fakeScheduler) Unregister(jobKey string) error {
 	delete(f.registered, jobKey)
 	f.unregisterCalls[jobKey]++
 	return nil
+}
+
+func (f *fakeScheduler) NextDue(ctx context.Context, jobKey string) (time.Time, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.nextDueErr != nil {
+		return time.Time{}, false, f.nextDueErr
+	}
+	due, ok := f.nextDue[jobKey]
+	return due, ok, nil
 }
 
 func (f *fakeScheduler) RunNow(ctx context.Context, jobKey string) error {

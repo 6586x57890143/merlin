@@ -86,16 +86,29 @@ func plainRetentionNotice(rc settings.RotationChannel, cadence string) string {
 // evenly, otherwise hours) so both ends of this bot describe a given
 // interval/retention window the same way.
 func humanDuration(d time.Duration) string {
-	hours := int(d / time.Hour)
-	if hours > 0 && hours%24 == 0 {
-		days := hours / 24
-		if days == 1 {
+	switch {
+	case d >= 24*time.Hour && d%(24*time.Hour) == 0:
+		if days := int(d / (24 * time.Hour)); days == 1 {
 			return "1 day"
+		} else {
+			return fmt.Sprintf("%d days", days)
 		}
-		return fmt.Sprintf("%d days", days)
+	case d >= time.Hour && d%time.Hour == 0:
+		if hours := int(d / time.Hour); hours == 1 {
+			return "1 hour"
+		} else {
+			return fmt.Sprintf("%d hours", hours)
+		}
+	default:
+		// Sub-hour and part-hour values are reachable now that intervals
+		// are minute-precise. Truncating to whole hours here would tell
+		// members a 90-minute channel resets "every 1 hour", which is both
+		// wrong and wrong in the direction that makes the notice look like
+		// it is describing a different channel.
+		if minutes := int(d / time.Minute); minutes == 1 {
+			return "1 minute"
+		} else {
+			return fmt.Sprintf("%d minutes", minutes)
+		}
 	}
-	if hours == 1 {
-		return "1 hour"
-	}
-	return fmt.Sprintf("%d hours", hours)
 }
