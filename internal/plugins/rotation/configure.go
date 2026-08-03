@@ -65,9 +65,15 @@ func (p *Plugin) registerCommands() {
 		}
 	}
 	// durationOpt is used for both interval and retention: a plain string
-	// rather than an Integer, so one option can accept either unit
+	// rather than an Integer, so one option can carry its own unit
 	// (core.ParseFlexibleDuration): "24h" or "3d" for a daily rotation, "30d"
-	// or "720h" for a month of retention. Integer options can't express a
+	// or "720h" for a month of retention.
+	//
+	// The unit is mandatory, and every description below says so where the
+	// person can read it before typing rather than only in the error
+	// afterwards. A bare "3" was once accepted as three hours, which cost a
+	// guild its archives a day early when three *days* was meant, and
+	// permanent deletion has no undo. Integer options can't express a
 	// unit at all, which is exactly why this used to be interval_hours/
 	// retention_days: two different granularities for what's conceptually
 	// the same kind of value, and no way to ask for "3 days" without doing
@@ -113,14 +119,14 @@ func (p *Plugin) registerCommands() {
 						Description: "Start rotating a channel",
 						Options: []*discordgo.ApplicationCommandOption{
 							channelOpt("channel", "The live channel to rotate"),
-							durationOpt("interval", "How often it rotates, e.g. \"24h\", \"3d\", \"90m\". Minimum 1 hour.", true),
+							durationOpt("interval", "How often it rotates. Needs a unit: \"3d\", \"24h\", \"90m\". Minimum 1 hour.", true),
 							{
 								Type:         discordgo.ApplicationCommandOptionChannel,
 								Name:         "archive_category",
 								Description:  "Hidden category archived channels move into. Omit to auto-create/reuse one named \"Archive\"",
 								ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildCategory},
 							},
-							durationOpt("retention", "How long to keep the archive before permanent deletion, e.g. \"30d\" or \"72h\". Omit to keep forever.", false),
+							durationOpt("retention", "Keep the archive this long before PERMANENT deletion. Needs a unit: \"30d\", \"72h\". Omit = forever.", false),
 							noticeOpt(),
 							visibilityOpt(false),
 						},
@@ -137,8 +143,8 @@ func (p *Plugin) registerCommands() {
 						Description: "Adjust an already-configured rotating channel",
 						Options: []*discordgo.ApplicationCommandOption{
 							channelOpt("channel", "The rotating channel to adjust"),
-							durationOpt("interval", "New rotation interval, e.g. \"24h\", \"3d\", \"90m\". Minimum 1 hour.", false),
-							durationOpt("retention", "New retention, e.g. \"30d\" or \"72h\"", false),
+							durationOpt("interval", "New rotation interval. Needs a unit: \"3d\", \"24h\", \"90m\". Minimum 1 hour.", false),
+							durationOpt("retention", "New retention before PERMANENT deletion. Needs a unit: \"30d\" or \"72h\"", false),
 							{
 								Type:        discordgo.ApplicationCommandOptionBoolean,
 								Name:        "retention_forever",
@@ -482,7 +488,7 @@ func noticeOpt() *discordgo.ApplicationCommandOption {
 	return &discordgo.ApplicationCommandOption{
 		Type:        discordgo.ApplicationCommandOptionString,
 		Name:        "notice",
-		Description: "Warn the channel this long before it rotates, e.g. \"10m\" or \"1h\". Use \"off\" for no warning.",
+		Description: "Warn the channel this long before it rotates. Needs a unit: \"10m\", \"1h\". \"off\" to disable.",
 	}
 }
 

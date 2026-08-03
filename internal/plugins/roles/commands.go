@@ -72,7 +72,7 @@ func (p *Plugin) registerCommands() {
 				// See collectJailUserIDs.
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to jail"),
-					durationOpt("duration", "How long before automatic release, e.g. \"24h\" or \"3d\"", true),
+					durationOpt("duration", "How long before automatic release. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
 					optionalUserOpt("user2", "A second member, jailed with the same duration and reason"),
 					optionalUserOpt("user3", "A third member"),
 					optionalUserOpt("user4", "A fourth member"),
@@ -86,7 +86,7 @@ func (p *Plugin) registerCommands() {
 				Description: "Jail everyone holding one role, for shutting down a raid",
 				Options: []*discordgo.ApplicationCommandOption{
 					roleOpt("role", "Every member holding this role will be jailed"),
-					durationOpt("duration", "How long before automatic release, e.g. \"24h\" or \"3d\"", true),
+					durationOpt("duration", "How long before automatic release. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
 					reasonOpt,
 				},
 			},
@@ -103,7 +103,7 @@ func (p *Plugin) registerCommands() {
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to grant a role to"),
 					roleOpt("role", "The role to grant"),
-					durationOpt("duration", "How long before automatic revocation, e.g. \"24h\" or \"3d\". Omit for permanent.", false),
+					durationOpt("duration", "How long before automatic revocation. Needs a unit: \"3d\", \"24h\". Omit for permanent.", false),
 					reasonOpt,
 				},
 			},

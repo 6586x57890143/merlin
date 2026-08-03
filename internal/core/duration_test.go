@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,13 +26,52 @@ func TestParseFlexibleDurationHours(t *testing.T) {
 	}
 }
 
-func TestParseFlexibleDurationBareNumberDefaultsToHours(t *testing.T) {
-	d, err := ParseFlexibleDuration("24")
-	if err != nil {
-		t.Fatalf("ParseFlexibleDuration: %v", err)
+// A bare number is refused, and this assertion used to be its exact
+// opposite. Defaulting to hours looked like a convenience and cost a guild
+// its archives a day early: "3" typed for a retention window by somebody
+// meaning three days bought three hours, the deletion is permanent, and
+// every list that echoed the value back agreed with the mistake. There is no
+// safe guess to make here, so it refuses and names the readings instead.
+func TestParseFlexibleDurationRejectsABareNumber(t *testing.T) {
+	for _, in := range []string{"24", "3", "  10  "} {
+		err := func() error { _, e := ParseFlexibleDuration(in); return e }()
+		if err == nil {
+			t.Fatalf("expected %q to be refused for having no unit", in)
+		}
+		// The error has to be actionable in Discord, where the only thing
+		// the person sees is this sentence.
+		for _, want := range []string{"d", "h", "m"} {
+			if !strings.Contains(err.Error(), strings.TrimSpace(in)+want) {
+				t.Errorf("error for %q should suggest %q, got: %v", in, strings.TrimSpace(in)+want, err)
+			}
+		}
 	}
-	if d != 24*time.Hour {
-		t.Fatalf("expected a bare number to be interpreted as hours, got %v", d)
+}
+
+// Requiring a unit should not make the input fussy. Anything a person would
+// plausibly type for the same value parses to the same duration.
+func TestParseFlexibleDurationAcceptsSpelledOutUnits(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"3d":         72 * time.Hour,
+		"3 d":        72 * time.Hour,
+		"3day":       72 * time.Hour,
+		"3 days":     72 * time.Hour,
+		"72h":        72 * time.Hour,
+		"72 hr":      72 * time.Hour,
+		"72hrs":      72 * time.Hour,
+		"72 HOURS":   72 * time.Hour,
+		"90m":        90 * time.Minute,
+		"90 min":     90 * time.Minute,
+		"90 minutes": 90 * time.Minute,
+	} {
+		got, err := ParseFlexibleDuration(in)
+		if err != nil {
+			t.Errorf("ParseFlexibleDuration(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("ParseFlexibleDuration(%q) = %v, want %v", in, got, want)
+		}
 	}
 }
 
@@ -70,7 +110,7 @@ func TestParseFlexibleDurationMinutes(t *testing.T) {
 }
 
 func TestParseFlexibleDurationRejectsInvalid(t *testing.T) {
-	cases := []string{"", "abc", "0h", "0d", "0m", "-3d", "-90m", "d", "h", "m", "1.5h", "90 m"}
+	cases := []string{"", "abc", "0h", "0d", "0m", "-3d", "-90m", "d", "h", "m", "1.5h", "3 fortnights", "3s", "24"}
 	for _, c := range cases {
 		if _, err := ParseFlexibleDuration(c); err == nil {
 			t.Errorf("expected %q to be rejected", c)
