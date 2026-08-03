@@ -26,6 +26,16 @@ type NoticeStore interface {
 	// of how the callers interleave.
 	ClaimNotice(ctx context.Context, rotationID int64, noticeFor time.Time) (bool, error)
 
+	// ReleaseNotice gives a claim back, for the one case where the caller
+	// knows with certainty that nothing was posted: the guard refused the
+	// send outright because the guild is paused or in dry-run, so Discord
+	// was never called at all.
+	//
+	// Deliberately not used for an ordinary send failure. A request that
+	// errored may still have been accepted with only the response lost, and
+	// this feature would rather drop a notice than warn a channel twice.
+	ReleaseNotice(ctx context.Context, rotationID int64, noticeFor time.Time) error
+
 	// PruneNotices drops claims for rotations that have already happened.
 	// They are only interesting until the rotation they refer to is past.
 	PruneNotices(ctx context.Context, before time.Time) error
@@ -45,6 +55,14 @@ func (s *pgNoticeStore) ClaimNotice(ctx context.Context, rotationID int64, notic
 		return false, fmt.Errorf("rotation: claim notice: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+func (s *pgNoticeStore) ReleaseNotice(ctx context.Context, rotationID int64, noticeFor time.Time) error {
+	if _, err := s.pool.Exec(ctx, `
+		DELETE FROM rotation_notices WHERE rotation_id = $1 AND notice_for = $2`, rotationID, noticeFor); err != nil {
+		return fmt.Errorf("rotation: release notice: %w", err)
+	}
+	return nil
 }
 
 func (s *pgNoticeStore) PruneNotices(ctx context.Context, before time.Time) error {

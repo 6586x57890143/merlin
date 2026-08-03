@@ -9,6 +9,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
@@ -76,7 +77,7 @@ func (p *Plugin) handleListSelect(ctx context.Context, s *discordgo.Session, i *
 			CustomID: core.PaginationCustomID(rotationListBackPrefix, page),
 		},
 	}}}
-	if err := core.UpdateEmbedWithComponents(s, i, renderRotationDetailEmbed(rc), backRow); err != nil {
+	if err := core.UpdateEmbedWithComponents(s, i, p.renderRotationDetailEmbed(ctx, rc), backRow); err != nil {
 		p.log.Error("rotation: list detail update failed", "err", err)
 	}
 }
@@ -155,13 +156,32 @@ func (p *Plugin) renderListPage(guildID string, channels []settings.RotationChan
 	return core.NewEmbed(core.ColorInfo, "Rotating channels", "", fields...), components
 }
 
-func renderRotationDetailEmbed(rc settings.RotationChannel) *discordgo.MessageEmbed {
+// renderRotationDetailEmbed is the one place an admin can see when a channel
+// actually rotates next, and whether its heads-up is armed.
+//
+// Both were missing, and their absence was the whole reason a heads-up that
+// posted nothing had no explanation available anywhere in Discord: the notice
+// job stays quiet whenever the rotation is further out than the lead or the
+// lead is off, which are the two most common states a channel is ever in, and
+// neither was visible. The next-due read costs one scheduler-state query for a
+// single channel, well inside the interaction budget, and it is deliberately
+// read from the Scheduler rather than recomputed from the interval so this
+// screen and the rotation itself cannot disagree.
+func (p *Plugin) renderRotationDetailEmbed(ctx context.Context, rc settings.RotationChannel) *discordgo.MessageEmbed {
 	retention := "forever"
 	if rc.RetentionHours != nil {
 		retention = humanDuration(time.Duration(*rc.RetentionHours) * time.Hour)
 	}
+
+	headsUp := "off"
+	if rc.NoticeLeadMinutes > 0 {
+		headsUp = humanDuration(time.Duration(rc.NoticeLeadMinutes)*time.Minute) + " before"
+	}
+
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "Interval", Value: humanDuration(time.Duration(rc.IntervalMinutes) * time.Minute), Inline: true},
+		{Name: "Next rotation", Value: p.nextRotationText(ctx, rc), Inline: true},
+		{Name: "Heads-up", Value: headsUp, Inline: true},
 		{Name: "Retention", Value: retention, Inline: true},
 		{Name: "Archive category", Value: fmt.Sprintf("<#%s>", rc.ArchiveCategoryID), Inline: true},
 		{Name: "Archive visibility", Value: rc.ArchiveVisibility, Inline: true},
@@ -171,4 +191,29 @@ func renderRotationDetailEmbed(rc settings.RotationChannel) *discordgo.MessageEm
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Sticky messages", Value: strings.Join(rc.StickyMessages, "\n")})
 	}
 	return core.NewEmbed(core.ColorInfo, fmt.Sprintf("<#%s>", rc.ChannelID), "", fields...)
+}
+
+// nextRotationText renders the countdown to rc's next rotation, spelling out
+// the two cases where there is no countdown to give rather than leaving the
+// field blank.
+//
+// "due now" covers a job that has never run as well as one running late after
+// a failure. They are worth saying out loud because they are also exactly when
+// the heads-up deliberately stays silent: an overdue rotation fires on the next
+// tick, and counting down to it would be wrong in the one direction that
+// matters.
+func (p *Plugin) nextRotationText(ctx context.Context, rc settings.RotationChannel) string {
+	due, ok, err := p.sched.NextDue(ctx, scheduler.JobKey(rc.GuildID, rotationJobName(rc.ID)))
+	if err != nil {
+		p.log.Error("rotation: read next due for detail view", "guild", rc.GuildID, "channel", rc.ChannelID, "err", err)
+		return "unknown"
+	}
+	if !ok {
+		return "due now"
+	}
+	remaining := due.Sub(p.now())
+	if remaining <= 0 {
+		return "due now"
+	}
+	return "in " + humanDuration(remaining.Round(time.Minute))
 }

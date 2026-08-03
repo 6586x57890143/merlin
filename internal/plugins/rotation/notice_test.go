@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/settings"
 )
@@ -34,12 +35,23 @@ func (f *fakeNoticeStore) ClaimNotice(_ context.Context, rotationID int64, notic
 	if f.claimErr != nil {
 		return false, f.claimErr
 	}
-	key := fmt.Sprintf("%d@%s", rotationID, noticeFor.UTC().Format(time.RFC3339Nano))
+	key := noticeKey(rotationID, noticeFor)
 	if f.claimed[key] {
 		return false, nil
 	}
 	f.claimed[key] = true
 	return true, nil
+}
+
+func noticeKey(rotationID int64, noticeFor time.Time) string {
+	return fmt.Sprintf("%d@%s", rotationID, noticeFor.UTC().Format(time.RFC3339Nano))
+}
+
+func (f *fakeNoticeStore) ReleaseNotice(_ context.Context, rotationID int64, noticeFor time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.claimed, noticeKey(rotationID, noticeFor))
+	return nil
 }
 
 func (f *fakeNoticeStore) PruneNotices(_ context.Context, before time.Time) error {
@@ -236,6 +248,60 @@ func TestAFailedClaimPostsNothing(t *testing.T) {
 	}
 	if got := len(ops.messages[rc.ChannelID]); got != 0 {
 		t.Errorf("posted %d notices despite failing to claim one", got)
+	}
+}
+
+// Dry-run and pause refuse the send before Discord is touched at all, so
+// the claim they consumed was spent on a message that provably never went
+// out. Keeping it would mean an operator who clears dry-run with minutes
+// still on the clock gets silence for a rotation the bot has already filed
+// as warned, which is the exact shape of the bug this whole feature exists
+// to avoid on the other side.
+func TestASkippedSendGivesItsClaimBack(t *testing.T) {
+	rc := noticeRC()
+	ops, sched, notices, p := setupNotice(t, rc)
+	due := fixedNow.Add(5 * time.Minute)
+	sched.nextDue[rotationKey(rc)] = due
+
+	ops.failWith["ChannelMessageSend"] = fmt.Errorf("message.send: %w", discordguard.ErrDryRun)
+
+	if err := p.postDueNotices(context.Background(), "g1"); !discordguard.Skipped(err) {
+		t.Fatalf("postDueNotices returned %v, want a skip so the job reports success", err)
+	}
+	if got := len(ops.messages[rc.ChannelID]); got != 0 {
+		t.Fatalf("dry-run posted %d notices", got)
+	}
+	if notices.claimed[noticeKey(rc.ID, due)] {
+		t.Fatal("the claim survived a send that never reached Discord, so this rotation can never be warned about")
+	}
+
+	// Dry-run cleared, still inside the window: the notice goes out.
+	delete(ops.failWith, "ChannelMessageSend")
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("postDueNotices: %v", err)
+	}
+	if got := len(ops.messages[rc.ChannelID]); got != 1 {
+		t.Errorf("posted %d notices after dry-run was cleared, want 1", got)
+	}
+}
+
+// The opposite case, and the reason the release is narrow. A send that
+// genuinely errored may have reached Discord with only the response lost, so
+// its claim stands: this feature would rather miss a notice than tell a
+// channel twice that it is about to be wiped.
+func TestAGenuinelyFailedSendKeepsItsClaim(t *testing.T) {
+	rc := noticeRC()
+	ops, sched, notices, p := setupNotice(t, rc)
+	due := fixedNow.Add(5 * time.Minute)
+	sched.nextDue[rotationKey(rc)] = due
+
+	ops.failWith["ChannelMessageSend"] = errors.New("500 internal server error")
+
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("one channel's failure aborted the whole pass: %v", err)
+	}
+	if !notices.claimed[noticeKey(rc.ID, due)] {
+		t.Error("released a claim for a send that may well have landed, risking a duplicate warning")
 	}
 }
 
