@@ -73,8 +73,26 @@ func (p *Plugin) postDueNotices(ctx context.Context, guildID string) error {
 	return nil
 }
 
+// noticeForChannel warns rc's channel if its rotation is inside the lead
+// window, and otherwise does nothing.
+//
+// Every "do nothing" branch logs why at debug level. That is not decoration:
+// this function has five separate ways to stay quiet, they all return
+// success, and /scheduler run-now reports success for all of them, so a
+// manual run that posts nothing is indistinguishable from a broken one
+// without this. Debug rather than info because the overwhelmingly common
+// answer is "the rotation is hours away", once a minute per channel forever.
+// An operator asking the question raises log_level in config.yaml, which
+// SIGHUP applies without a restart (config.Loader.OnReload), and re-runs the
+// job.
 func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settings.RotationChannel, now time.Time) error {
+	quiet := func(why string, args ...any) {
+		p.log.Debug("rotation notice: nothing to post",
+			append([]any{"guild", guildID, "channel", rc.ChannelID, "why", why}, args...)...)
+	}
+
 	if rc.NoticeLeadMinutes <= 0 {
+		quiet("no lead configured, the heads-up is switched off for this channel")
 		return nil
 	}
 	lead := time.Duration(rc.NoticeLeadMinutes) * time.Minute
@@ -91,11 +109,17 @@ func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settin
 		// on the next tick would be wrong in the one direction that matters,
 		// and the rotation itself is already late enough to be somebody's
 		// problem without a misleading countdown on top.
+		quiet("the rotation has no future due instant: it is unregistered, has never run, or is overdue")
 		return nil
 	}
 
 	remaining := due.Sub(now)
-	if remaining > lead || remaining <= 0 {
+	if remaining > lead {
+		quiet("the rotation is further out than the lead", "due_in", remaining, "lead", lead)
+		return nil
+	}
+	if remaining <= 0 {
+		quiet("the due instant has already passed", "due", due)
 		return nil
 	}
 
@@ -108,6 +132,7 @@ func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settin
 		return fmt.Errorf("claim notice: %w", err)
 	}
 	if !claimed {
+		quiet("this rotation has already been warned about", "due", due)
 		return nil
 	}
 
@@ -115,9 +140,28 @@ func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settin
 		"when": core.FormatDuration(remaining.Round(time.Minute)),
 	})
 	if line == "" {
+		quiet("voice returned nothing to say")
 		return nil
 	}
 	if _, err := p.ops(guildID).ChannelMessageSend(rc.ChannelID, line); err != nil {
+		// A guard skip is the one failure where we know for certain that
+		// Discord was never called: allow returns before touching the
+		// session. Keeping the claim there would spend the window on a
+		// message that was deliberately not sent, so an operator who clears
+		// dry-run with minutes still on the clock would get silence for a
+		// rotation the bot had already marked as warned. Release, and the
+		// next tick inside the window warns properly.
+		//
+		// Any other error keeps its claim, deliberately. A send that
+		// genuinely failed may still have reached Discord with only the
+		// response lost, and this feature's stated preference is a missed
+		// notice over a duplicate one.
+		if discordguard.Skipped(err) {
+			if relErr := p.notices.ReleaseNotice(ctx, rc.ID, due); relErr != nil {
+				p.log.Error("rotation notice: release claim after a skipped send",
+					"guild", guildID, "channel", rc.ChannelID, "err", relErr)
+			}
+		}
 		return fmt.Errorf("post notice: %w", err)
 	}
 	p.log.Info("rotation notice: warned channel", "guild", guildID, "channel", rc.ChannelID, "in", remaining)
