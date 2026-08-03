@@ -20,6 +20,50 @@ func TestNewEmbedSetsFields(t *testing.T) {
 	}
 }
 
+// The footer and timestamp are gone on purpose. Together they drew a second
+// "Merlin, today at 14:32" line immediately under the one Discord already
+// puts above every message the bot sends, saying nothing new in a smaller
+// font. This asserts on their absence because the natural instinct when
+// adding a field to NewEmbed is to put the brand mark back.
+func TestNewEmbedHasNoRedundantFooterOrTimestamp(t *testing.T) {
+	for name, e := range map[string]*discordgo.MessageEmbed{
+		"ok":       NewEmbed(ColorSuccess, "t", "d"),
+		"error":    NewEmbed(ColorError, "t", "d"),
+		"landmark": NewLandmarkEmbed(ColorInfo, "t", "d"),
+	} {
+		if e.Footer != nil {
+			t.Errorf("%s: footer is back: %+v", name, e.Footer)
+		}
+		if e.Timestamp != "" {
+			t.Errorf("%s: timestamp is back: %q", name, e.Timestamp)
+		}
+	}
+}
+
+// Nothing points at the avatar any more, so nothing should upload it. This
+// is bytes on every single response, and an attachment nobody references
+// also shows up in Discord's own attachment list on the message.
+func TestEmbedFilesSkipsTheUnreferencedAvatar(t *testing.T) {
+	for _, f := range EmbedFiles(NewEmbed(ColorSuccess, "t", "d")) {
+		if f.Name == avatarAttachmentName {
+			t.Error("the avatar is uploaded despite nothing in the embed referencing it")
+		}
+	}
+	// But an embed that does reference it still gets it, which is what keeps
+	// this from being a rule that silently breaks a future footer.
+	e := NewEmbed(ColorSuccess, "t", "d")
+	e.Footer = &discordgo.MessageEmbedFooter{Text: "x", IconURL: avatarAttachmentURL}
+	var found bool
+	for _, f := range EmbedFiles(e) {
+		if f.Name == avatarAttachmentName {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("an embed referencing the avatar did not get it attached, so it renders as a broken frame")
+	}
+}
+
 func TestNewEmbedWithNoFields(t *testing.T) {
 	e := NewEmbed(ColorError, "Oops", "failed")
 	if len(e.Fields) != 0 {

@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	_ "embed"
-	"time"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
@@ -169,9 +168,18 @@ func WithMood(embed *discordgo.MessageEmbed, m Mood) *discordgo.MessageEmbed {
 // wrong. Reading the URLs back off the finished embed means they cannot
 // disagree.
 func embedFiles(embed *discordgo.MessageEmbed) []*discordgo.File {
-	files := []*discordgo.File{avatarFile()}
 	if embed == nil {
-		return files
+		return nil
+	}
+	var files []*discordgo.File
+	// The avatar is attached only where something actually points at it.
+	// It used to go out unconditionally, which was right while NewEmbed set a
+	// footer icon and became a wasted upload on every single response the
+	// moment that footer went away. Discord also rejects a message carrying
+	// the same filename twice, so this is a single flag rather than one
+	// append per slot that could reference it.
+	if referencesAvatar(embed) {
+		files = append(files, avatarFile())
 	}
 	if embed.Thumbnail != nil {
 		for m, a := range moodAssets {
@@ -187,6 +195,24 @@ func embedFiles(embed *discordgo.MessageEmbed) []*discordgo.File {
 	return files
 }
 
+// referencesAvatar reports whether any slot on the embed points at the brand
+// avatar. Nothing in this package sets one today; it stays because the check
+// costs nothing and the alternative failure (an embed pointing at an image
+// that was never uploaded, rendering as a broken frame in a public channel)
+// is silent and looks like nothing is wrong in the code that built it.
+func referencesAvatar(e *discordgo.MessageEmbed) bool {
+	if e.Footer != nil && e.Footer.IconURL == avatarAttachmentURL {
+		return true
+	}
+	if e.Author != nil && e.Author.IconURL == avatarAttachmentURL {
+		return true
+	}
+	if e.Thumbnail != nil && e.Thumbnail.URL == avatarAttachmentURL {
+		return true
+	}
+	return e.Image != nil && e.Image.URL == avatarAttachmentURL
+}
+
 func avatarFile() *discordgo.File {
 	return &discordgo.File{Name: avatarAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(avatarPNG)}
 }
@@ -196,19 +222,24 @@ func bannerFile() *discordgo.File {
 }
 
 // NewEmbed builds a MessageEmbed with the given color/title/description and
-// optional fields, plus Merlin's own consistent footer (brand icon + name)
-// and a timestamp, so every plugin's responses read as one cohesive bot
-// rather than a pile of ad hoc messages. Plugins should always use this (or
-// RespondOK/Err/Info/Warn below) instead of constructing discordgo.MessageEmbed
-// literals directly.
+// optional fields. Plugins should always use this (or RespondOK/Err/Info/Warn
+// below) instead of constructing discordgo.MessageEmbed literals directly, so
+// every plugin's responses read as one cohesive bot rather than a pile of ad
+// hoc messages.
+//
+// Deliberately no footer and no timestamp. Both used to be set, and together
+// they rendered as a second "Merlin, today at 14:32" line directly underneath
+// the one Discord already draws above every message this bot sends. It said
+// nothing the client had not just said, in a smaller font, and the identity
+// it was there to establish now comes from the mood thumbnail and the palette
+// instead. An embed footer should carry something the reader would otherwise
+// not know; repeating the author and the clock is furniture.
 func NewEmbed(color int, title, description string, fields ...*discordgo.MessageEmbedField) *discordgo.MessageEmbed {
 	e := &discordgo.MessageEmbed{
 		Title:       title,
 		Description: description,
 		Color:       color,
 		Fields:      fields,
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		Footer:      &discordgo.MessageEmbedFooter{Text: "Merlin", IconURL: avatarAttachmentURL},
 	}
 	return WithMood(e, moodForColor(color))
 }
@@ -217,8 +248,7 @@ func NewEmbed(color int, title, description string, fields ...*discordgo.Message
 // moments that genuinely warrant visual weight (first-time setup, the
 // onboarding DM), not every routine response (a banner image on every
 // one-line confirmation would be noise, not polish). Adds Merlin's banner
-// as the embed's large image; everything else (footer, timestamp) matches
-// NewEmbed exactly.
+// as the embed's large image; everything else matches NewEmbed exactly.
 func NewLandmarkEmbed(color int, title, description string, fields ...*discordgo.MessageEmbedField) *discordgo.MessageEmbed {
 	e := NewEmbed(color, title, description, fields...)
 	e.Image = &discordgo.MessageEmbedImage{URL: bannerAttachmentURL}
@@ -227,10 +257,10 @@ func NewLandmarkEmbed(color int, title, description string, fields ...*discordgo
 	return WithMood(e, MoodNone)
 }
 
-// RespondEmbed sends embed as an ephemeral interaction response, attaching
-// the brand avatar file its footer icon references, the embed-based
-// counterpart to respondEphemeral, exported so plugin handlers can use it
-// directly instead of building their own InteractionResponse.
+// RespondEmbed sends embed as an ephemeral interaction response, along with
+// whatever files the embed references, the embed-based counterpart to
+// respondEphemeral, exported so plugin handlers can use it directly instead
+// of building their own InteractionResponse.
 func RespondEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
 	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -243,8 +273,7 @@ func RespondEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *d
 }
 
 // RespondLandmarkEmbed is RespondEmbed's counterpart for a NewLandmarkEmbed:
-// it also attaches the banner file the embed's Image references, alongside
-// the footer's avatar file.
+// it also attaches the banner file the embed's Image references.
 func RespondLandmarkEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
 	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,

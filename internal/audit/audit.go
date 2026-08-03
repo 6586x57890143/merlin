@@ -70,10 +70,13 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 		return fmt.Errorf("audit: guild %s has no audit log channel configured", guildID)
 	}
 
+	// No embed timestamp, matching core.NewEmbed: it only ever repeated the
+	// clock Discord already draws on the message itself. The audit trail's
+	// real timestamp is the row written above, which is the copy that
+	// survives the channel being deleted.
 	embed := &discordgo.MessageEmbed{
-		Title:     action,
-		Color:     core.ColorSuccess,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Title: action,
+		Color: core.ColorSuccess,
 		Fields: []*discordgo.MessageEmbedField{
 			{Name: "Actor", Value: actorID, Inline: true},
 		},

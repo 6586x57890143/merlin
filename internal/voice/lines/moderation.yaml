@@ -6,19 +6,36 @@
 # joke here reads as gloating to the person on the receiving end, and it is
 # the message most likely to end up in a screenshot.
 #
+# So the variety in this file is a range of warmth, not a range of wit. The
+# gentlest line and the most matter-of-fact one say exactly the same thing.
+# There is no blunt end here on purpose, because the situation supplies quite
+# enough of that on its own.
+#
 # Every line must name the server and when it ends, so someone in several
 # servers is never left guessing which one this is about.
 
 moderation.jail:
-  - "you've been jailed in {guild}. your roles are saved and you'll get them back {until}."
-  - "heads up: you're jailed in {guild} for the moment. nothing is lost, your roles are held and returned {until}."
-  - "a moderator in {guild} has jailed you. your roles are stored exactly as they were and come back {until}."
-  - "you're jailed in {guild}. this isn't permanent, your roles return {until}."
+  # warm
   - "quick note: you've been jailed in {guild}. your roles are kept as they were and restored {until}."
+  - "this is a temporary thing. you're jailed in {guild}, your roles are safe, and they come back {until}."
+  - "heads up: you're jailed in {guild} for the moment. nothing is lost, your roles are held and returned {until}."
+  # plain
+  - "you've been jailed in {guild}. your roles are saved and you'll get them back {until}."
+  - "you're jailed in {guild}. this isn't permanent, your roles return {until}."
+  - "a moderator in {guild} has jailed you. your roles are stored exactly as they were and come back {until}."
+  # matter of fact
+  - "a moderator has jailed you in {guild}. nothing has been removed permanently, and your roles return {until}."
+  - "you're jailed in {guild} for now. your roles are held exactly as they were and come back {until}."
 
 moderation.release:
+  # warm
   - "you're out. your roles in {guild} are back where they were 🌿"
-  - "released. everything you had in {guild} has been restored."
+  - "you're out of jail in {guild}, and your roles are back. thanks for waiting"
   - "that's you done. your roles in {guild} are back."
+  # plain
+  - "released. everything you had in {guild} has been restored."
   - "you're free to go. roles in {guild} restored, nothing lost."
   - "all clear. your roles in {guild} have been put back."
+  # matter of fact
+  - "you've been released in {guild}. everything you had is back where it was."
+  - "done. your roles in {guild} are restored, exactly as they were before."

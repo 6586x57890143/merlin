@@ -124,9 +124,9 @@ func TestFormatRetentionDistinguishesForever(t *testing.T) {
 // The retention notice is the single most-read thing Merlin posts: it lands
 // in the busiest channel in the server on every rotation. It has to look
 // like the same bot as everything else, which means going through
-// core.NewEmbed and carrying the brand file its footer icon references. An
-// embed whose footer points at an attachment that was never uploaded shows
-// a broken icon to the whole server.
+// core.NewEmbed and carrying every file it references. An embed pointing at
+// an attachment that was never uploaded shows a broken frame to the whole
+// server.
 func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
 	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
 
@@ -141,8 +141,14 @@ func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
 	if sent.Embed == nil {
 		t.Fatal("the notice was not sent as an embed")
 	}
-	if sent.Embed.Footer == nil || sent.Embed.Footer.Text != "Merlin" {
-		t.Error("the notice carries no Merlin footer, so it reads as a different bot than every other message")
+	// No footer and no timestamp: both only repeated what Discord already
+	// draws above the message. The colour and the face are what tie the
+	// notice to the rest of the bot now.
+	if sent.Embed.Footer != nil {
+		t.Errorf("the notice grew a footer back: %+v", sent.Embed.Footer)
+	}
+	if sent.Embed.Timestamp != "" {
+		t.Errorf("the notice grew a timestamp back: %q", sent.Embed.Timestamp)
 	}
 	if sent.Embed.Color == 0 {
 		t.Error("the notice has no colour, the one visual cue that ties it to the rest of the bot")
@@ -160,7 +166,10 @@ func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
 	for _, f := range sent.Files {
 		attached[f.Name] = true
 	}
-	referenced := []string{sent.Embed.Footer.IconURL}
+	var referenced []string
+	if sent.Embed.Footer != nil {
+		referenced = append(referenced, sent.Embed.Footer.IconURL)
+	}
 	if sent.Embed.Thumbnail != nil {
 		referenced = append(referenced, sent.Embed.Thumbnail.URL)
 	}
@@ -177,7 +186,8 @@ func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
 		}
 	}
 
-	// And the notice should carry a face, not just the footer mark.
+	// And the notice should carry a face, which is now the only brand mark
+	// on it.
 	if sent.Embed.Thumbnail == nil {
 		t.Error("the notice has no mood thumbnail")
 	}
