@@ -7,47 +7,76 @@ import (
 	"time"
 )
 
-// ParseFlexibleDuration parses a whole number optionally suffixed with "d"
-// (days), "h" (hours) or "m" (minutes), e.g. "3d", "72h", "90m", or a bare
-// "72" (hours, for backward compatibility with this bot's old hours-only
-// inputs). This is the only duration shape used anywhere a mod configures a
-// schedule, retention window, or notice lead.
+// ParseFlexibleDuration parses a whole number followed by an explicit unit:
+// "3d"/"3 days", "72h"/"72 hours", "90m"/"90 minutes". This is the only
+// duration shape used anywhere a mod configures a schedule, retention
+// window, or notice lead.
 //
-// Minutes are accepted because rotation intervals are stored and enforced
-// to the minute (migration 0016). They were not, for a while after that
-// change: the option descriptions offered "90m", the storage column held
-// minutes, the floor was checked in minutes, and this parser still rejected
-// anything with an "m" on it, so the one input the feature existed to
-// support failed with "isn't a valid duration". Whether a given setting
-// *allows* sub-hour values is the caller's business (rotation enforces a
-// one hour floor in validateRotationChannel); parsing them is this
-// function's.
+// The unit is REQUIRED, and that is the entire point of this function
+// existing rather than a call to time.ParseDuration. A bare number used to
+// be accepted as hours. That reads as a harmless convenience and is anything
+// but: a retention window entered as "3" meaning three days became three
+// hours, and the first visible sign was archived channels being permanently
+// deleted a day early. Nothing recoverable, no warning, and the value looked
+// correct in every list that echoed it back. Since intervals became
+// minute-precise the same ambiguity got worse rather than better: a notice
+// lead of "10" is far more likely to mean ten minutes than ten hours.
+//
+// "3" is genuinely ambiguous to a human, so this asks instead of guessing.
+// Refusing is the safe failure here because every consumer of the value
+// either destroys content or restricts a member when it elapses, so there is
+// no reading that is harmless to get wrong. The error names the readings
+// back rather than only rejecting.
+//
+// Requiring a unit should not make the input fussy, so spelled-out and
+// spaced forms parse too: 3d, 3 d, 3day, 3 days, 72h, 72 hr, 72hrs,
+// 72 hours, 90m, 90 min, 90 minutes, case-insensitive. Whether a given
+// setting *allows* sub-hour values is the caller's business (rotation
+// enforces a one hour floor in validateRotationChannel); parsing them is
+// this function's.
 func ParseFlexibleDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if s == "" {
-		return 0, fmt.Errorf("duration must not be empty: use a whole number of minutes, hours or days, e.g. \"90m\", \"72h\" or \"3d\"")
+		return 0, fmt.Errorf("duration must not be empty: give a number and a unit, e.g. %q, %q or %q", "3d", "72h", "90m")
 	}
 
-	unit := "h"
-	numPart := s
-	if last := s[len(s)-1]; last == 'd' || last == 'h' || last == 'm' {
-		unit = string(last)
-		numPart = s[:len(s)-1]
+	numPart, unitPart := splitNumberAndUnit(s)
+	if unitPart == "" {
+		return 0, fmt.Errorf("%q doesn't say what unit you mean: write %q for days, %q for hours or %q for minutes",
+			s, numPart+"d", numPart+"h", numPart+"m")
+	}
+
+	var per time.Duration
+	switch unitPart {
+	case "d", "day", "days":
+		per = 24 * time.Hour
+	case "h", "hr", "hrs", "hour", "hours":
+		per = time.Hour
+	case "m", "min", "mins", "minute", "minutes":
+		per = time.Minute
+	default:
+		return 0, fmt.Errorf("%q isn't a unit this bot understands: use d (days), h (hours) or m (minutes), e.g. %q, %q or %q",
+			unitPart, "3d", "72h", "90m")
 	}
 
 	n, err := strconv.Atoi(numPart)
 	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%q isn't a valid duration: use a positive whole number, optionally followed by d (days), h (hours) or m (minutes), e.g. \"3d\", \"72h\" or \"90m\"", s)
+		return 0, fmt.Errorf("%q isn't a valid duration: use a positive whole number followed by d (days), h (hours) or m (minutes), e.g. %q, %q or %q",
+			s, "3d", "72h", "90m")
 	}
+	return time.Duration(n) * per, nil
+}
 
-	switch unit {
-	case "d":
-		return time.Duration(n) * 24 * time.Hour, nil
-	case "m":
-		return time.Duration(n) * time.Minute, nil
-	default:
-		return time.Duration(n) * time.Hour, nil
+// splitNumberAndUnit divides s into its leading digits and the rest, with any
+// separating whitespace dropped ("3 days" -> "3", "days"). Either half may
+// come back empty; the caller decides what that means, so a bare number and
+// an unrecognized unit can be reported differently.
+func splitNumberAndUnit(s string) (numPart, unitPart string) {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
 	}
+	return s[:i], strings.TrimSpace(s[i:])
 }
 
 // FormatDuration renders d back in the same shape ParseFlexibleDuration
