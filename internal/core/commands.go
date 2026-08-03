@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // CommandHandler handles one fully-resolved command/subcommand invocation.
@@ -55,6 +57,10 @@ type CommandRouter struct {
 	perms *Permissions
 	gate  PluginGate
 	log   *slog.Logger
+	// voice supplies the wording for the refusals below. Optional: a nil
+	// speaker falls back to the plain sentences, so a router built in a
+	// test does not have to care that Merlin has a personality.
+	voice voice.Source
 
 	topLevel       []*discordgo.ApplicationCommand
 	topLevelPlugin map[string]string // top-level command name -> owning plugin name
@@ -71,6 +77,30 @@ func NewCommandRouter(perms *Permissions, gate PluginGate, log *slog.Logger) *Co
 		topLevelPlugin: make(map[string]string),
 		components:     make(map[string]*registeredComponent),
 	}
+}
+
+// WithVoice gives the router Merlin's own wording for the refusals it
+// sends. These are the messages ordinary members hit most often, by
+// clicking a stale button or trying a command that is not theirs, so they
+// are worth sounding like her rather than like a 403.
+//
+// Optional on purpose. The plain sentences are still in the code as the
+// fallback, so a refusal is never silently dropped because a catalog
+// failed to load.
+func (r *CommandRouter) WithVoice(v voice.Source) *CommandRouter {
+	r.voice = v
+	return r
+}
+
+// say returns Merlin's wording for key, or plain if no voice is wired.
+func (r *CommandRouter) say(key voice.Key, plain string) string {
+	if r.voice == nil {
+		return plain
+	}
+	if line := r.voice.Line(context.Background(), "", key, nil); line != "" {
+		return line
+	}
+	return plain
 }
 
 // RegisterCommand adds one top-level command, owned by pluginName (used for
@@ -304,14 +334,14 @@ func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.Int
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("component handler panicked", "panic", rec)
-			r.respondEphemeral(s, i, "Something went wrong handling that.")
+			r.respondEphemeral(s, i, r.say(voice.KeyBroken, "Something went wrong handling that."))
 		}
 	}()
 
 	// Same fail-closed guard as dispatchCommand: GuildID is the settings
 	// cache key both checks below depend on.
 	if i.GuildID == "" {
-		r.respondEphemeral(s, i, "This only works inside a server.")
+		r.respondEphemeral(s, i, r.say(voice.KeyGuildOnly, "This only works inside a server."))
 		return
 	}
 
@@ -319,16 +349,16 @@ func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.Int
 	matched := r.matchComponent(customID)
 	if matched == nil {
 		r.log.Error("component dispatch: no handler registered", "custom_id", customID)
-		r.respondEphemeral(s, i, "This button or menu isn't wired up yet.")
+		r.respondEphemeral(s, i, r.say(voice.KeyStaleComponent, "This button or menu isn't wired up yet."))
 		return
 	}
 
 	if !r.gate.PluginEnabled(i.GuildID, matched.pluginName) {
-		r.respondEphemeral(s, i, "This feature is disabled in this server.")
+		r.respondEphemeral(s, i, r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
 		return
 	}
 	if err := r.perms.Authorize(i, matched.spec); err != nil {
-		r.respondEphemeral(s, i, "You are not allowed to do that.")
+		r.respondEphemeral(s, i, r.say(voice.KeyDenied, "You are not allowed to do that."))
 		return
 	}
 
@@ -341,7 +371,7 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("command handler panicked", "panic", rec)
-			r.respondEphemeral(s, i, "Something went wrong running that command.")
+			r.respondEphemeral(s, i, r.say(voice.KeyBroken, "Something went wrong running that command."))
 		}
 	}()
 
@@ -352,7 +382,7 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 	// cheap guard on the one path that must never fail open, and it costs
 	// nothing on the path that actually happens.
 	if i.GuildID == "" {
-		r.respondEphemeral(s, i, "This command only works inside a server.")
+		r.respondEphemeral(s, i, r.say(voice.KeyGuildOnly, "This command only works inside a server."))
 		return
 	}
 
@@ -362,17 +392,17 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 	leaf, ok := r.leaves[key]
 	if !ok {
 		r.log.Error("command dispatch: no handler registered", "key", key)
-		r.respondEphemeral(s, i, "This command isn't wired up yet.")
+		r.respondEphemeral(s, i, r.say(voice.KeyStaleComponent, "This command isn't wired up yet."))
 		return
 	}
 
 	if !r.gate.PluginEnabled(i.GuildID, r.topLevelPlugin[data.Name]) {
-		r.respondEphemeral(s, i, "This feature is disabled in this server.")
+		r.respondEphemeral(s, i, r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
 		return
 	}
 
 	if err := r.perms.Authorize(i, leaf.spec); err != nil {
-		r.respondEphemeral(s, i, "You are not allowed to run this command.")
+		r.respondEphemeral(s, i, r.say(voice.KeyDenied, "You are not allowed to run this command."))
 		return
 	}
 

@@ -85,6 +85,16 @@ func (f *fakeSession) ChannelMessageSend(string, string, ...discordgo.RequestOpt
 	return &discordgo.Message{}, nil
 }
 
+func (f *fakeSession) Guild(string, ...discordgo.RequestOption) (*discordgo.Guild, error) {
+	f.reads++
+	return &discordgo.Guild{Name: "Test Guild"}, nil
+}
+
+func (f *fakeSession) UserChannelCreate(string, ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.reads++
+	return &discordgo.Channel{ID: "dm"}, nil
+}
+
 func (f *fakeSession) ChannelMessageSendComplex(_ string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
 	f.writes++
 	f.sends = append(f.sends, data)

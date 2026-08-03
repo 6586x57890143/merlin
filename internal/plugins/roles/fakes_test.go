@@ -25,6 +25,12 @@ func testLogger() *slog.Logger {
 
 type overwriteKey struct{ channelID, targetID string }
 
+// sentDM is one direct message the bot tried to deliver.
+type sentDM struct {
+	channelID string
+	data      *discordgo.MessageSend
+}
+
 type fakeOps struct {
 	mu sync.Mutex
 
@@ -46,6 +52,12 @@ type fakeOps struct {
 	// intent not being granted).
 	memberListErr   error
 	memberListCalls int
+
+	// guildErr and dmErr stand in for a member with DMs closed or a guild
+	// lookup that fails, both of which must leave the jail itself intact.
+	guildErr error
+	dmErr    error
+	dmSends  []sentDM
 
 	roleAddCalls    []string // "guildID:userID:roleID"
 	roleRemoveCalls []string
@@ -177,6 +189,34 @@ func (f *fakeOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildM
 	}
 	cp := *m
 	return &cp, nil
+}
+
+// The DM path: a fake guild name, an in-memory DM channel, and a record of
+// every notice sent, so a test can assert on what a jailed member is
+// actually told rather than only that something was attempted.
+func (f *fakeOps) Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.guildErr != nil {
+		return nil, f.guildErr
+	}
+	return &discordgo.Guild{ID: guildID, Name: "The Melting Pot"}, nil
+}
+
+func (f *fakeOps) UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dmErr != nil {
+		return nil, f.dmErr
+	}
+	return &discordgo.Channel{ID: "dm:" + recipientID, Type: discordgo.ChannelTypeDM}, nil
+}
+
+func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dmSends = append(f.dmSends, sentDM{channelID: channelID, data: data})
+	return &discordgo.Message{ID: "m1"}, nil
 }
 
 func (f *fakeOps) GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {

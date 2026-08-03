@@ -11,6 +11,7 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/scheduler"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // sweepInterval is how often each guild's due-jail/due-grant sweep runs.
@@ -38,6 +39,10 @@ type Plugin struct {
 	sched             core.Scheduler
 	commands          *core.CommandRouter
 	now               func() time.Time
+	// voice supplies the DM wording sent to a jailed or released member.
+	// An interface, not the concrete catalog, so a generator can replace it
+	// later without this plugin knowing (see internal/voice).
+	voice voice.Source
 
 	mu              sync.Mutex
 	sweepRegistered map[string]bool // guild ID -> sweep job registered
@@ -57,12 +62,13 @@ type OpsProvider func(guildID string) DiscordMemberOps
 // slice of internal/settings.Store (mirrors rotation's own SettingsProvider
 // parameter) for the one piece of guild configuration this plugin has:
 // jail's channel-visibility allowlist.
-func New(store Store, jailChannelConfig JailChannelConfig, ops OpsProvider, dryRun func(guildID string) bool) *Plugin {
+func New(store Store, jailChannelConfig JailChannelConfig, ops OpsProvider, dryRun func(guildID string) bool, speaker voice.Source) *Plugin {
 	return &Plugin{
 		store:             store,
 		jailChannelConfig: jailChannelConfig,
 		ops:               ops,
 		dryRun:            dryRun,
+		voice:             speaker,
 		now:               func() time.Time { return time.Now().UTC() },
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),

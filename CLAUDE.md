@@ -81,6 +81,20 @@ Each rotation cycle re-derives "is this step already done?" from live Discord/Po
 
 **Audit-failure policy**: an audit-embed post failure (e.g. `#bird-audit-log` not configured or deleted) must never fail the operation that triggered it: the actual action already succeeded, and the durable audit record write happens independently of the embed post inside `audit.Writer.Record`. Every call site logs-and-continues on a non-nil `Record` error; this was a real bug in `rotation/execute.go` (an audit failure was making the Scheduler treat a successful rotation as failed) fixed by matching the policy every other call site already used.
 
+### Merlin's voice (`internal/voice`)
+
+Every member-facing message Merlin writes herself comes from here. Not string literals at call sites, for two reasons: a bot that says the identical sentence every rotation reads as furniture rather than a character, and, more importantly, **some of what she says is load bearing**.
+
+The split is the whole design. **Lines are data** (`lines/*.yaml`, `go:embed`ed) so they can be reviewed as writing; **the contract is code** (`keys.go`) so it cannot drift. Each `Key` declares a `Register` (playful for ambient surfaces, plain for moderation outcomes), its **required placeholders**, a length limit, and a compiled-in `fallback`.
+
+**The required-placeholder rule is the point.** Every `rotation.intro` line must contain `{cadence}`, and every `rotation.intro.kept` line must also contain `{retention}`, because that notice is the server's published retention policy and the code has already reported the cadence as though it were the deletion window once (see `rotation/templates.go`'s comment). Personality varies the wording; it can never vary the facts. `loadCatalog` refuses to boot on a line missing one, exactly as `CommandRouter.Finalize()` refuses to boot on a command with no declared tier. It also rejects unknown placeholders (`{cadance}`), unbalanced braces (a malformed placeholder otherwise passes the "has none" check and posts a literal brace), too few lines per key, and the same em dashes/curly quotes CI rejects repo-wide. `Validate` is exported because it is the contract: **any future generator has to pass its output through it**, which is what makes "add an LLM later" a change of source rather than a second unchecked path into a public channel.
+
+Consumers depend on `voice.Source`, never `*Speaker`, so that swap stays a constructor change. `Line` never returns an error (every call site is about to post something, and an error there just means silence); it falls back to the spec's compiled-in line, and returns `""` only if even that cannot render, which callers treat as "say nothing" rather than posting visible braces. Selection is random with **guaranteed** no-immediate-repeat per guild+key: one re-roll, then a deterministic step, because a plain re-roll still repeats about one time in twenty five with five lines and the one place people notice is a channel they are watching. `WithRand` injects the RNG, mirroring the Scheduler's `now func() time.Time`.
+
+`PERSONA.md` is the brief the lines are written against, and is what a generator would get as its system prompt. Operator-supplied sticky messages are deliberately **not** routed through any of this: those are the guild's own words, posted verbatim in order.
+
+Admin surfaces (`/config`, `/rotation configure`) are not in the catalog at all. They are read by someone making a decision, often under time pressure, where warmth costs scanning speed.
+
 ### Temporary Role Management (`internal/plugins/roles`)
 
 Jail (snapshot-and-strip a member's roles, restore automatically or on demand) and timed single-role grants, mirroring rotation's shape end to end: a plugin-owned Postgres store (`role_jails`/`role_grants`, migration 0011) for runtime state (not `internal/settings.Store`, which is guild *configuration* only), and a per-guild `roles-sweep` Scheduler job (every 1 minute, not rotation's hourly cadence: jail/grant durations are realistically minutes-to-hours, not day-scale) that re-derives idempotency from live Discord state rather than trusting stored assumptions.

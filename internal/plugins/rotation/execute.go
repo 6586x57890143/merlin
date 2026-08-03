@@ -181,7 +181,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// 5. Populate the still-hidden channel: sticky repost + pin, then
 		// the transparency notice. Any failure here leaves the OLD channel
 		// completely untouched and still live, with zero member-visible impact.
-		if err := p.populateIfNeeded(newChannel.ID, rc); err != nil {
+		if err := p.populateIfNeeded(ctx, newChannel.ID, rc); err != nil {
 			return fmt.Errorf("rotation: populate staging channel: %w", err)
 		}
 
@@ -336,7 +336,7 @@ func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Chann
 // the staging channel, unless it already has messages, which only happens
 // on a retry after a prior run got this far, and reposting would duplicate
 // content in what will shortly become a very-visible channel.
-func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel) error {
+func (p *Plugin) populateIfNeeded(ctx context.Context, channelID string, rc settings.RotationChannel) error {
 	existing, err := p.ops(rc.GuildID).ChannelMessages(channelID, 1, "", "", "")
 	if err != nil {
 		return fmt.Errorf("check existing messages: %w", err)
@@ -370,7 +370,7 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 	// an attachment:// reference, so the file has to travel with it or the
 	// icon renders broken.
 	if _, err := p.ops(rc.GuildID).ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Embed: core.NewEmbed(core.ColorPrimary, "", retentionNotice(rc)),
+		Embed: core.NewEmbed(core.ColorPrimary, "", p.retentionNotice(ctx, rc)),
 		Files: []*discordgo.File{core.AvatarFile()},
 	}); err != nil {
 		return fmt.Errorf("post retention notice: %w", err)

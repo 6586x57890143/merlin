@@ -8,6 +8,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 var fixedNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -56,7 +57,19 @@ func newTestPlugin(ops *fakeOps, store *fakeStore, settings *fakeSettings, audit
 		now:               func() time.Time { return fixedNow },
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),
+		voice:             testVoice(),
 	}
+}
+
+// testVoice is the real catalog, not a stub. The DM a jailed member gets is
+// text that reaches an actual person, so substituting fixed strings here
+// would exercise the plumbing while leaving the message unchecked.
+func testVoice() voice.Source {
+	sp, err := voice.New(testLogger())
+	if err != nil {
+		panic("voice catalog does not load: " + err.Error())
+	}
+	return sp
 }
 
 func TestResolveJailRoleCreatesWhenMissing(t *testing.T) {

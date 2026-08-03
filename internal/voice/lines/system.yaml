@@ -1,0 +1,47 @@
+# The router's own refusals, plus /ping.
+#
+# Any member can trigger these by clicking a stale button or trying a
+# command that is not theirs, so they are public-facing even though they are
+# ephemeral. They stay short: a refusal that goes on for two sentences reads
+# as either lecturing or sulking, and neither is the tone.
+#
+# None of these take placeholders. If you add one that does, declare it in
+# keys.go first or the build will tell you about it.
+
+system.denied:
+  - "that one's not for you, sorry"
+  - "nope, you can't run that one"
+  - "you don't have the perch height for that one"
+  - "not yours to run, i'm afraid"
+  - "that one's above your pay grade in here"
+
+system.plugin_disabled:
+  - "that whole feature is switched off in this server"
+  - "someone turned that one off here, so there's nothing i can do with it"
+  - "that's disabled in this server. an admin can switch it back on"
+  - "not running that one here, it's been turned off"
+
+system.guild_only:
+  - "that one only works inside a server, not in here"
+  - "you'll have to run that one in a server"
+  - "no can do in dms, try it in the server"
+  - "server only, this one"
+
+system.stale_component:
+  - "that button doesn't go anywhere any more"
+  - "that one's gone stale, run the command again for a fresh one"
+  - "old button, sorry. the command will hand you a new one"
+  - "nothing behind that button now. try the command again"
+
+system.broken:
+  - "something went wrong there, sorry"
+  - "that didn't work, and it's on me rather than you"
+  - "hit a snag handling that one"
+  - "that broke somewhere on my end"
+
+system.ping:
+  - "kik-ong!"
+  - "kik-ong! still here 🐦"
+  - "awake. mostly"
+  - "still perched, still working"
+  - "kik-ong. peregrine says hi"

@@ -27,6 +27,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/settings"
 	"github.com/6586x57890143/merlin/internal/storage"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 func main() {
@@ -114,7 +115,16 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// database is reachable again, instead of waiting on the next mutation.
 	settingsStore.StartRetry(ctx, log)
 	perms := core.NewPermissions(session, settingsStore, cfg.BootstrapAdminUserID)
-	commands := core.NewCommandRouter(perms, settingsStore, log)
+	// Loaded and validated before anything can use it, so a catalog that
+	// has lost a required placeholder (the rotation notice's retention
+	// window, most of all) stops the bot here rather than posting an
+	// incomplete notice to a live channel.
+	speaker, err := voice.New(log)
+	if err != nil {
+		return fmt.Errorf("load voice catalog: %w", err)
+	}
+
+	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	journal := discordguard.NewPostgresJournal(db.Pool)
 	auditWriter := audit.New(db.Pool, session, settingsStore)
@@ -147,15 +157,17 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	rotationPlugin := rotation.New(settingsStore,
 		func(guildID string) rotation.DiscordChannelOps { return guard.For(guildID) },
 		guard.DryRun,
+		speaker,
 	)
 	rolesPlugin := roles.New(roles.NewPostgresStore(db.Pool), settingsStore,
 		func(guildID string) roles.DiscordMemberOps { return guard.For(guildID) },
 		guard.DryRun,
+		speaker,
 	)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
-	registry.Register(ping.New())
+	registry.Register(ping.New(speaker))
 	registry.Register(rotationPlugin)
 	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)

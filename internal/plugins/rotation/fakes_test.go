@@ -15,6 +15,7 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 func testLogger() *slog.Logger {
@@ -531,5 +532,19 @@ func newTestPlugin(ops *fakeOps, archives ArchiveStore, audit *fakeAudit, fs *fa
 		bus:      core.NewEventBus(testLogger()),
 		log:      testLogger(),
 		now:      func() time.Time { return at },
+		voice:    testVoice(),
 	}
+}
+
+// testVoice is the real catalog, not a stub. Rotation's tests assert on the
+// text members actually see, so substituting fixed strings here would test
+// the plumbing while leaving the thing that reaches the server unchecked.
+// It also means a catalog that stops loading fails these tests too, not
+// only the voice package's own.
+func testVoice() voice.Source {
+	sp, err := voice.New(testLogger())
+	if err != nil {
+		panic("voice catalog does not load: " + err.Error())
+	}
+	return sp
 }

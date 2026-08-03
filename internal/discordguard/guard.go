@@ -85,6 +85,8 @@ type Session interface {
 	GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error
 	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 	GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
+	Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error)
+	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 }
 
 // Guard holds the process-wide stop and the per-guild gate. One is
@@ -297,6 +299,23 @@ func (o *GuildOps) ChannelMessageSend(channelID, content string, options ...disc
 // copied into a later call site that should not have had it. If a genuine
 // need to ping ever turns up, it belongs in its own named method with an
 // explicit allowlist argument.
+// Guild reads the guild itself. Ungated: a read, and the only caller wants
+// its name so a DM can say which server it is about.
+func (o *GuildOps) Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error) {
+	return o.guard.session.Guild(guildID, options...)
+}
+
+// UserChannelCreate opens (or returns the existing) DM channel with a user.
+//
+// Ungated despite the name: it creates nothing in the guild, changes
+// nothing anybody can see, and is idempotent, so counting it against a
+// guild's write budget would spend the budget on the wrong thing. The
+// message that follows it goes through ChannelMessageSendComplex and is
+// gated there, which is where the cost actually is.
+func (o *GuildOps) UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	return o.guard.session.UserChannelCreate(recipientID, options...)
+}
+
 func (o *GuildOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	if err := o.allow(opMessageSend); err != nil {
 		return nil, err

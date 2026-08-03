@@ -27,6 +27,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/settings"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // sweepInterval is how often each guild's archive-deletion sweep runs.
@@ -64,6 +65,10 @@ type Plugin struct {
 	sched    core.Scheduler
 	commands *core.CommandRouter
 	now      func() time.Time
+	// voice supplies the member-facing wording. An interface rather than
+	// the concrete catalog so a generator can be swapped in later without
+	// this plugin knowing (see internal/voice).
+	voice voice.Source
 
 	mu              sync.Mutex
 	sweepRegistered map[string]bool          // guild ID -> sweep job registered
@@ -85,11 +90,12 @@ type Plugin struct {
 // their own, so the guild has to come from the caller, which always knows it.
 type OpsProvider func(guildID string) DiscordChannelOps
 
-func New(settingsStore SettingsProvider, ops OpsProvider, dryRun func(guildID string) bool) *Plugin {
+func New(settingsStore SettingsProvider, ops OpsProvider, dryRun func(guildID string) bool, speaker voice.Source) *Plugin {
 	return &Plugin{
 		settings:        settingsStore,
 		ops:             ops,
 		dryRun:          dryRun,
+		voice:           speaker,
 		now:             func() time.Time { return time.Now().UTC() },
 		sweepRegistered: make(map[string]bool),
 		registeredJobs:  make(map[string]time.Duration),
