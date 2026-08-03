@@ -127,8 +127,9 @@ func (p *Plugin) renderListPage(guildID string, channels []settings.RotationChan
 		}
 		fields = append(fields, &discordgo.MessageEmbedField{
 			Name: fmt.Sprintf("<#%s>", rc.ChannelID),
-			Value: fmt.Sprintf("Every %s · archive <#%s> (%s) · retention %s · sticky %v",
-				humanDuration(time.Duration(rc.IntervalMinutes)*time.Minute), rc.ArchiveCategoryID, rc.ArchiveVisibility, retention, rc.StickyEnabled),
+			Value: fmt.Sprintf("Every %s · archive <#%s> (%s) · retention %s · sticky %v · discloses %s",
+				humanDuration(time.Duration(rc.IntervalMinutes)*time.Minute), rc.ArchiveCategoryID,
+				visibilityLabel(rc.ArchiveVisibility), retention, rc.StickyEnabled, disclosureLabel(rc.Disclosure)),
 		})
 
 		label := rc.ChannelID
@@ -184,13 +185,42 @@ func (p *Plugin) renderRotationDetailEmbed(ctx context.Context, rc settings.Rota
 		{Name: "Heads-up", Value: headsUp, Inline: true},
 		{Name: "Retention", Value: retention, Inline: true},
 		{Name: "Archive category", Value: fmt.Sprintf("<#%s>", rc.ArchiveCategoryID), Inline: true},
-		{Name: "Archive visibility", Value: rc.ArchiveVisibility, Inline: true},
+		{Name: "Archive visibility", Value: visibilityLabel(rc.ArchiveVisibility), Inline: true},
+		{Name: "Discloses", Value: disclosureLabel(rc.Disclosure), Inline: true},
 		{Name: "Sticky", Value: fmt.Sprintf("%v", rc.StickyEnabled), Inline: true},
 	}
 	if rc.StickyEnabled && len(rc.StickyMessages) > 0 {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Sticky messages", Value: strings.Join(rc.StickyMessages, "\n")})
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name: "Sticky messages", Value: core.TruncateEmbedField(strings.Join(rc.StickyMessages, "\n")),
+		})
 	}
 	return core.NewEmbed(core.ColorInfo, fmt.Sprintf("<#%s>", rc.ChannelID), "", fields...)
+}
+
+// disclosureLabel renders a disclosure mode the way an admin reading a list
+// thinks about it: what the channel gets told, not the stored enum.
+func disclosureLabel(d settings.Disclosure) string {
+	switch d.Resolve() {
+	case settings.DisclosureCadence:
+		return "rotation schedule only"
+	case settings.DisclosureRetention:
+		return "archive window only"
+	case settings.DisclosureGeneric:
+		return "just that it rotated"
+	default:
+		return "schedule + archive window"
+	}
+}
+
+// visibilityLabel marks the legacy whitelist mode as legacy. It is no longer
+// offered by /rotation configure, so an admin who finds one on a slot
+// imported from pre-Milestone-4 YAML has no other way to learn where it came
+// from or why they cannot select it.
+func visibilityLabel(v string) string {
+	if v == "whitelist" {
+		return "mods + whitelist (legacy)"
+	}
+	return v
 }
 
 // nextRotationText renders the countdown to rc's next rotation, spelling out

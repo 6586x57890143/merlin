@@ -119,7 +119,7 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 	if len(userIDs) == 1 {
 		if len(res.jailed) == 1 {
 			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.jail", "",
-				fmt.Sprintf("user=%s duration=%s reason=%q", userIDs[0], core.FormatDuration(duration), reason)); err != nil {
+				fmt.Sprintf("user=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), core.FormatDuration(duration), reason)); err != nil {
 				p.log.Error("roles: audit jail failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
 			}
 			// Only the individually-targeted path notifies. A jail is
@@ -358,7 +358,7 @@ func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRe
 
 	p.log.Warn("roles: re-applied jail after rejoin", "guild", guildID, "user", rec.UserID,
 		"jailed_at", rec.JailedAt, "joined_at", member.JoinedAt)
-	if err := p.audit.Record(ctx, guildID, "system", "roles.jail_reapplied", rec.UserID,
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.jail_reapplied", core.MentionUser(rec.UserID),
 		fmt.Sprintf("left and rejoined while jailed; jail re-applied until %s unmanageable_roles=%v", releaseAtText(rec), unmanageable)); err != nil {
 		p.log.Error("roles: audit jail re-apply failed", "guild", guildID, "user", rec.UserID, "err", err)
 	}
@@ -462,7 +462,7 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 		return fmt.Errorf("roles: restore roles for %s: %w", userID, err)
 	}
 
-	if err := p.audit.Record(ctx, guildID, "system", "roles.release", "", fmt.Sprintf("user=%s restored=%v", userID, restore)); err != nil {
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.release", "", fmt.Sprintf("user=%s restored=%v", core.MentionUser(userID), restore)); err != nil {
 		p.log.Error("roles: audit release failed", "guild", guildID, "user", userID, "err", err)
 	}
 

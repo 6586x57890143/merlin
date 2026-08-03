@@ -73,7 +73,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	// an honest "here is what a rotation would do".
 	if p.dryRun(guildID) {
 		p.log.Info("rotation: dry-run, skipping rotation", "guild", guildID, "channel", rc.ChannelID)
-		if err := p.audit.Record(ctx, guildID, "system", "rotation.dryrun", rc.ChannelID, "would have rotated now"); err != nil {
+		if err := p.audit.Record(ctx, guildID, core.ActorSystem, "rotation.dryrun", core.MentionChannel(rc.ChannelID), "would have rotated now"); err != nil {
 			p.log.Error("rotation: audit dry-run", "guild", guildID, "err", err)
 		}
 		return nil
@@ -281,7 +281,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	// maxConsecutiveFailures, masking the fact that rotation itself is fine.
 	// Matches the log-and-continue policy every other audit call site uses
 	// (sweep.go, adminconfig.go, rotation/configure.go).
-	if err := p.audit.Record(ctx, guildID, "system", "channel.rotated", oldChannel.ID, newChannel.ID); err != nil {
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "channel.rotated", core.MentionChannel(oldChannel.ID), core.MentionChannel(newChannel.ID)); err != nil {
 		p.log.Error("rotation: audit failed", "old_channel", oldChannel.ID, "new_channel", newChannel.ID, "err", err)
 	}
 	p.bus.Publish(ctx, core.Event{

@@ -93,7 +93,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 			}
 		}
 		p.log.Info("rotation sweep: dry-run, skipping deletion", "guild", guildID, "due", due)
-		if err := p.audit.Record(ctx, guildID, "system", "archive.dryrun", strings.Join(due, ","), "would have been deleted now"); err != nil {
+		if err := p.audit.Record(ctx, guildID, core.ActorSystem, "archive.dryrun", strings.Join(due, ","), "would have been deleted now"); err != nil {
 			p.log.Error("rotation sweep: audit dry-run", "guild", guildID, "err", err)
 		}
 		return nil
@@ -154,7 +154,7 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 	if _, err := p.ops(guildID).ChannelDelete(rec.ChannelID); err != nil {
 		return fmt.Errorf("delete channel %s: %w", rec.ChannelID, err)
 	}
-	if err := p.audit.Record(ctx, guildID, "system", "archive.deleted", rec.ChannelID, ""); err != nil {
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "archive.deleted", core.MentionChannel(rec.ChannelID), ""); err != nil {
 		p.log.Error("rotation sweep: audit failed", "channel", rec.ChannelID, "err", err)
 	}
 	return p.archives.Delete(ctx, rec.ChannelID)

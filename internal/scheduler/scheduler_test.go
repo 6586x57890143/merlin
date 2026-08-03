@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strconv"
@@ -190,8 +191,8 @@ func TestThresholdFailuresAlertOnce(t *testing.T) {
 	s.now = clock.Now
 
 	var alerts []string
-	s.alertFunc = func(ctx context.Context, jobKey, msg string) error {
-		alerts = append(alerts, msg)
+	s.alertFunc = func(ctx context.Context, jobKey string, failures int, cause error) error {
+		alerts = append(alerts, fmt.Sprintf("%s failed %d times: %v", jobKey, failures, cause))
 		return nil
 	}
 

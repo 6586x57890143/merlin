@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 )
 
@@ -68,7 +69,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 		return fmt.Errorf("roles sweep: query due grants: %w", err)
 	}
 	for _, rec := range dueGrants {
-		if err := p.revokeGrant(ctx, guildID, rec.UserID, rec.RoleID, "system"); err != nil {
+		if err := p.revokeGrant(ctx, guildID, rec.UserID, rec.RoleID, core.ActorSystem); err != nil {
 			p.log.Error("roles sweep: revoke grant failed", "guild", guildID, "user", rec.UserID, "role", rec.RoleID, "err", err)
 			if firstErr == nil {
 				firstErr = err

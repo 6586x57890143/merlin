@@ -35,9 +35,37 @@ type DBHealth interface {
 // TierMod, not TierAdmin: it reads state and changes nothing, and a mod
 // noticing "rotation is wedged" hours before an admin logs in is the entire
 // point.
+// severity is how much a status line needs a human, tracked as the body is
+// built rather than recovered from it afterwards.
+//
+// This replaced a scan of the finished text for ❌/⚠️/⛔. That worked, but the
+// control signal for the response colour was being read back out of prose
+// this bot does not author: channelState interpolates arbitrary Discord error
+// text, and Healthy() interpolates arbitrary database error text, so any
+// error string containing a warning glyph turned a healthy server amber, and
+// any future line that merely mentioned one did the same. The emoji are cues
+// for the reader now, not load-bearing state.
+type severity int
+
+const (
+	sevOK severity = iota
+	// sevStopped is a deliberate operator state: paused, or in dry-run.
+	// Reported as a warning but wearing the idle face, matching /config pause
+	// and /config dryrun. A bot that was told to stop has not failed.
+	sevStopped
+	sevWarn
+	sevError
+)
+
 func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	gs := p.settings.GuildSettings(i.GuildID)
 	var b strings.Builder
+	worst := sevOK
+	note := func(sev severity) {
+		if sev > worst {
+			worst = sev
+		}
+	}
 
 	// Database first: if it's down, everything below is suspect, and saying
 	// so plainly beats reporting a lot of stale-looking numbers.
@@ -45,6 +73,7 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		b.WriteString("**Database:** not wired up\n")
 	} else if err := p.db.Healthy(ctx); err != nil {
 		fmt.Fprintf(&b, "**Database:** ❌ unreachable: %v\n", err)
+		note(sevError)
 	} else {
 		b.WriteString("**Database:** ✅ reachable\n")
 	}
@@ -56,10 +85,12 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		switch {
 		case err != nil:
 			fmt.Fprintf(&b, "**Jobs:** ⚠️ %d registered, state unreadable: %v\n", total, err)
+			note(sevWarn)
 		case total == 0:
 			b.WriteString("**Jobs:** none registered (no rotation configured yet)\n")
 		case failing > 0:
 			fmt.Fprintf(&b, "**Jobs:** ⚠️ %d of %d failing; see `/scheduler list`\n", failing, total)
+			note(sevWarn)
 		default:
 			fmt.Fprintf(&b, "**Jobs:** ✅ %d registered, all healthy\n", total)
 		}
@@ -68,65 +99,121 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	switch {
 	case gs.WritesPaused && gs.WritesDryRun:
 		b.WriteString("**Actions:** ⛔ paused *and* in dry-run; nothing will be changed\n")
+		note(sevStopped)
 	case gs.WritesPaused:
 		b.WriteString("**Actions:** ⛔ paused; clear with `/config pause paused:false`\n")
+		note(sevStopped)
 	case gs.WritesDryRun:
 		b.WriteString("**Actions:** 🧪 dry-run; clear with `/config dryrun enabled:false`\n")
+		note(sevStopped)
 	default:
 		b.WriteString("**Actions:** ✅ running normally\n")
 	}
 
 	b.WriteString("\n")
-	b.WriteString(p.configuredResourceLines(gs))
+	resources, resourceSev := p.configuredResourceLines(gs)
+	b.WriteString(resources)
+	note(resourceSev)
 
-	// Warn rather than OK whenever something needs a human, so the colour
-	// alone carries the answer at a glance.
-	body := b.String()
-	if strings.Contains(body, "❌") || strings.Contains(body, "⚠️") || strings.Contains(body, "⛔") {
+	// Truncated because the body interpolates error text from the database,
+	// the scheduler and per-channel lookups, none of it bounded and none of
+	// it ours. Over 4096 bytes Discord rejects the whole message, so without
+	// this the health command would break in exactly the circumstances that
+	// produce a long error.
+	body := core.TruncateEmbedDescription(b.String())
+
+	switch worst {
+	case sevError, sevWarn:
 		core.RespondWarn(s, i, "Merlin status", body)
-		return
+	case sevStopped:
+		embed := core.WithMood(core.NewEmbed(core.ColorWarning, "Merlin status", body), core.MoodIdle)
+		_ = core.RespondEmbed(s, i, embed)
+	default:
+		core.RespondInfo(s, i, "Merlin status", body)
 	}
-	core.RespondInfo(s, i, "Merlin status", body)
 }
 
 // configuredResourceLines reports whether each configured channel/role still
 // exists. A channel deleted out from under the configuration is silent
 // otherwise: audit embeds and status alerts simply stop arriving, with
 // nothing anywhere saying why.
-func (p *Plugin) configuredResourceLines(gs settings.GuildSettings) string {
+func (p *Plugin) configuredResourceLines(gs settings.GuildSettings) (string, severity) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**Audit log:** %s\n", p.channelState(gs.AuditLogChannelID))
-	fmt.Fprintf(&b, "**Status channel:** %s\n", p.channelState(gs.StatusChannelID))
-
-	switch n := len(gs.ModRoleIDs); n {
-	case 0:
-		b.WriteString("**Mod roles:** ⚠️ none configured; only admins can use mod commands\n")
-	default:
-		fmt.Fprintf(&b, "**Mod roles:** %d configured\n", n)
+	worst := sevOK
+	note := func(sev severity) {
+		if sev > worst {
+			worst = sev
+		}
 	}
-	fmt.Fprintf(&b, "**Admins:** %d configured (plus anyone with Discord's Administrator permission)\n",
-		len(gs.AdminUserIDs))
-	return b.String()
+
+	audit, sev := p.channelState(gs.AuditLogChannelID)
+	fmt.Fprintf(&b, "**Audit log:** %s\n", audit)
+	note(sev)
+	status, sev := p.channelState(gs.StatusChannelID)
+	fmt.Fprintf(&b, "**Status channel:** %s\n", status)
+	note(sev)
+
+	// Named rather than counted. "2 configured" answers a question nobody is
+	// asking: an admin reading this wants to know *which* roles carry mod
+	// powers in their server, and a count sends them off to a different
+	// command to find out. The channels above were already mentions, so the
+	// counts were also the odd ones out on the same screen.
+	if len(gs.ModRoleIDs) == 0 {
+		b.WriteString("**Mod roles:** ⚠️ none configured; only admins can use mod commands\n")
+		note(sevWarn)
+	} else {
+		fmt.Fprintf(&b, "**Mod roles:** %s\n", mentionList(gs.ModRoleIDs, core.MentionRole))
+	}
+	if len(gs.AdminUserIDs) == 0 {
+		b.WriteString("**Admins:** none listed (anyone with Discord's Administrator permission still counts)\n")
+	} else {
+		fmt.Fprintf(&b, "**Admins:** %s (plus anyone with Discord's Administrator permission)\n",
+			mentionList(gs.AdminUserIDs, core.MentionUser))
+	}
+	return b.String(), worst
 }
 
-func (p *Plugin) channelState(channelID string) string {
+// maxMentionsListed caps how many roles or admins are named before the rest
+// become a count.
+//
+// A readability limit, not a byte limit: a role mention is around 22 bytes,
+// so even twice this is a rounding error against the 4096-byte description.
+// Past about ten the line stops being scannable and the count is genuinely
+// the more useful summary.
+const maxMentionsListed = 10
+
+func mentionList(ids []string, render func(string) string) string {
+	shown := ids
+	var suffix string
+	if len(ids) > maxMentionsListed {
+		shown = ids[:maxMentionsListed]
+		suffix = fmt.Sprintf(", and %d more", len(ids)-maxMentionsListed)
+	}
+	parts := make([]string, 0, len(shown))
+	for _, id := range shown {
+		parts = append(parts, render(id))
+	}
+	return strings.Join(parts, ", ") + suffix
+}
+
+func (p *Plugin) channelState(channelID string) (string, severity) {
 	if channelID == "" {
-		return "⚠️ not configured; run `/config setup`"
+		return "⚠️ not configured; run `/config setup`", sevWarn
 	}
 	if p.session == nil {
-		return fmt.Sprintf("<#%s>", channelID)
+		return fmt.Sprintf("<#%s>", channelID), sevOK
 	}
 	ch, err := p.session.Channel(channelID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
-			return fmt.Sprintf("❌ configured as `%s`, but that channel no longer exists. Re-run `/config setup`", channelID)
+			return fmt.Sprintf("❌ configured as `%s`, but that channel no longer exists. Re-run `/config setup`", channelID), sevError
 		}
-		return fmt.Sprintf("<#%s> (couldn't verify: %v)", channelID, err)
+		return fmt.Sprintf("<#%s> (couldn't verify: %v)", channelID, err), sevWarn
 	}
 	if everyoneCanRead(ch) {
-		return fmt.Sprintf("<#%s> ⚠️ everyone can read this; moderation actions and alerts are public", channelID)
+		return fmt.Sprintf("<#%s> ⚠️ everyone can read this; moderation actions and alerts are public", channelID), sevWarn
 	}
-	return fmt.Sprintf("<#%s> ✅", channelID)
+	return fmt.Sprintf("<#%s> ✅", channelID), sevOK
 }
 
 // everyoneCanRead reports whether the guild's @everyone role can still see

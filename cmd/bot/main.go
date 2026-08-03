@@ -236,7 +236,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			// readable again, which is what reconciles it.
 			rotationPlugin.SyncGuild(guildCtx, gc.ID)
 		}
-		if commandsRegistered && settingsLoaded {
+		if cfg.OnboardingDM && commandsRegistered && settingsLoaded {
+			// Off unless MERLIN_ENABLE_ONBOARDING_DM says otherwise; see
+			// config.GlobalConfig.OnboardingDM for why this one is opt-in
+			// while the GUILD_MEMBERS intent is opt-out.
+			//
 			// Only nudge toward /config setup if it was actually registered
 			// here. Otherwise the nudge would point at a command that
 			// doesn't exist yet, and (if the DM itself succeeds) burn the

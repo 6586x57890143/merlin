@@ -359,10 +359,19 @@ func (p *Plugin) excludeSelfAndBot(targets []jailTarget, actorID string, s *disc
 // happened: a mod ran one action. Per-member state stays queryable in
 // role_jails via /roles list.
 func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope string, duration time.Duration, reason string, res bulkJailResult) {
+	// Mentions rather than bare snowflakes: this is the single record of who
+	// a bulk jail hit, and it is read by somebody working out whether the
+	// right people were caught. A list of raw IDs makes that a lookup
+	// exercise per member. The count is capped by maxBulkJailTargets and the
+	// field is truncated at 1024 bytes regardless, so this cannot run away.
+	mentions := make([]string, 0, len(res.jailed))
+	for _, id := range res.jailed {
+		mentions = append(mentions, core.MentionUser(id))
+	}
 	detail := fmt.Sprintf("%s duration=%s reason=%q jailed=%d already_jailed=%d protected=%d failed=%d users=%s",
 		scope, core.FormatDuration(duration), reason,
 		len(res.jailed), len(res.alreadyIn), len(res.protected), len(res.failed),
-		strings.Join(res.jailed, ","))
+		strings.Join(mentions, " "))
 	if err := p.audit.Record(ctx, guildID, actor, "roles.jail_bulk", "", detail); err != nil {
 		p.log.Error("roles: audit bulk jail failed", "guild", guildID, "err", err)
 	}

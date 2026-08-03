@@ -83,6 +83,148 @@ func TestRetentionNoticeOnKeepForeverPromisesNoDeletion(t *testing.T) {
 	}
 }
 
+// disclosureRC builds a channel on a 1 day cadence with a 3 hour retention
+// window, so "1 day" and "3 hours" are two distinct strings a notice either
+// does or does not contain.
+func disclosureRC(d settings.Disclosure, forever bool) settings.RotationChannel {
+	rc := settings.RotationChannel{GuildID: "g1", IntervalMinutes: 24 * 60, Disclosure: d}
+	if !forever {
+		hours := 3
+		rc.RetentionHours = &hours
+	}
+	return rc
+}
+
+// TestIntroKeySuppliesExactlyTheVarsItsKeyRequires is the structural
+// guarantee behind the whole disclosure feature, and the reason introKey
+// returns the key and its vars together instead of selecting in one place and
+// populating in another.
+//
+// voice.Line does not error on a missing placeholder, it silently falls back
+// to the compiled-in line, so a mismatch here would degrade every notice for
+// that mode to the plainest possible wording and nothing would say why. This
+// asserts the two sides agree for all eight combinations rather than trusting
+// that whoever edits one switch remembers the other.
+func TestIntroKeySuppliesExactlyTheVarsItsKeyRequires(t *testing.T) {
+	for _, d := range []settings.Disclosure{
+		settings.DisclosureFull, settings.DisclosureCadence,
+		settings.DisclosureRetention, settings.DisclosureGeneric, "",
+	} {
+		for _, forever := range []bool{false, true} {
+			key, vars := introKey(disclosureRC(d, forever))
+
+			required := map[string]bool{}
+			for _, name := range voice.RequiredVars(key) {
+				required[name] = true
+			}
+			for _, name := range voice.RequiredVars(key) {
+				if _, ok := vars[name]; !ok {
+					t.Errorf("disclosure %q forever=%v: key %s requires {%s} but introKey supplied no value, so every line falls back",
+						d, forever, key, name)
+				}
+			}
+			for name := range vars {
+				if !required[name] {
+					t.Errorf("disclosure %q forever=%v: key %s does not declare {%s}, so supplying it is dead weight at best and a leak at worst",
+						d, forever, key, name)
+				}
+			}
+		}
+	}
+}
+
+// TestDisclosureModesNeverPublishWhatTheySuppress is the safety-critical one.
+//
+// The whole point of the narrower modes is the *absence* of a fact, and an
+// absence is exactly what a spot check misses: the wording varies per
+// rotation, so a single tempting line that mentions the archive window in
+// cadence mode would surface only in production, on whichever rotation
+// happened to draw it. This walks every line of every key.
+//
+// The catalog's own required-placeholder validation already stops a
+// {retention} substitution reaching a cadence-only line. What it cannot catch
+// is prose, so this asserts on the rendered output instead.
+func TestDisclosureModesNeverPublishWhatTheySuppress(t *testing.T) {
+	const (
+		cadenceText   = "1 day"
+		retentionText = "3 hours"
+	)
+
+	cases := []struct {
+		mode        settings.Disclosure
+		forever     bool
+		wantCadence bool
+		wantReten   bool
+	}{
+		{settings.DisclosureFull, false, true, true},
+		{settings.DisclosureFull, true, true, false},
+		{settings.DisclosureCadence, false, true, false},
+		{settings.DisclosureCadence, true, true, false},
+		{settings.DisclosureRetention, false, false, true},
+		{settings.DisclosureRetention, true, false, false},
+		{settings.DisclosureGeneric, false, false, false},
+		{settings.DisclosureGeneric, true, false, false},
+		// An unset mode is today's behaviour, which is full disclosure.
+		{"", false, true, true},
+	}
+
+	for _, c := range cases {
+		rc := disclosureRC(c.mode, c.forever)
+		for i := range maxCatalogLines {
+			p := noticePluginPickingLine(t, i)
+			notice := p.retentionNotice(context.Background(), rc)
+
+			if got := strings.Contains(notice, cadenceText); got != c.wantCadence {
+				t.Errorf("mode %q forever=%v line %d: states the rotation cadence = %v, want %v: %s",
+					c.mode, c.forever, i, got, c.wantCadence, notice)
+			}
+			if got := strings.Contains(notice, retentionText); got != c.wantReten {
+				t.Errorf("mode %q forever=%v line %d: states the retention window = %v, want %v: %s",
+					c.mode, c.forever, i, got, c.wantReten, notice)
+			}
+			if strings.ContainsAny(notice, "{}") {
+				t.Errorf("mode %q forever=%v line %d leaked a placeholder: %s", c.mode, c.forever, i, notice)
+			}
+		}
+	}
+}
+
+// TestPlainRetentionNoticeRespectsTheDisclosureMode covers the backstop.
+//
+// plainRetentionNotice is reached only when the catalog produces nothing at
+// all, which is the moment nobody is watching. If it ignored the mode it
+// would publish the cadence and the deletion window of a guild that had
+// explicitly chosen to publish neither, and it would do so silently and in
+// public. That makes the fallback worth its own test rather than trusting it
+// to be unreachable.
+func TestPlainRetentionNoticeRespectsTheDisclosureMode(t *testing.T) {
+	cases := []struct {
+		mode        settings.Disclosure
+		forever     bool
+		wantCadence bool
+		wantReten   bool
+	}{
+		{settings.DisclosureFull, false, true, true},
+		{settings.DisclosureCadence, false, true, false},
+		{settings.DisclosureRetention, false, false, true},
+		{settings.DisclosureRetention, true, false, false},
+		{settings.DisclosureGeneric, false, false, false},
+	}
+
+	for _, c := range cases {
+		got := plainRetentionNotice(disclosureRC(c.mode, c.forever))
+		if got == "" {
+			t.Errorf("mode %q forever=%v: the fallback said nothing at all", c.mode, c.forever)
+		}
+		if has := strings.Contains(got, "1 day"); has != c.wantCadence {
+			t.Errorf("fallback mode %q forever=%v: states cadence = %v, want %v: %s", c.mode, c.forever, has, c.wantCadence, got)
+		}
+		if has := strings.Contains(got, "3 hours"); has != c.wantReten {
+			t.Errorf("fallback mode %q forever=%v: states retention = %v, want %v: %s", c.mode, c.forever, has, c.wantReten, got)
+		}
+	}
+}
+
 // TestRotationSummaryNeverPrintsAPointer is the audit-trail regression. The
 // audit line interpolated the *int RetentionHours with %v, so a real record
 // in production reads "retention=0x55c4509432e8", the one irreversible

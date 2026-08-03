@@ -128,11 +128,28 @@ func TestNoticeFiresInsideTheLeadWindow(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("messages posted = %d, want 1", len(msgs))
 	}
-	if !strings.Contains(msgs[0].Content, "6m") {
-		t.Errorf("notice does not say how long is left: %q", msgs[0].Content)
+	// The heads-up is an embed now, matching the intro notice posted into
+	// this same channel when the rotation lands, so the text is a
+	// description rather than message content.
+	if len(ops.complexSends) != 1 || ops.complexSends[0].Embed == nil {
+		t.Fatalf("heads-up was not sent as an embed: %+v", ops.complexSends)
 	}
-	if strings.ContainsAny(msgs[0].Content, "{}") {
-		t.Errorf("notice leaked a placeholder: %q", msgs[0].Content)
+	body := ops.complexSends[0].Embed.Description
+
+	// Deliberately "6 minutes", not the "6m" this asserted before. The
+	// countdown moved from core.FormatDuration to humanDuration when the
+	// heads-up became an embed, so that the two messages rotation posts into
+	// one channel describe time the same way; the compact form is the
+	// admin-surface register. This assertion is the contract, so it is
+	// changed knowingly rather than relaxed to match whatever the code does.
+	if !strings.Contains(body, "6 minutes") {
+		t.Errorf("notice does not say how long is left: %q", body)
+	}
+	if strings.ContainsAny(body, "{}") {
+		t.Errorf("notice leaked a placeholder: %q", body)
+	}
+	if len(ops.complexSends[0].Files) == 0 {
+		t.Error("heads-up embed has no files, so its mood thumbnail renders as a broken frame")
 	}
 }
 
@@ -353,5 +370,73 @@ func TestNoticeLeadMustBeShorterThanTheInterval(t *testing.T) {
 		if !c.wantErr && err != nil {
 			t.Errorf("lead of %d minutes was rejected: %v", c.lead, err)
 		}
+	}
+}
+
+// A channel on generic disclosure still gets warned, but without a number.
+// The countdown is the rotation schedule, which is exactly what that mode
+// exists to withhold, so publishing it in the message immediately before the
+// deliberately vague intro notice would make the setting pointless.
+func TestGenericDisclosureWarnsWithoutACountdown(t *testing.T) {
+	rc := noticeRC()
+	rc.Disclosure = settings.DisclosureGeneric
+	ops, sched, _, p := setupNotice(t, rc)
+	sched.nextDue[rotationKey(rc)] = fixedNow.Add(6 * time.Minute)
+
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("postDueNotices: %v", err)
+	}
+
+	if len(ops.complexSends) != 1 || ops.complexSends[0].Embed == nil {
+		t.Fatalf("generic disclosure posted no heads-up embed: %+v", ops.complexSends)
+	}
+	body := ops.complexSends[0].Embed.Description
+	for _, leak := range []string{"6 minutes", "6m", "minutes"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("generic heads-up published the countdown (%q), which is the schedule the mode withholds: %q", leak, body)
+		}
+	}
+	if body == "" {
+		t.Error("generic heads-up said nothing at all; the warning itself is still wanted")
+	}
+}
+
+// The two switches stay independent: disclosure decides how much is said,
+// notice lead decides whether anything is said at all. Turning disclosure
+// down must not quietly re-arm a heads-up an admin had switched off, and a
+// lead of zero must still mean silence even in generic mode.
+func TestNoticeLeadOffSilencesGenericDisclosureToo(t *testing.T) {
+	rc := noticeRC()
+	rc.Disclosure = settings.DisclosureGeneric
+	rc.NoticeLeadMinutes = 0
+	ops, sched, _, p := setupNotice(t, rc)
+	sched.nextDue[rotationKey(rc)] = fixedNow.Add(6 * time.Minute)
+
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("postDueNotices: %v", err)
+	}
+	if got := len(ops.messages[rc.ChannelID]); got != 0 {
+		t.Errorf("posted %d notices with the lead switched off, want 0", got)
+	}
+}
+
+// Under a minute out, the countdown rounds to zero and the message would read
+// "resets in 0 minutes", which is wrong and visibly broken. Staying quiet is
+// the failure mode this feature already prefers, and the claim must survive
+// so the window is not spent on a message that was never sent.
+func TestASubMinuteRotationGetsNoCountdown(t *testing.T) {
+	rc := noticeRC()
+	ops, sched, notices, p := setupNotice(t, rc)
+	due := fixedNow.Add(20 * time.Second)
+	sched.nextDue[rotationKey(rc)] = due
+
+	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		t.Fatalf("postDueNotices: %v", err)
+	}
+	if got := len(ops.messages[rc.ChannelID]); got != 0 {
+		t.Errorf("posted %d notices for a rotation under a minute away, want 0", got)
+	}
+	if notices.claimed[noticeKey(rc.ID, due)] {
+		t.Error("a notice that was never sent consumed its claim")
 	}
 }

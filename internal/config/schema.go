@@ -47,6 +47,31 @@ type GlobalConfig struct {
 	// cmd/bot/main.go. See waitForReady, which turns that rejection into a
 	// startup failure naming the toggle instead of a silent reconnect loop.
 	GuildMembersIntent bool `yaml:"-"`
+	// OnboardingDM lets Merlin send a guild's owner a one-time DM pointing at
+	// /config setup when she joins a server nobody has configured yet.
+	//
+	// Off by default, and opt-in via MERLIN_ENABLE_ONBOARDING_DM. That is the
+	// opposite default from GuildMembersIntent above, deliberately, and the
+	// reasoning that made opt-in a bug there does not transfer. That bug had
+	// three parts: an operator performing a visible action in a UI outside
+	// this bot (ticking "Server Members Intent"), that action being the only
+	// step that looks like it should matter, and nothing anywhere reporting
+	// that it had no effect. None of them hold here. There is no external
+	// toggle, nothing claims Merlin will DM anyone, and no granted capability
+	// is being silently declined.
+	//
+	// What is left is a message Merlin originates unprompted to a person who
+	// has not interacted with her, which is the category where "off unless
+	// asked for" is the conservative default rather than the surprising one.
+	// The failure mode is also mild and self-correcting: an operator who
+	// expected the DM and did not get it goes and runs /config setup, which
+	// is precisely what the DM would have told them to do.
+	//
+	// Enabling it later DMs the owner of every still-unconfigured guild on
+	// the next restart, since onboarding_nudge_sent_at is only written after
+	// a successful send. That is correct, and worth knowing before flipping
+	// it on a bot that is already in several servers.
+	OnboardingDM bool `yaml:"-"`
 }
 
 // Level maps LogLevel onto slog. The value is validated at load time, so an

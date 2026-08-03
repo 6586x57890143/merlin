@@ -98,6 +98,58 @@ type RotationChannel struct {
 	// would mean the warning for the next one arrives before the previous
 	// one has happened.
 	NoticeLeadMinutes int
+	// Disclosure is how much the channel is told about its own rotation
+	// (migration 0018). Empty is read as DisclosureFull; UpsertRotationChannel
+	// normalizes it so a zero-valued struct can never write an illegal value.
+	Disclosure Disclosure
+}
+
+// Disclosure is how much a freshly rotated channel is told about the rotation
+// that just happened, and about how long the archived copy survives.
+//
+// This is the guild's published retention policy, so it is a setting rather
+// than a wording choice: stating the deletion window is worth doing in a
+// server that wants to point at what the bot actually does, and worth
+// withholding in one that would rather not advertise the schedule. The voice
+// catalog varies how each of these is said; it can never vary which facts
+// appear, because internal/voice requires the matching placeholders in every
+// single line of the corresponding key.
+type Disclosure string
+
+const (
+	// DisclosureFull states the rotation cadence and the archival window.
+	// The default, and what every channel did before migration 0018.
+	DisclosureFull Disclosure = "full"
+	// DisclosureCadence states only how often the channel resets, saying
+	// nothing about what happens to the archived copy.
+	DisclosureCadence Disclosure = "cadence"
+	// DisclosureRetention states only how long the archive survives, saying
+	// nothing about the rotation schedule.
+	DisclosureRetention Disclosure = "retention"
+	// DisclosureGeneric states neither: just that the channel has rotated.
+	DisclosureGeneric Disclosure = "generic"
+)
+
+// Valid reports whether d is one of the four known modes. The empty value is
+// deliberately *not* valid: callers that mean "unspecified" should resolve it
+// to DisclosureFull explicitly (see Resolve), so that a mode arriving from a
+// corrupt row or a hand-edited database is caught rather than silently read
+// as the most disclosing option.
+func (d Disclosure) Valid() bool {
+	switch d {
+	case DisclosureFull, DisclosureCadence, DisclosureRetention, DisclosureGeneric:
+		return true
+	}
+	return false
+}
+
+// Resolve maps the empty value onto the default, leaving anything else
+// (including an unrecognized value) untouched for Valid to reject.
+func (d Disclosure) Resolve() Disclosure {
+	if d == "" {
+		return DisclosureFull
+	}
+	return d
 }
 
 type guildCache struct {
@@ -177,19 +229,29 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 
 	rcRows, err := s.pool.Query(ctx, `SELECT id, channel_id, interval_minutes, archive_category_id, archive_visibility,
 		archive_whitelist_role_ids, archive_whitelist_user_ids, retention_hours, sticky_enabled, sticky_messages,
-		notice_lead_minutes
+		notice_lead_minutes, disclosure
 		FROM settings_rotation_channels WHERE guild_id = $1`, guildID)
 	if err != nil {
 		return fmt.Errorf("settings: load rotation channels for %s: %w", guildID, err)
 	}
 	for rcRows.Next() {
 		rc := RotationChannel{GuildID: guildID}
+		// Scanned through a plain string rather than straight into
+		// rc.Disclosure. pgx does handle a named string type, but it reaches
+		// it by reflection over the underlying type rather than by a
+		// registered codec, and nothing in this repo tests against a real
+		// database. The blast radius of being wrong is out of proportion to
+		// the tidiness: a failing Scan fails Refresh, which drops the guild
+		// to fail-closed defaults and, on the GuildCreate path, skips
+		// rotation's reconcile entirely. One conversion avoids the question.
+		var disclosure string
 		if err := rcRows.Scan(&rc.ID, &rc.ChannelID, &rc.IntervalMinutes, &rc.ArchiveCategoryID, &rc.ArchiveVisibility,
 			&rc.ArchiveWhitelistRoleIDs, &rc.ArchiveWhitelistUserIDs, &rc.RetentionHours, &rc.StickyEnabled, &rc.StickyMessages,
-			&rc.NoticeLeadMinutes); err != nil {
+			&rc.NoticeLeadMinutes, &disclosure); err != nil {
 			rcRows.Close()
 			return fmt.Errorf("settings: scan rotation channel for %s: %w", guildID, err)
 		}
+		rc.Disclosure = Disclosure(disclosure)
 		gc.rotations[rc.ChannelID] = rc
 	}
 	if err := rcRows.Err(); err != nil {
@@ -837,18 +899,25 @@ func (s *Store) UpsertRotationChannel(ctx context.Context, rc RotationChannel) e
 	if rc.StickyMessages == nil {
 		rc.StickyMessages = []string{}
 	}
+	// Same reasoning as the slices above, one column over: a caller building
+	// the struct from scratch leaves Disclosure empty, and the column's
+	// DEFAULT never applies because this INSERT always names every column.
+	// Normalizing to the default here rather than rejecting keeps the
+	// "unspecified means full" rule in exactly one place.
+	rc.Disclosure = rc.Disclosure.Resolve()
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO settings_rotation_channels (guild_id, channel_id, interval_minutes, archive_category_id,
 			archive_visibility, archive_whitelist_role_ids, archive_whitelist_user_ids, retention_hours,
-			sticky_enabled, sticky_messages, notice_lead_minutes, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
+			sticky_enabled, sticky_messages, notice_lead_minutes, disclosure, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
 		ON CONFLICT (guild_id, channel_id) DO UPDATE SET
 			interval_minutes = $3, archive_category_id = $4, archive_visibility = $5,
 			archive_whitelist_role_ids = $6, archive_whitelist_user_ids = $7, retention_hours = $8,
-			sticky_enabled = $9, sticky_messages = $10, notice_lead_minutes = $11, updated_at = now()`,
+			sticky_enabled = $9, sticky_messages = $10, notice_lead_minutes = $11,
+			disclosure = $12, updated_at = now()`,
 		rc.GuildID, rc.ChannelID, rc.IntervalMinutes, rc.ArchiveCategoryID, rc.ArchiveVisibility,
 		rc.ArchiveWhitelistRoleIDs, rc.ArchiveWhitelistUserIDs, rc.RetentionHours, rc.StickyEnabled, rc.StickyMessages,
-		rc.NoticeLeadMinutes,
+		rc.NoticeLeadMinutes, string(rc.Disclosure),
 	); err != nil {
 		return fmt.Errorf("settings: upsert rotation channel: %w", err)
 	}

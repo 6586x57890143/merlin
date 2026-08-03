@@ -400,7 +400,7 @@ func (p *Plugin) setupAddModRole(ctx context.Context, s *discordgo.Session, i *d
 		return
 	}
 	p.grantModRoleChannelAccess(s, i.GuildID, roleID)
-	p.audit(ctx, i, "config.setup", "", "mod_role="+roleID)
+	p.audit(ctx, i, "config.setup", "", "mod_role="+core.MentionRole(roleID))
 	p.updateSetupStep(s, i, setupStepModRole+1, notice)
 }
 
@@ -414,7 +414,7 @@ func (p *Plugin) handleSetupAdminsSelect(ctx context.Context, s *discordgo.Sessi
 			p.updateSetupStep(s, i, setupStepAdmins, fmt.Sprintf("⚠️ Couldn't save <@%s> as an admin: %v", userID, err))
 			return
 		}
-		p.audit(ctx, i, "config.setup", "", "admin="+userID)
+		p.audit(ctx, i, "config.setup", "", "admin="+core.MentionUser(userID))
 	}
 	p.updateSetupStep(s, i, setupStepAdmins+1, fmt.Sprintf("✅ Added %s as admin.", mentionListText(values, "<@%s>", "")))
 }

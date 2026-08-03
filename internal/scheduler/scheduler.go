@@ -11,6 +11,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -124,7 +125,7 @@ type Scheduler struct {
 	// alertFunc, if set, replaces the default "post to the guild's
 	// status channel" behavior. Tests inject a fake so they don't need a
 	// live Discord session.
-	alertFunc func(ctx context.Context, jobKey, message string) error
+	alertFunc func(ctx context.Context, jobKey string, failures int, cause error) error
 }
 
 func New(store JobStateStore, settings statusChannelResolver, log *slog.Logger) *Scheduler {
@@ -400,7 +401,7 @@ func (s *Scheduler) execute(ctx context.Context, j *registeredJob) error {
 			s.log.Error("scheduler: record failure", "job", j.key, "err", ferr)
 		}
 		if count >= maxConsecutiveFailures {
-			s.alert(stateCtx, j.key, fmt.Sprintf("job %q has failed %d consecutive times: %v", j.key, count, err))
+			s.alert(stateCtx, j.key, count, err)
 		}
 		return err
 	}
@@ -410,14 +411,21 @@ func (s *Scheduler) execute(ctx context.Context, j *registeredJob) error {
 	return nil
 }
 
-func (s *Scheduler) alert(ctx context.Context, jobKey, msg string) {
+// alert tells a guild's status channel that one of its jobs is wedged.
+//
+// It takes the failure count and the cause rather than a pre-formatted
+// string, so the test hook and the real path cannot describe the same
+// failure differently. That matters more here than elsewhere: this is the
+// message that says the bot is broken, and it is the one nobody sees during
+// normal development.
+func (s *Scheduler) alert(ctx context.Context, jobKey string, failures int, cause error) {
 	if s.alertFunc != nil {
-		if err := s.alertFunc(ctx, jobKey, msg); err != nil {
+		if err := s.alertFunc(ctx, jobKey, failures, cause); err != nil {
 			s.log.Error("scheduler: alert failed", "job", jobKey, "err", err)
 		}
 		return
 	}
-	guildID, _, ok := strings.Cut(jobKey, ":")
+	guildID, jobName, ok := strings.Cut(jobKey, ":")
 	if !ok {
 		s.log.Error("scheduler: alert: job key has no guild prefix, cannot route alert", "job", jobKey)
 		return
@@ -427,15 +435,36 @@ func (s *Scheduler) alert(ctx context.Context, jobKey, msg string) {
 		s.log.Error("scheduler: alert: no status channel configured", "job", jobKey)
 		return
 	}
+
+	causeText := "unknown"
+	if cause != nil {
+		causeText = cause.Error()
+	}
+	// An embed, matching every other thing this bot posts. It also fixes a
+	// real failure: this used to be a Content string with no truncation, so
+	// an error over 2000 bytes (a Discord API response body, a sweep error
+	// wrapping several channels) made the send fail outright and the wedged
+	// job alerted nobody, which is the single failure this mechanism exists
+	// to prevent. TruncateEmbedField bounds it at 1024.
+	//
+	// The guild prefix is stripped from the job name: it is noise inside the
+	// guild's own status channel, and jobsForGuild already presents job names
+	// that way.
+	embed := core.NewEmbed(core.ColorError, "Scheduled job is failing", "",
+		&discordgo.MessageEmbedField{Name: "Job", Value: jobName, Inline: true},
+		&discordgo.MessageEmbedField{Name: "Consecutive failures", Value: strconv.Itoa(failures), Inline: true},
+		&discordgo.MessageEmbedField{Name: "Last error", Value: core.TruncateEmbedField(causeText)},
+	)
 	// Mentions suppressed for the same reason discordguard.GuildOps
 	// suppresses them, and spelled out here because this send is on the raw
-	// session rather than through the guard: msg interpolates an arbitrary
-	// error string, and an error carrying a channel topic, a role name, or
-	// any other guild-supplied text would otherwise ping whatever it names,
-	// repeatedly, since a wedged job alerts on every failure past the
-	// threshold. An alert about a problem must not become part of one.
+	// session rather than through the guard: the error text is arbitrary, and
+	// one carrying a channel topic, a role name, or any other guild-supplied
+	// text would otherwise ping whatever it names, repeatedly, since a wedged
+	// job alerts on every failure past the threshold. An alert about a
+	// problem must not become part of one.
 	if _, err := s.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Content:         msg,
+		Embed:           embed,
+		Files:           core.EmbedFiles(embed),
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	}); err != nil {
 		s.log.Error("scheduler: alert: send failed", "job", jobKey, "err", err)

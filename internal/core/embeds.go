@@ -272,33 +272,26 @@ func RespondEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *d
 	})
 }
 
-// RespondLandmarkEmbed is RespondEmbed's counterpart for a NewLandmarkEmbed:
-// it also attaches the banner file the embed's Image references.
+// RespondLandmarkEmbed and RespondLandmarkEmbedWithComponents are the
+// NewLandmarkEmbed counterparts of RespondEmbed and
+// RespondEmbedWithComponents.
+//
+// They delegate rather than duplicate. Their bodies used to be byte-identical
+// copies, and their doc comments claimed they "also attach the banner file",
+// which was never something they did: embedFiles derives every attachment
+// from the finished embed, so a landmark embed's banner travels through the
+// ordinary path automatically. That is the whole design (see embedFiles), and
+// two identical bodies free to drift apart was the actual defect.
+//
+// The names stay because they document intent at the call site: /config
+// setup's first-run prompts are landmark moments, and reading
+// RespondLandmarkEmbed there says so in a way RespondEmbed would not.
 func RespondLandmarkEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Embeds: []*discordgo.MessageEmbed{embed},
-			Files:  embedFiles(embed),
-			Flags:  discordgo.MessageFlagsEphemeral,
-		},
-	})
+	return RespondEmbed(s, i, embed)
 }
 
-// RespondLandmarkEmbedWithComponents combines RespondLandmarkEmbed's banner
-// attachment with RespondEmbedWithComponents' components, for the rare
-// response that's both a landmark moment and needs interactive controls
-// (e.g. /config setup's first-run channel prompts).
 func RespondLandmarkEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Embeds:     []*discordgo.MessageEmbed{embed},
-			Components: components,
-			Files:      embedFiles(embed),
-			Flags:      discordgo.MessageFlagsEphemeral,
-		},
-	})
+	return RespondEmbedWithComponents(s, i, embed, components)
 }
 
 // RespondOK, RespondErr, RespondInfo, and RespondWarn are the response
@@ -375,6 +368,35 @@ func TruncateEmbedField(s string) string {
 	// Cut on a rune boundary: slicing mid-rune yields invalid UTF-8, which
 	// Discord rejects outright.
 	cut := maxEmbedFieldValue - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
+}
+
+// maxEmbedDescriptionLen is Discord's hard limit on an embed description.
+// Same failure mode as a field: over-limit rejects the whole message rather
+// than trimming.
+const maxEmbedDescriptionLen = 4096
+
+// TruncateEmbedDescription is TruncateEmbedField's counterpart for the
+// description, which is where any embed built as one prose body ends up.
+//
+// /config status is the motivating case and shows why this is a correctness
+// fix rather than tidiness: it builds one description out of a database error
+// string, a scheduler error string, and a per-channel "couldn't verify: %v",
+// none of which have a bounded length, and none of which it authored. The
+// message failing outright at 4096 bytes would mean the health command breaks
+// precisely when something is unhealthy enough to produce a long error, which
+// is the one moment it has to work.
+func TruncateEmbedDescription(s string) string {
+	if len(s) <= maxEmbedDescriptionLen {
+		return s
+	}
+	const ellipsis = "\n... (truncated)"
+	// Cut on a rune boundary: slicing mid-rune yields invalid UTF-8, which
+	// Discord rejects outright.
+	cut := maxEmbedDescriptionLen - len(ellipsis)
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
