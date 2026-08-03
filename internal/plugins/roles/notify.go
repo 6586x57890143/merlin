@@ -65,9 +65,10 @@ func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, 
 		p.log.Info("roles: could not open a DM to notify member", "guild", guildID, "user", userID, "err", err)
 		return
 	}
+	embed := core.NewEmbed(color, title, body, fields...)
 	if _, err := p.ops(guildID).ChannelMessageSendComplex(ch.ID, &discordgo.MessageSend{
-		Embed: core.NewEmbed(color, title, body, fields...),
-		Files: []*discordgo.File{core.AvatarFile()},
+		Embed: embed,
+		Files: core.EmbedFiles(embed),
 	}); err != nil {
 		p.log.Info("roles: could not deliver member notice", "guild", guildID, "user", userID, "err", err)
 	}

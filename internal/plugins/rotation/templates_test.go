@@ -151,12 +151,34 @@ func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
 		t.Errorf("the notice lost its cadence disclosure: %q", sent.Embed.Description)
 	}
 
-	// The footer icon is an attachment:// reference, so the file has to
-	// travel in the same request or it renders broken.
-	if len(sent.Files) != 1 {
-		t.Fatalf("attached files = %d, want 1; the footer icon would render broken", len(sent.Files))
+	// Every attachment:// URL in the embed has to have a matching upload in
+	// the same request. Discord renders a reference to a file that was not
+	// sent as a broken frame, and nothing about the code that built the
+	// embed would look wrong, so this asserts on the relationship rather
+	// than on a file count that changes whenever the design does.
+	attached := map[string]bool{}
+	for _, f := range sent.Files {
+		attached[f.Name] = true
 	}
-	if !strings.Contains(sent.Embed.Footer.IconURL, sent.Files[0].Name) {
-		t.Errorf("footer icon %q does not match the attached file %q", sent.Embed.Footer.IconURL, sent.Files[0].Name)
+	referenced := []string{sent.Embed.Footer.IconURL}
+	if sent.Embed.Thumbnail != nil {
+		referenced = append(referenced, sent.Embed.Thumbnail.URL)
+	}
+	if sent.Embed.Image != nil {
+		referenced = append(referenced, sent.Embed.Image.URL)
+	}
+	for _, url := range referenced {
+		name, ok := strings.CutPrefix(url, "attachment://")
+		if !ok {
+			continue
+		}
+		if !attached[name] {
+			t.Errorf("embed references %q but that file was never uploaded, so it renders as a broken image", url)
+		}
+	}
+
+	// And the notice should carry a face, not just the footer mark.
+	if sent.Embed.Thumbnail == nil {
+		t.Error("the notice has no mood thumbnail")
 	}
 }

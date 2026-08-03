@@ -579,8 +579,11 @@ func (p *Plugin) handlePause(ctx context.Context, s *discordgo.Session, i *disco
 	}
 	if paused {
 		p.audit(ctx, i, "config.writes_paused", "", "true")
-		core.RespondWarn(s, i, "Destructive actions paused",
-			"Merlin will refuse every channel rotation, archive deletion, jail, and role change in this server until you run `/config pause paused:false`. Scheduled jobs stay due and resume where they left off.")
+		// The idle face rather than the warning one. A paused bot is doing
+		// exactly what an operator just asked it to; showing an alert would
+		// say the opposite of what they need to read back.
+		_ = core.RespondEmbed(s, i, core.WithMood(core.NewEmbed(core.ColorWarning, "Destructive actions paused",
+			"Merlin will refuse every channel rotation, archive deletion, jail, and role change in this server until you run `/config pause paused:false`. Scheduled jobs stay due and resume where they left off."), core.MoodIdle))
 		return
 	}
 	p.audit(ctx, i, "config.writes_paused", "", "false")
@@ -601,8 +604,8 @@ func (p *Plugin) handleDryRun(ctx context.Context, s *discordgo.Session, i *disc
 	}
 	if enabled {
 		p.audit(ctx, i, "config.writes_dry_run", "", "true")
-		core.RespondWarn(s, i, "Dry-run enabled",
-			"Rotations, archive sweeps, and jails will be logged to the audit channel as what they *would* have done, and nothing will actually change. Turn it off with `/config dryrun enabled:false`.")
+		_ = core.RespondEmbed(s, i, core.WithMood(core.NewEmbed(core.ColorWarning, "Dry-run enabled",
+			"Rotations, archive sweeps, and jails will be logged to the audit channel as what they *would* have done, and nothing will actually change. Turn it off with `/config dryrun enabled:false`."), core.MoodIdle))
 		return
 	}
 	p.audit(ctx, i, "config.writes_dry_run", "", "false")
@@ -681,7 +684,7 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 			"step, and it's safe to re-run any time.", gc.Name))
 	_, err = p.session.ChannelMessageSendComplex(dmChannel.ID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{embed},
-		Files:  []*discordgo.File{core.AvatarFile(), core.BannerFile()},
+		Files:  core.EmbedFiles(embed),
 	})
 	if err != nil {
 		p.log.Warn("adminconfig: onboarding DM failed, owner may have DMs closed",

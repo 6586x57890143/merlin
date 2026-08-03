@@ -94,7 +94,7 @@ func RespondEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCr
 		Data: &discordgo.InteractionResponseData{
 			Embeds:     []*discordgo.MessageEmbed{embed},
 			Components: components,
-			Files:      []*discordgo.File{avatarFile()},
+			Files:      embedFiles(embed),
 			Flags:      discordgo.MessageFlagsEphemeral,
 		},
 	})
@@ -106,13 +106,13 @@ func RespondEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCr
 // that's re-rendering the same list/detail view the user is already
 // looking at.
 func UpdateEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
-	return updateEmbed(s, i, embed, components, []*discordgo.File{avatarFile()})
+	return updateEmbed(s, i, embed, components, embedFiles(embed))
 }
 
 // UpdateLandmarkEmbedWithComponents is UpdateEmbedWithComponents for a
 // NewLandmarkEmbed. Also re-uploads the banner file its Image references.
 func UpdateLandmarkEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
-	return updateEmbed(s, i, embed, components, []*discordgo.File{avatarFile(), bannerFile()})
+	return updateEmbed(s, i, embed, components, embedFiles(embed))
 }
 
 func updateEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent, files []*discordgo.File) error {

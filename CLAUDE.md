@@ -81,6 +81,16 @@ Each rotation cycle re-derives "is this step already done?" from live Discord/Po
 
 **Audit-failure policy**: an audit-embed post failure (e.g. `#bird-audit-log` not configured or deleted) must never fail the operation that triggered it: the actual action already succeeded, and the durable audit record write happens independently of the embed post inside `audit.Writer.Record`. Every call site logs-and-continues on a non-nil `Record` error; this was a real bug in `rotation/execute.go` (an audit failure was making the Scheduler treat a successful rotation as failed) fixed by matching the policy every other call site already used.
 
+### Mood icons (`internal/core/embeds.go`)
+
+Six drawings of Merlin (`assets/merlin_{ok,error,warn,info,notice,idle}.png`), shown as the embed **thumbnail**. Not the author icon: Discord renders that at around 24px and circle-crops it, which turns a detailed square sprite into a smudge with its corners cut off.
+
+**The mood is derived from the embed's colour** (`moodForColor`), not passed in. That is what let all ~113 existing `RespondOK/Err/Info/Warn` call sites pick up an icon without being touched: the colour already encodes exactly this distinction, and a second argument saying the same thing again is only an opportunity for the two to disagree. `core.WithMood` overrides it for the cases the palette cannot express, which today is `MoodIdle` on `/config pause` and `/config dryrun`: both report as warnings, and a paused bot is doing what it was told rather than failing.
+
+**Attachments are derived from the finished embed** (`embedFiles`/`EmbedFiles`), never hand-listed. An `attachment://` URL with no matching upload renders as a broken frame, and nothing about the code that built the embed would look wrong, so reading the URLs back off the embed is what stops the two drifting apart. Any non-interaction sender (a DM, a channel post) must use `core.EmbedFiles(embed)` rather than listing `AvatarFile()` itself. `NewLandmarkEmbed` deliberately clears the thumbnail: the banner is already carrying the visual weight.
+
+The icons were cut from a single 1024x1536 sheet (kept at `assets/source/`, not embedded) by throwaway tooling outside the repo module. Two details that mattered: the trim uses per-row/column ink counts rather than a plain bounding box, because one faint speck near a cell corner pinned the alert sprite's box to the whole cell and made that one icon render visibly smaller than the other five; and the alpha threshold was measured rather than guessed, since the sprites sit on a glow that fades to nothing and the resulting bounds are stable only above `0x4000`.
+
 ### Merlin's voice (`internal/voice`)
 
 Every member-facing message Merlin writes herself comes from here. Not string literals at call sites, for two reasons: a bot that says the identical sentence every rotation reads as furniture rather than a character, and, more importantly, **some of what she says is load bearing**.

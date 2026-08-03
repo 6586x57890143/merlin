@@ -46,6 +46,147 @@ const (
 	bannerAttachmentURL  = "attachment://" + bannerAttachmentName
 )
 
+// Merlin's moods. One drawing of her per kind of thing a message can be,
+// shown as the embed's thumbnail.
+//
+// The thumbnail slot rather than the author icon: Discord renders the
+// author icon at around 24px and crops it to a circle, which turns a
+// detailed square sprite into a smudge with its corners missing. The
+// thumbnail renders near 80px, uncropped.
+//
+// Embedded into the binary and referenced via attachment:// for the same
+// reason as the avatar and banner above: no external image host, so
+// branding cannot break because something this bot does not control had an
+// outage.
+//
+//go:embed assets/merlin_ok.png
+var moodOKPNG []byte
+
+//go:embed assets/merlin_error.png
+var moodErrorPNG []byte
+
+//go:embed assets/merlin_warn.png
+var moodWarnPNG []byte
+
+//go:embed assets/merlin_info.png
+var moodInfoPNG []byte
+
+//go:embed assets/merlin_notice.png
+var moodNoticePNG []byte
+
+//go:embed assets/merlin_idle.png
+var moodIdlePNG []byte
+
+// Mood is which drawing of Merlin a message carries.
+type Mood int
+
+const (
+	// MoodNone means no thumbnail at all, for embeds whose visual weight
+	// comes from somewhere else (the setup wizard's banner).
+	MoodNone Mood = iota
+	MoodOK
+	MoodError
+	MoodWarn
+	MoodInfo
+	// MoodNotice is for things Merlin is telling you rather than answering:
+	// the rotation notice, the DMs a jailed member gets.
+	MoodNotice
+	// MoodIdle is for deliberately-stopped states, pause and dry-run. A
+	// paused bot is not broken, and showing it the error face would say the
+	// opposite of what an operator needs to read.
+	MoodIdle
+)
+
+var moodAssets = map[Mood]struct {
+	name string
+	png  []byte
+}{
+	MoodOK:     {"merlin_ok.png", moodOKPNG},
+	MoodError:  {"merlin_error.png", moodErrorPNG},
+	MoodWarn:   {"merlin_warn.png", moodWarnPNG},
+	MoodInfo:   {"merlin_info.png", moodInfoPNG},
+	MoodNotice: {"merlin_notice.png", moodNoticePNG},
+	MoodIdle:   {"merlin_idle.png", moodIdlePNG},
+}
+
+// moodForColor maps an embed's colour to a mood.
+//
+// Deriving it from the colour rather than taking it as a parameter is what
+// lets every existing RespondOK/Err/Info/Warn call site pick up an icon
+// without being touched. The colour already encodes exactly this
+// distinction; asking a hundred call sites to repeat it in a second
+// argument would only create opportunities for the two to disagree.
+func moodForColor(color int) Mood {
+	switch color {
+	case ColorSuccess:
+		return MoodOK
+	case ColorError:
+		return MoodError
+	case ColorWarning:
+		return MoodWarn
+	case ColorPrimary:
+		return MoodNotice
+	default:
+		return MoodInfo
+	}
+}
+
+func moodAttachmentURL(m Mood) string {
+	a, ok := moodAssets[m]
+	if !ok {
+		return ""
+	}
+	return "attachment://" + a.name
+}
+
+func moodFile(m Mood) *discordgo.File {
+	a, ok := moodAssets[m]
+	if !ok {
+		return nil
+	}
+	return &discordgo.File{Name: a.name, ContentType: "image/png", Reader: bytes.NewReader(a.png)}
+}
+
+// WithMood overrides the mood an embed's colour implied, for the few states
+// the palette cannot express on its own. Pause and dry-run are the reason
+// it exists: both are reported as ordinary informational responses, and
+// both should show Merlin asleep rather than attentive.
+func WithMood(embed *discordgo.MessageEmbed, m Mood) *discordgo.MessageEmbed {
+	if url := moodAttachmentURL(m); url != "" {
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: url}
+	} else {
+		embed.Thumbnail = nil
+	}
+	return embed
+}
+
+// embedFiles returns every attachment an embed references.
+//
+// Derived from the embed rather than tracked alongside it, because the two
+// getting out of step is exactly the bug that shows a broken-image icon to
+// a whole server: an attachment:// URL with no matching upload renders as a
+// blank frame, and nothing about the code that built the embed would look
+// wrong. Reading the URLs back off the finished embed means they cannot
+// disagree.
+func embedFiles(embed *discordgo.MessageEmbed) []*discordgo.File {
+	files := []*discordgo.File{avatarFile()}
+	if embed == nil {
+		return files
+	}
+	if embed.Thumbnail != nil {
+		for m, a := range moodAssets {
+			if embed.Thumbnail.URL == "attachment://"+a.name {
+				files = append(files, moodFile(m))
+				break
+			}
+		}
+	}
+	if embed.Image != nil && embed.Image.URL == bannerAttachmentURL {
+		files = append(files, bannerFile())
+	}
+	return files
+}
+
 func avatarFile() *discordgo.File {
 	return &discordgo.File{Name: avatarAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(avatarPNG)}
 }
@@ -61,7 +202,7 @@ func bannerFile() *discordgo.File {
 // RespondOK/Err/Info/Warn below) instead of constructing discordgo.MessageEmbed
 // literals directly.
 func NewEmbed(color int, title, description string, fields ...*discordgo.MessageEmbedField) *discordgo.MessageEmbed {
-	return &discordgo.MessageEmbed{
+	e := &discordgo.MessageEmbed{
 		Title:       title,
 		Description: description,
 		Color:       color,
@@ -69,6 +210,7 @@ func NewEmbed(color int, title, description string, fields ...*discordgo.Message
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		Footer:      &discordgo.MessageEmbedFooter{Text: "Merlin", IconURL: avatarAttachmentURL},
 	}
+	return WithMood(e, moodForColor(color))
 }
 
 // NewLandmarkEmbed is NewEmbed's richer sibling, reserved for the handful of
@@ -80,7 +222,9 @@ func NewEmbed(color int, title, description string, fields ...*discordgo.Message
 func NewLandmarkEmbed(color int, title, description string, fields ...*discordgo.MessageEmbedField) *discordgo.MessageEmbed {
 	e := NewEmbed(color, title, description, fields...)
 	e.Image = &discordgo.MessageEmbedImage{URL: bannerAttachmentURL}
-	return e
+	// No mood thumbnail here. The banner already carries the visual weight,
+	// and an embed with both reads as cluttered rather than considered.
+	return WithMood(e, MoodNone)
 }
 
 // RespondEmbed sends embed as an ephemeral interaction response, attaching
@@ -92,7 +236,7 @@ func RespondEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *d
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Embeds: []*discordgo.MessageEmbed{embed},
-			Files:  []*discordgo.File{avatarFile()},
+			Files:  embedFiles(embed),
 			Flags:  discordgo.MessageFlagsEphemeral,
 		},
 	})
@@ -106,7 +250,7 @@ func RespondLandmarkEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, 
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Embeds: []*discordgo.MessageEmbed{embed},
-			Files:  []*discordgo.File{avatarFile(), bannerFile()},
+			Files:  embedFiles(embed),
 			Flags:  discordgo.MessageFlagsEphemeral,
 		},
 	})
@@ -122,7 +266,7 @@ func RespondLandmarkEmbedWithComponents(s *discordgo.Session, i *discordgo.Inter
 		Data: &discordgo.InteractionResponseData{
 			Embeds:     []*discordgo.MessageEmbed{embed},
 			Components: components,
-			Files:      []*discordgo.File{avatarFile(), bannerFile()},
+			Files:      embedFiles(embed),
 			Flags:      discordgo.MessageFlagsEphemeral,
 		},
 	})
@@ -181,7 +325,7 @@ func FollowUpErr(s *discordgo.Session, i *discordgo.InteractionCreate, title str
 func followUp(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
 	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
-		Files:  []*discordgo.File{avatarFile()},
+		Files:  embedFiles(embed),
 	})
 	return err
 }
@@ -213,3 +357,13 @@ func TruncateEmbedField(s string) string {
 // the same brand images without duplicating the embed byte constants.
 func AvatarFile() *discordgo.File { return avatarFile() }
 func BannerFile() *discordgo.File { return bannerFile() }
+
+// EmbedFiles returns every attachment embed references, for senders outside
+// an interaction response (a DM, a channel post).
+//
+// Prefer this over listing files by hand. NewEmbed now attaches a mood
+// thumbnail by attachment:// URL, so a caller that hand-lists only the
+// avatar ends up sending an embed that references an image it did not
+// upload, which Discord renders as a broken frame. Asking the embed what it
+// needs cannot go out of step with what the embed actually has.
+func EmbedFiles(embed *discordgo.MessageEmbed) []*discordgo.File { return embedFiles(embed) }

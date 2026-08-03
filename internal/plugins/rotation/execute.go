@@ -369,9 +369,10 @@ func (p *Plugin) populateIfNeeded(ctx context.Context, channelID string, rc sett
 	// It needs SendComplex rather than SendEmbed because the footer icon is
 	// an attachment:// reference, so the file has to travel with it or the
 	// icon renders broken.
+	notice := core.NewEmbed(core.ColorPrimary, "", p.retentionNotice(ctx, rc))
 	if _, err := p.ops(rc.GuildID).ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Embed: core.NewEmbed(core.ColorPrimary, "", p.retentionNotice(ctx, rc)),
-		Files: []*discordgo.File{core.AvatarFile()},
+		Embed: notice,
+		Files: core.EmbedFiles(notice),
 	}); err != nil {
 		return fmt.Errorf("post retention notice: %w", err)
 	}
