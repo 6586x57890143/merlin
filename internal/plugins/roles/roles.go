@@ -117,6 +117,33 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	p.forgetJailRole(guildID)
 }
 
+// HandleRoleDeleted reacts to a role disappearing from guildID.
+//
+// The only role this plugin caches is the jail marker, and that cache is
+// held for the process lifetime once resolved, deliberately, so that
+// renaming the role does not spawn a duplicate. The flip side is that a
+// *deleted* marker role leaves the cache pointing at an ID Discord no
+// longer knows, and every subsequent jail in that guild fails against it
+// until the process restarts.
+//
+// There is already a recovery path: applyJail drops the cache when Discord
+// answers Unknown Role. This closes the same hole a step earlier, so the
+// first jail after the deletion succeeds instead of being the one that pays
+// for the discovery. Nothing else is touched: the role is gone, so no
+// member still holds it, and the jail records in Postgres are still the
+// only copy of what those members held before being jailed.
+func (p *Plugin) HandleRoleDeleted(guildID, roleID string) {
+	p.jailRoleMu.Lock()
+	cached, known := p.jailRoleID[guildID]
+	p.jailRoleMu.Unlock()
+	if !known || cached != roleID {
+		return
+	}
+	p.forgetJailRole(guildID)
+	p.log.Warn("roles: jail role was deleted, will be recreated on the next jail",
+		"guild", guildID, "role", roleID)
+}
+
 // resolveJailRole returns guildID's jail marker role ID, creating one named
 // jailRoleName if none exists yet. Mirrors rotation.resolveArchiveCategory's
 // find-by-name-or-create-if-missing pattern, so a mod never has to go create

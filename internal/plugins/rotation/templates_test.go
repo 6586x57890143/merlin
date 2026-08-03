@@ -1,6 +1,7 @@
 package rotation
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -79,5 +80,45 @@ func TestFormatRetentionDistinguishesForever(t *testing.T) {
 	week := 168
 	if got := formatRetention(&week); got != "7d" {
 		t.Errorf("formatRetention(168) = %q, want %q", got, "7d")
+	}
+}
+
+// The retention notice is the single most-read thing Merlin posts: it lands
+// in the busiest channel in the server on every rotation. It has to look
+// like the same bot as everything else, which means going through
+// core.NewEmbed and carrying the brand file its footer icon references. An
+// embed whose footer points at an attachment that was never uploaded shows
+// a broken icon to the whole server.
+func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
+	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	if len(ops.complexSends) != 1 {
+		t.Fatalf("complex sends = %d, want 1; the notice did not go out as an embed plus attachment", len(ops.complexSends))
+	}
+	sent := ops.complexSends[0]
+	if sent.Embed == nil {
+		t.Fatal("the notice was not sent as an embed")
+	}
+	if sent.Embed.Footer == nil || sent.Embed.Footer.Text != "Merlin" {
+		t.Error("the notice carries no Merlin footer, so it reads as a different bot than every other message")
+	}
+	if sent.Embed.Color == 0 {
+		t.Error("the notice has no colour, the one visual cue that ties it to the rest of the bot")
+	}
+	if !strings.Contains(sent.Embed.Description, "1 day") {
+		t.Errorf("the notice lost its cadence disclosure: %q", sent.Embed.Description)
+	}
+
+	// The footer icon is an attachment:// reference, so the file has to
+	// travel in the same request or it renders broken.
+	if len(sent.Files) != 1 {
+		t.Fatalf("attached files = %d, want 1; the footer icon would render broken", len(sent.Files))
+	}
+	if !strings.Contains(sent.Embed.Footer.IconURL, sent.Files[0].Name) {
+		t.Errorf("footer icon %q does not match the attached file %q", sent.Embed.Footer.IconURL, sent.Files[0].Name)
 	}
 }

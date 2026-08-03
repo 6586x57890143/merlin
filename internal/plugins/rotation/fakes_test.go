@@ -52,6 +52,11 @@ type fakeOps struct {
 	// category; an assertion on the end state would pass even if the two
 	// were swapped.
 	editCalls []recordedEdit
+
+	// complexSends records the full MessageSend payloads, so a test can
+	// assert on the embed and its attachments rather than only on the fact
+	// that something was posted.
+	complexSends []*discordgo.MessageSend
 }
 
 type recordedEdit struct {
@@ -261,6 +266,24 @@ func (f *fakeOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.Mes
 		return nil, err
 	}
 	return f.appendMessage(channelID, "")
+}
+
+// ChannelMessageSendComplex records the whole payload, not just that a send
+// happened, so a test can check the retention notice actually carries the
+// file its footer icon references. Kept under the "ChannelMessageSendEmbed"
+// failure key: callers that inject a failure are simulating "the notice
+// could not be posted", and which discordgo method carries it is an
+// implementation detail they should not have to track.
+func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	if err := f.shouldFail("ChannelMessageSendEmbed"); err != nil {
+		return nil, err
+	}
+	f.complexSends = append(f.complexSends, data)
+	content := ""
+	if data != nil {
+		content = data.Content
+	}
+	return f.appendMessage(channelID, content)
 }
 
 func (f *fakeOps) ChannelMessagePin(channelID, messageID string, _ ...discordgo.RequestOption) error {

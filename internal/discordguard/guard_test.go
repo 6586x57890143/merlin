@@ -19,6 +19,10 @@ func testLogger() *slog.Logger {
 type fakeSession struct {
 	writes int
 	reads  int
+	// sends records the full payload of every message send, so a test can
+	// assert on what was actually put on the wire (mention suppression)
+	// rather than only that a send happened.
+	sends []*discordgo.MessageSend
 }
 
 func (f *fakeSession) Channel(string, ...discordgo.RequestOption) (*discordgo.Channel, error) {
@@ -78,6 +82,12 @@ func (f *fakeSession) ChannelDelete(string, ...discordgo.RequestOption) (*discor
 
 func (f *fakeSession) ChannelMessageSend(string, string, ...discordgo.RequestOption) (*discordgo.Message, error) {
 	f.writes++
+	return &discordgo.Message{}, nil
+}
+
+func (f *fakeSession) ChannelMessageSendComplex(_ string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	f.writes++
+	f.sends = append(f.sends, data)
 	return &discordgo.Message{}, nil
 }
 
@@ -240,6 +250,58 @@ func TestReadsAreNeverGated(t *testing.T) {
 	}
 	if sess.reads != 7 {
 		t.Errorf("reads = %d, want 7; a read was gated", sess.reads)
+	}
+}
+
+// Every message this bot sends must go out with mentions suppressed.
+//
+// Rotation reposts operator-supplied sticky text into the fresh channel on
+// every single cycle, so an unfiltered send turns one configured mention
+// into a recurring ping: a named user gets pinged forever on a schedule, a
+// mentionable role pings its whole membership. Plain discordgo omits
+// allowed_mentions entirely, which Discord reads as "parse everything", so
+// the safe behaviour is the one that has to be written down, not the
+// default. Asserting on the payload rather than the call count because the
+// call count is identical either way.
+func TestMessageSendsSuppressMentions(t *testing.T) {
+	sess := &fakeSession{}
+	g := New(sess, fakeGate{}, testLogger(), false)
+
+	if _, err := g.For("g1").ChannelMessageSend("c", "hey @everyone <@123> <@&456>"); err != nil {
+		t.Fatalf("ChannelMessageSend: %v", err)
+	}
+	if len(sess.sends) != 1 {
+		t.Fatalf("sends = %d, want 1; the send did not go through ChannelMessageSendComplex", len(sess.sends))
+	}
+
+	sent := sess.sends[0]
+	if sent.Content != "hey @everyone <@123> <@&456>" {
+		t.Errorf("content was rewritten to %q; suppression must not alter the text, only whether it pings", sent.Content)
+	}
+	if sent.AllowedMentions == nil {
+		t.Fatal("AllowedMentions is nil, so it is dropped by omitempty and Discord parses every mention in the content")
+	}
+	if len(sent.AllowedMentions.Parse) != 0 {
+		t.Errorf("AllowedMentions.Parse = %v, want empty; a non-empty Parse whitelists that whole mention class", sent.AllowedMentions.Parse)
+	}
+	if len(sent.AllowedMentions.Roles) != 0 || len(sent.AllowedMentions.Users) != 0 {
+		t.Errorf("AllowedMentions allows specific roles/users (%v/%v), want neither",
+			sent.AllowedMentions.Roles, sent.AllowedMentions.Users)
+	}
+}
+
+// Suppression must not become a way around the pause or the rate cap: it is
+// a property of how a send is formed, not a different path to Discord.
+func TestSuppressedSendIsStillGated(t *testing.T) {
+	sess := &fakeSession{}
+	gate := fakeGate{paused: map[string]bool{"g1": true}}
+	g := New(sess, gate, testLogger(), false)
+
+	if _, err := g.For("g1").ChannelMessageSend("c", "hello"); !errors.Is(err, ErrPaused) {
+		t.Errorf("got %v, want ErrPaused", err)
+	}
+	if len(sess.sends) != 0 || sess.writes != 0 {
+		t.Errorf("a paused guild still reached Discord: %d sends, %d writes", len(sess.sends), sess.writes)
 	}
 }
 

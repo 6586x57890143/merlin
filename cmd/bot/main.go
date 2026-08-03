@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,6 +75,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Registered before Watch starts, so a SIGHUP that lands immediately
+	// still moves the level. Without this hook the level was applied exactly
+	// once, at startup, and reloading the config parsed a new LogLevel into
+	// a field nothing read again: turning up verbosity to look at a live
+	// problem meant restarting the process and losing the problem.
+	cfgLoader.OnReload(func(c *config.GlobalConfig) {
+		level.Set(c.Level())
+		log.Info("log level applied", "level", c.LogLevel)
+	})
 	cfgLoader.Watch(ctx)
 
 	cfg := cfgLoader.Global()
@@ -266,6 +276,41 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		rotationPlugin.HandleChannelDeleted(guildCtx, cd.GuildID, cd.ID)
+	})
+
+	// A deleted role is invisible to this bot otherwise, and it leaves two
+	// distinct traces: entries in the guild's settings that name a role
+	// nobody can see any more, and, if it was the jail marker, a cached ID
+	// that every later jail in that guild fails against.
+	//
+	// There is deliberately no GuildMemberRemove counterpart. A jailed
+	// member who leaves must keep their role_jails row: that row is the only
+	// copy of the roles they held before being jailed, and it is what
+	// re-applies the marker if they come back inside their window. Dropping
+	// or flagging it on leave is precisely the evasion bug that was fixed
+	// once already, and evasion_test.go asserts the row survives.
+	session.AddHandler(func(s *discordgo.Session, rd *discordgo.GuildRoleDelete) {
+		rolesPlugin.HandleRoleDeleted(rd.GuildID, rd.RoleID)
+
+		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		removed, err := settingsStore.PruneDeletedRole(guildCtx, rd.GuildID, rd.RoleID)
+		if err != nil {
+			log.Error("prune deleted role from settings", "guild", rd.GuildID, "role", rd.RoleID, "err", err)
+			return
+		}
+		if len(removed) == 0 {
+			return
+		}
+		log.Info("pruned deleted role from settings", "guild", rd.GuildID, "role", rd.RoleID, "from", removed)
+		if err := auditWriter.Record(guildCtx, rd.GuildID, session.State.User.ID, "config.role_pruned",
+			fmt.Sprintf("role %s referenced by: %s", rd.RoleID, strings.Join(removed, ", ")),
+			"role deleted in Discord, references removed"); err != nil {
+			// Same log-and-continue policy every other audit call site uses:
+			// the prune already happened and is durable, so a failed audit
+			// post must not be reported as a failed prune.
+			log.Error("audit role prune", "guild", rd.GuildID, "err", err)
+		}
 	})
 
 	session.AddHandler(func(s *discordgo.Session, gd *discordgo.GuildDelete) {

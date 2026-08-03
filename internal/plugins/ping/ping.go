@@ -32,9 +32,20 @@ func (p *Plugin) Start(ctx context.Context) error { return nil }
 
 func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 
+// handlePing answers only the person who asked.
+//
+// It is the one command in this bot that everybody can run, which in a
+// server of a couple of thousand people makes a non-ephemeral reply a free
+// way for anyone to put bot noise in any channel, as often as they like,
+// out of the guild's own message budget. Ephemeral keeps the health check
+// useful (the invoker still learns the bot is alive and responding) and
+// costs the channel nothing.
 func handlePing(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: "kik-ong!"},
+		Data: &discordgo.InteractionResponseData{
+			Content: "kik-ong!",
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
 	})
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -182,6 +183,18 @@ func (f *fakeOps) GuildRoles(guildID string, options ...discordgo.RequestOption)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]*discordgo.Role(nil), f.roles[guildID]...), nil
+}
+
+// deleteRole removes a role from the guild, standing in for a mod deleting
+// it in Discord. Needed so a test can distinguish "the cache was dropped"
+// from "the role is actually gone": re-resolving finds the role by name, so
+// dropping the cache alone still lands on the same ID.
+func (f *fakeOps) deleteRole(guildID, roleID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.roles[guildID] = slices.DeleteFunc(f.roles[guildID], func(r *discordgo.Role) bool {
+		return r.ID == roleID
+	})
 }
 
 func (f *fakeOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {

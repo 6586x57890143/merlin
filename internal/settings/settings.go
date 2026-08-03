@@ -450,6 +450,52 @@ func (s *Store) RemoveModRole(ctx context.Context, guildID, roleID string) error
 	return nil
 }
 
+// PruneDeletedRole removes roleID from everywhere a guild's settings can
+// still be pointing at it: the mod-role list, and every action's allow and
+// deny lists. It returns a description of what it actually removed, empty
+// when the role was not referenced, so a caller can audit a real change
+// without writing an entry every time anybody deletes any role.
+//
+// Deleting a role in Discord tells this bot nothing on its own, so without
+// this the entries sit there permanently. Snowflakes are never reused, so a
+// stale entry cannot silently grant a stranger anything later. The cost is
+// to the operator instead: /config permissions list accumulates rules
+// naming roles that no longer exist, and the one time somebody reads that
+// list carefully is while working out why a person can or cannot do
+// something, which is exactly when a screenful of dead entries is most
+// expensive.
+//
+// Built on the ordinary mutators rather than one bulk statement so each
+// removal takes the same SQL, cache refresh, and EventConfigChanged path a
+// mod-initiated removal takes. A deleted role is usually in none or one of
+// these lists, so the extra round trips cost nothing in practice.
+func (s *Store) PruneDeletedRole(ctx context.Context, guildID, roleID string) ([]string, error) {
+	var removed []string
+
+	if slices.Contains(s.ModRoleIDs(guildID), roleID) {
+		if err := s.RemoveModRole(ctx, guildID, roleID); err != nil {
+			return removed, err
+		}
+		removed = append(removed, "mod role")
+	}
+
+	for _, o := range s.Overrides(guildID) {
+		if slices.Contains(o.RoleIDs, roleID) {
+			if err := s.RevokeOverride(ctx, guildID, o.Action, roleID, ""); err != nil {
+				return removed, err
+			}
+			removed = append(removed, "allow on "+o.Action)
+		}
+		if slices.Contains(o.DenyRoleIDs, roleID) {
+			if err := s.UndenyOverride(ctx, guildID, o.Action, roleID, ""); err != nil {
+				return removed, err
+			}
+			removed = append(removed, "deny on "+o.Action)
+		}
+	}
+	return removed, nil
+}
+
 // AddJailAllowedChannel and RemoveJailAllowedChannel mirror Add/RemoveModRole
 // exactly: same upsert-or-append / array_remove shape, just a different
 // column.

@@ -333,7 +333,21 @@ func (p *Plugin) setupChannelPicked(ctx context.Context, s *discordgo.Session, i
 	}
 	p.grantModRolesChannelAccess(s, i.GuildID)
 	p.audit(ctx, i, "config.setup", "", fmt.Sprintf("%s=<#%s> (existing)", label, channelID))
-	p.updateSetupStep(s, i, step+1, fmt.Sprintf("✅ %s is now <#%s>.", label, channelID))
+
+	// Picking an existing channel deliberately changes no permissions on it,
+	// unlike the "create it for me" path, which denies @everyone up front.
+	// That is the right default (this is a channel the guild already uses
+	// for something, and silently locking the server out of it would be a
+	// surprise), but it does mean an admin can point the audit log at a
+	// public channel and publish every jail and config change to the whole
+	// server. Say so at the moment the choice is made, and accept it if they
+	// meant it. A failed lookup says nothing either way, so it stays quiet
+	// rather than crying wolf; /config status re-checks this on every run.
+	notice := fmt.Sprintf("✅ %s is now <#%s>.", label, channelID)
+	if ch, err := s.Channel(channelID); err == nil && everyoneCanRead(ch) {
+		notice += " ⚠️ Everyone can read that channel, so anything recorded there is public."
+	}
+	p.updateSetupStep(s, i, step+1, notice)
 }
 
 func (p *Plugin) handleSetupAuditLogCreate(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {

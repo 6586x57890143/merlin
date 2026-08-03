@@ -427,7 +427,17 @@ func (s *Scheduler) alert(ctx context.Context, jobKey, msg string) {
 		s.log.Error("scheduler: alert: no status channel configured", "job", jobKey)
 		return
 	}
-	if _, err := s.session.ChannelMessageSend(channelID, msg); err != nil {
+	// Mentions suppressed for the same reason discordguard.GuildOps
+	// suppresses them, and spelled out here because this send is on the raw
+	// session rather than through the guard: msg interpolates an arbitrary
+	// error string, and an error carrying a channel topic, a role name, or
+	// any other guild-supplied text would otherwise ping whatever it names,
+	// repeatedly, since a wedged job alerts on every failure past the
+	// threshold. An alert about a problem must not become part of one.
+	if _, err := s.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content:         msg,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	}); err != nil {
 		s.log.Error("scheduler: alert: send failed", "job", jobKey, "err", err)
 	}
 }

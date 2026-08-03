@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bwmarrin/discordgo"
+
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
@@ -72,5 +74,69 @@ func TestStatusDBHealthSurfacesTheError(t *testing.T) {
 	}
 	if (stubDB{}).Healthy(context.Background()) != nil {
 		t.Fatal("healthy stub should report nil")
+	}
+}
+
+// The audit log and the status channel carry moderation actions, config
+// changes and raw job errors. Configuring either as a channel the whole
+// server can read publishes all of it, and nothing about the channel
+// filling up normally says so. The check has to lean toward warning: a
+// spurious warning wastes a moment, a missed one is a privacy failure
+// nobody finds out about.
+func TestEveryoneCanReadLeansTowardWarning(t *testing.T) {
+	const guildID = "g1"
+	everyone := guildID // @everyone's role ID is the guild ID
+
+	cases := []struct {
+		name string
+		ch   *discordgo.Channel
+		want bool
+	}{
+		{
+			name: "no overwrites at all is a plain public channel",
+			ch:   &discordgo.Channel{GuildID: guildID},
+			want: true,
+		},
+		{
+			name: "explicit @everyone view deny is the private case",
+			ch: &discordgo.Channel{GuildID: guildID, PermissionOverwrites: []*discordgo.PermissionOverwrite{
+				{ID: everyone, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+			}},
+			want: false,
+		},
+		{
+			name: "a deny on some other permission does not hide the channel",
+			ch: &discordgo.Channel{GuildID: guildID, PermissionOverwrites: []*discordgo.PermissionOverwrite{
+				{ID: everyone, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionSendMessages},
+			}},
+			want: true,
+		},
+		{
+			name: "denying one role is not denying everyone",
+			ch: &discordgo.Channel{GuildID: guildID, PermissionOverwrites: []*discordgo.PermissionOverwrite{
+				{ID: "some-other-role", Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+			}},
+			want: true,
+		},
+		{
+			name: "a member overwrite sharing the guild ID is not the @everyone role",
+			ch: &discordgo.Channel{GuildID: guildID, PermissionOverwrites: []*discordgo.PermissionOverwrite{
+				{ID: everyone, Type: discordgo.PermissionOverwriteTypeMember, Deny: discordgo.PermissionViewChannel},
+			}},
+			want: true,
+		},
+		{
+			name: "unknown channel warns rather than reassuring",
+			ch:   nil,
+			want: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := everyoneCanRead(c.ch); got != c.want {
+				t.Errorf("everyoneCanRead = %v, want %v", got, c.want)
+			}
+		})
 	}
 }

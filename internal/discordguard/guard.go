@@ -72,6 +72,7 @@ type Session interface {
 	ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
 	ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
 	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
@@ -249,12 +250,63 @@ func (o *GuildOps) ChannelDelete(channelID string, options ...discordgo.RequestO
 	return v, o.record(jid, err)
 }
 
+// ChannelMessageSend posts content with every mention suppressed.
+//
+// This is deliberately not what plain discordgo does. ChannelMessageSend
+// there builds a MessageSend with a nil AllowedMentions, and the field is
+// tagged omitempty, so it is dropped from the request entirely, which
+// Discord reads as "parse every mention in the content". The zero-value
+// MessageAllowedMentions used here marshals as {"parse":[]} instead
+// (discordgo deliberately leaves Parse without omitempty for exactly this),
+// which is Discord's "allow nothing" form.
+//
+// It matters because the text reaching this method is not always ours.
+// Rotation reposts operator-supplied sticky messages into a fresh channel
+// on every cycle, so a user mention in one pings that person on a schedule
+// forever, and a mentionable role pings its entire membership the same way.
+// @everyone and @here need Mention Everyone, which the documented invite
+// link does not request, but any admin can grant Merlin's role that bit at
+// any time and would silently arm every sticky already configured.
+//
+// Suppressing at the guard rather than at each call site is the same
+// reasoning as core.DenyEveryoneExceptBot: a future plugin that sends a
+// message gets this without having to know it exists. A caller that
+// genuinely needs to ping should add an explicit method that takes an
+// allowlist, rather than reaching past the guard to the raw session.
 func (o *GuildOps) ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	if err := o.allow(opMessageSend); err != nil {
 		return nil, err
 	}
 	jid := o.beginJournal(opMessageSend, channelID)
-	v, err := o.guard.session.ChannelMessageSend(channelID, content, options...)
+	v, err := o.guard.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content:         content,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	}, options...)
+	return v, o.record(jid, err)
+}
+
+// ChannelMessageSendComplex posts a full MessageSend, for the cases a plain
+// content string cannot express: an embed that carries Merlin's brand
+// footer, which references an attachment:// URL and therefore has to be
+// sent alongside the file itself.
+//
+// AllowedMentions is overwritten, not defaulted. A caller cannot opt back
+// into pinging by setting it, because the reason it is suppressed (see
+// ChannelMessageSend) has nothing to do with what any individual call site
+// knows, and a per-call override is exactly the kind of thing that gets
+// copied into a later call site that should not have had it. If a genuine
+// need to ping ever turns up, it belongs in its own named method with an
+// explicit allowlist argument.
+func (o *GuildOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	if err := o.allow(opMessageSend); err != nil {
+		return nil, err
+	}
+	if data == nil {
+		data = &discordgo.MessageSend{}
+	}
+	data.AllowedMentions = &discordgo.MessageAllowedMentions{}
+	jid := o.beginJournal(opMessageSend, channelID)
+	v, err := o.guard.session.ChannelMessageSendComplex(channelID, data, options...)
 	return v, o.record(jid, err)
 }
 

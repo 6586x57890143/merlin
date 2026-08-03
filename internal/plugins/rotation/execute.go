@@ -359,8 +359,19 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 		}
 	}
 
-	if _, err := p.ops(rc.GuildID).ChannelMessageSendEmbed(channelID, &discordgo.MessageEmbed{
-		Description: retentionNotice(rc),
+	// Sent through core.NewEmbed like every other embed this bot produces,
+	// rather than as a bare literal. This one is the most-read message
+	// Merlin sends: it lands in the busiest channel in the server on every
+	// single rotation, and until now it was the only embed with no colour,
+	// no footer and no timestamp, which made the server's own retention
+	// notice look less like the bot than the bot's error messages did.
+	//
+	// It needs SendComplex rather than SendEmbed because the footer icon is
+	// an attachment:// reference, so the file has to travel with it or the
+	// icon renders broken.
+	if _, err := p.ops(rc.GuildID).ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Embed: core.NewEmbed(core.ColorPrimary, "", retentionNotice(rc)),
+		Files: []*discordgo.File{core.AvatarFile()},
 	}); err != nil {
 		return fmt.Errorf("post retention notice: %w", err)
 	}
