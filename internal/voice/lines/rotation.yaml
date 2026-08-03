@@ -6,29 +6,68 @@
 # a style rule: it is the server's published retention policy, and dropping
 # half of it is how the code got this wrong once before. Startup validation
 # enforces it, so a line missing {cadence} or {retention} fails the build.
+#
+# Each key deliberately spans a range rather than settling on one tone. Some
+# lines are calm, some are funny, a couple are blunt. Merlin lives in a
+# chaotic server and a bot that hits the exact same note every single time
+# reads as a machine no matter how good that one note is. Nothing here
+# escalates the room, though: she is the cleaner-spoken of the two birds, so
+# the edge stays dry rather than crude.
 
 rotation.intro.kept:
+  # calm
+  - "quiet reset. this channel empties every {cadence}, the archive holds it {retention}, and then there is nothing left. that is the whole policy, no small print 🍵"
+  - "fresh start, no ceremony. every {cadence} this place clears, the archive keeps it {retention}, and after that it is genuinely gone"
+  - "consider this a fresh nest. clears every {cadence}, archive keeps things {retention}, nothing lingers past that 🪶"
+  # neutral
   - "fresh channel, same as the old one. this place wipes itself every {cadence}, and anything that lands in the archive only sticks around {retention} after that before it's properly gone 🌿"
   - "clean slate. everything in here disappears every {cadence}. the archive holds onto it for {retention} and then deletes it for real, not the fake kind of deleted"
   - "new perch, no history. resets every {cadence}, archives last {retention}, and after that there is genuinely nothing left to find"
-  - "so this channel cleans itself every {cadence}. whatever gets tucked into the archive survives {retention} and then it's gone for good. you're welcome 😌"
   - "starting over in here. wipes every {cadence}. the archived copy hangs on {retention} longer, purely so the mods can deal with anything that needs dealing with, and then it goes too"
-  - "consider this a fresh nest. clears every {cadence}, archive keeps things {retention}, nothing lingers past that 🪶"
-  - "everything you're about to say has a shelf life of {cadence}. the archive adds {retention} on top of that and then it's over"
+  - "reset done. {cadence} on the clock, {retention} in the archive after that, then nothing at all"
+  # witty
+  - "so this channel cleans itself every {cadence}. whatever gets tucked into the archive survives {retention} and then it's gone for good. you're welcome 😌"
+  - "the channel has been reincarnated. happens every {cadence}. its previous life sits in the archive for {retention} and then even that goes. very freeing honestly"
+  - "everything you're about to say has a shelf life of {cadence}. the archive adds {retention} on top and then it's over"
+  - "new channel smell. it goes every {cadence}, the archive babysits it for {retention}, and then whatever cursed thing you posted stops existing. that's a promise, not a threat"
+  # blunt
   - "empty channel, as scheduled. it does this every {cadence}, archives get {retention} and no more. post it and forget it exists ✨"
+  - "wiped. every {cadence}. the archive holds the wreckage {retention} and then shreds it. say something stupid, it has an expiry date 🔥"
 
 rotation.intro.forever:
+  # calm
+  - "and we go again. every {cadence} this channel starts fresh, and the old one is kept safe out of view rather than thrown away 🍵"
+  - "new page every {cadence}. the previous one is filed away for the mods, and nothing on it is deleted"
+  - "empty again, as it will be every {cadence}. nothing is deleted here, it just moves somewhere quieter 🪶"
+  # neutral
   - "fresh channel. this one clears itself every {cadence}, and the old one gets tucked somewhere only the mods can reach 🌿"
   - "clean slate, same as every {cadence}. the previous version is archived rather than deleted, out of sight but not gone"
   - "new perch. resets every {cadence}. the old one is still around, just somewhere you can't get to"
   - "this place starts over every {cadence}. what was here before is archived where only the flock's keepers can see it"
-  - "empty again, as it will be every {cadence}. nothing is deleted here, it just moves somewhere quieter 🪶"
+  - "fresh perch, {cadence} like always. the old one is archived where only mods go"
+  # witty
+  - "channel's been rehoused. every {cadence}, like clockwork. the last one still exists, it just lives behind a door you don't have a key to"
+  - "reset. every {cadence}. nothing is actually deleted here, so if you were hoping something vanished, it didn't. the mods just moved it"
   - "blank slate. happens every {cadence}. the old channel is kept out of sight for the mods rather than wiped"
+  # blunt
+  - "cleared. every {cadence}. the old one is archived, not destroyed, which does mean it is still readable. by them, not by you"
 
 rotation.headsup:
-  - "heads up, this channel resets in {when} 🕊️"
-  - "{when} until this place wipes itself. say your goodbyes"
-  - "rotating in {when}. if there's anything in here you actually want, now is the moment"
+  # calm
+  - "gentle warning: {when} until the reset. nothing you need to do, just so it isn't a shock"
+  - "{when} to go. if you're mid-conversation, no rush, it picks up in the new one"
+  - "reset in {when}. carry on as you were"
   - "reminder that this channel clears in {when}. no action required, just don't be surprised"
+  # neutral
+  - "heads up, this channel resets in {when} 🕊️"
+  - "rotating in {when}. if there's anything in here you actually want, now is the moment"
   - "{when} left on this one, then it starts again from nothing"
   - "clearing out in {when} 🍃 carry on"
+  - "{when} to the reset ⏳"
+  # witty
+  - "{when} until the wipe. screenshot your best work or let it die with dignity"
+  - "this channel has {when} left to live. it's taking it well"
+  - "{when} until this place wipes itself. say your goodbyes"
+  # blunt
+  - "{when}. then it's gone. you know how this works by now"
+  - "{when} until the whole channel gets flattened. tie up whatever you were doing 💀"

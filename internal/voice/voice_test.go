@@ -48,6 +48,30 @@ func TestEmbeddedCatalogIsValid(t *testing.T) {
 	}
 }
 
+// Variety is the feature, so it gets an assertion rather than a hope. The
+// floor is the contract; the keys a member sees hourly carry well above it,
+// and this reports the real numbers on failure so whoever trips it can see
+// which key got thin rather than guessing.
+func TestEveryKeyCarriesEnoughPermutations(t *testing.T) {
+	s := testSpeaker(t)
+
+	for _, key := range Keys() {
+		lines := s.cat[key]
+		if len(lines) < minLinesPerKey {
+			t.Errorf("%s has %d lines, below the floor of %d", key, len(lines), minLinesPerKey)
+		}
+		// Duplicates pass the count while quietly costing a permutation and
+		// making the repeated line twice as likely as its neighbours.
+		seen := map[string]int{}
+		for i, line := range lines {
+			if j, dup := seen[line]; dup {
+				t.Errorf("%s[%d] is identical to [%d]: %q", key, i, j, line)
+			}
+			seen[line] = i
+		}
+	}
+}
+
 // Every key must render with exactly the placeholders its spec declares. A
 // caller passing the wrong vars is the one runtime failure startup
 // validation cannot catch, so it gets caught here instead.

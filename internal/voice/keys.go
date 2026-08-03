@@ -56,7 +56,15 @@ const (
 // minLinesPerKey is how much variety a key has to carry before it counts as
 // varied. Two lines alternating is arguably worse than one line repeating,
 // because the alternation itself becomes the pattern people notice.
-const minLinesPerKey = 4
+//
+// It was four, which was enough to prove the mechanism and not enough to
+// survive contact with a busy server. A channel on a six hour rotation burns
+// through four intro lines in a day, and a refusal that any member can
+// trigger by clicking the wrong button is repeated far more often than that.
+// Eight is the floor; the keys people actually see hourly carry twelve to
+// fourteen. Raising this is what turns "add a few more lines" into something
+// the build checks rather than something that quietly rots.
+const minLinesPerKey = 8
 
 // spec is the contract a key's lines must satisfy, checked at startup.
 type spec struct {

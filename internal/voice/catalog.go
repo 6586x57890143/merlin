@@ -72,10 +72,21 @@ func loadCatalog() (catalog, error) {
 		if len(lines) < minLinesPerKey {
 			problems = append(problems, fmt.Sprintf("%s: %d lines, want at least %d", key, len(lines), minLinesPerKey))
 		}
+		// A repeated line is the one authoring mistake that costs variety
+		// without looking like anything: the key still passes its line count,
+		// the duplicate just gets picked twice as often as everything else,
+		// and nobody notices until the same sentence turns up twice in an
+		// afternoon in a channel people are watching.
+		seen := map[string]int{}
 		for i, line := range lines {
 			for _, p := range Validate(key, line) {
 				problems = append(problems, fmt.Sprintf("%s[%d]: %s", key, i, p))
 			}
+			if j, dup := seen[line]; dup {
+				problems = append(problems, fmt.Sprintf("%s[%d]: identical to line %d, so this key has one permutation fewer than it looks like", key, i, j))
+				continue
+			}
+			seen[line] = i
 		}
 		cat[key] = lines
 	}

@@ -5,39 +5,71 @@
 # ephemeral. They stay short: a refusal that goes on for two sentences reads
 # as either lecturing or sulking, and neither is the tone.
 #
+# The range within each key is on purpose. A refusal is the single most
+# repeated thing this bot says, so one fixed sentence turns into a meme in a
+# week. Some of these are gentle, some are dry, one or two are blunt. None of
+# them are mean: the person reading it just clicked something they weren't
+# allowed to click, which is not a character flaw.
+#
 # None of these take placeholders. If you add one that does, declare it in
 # keys.go first or the build will tell you about it.
 
 system.denied:
+  # gentle
   - "that one's not for you, sorry"
-  - "nope, you can't run that one"
-  - "you don't have the perch height for that one"
   - "not yours to run, i'm afraid"
+  - "can't let you do that, sorry 🪶"
+  - "that one needs permissions you don't have here"
+  # dry
+  - "you don't have the perch height for that one"
   - "that one's above your pay grade in here"
+  - "that one needs a bigger hat than you're wearing"
+  - "that's mod business, not yours"
+  # blunt
+  - "nope, you can't run that one"
+  - "denied. nothing personal"
+  - "you're not on the list for that one"
+  - "nice try. no"
 
 system.plugin_disabled:
   - "that whole feature is switched off in this server"
   - "someone turned that one off here, so there's nothing i can do with it"
   - "that's disabled in this server. an admin can switch it back on"
   - "not running that one here, it's been turned off"
+  - "that feature's off in this server. take it up with an admin"
+  - "switched off here. not my call, ask an admin"
+  - "that one's disabled, so there's nothing behind it right now"
+  - "off. an admin turned it off, and only an admin turns it back on"
 
 system.guild_only:
   - "that one only works inside a server, not in here"
   - "you'll have to run that one in a server"
   - "no can do in dms, try it in the server"
   - "server only, this one"
+  - "that needs a server around it. dms won't do"
+  - "can't run that from a dm, sorry"
+  - "wrong place. that one lives in the server"
+  - "in a server, please. not here"
 
 system.stale_component:
   - "that button doesn't go anywhere any more"
   - "that one's gone stale, run the command again for a fresh one"
   - "old button, sorry. the command will hand you a new one"
   - "nothing behind that button now. try the command again"
+  - "that button expired. run the command again and you'll get a live one"
+  - "dead button. not your fault, just run it again"
+  - "that one's from an older message and doesn't do anything now"
+  - "you clicked a ghost. run the command again for a working one 👻"
 
 system.broken:
   - "something went wrong there, sorry"
   - "that didn't work, and it's on me rather than you"
   - "hit a snag handling that one"
   - "that broke somewhere on my end"
+  - "yeah, that failed. mine, not yours"
+  - "something fell over back there. try again in a moment"
+  - "that one didn't land. sorry, genuinely my fault"
+  - "i dropped that one 🪶 give it another go"
 
 system.ping:
   - "kik-ong!"
@@ -45,3 +77,10 @@ system.ping:
   - "awake. mostly"
   - "still perched, still working"
   - "kik-ong. peregrine says hi"
+  - "here. what do you need"
+  - "alive and irritatingly punctual"
+  - "kik-ong 🪶"
+  - "yep, still running"
+  - "present. perched. functional"
+  - "still here, still watching the clocks"
+  - "awake and annoyingly well rested"
