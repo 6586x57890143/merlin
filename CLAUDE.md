@@ -18,6 +18,8 @@ go test ./internal/plugins/rotation/... -run TestRotateFullCycle -v   # single p
 govulncheck ./...
 ```
 
+`internal/settings` and `internal/storage` also have Postgres-backed tests (`internal/dbtest` is the shared harness). They skip themselves, rather than failing, when `TEST_DATABASE_URL` isn't set, so `go test ./...` still runs everywhere with zero setup; CI sets it via a `postgres:16-alpine` service on the `lint-test` job. To run them locally: `docker compose up -d postgres` (or any Postgres reachable at the DSN below), then `TEST_DATABASE_URL=postgres://merlin:changeme@localhost:5432/merlin?sslmode=disable go test ./internal/settings/... ./internal/storage/...` (substitute your own `.env` credentials if you changed them from `.env.example`'s defaults).
+
 Local run:
 ```sh
 cp .env.example .env                 # DISCORD_BOT_TOKEN, DISCORD_APP_ID, MERLIN_BOOTSTRAP_ADMIN_USER_ID, ...
