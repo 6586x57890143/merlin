@@ -1,16 +1,22 @@
 package rotation
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/6586x57890143/merlin/internal/settings"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // resolveSticky returns rc's ordered sticky messages, or nil if sticky
 // reposting isn't enabled. Message text lives directly on the
 // settings.RotationChannel record (set via /rotation configure sticky);
 // there's no separate named-template table to resolve against.
+//
+// Deliberately untouched by the voice catalog: these are the operator's own
+// words, not Merlin's, and every one of them is posted in order exactly as
+// written. The catalog supplies only the notice she writes herself.
 func resolveSticky(rc settings.RotationChannel) []string {
 	if !rc.StickyEnabled {
 		return nil
@@ -20,10 +26,11 @@ func resolveSticky(rc settings.RotationChannel) []string {
 
 // retentionNotice is the transparency message posted in every freshly
 // rotated channel (spec.MD §6 step 7), genuinely useful to members and
-// doubles as documentation of the retention policy if it's ever questioned.
-// Given a birdlike flavor (Merlin is a bird, the falcon species) per
-// spec.MD, without dropping any of the required information: the reset
-// cadence and how long content survives after a rotation.
+// doubling as documentation of the retention policy if it's ever
+// questioned. The wording comes from internal/voice, so it varies between
+// rotations rather than reading like a form letter, but the two facts in it
+// do not vary: every line in the catalog is required to carry both
+// placeholders, and startup validation refuses to boot otherwise.
 //
 // It takes the whole config, not just the interval. It used to be handed
 // rc.IntervalMinutes and told members "nothing posted here roosts longer than
@@ -34,21 +41,43 @@ func resolveSticky(rc settings.RotationChannel) []string {
 // while the notice promised deletion outright. Publishing a false retention
 // claim is worse than publishing none, in a community whose whole reason for
 // running this feature is being able to point at what it actually does.
-func retentionNotice(rc settings.RotationChannel) string {
+// That history is why the placeholder requirement is enforced by the build
+// rather than left to whoever writes the next line.
+func (p *Plugin) retentionNotice(ctx context.Context, rc settings.RotationChannel) string {
 	cadence := humanDuration(time.Duration(rc.IntervalMinutes) * time.Minute)
+
+	var line string
 	if rc.RetentionHours == nil {
-		return fmt.Sprintf(
-			"🦅 Merlins travel light, so this nest gets a fresh perch every %s. Retired perches are tucked "+
-				"out of sight where only the flock's keepers can reach them.",
-			cadence,
-		)
+		line = p.voice.Line(ctx, rc.GuildID, voice.KeyRotationIntroForever, map[string]string{
+			"cadence": cadence,
+		})
+	} else {
+		line = p.voice.Line(ctx, rc.GuildID, voice.KeyRotationIntroKept, map[string]string{
+			"cadence":   cadence,
+			"retention": humanDuration(time.Duration(*rc.RetentionHours) * time.Hour),
+		})
 	}
-	return fmt.Sprintf(
-		"🦅 Merlins travel light, so this nest gets a fresh perch every %s, and once a perch is retired "+
-			"nothing on it roosts more than %s before it's gone for good.",
-		cadence,
-		humanDuration(time.Duration(*rc.RetentionHours)*time.Hour),
-	)
+	if line != "" {
+		return line
+	}
+
+	// Unreachable given the catalog validates at startup and this, its only
+	// caller, supplies exactly the placeholders the spec requires. Kept
+	// anyway because of what is at stake: this notice is the server's
+	// published retention policy, and returning nothing would quietly
+	// remove it from a channel two thousand people read. A plain sentence
+	// beats a silent gap.
+	return plainRetentionNotice(rc, cadence)
+}
+
+// plainRetentionNotice is the no-personality version, reached only if the
+// voice catalog produces nothing at all.
+func plainRetentionNotice(rc settings.RotationChannel, cadence string) string {
+	if rc.RetentionHours == nil {
+		return fmt.Sprintf("this channel resets every %s. the previous channel is archived where only the moderators can reach it.", cadence)
+	}
+	return fmt.Sprintf("this channel resets every %s. anything archived is kept %s and then permanently deleted.",
+		cadence, humanDuration(time.Duration(*rc.RetentionHours)*time.Hour))
 }
 
 // humanDuration renders d as a member-facing phrase ("3 days", "18 hours"),
@@ -57,16 +86,29 @@ func retentionNotice(rc settings.RotationChannel) string {
 // evenly, otherwise hours) so both ends of this bot describe a given
 // interval/retention window the same way.
 func humanDuration(d time.Duration) string {
-	hours := int(d / time.Hour)
-	if hours > 0 && hours%24 == 0 {
-		days := hours / 24
-		if days == 1 {
+	switch {
+	case d >= 24*time.Hour && d%(24*time.Hour) == 0:
+		if days := int(d / (24 * time.Hour)); days == 1 {
 			return "1 day"
+		} else {
+			return fmt.Sprintf("%d days", days)
 		}
-		return fmt.Sprintf("%d days", days)
+	case d >= time.Hour && d%time.Hour == 0:
+		if hours := int(d / time.Hour); hours == 1 {
+			return "1 hour"
+		} else {
+			return fmt.Sprintf("%d hours", hours)
+		}
+	default:
+		// Sub-hour and part-hour values are reachable now that intervals
+		// are minute-precise. Truncating to whole hours here would tell
+		// members a 90-minute channel resets "every 1 hour", which is both
+		// wrong and wrong in the direction that makes the notice look like
+		// it is describing a different channel.
+		if minutes := int(d / time.Minute); minutes == 1 {
+			return "1 minute"
+		} else {
+			return fmt.Sprintf("%d minutes", minutes)
+		}
 	}
-	if hours == 1 {
-		return "1 hour"
-	}
-	return fmt.Sprintf("%d hours", hours)
 }

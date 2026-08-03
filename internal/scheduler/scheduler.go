@@ -427,7 +427,17 @@ func (s *Scheduler) alert(ctx context.Context, jobKey, msg string) {
 		s.log.Error("scheduler: alert: no status channel configured", "job", jobKey)
 		return
 	}
-	if _, err := s.session.ChannelMessageSend(channelID, msg); err != nil {
+	// Mentions suppressed for the same reason discordguard.GuildOps
+	// suppresses them, and spelled out here because this send is on the raw
+	// session rather than through the guard: msg interpolates an arbitrary
+	// error string, and an error carrying a channel topic, a role name, or
+	// any other guild-supplied text would otherwise ping whatever it names,
+	// repeatedly, since a wedged job alerts on every failure past the
+	// threshold. An alert about a problem must not become part of one.
+	if _, err := s.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content:         msg,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	}); err != nil {
 		s.log.Error("scheduler: alert: send failed", "job", jobKey, "err", err)
 	}
 }
@@ -512,6 +522,34 @@ func (s *Scheduler) JobHealth(ctx context.Context, guildID string) (total, faili
 // jobLines formats one line per guildID job, newest logic unchanged from
 // before pagination existed, just split out so both handleList and
 // handleListPage build from the same up-to-date source.
+// NextDue reports when jobKey is expected to fire next.
+//
+// ok is false when the job is due right now (never run, or overdue), and
+// when jobKey is not registered at all. Both mean "there is no future
+// instant to count down to", which is the only thing the caller can act on.
+//
+// Exported for rotation's pre-rotation notice, which has to know how long
+// is left before a channel wipes. It reads the same state and applies the
+// same jitter the tick loop does, rather than recomputing "last run plus
+// interval" independently, so the number a member is told and the moment
+// the rotation actually happens cannot drift apart. It is an estimate for
+// the same reason /scheduler list's is: a currently-failing job's real next
+// attempt depends on backoff.
+func (s *Scheduler) NextDue(ctx context.Context, jobKey string) (time.Time, bool, error) {
+	s.mu.Lock()
+	j, registered := s.jobs[jobKey]
+	s.mu.Unlock()
+	if !registered {
+		return time.Time{}, false, nil
+	}
+	st, err := s.store.Get(ctx, jobKey)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	due, ok := nextDue(st, j.spec.Schedule, j.jitter)
+	return due, ok, nil
+}
+
 func (s *Scheduler) jobLines(ctx context.Context, guildID string) []string {
 	jobs := s.jobsForGuild(guildID)
 	prefix := guildID + ":"

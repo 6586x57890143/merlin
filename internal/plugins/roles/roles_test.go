@@ -8,6 +8,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 var fixedNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -38,6 +39,12 @@ func (f *fakeScheduler) Unregister(jobKey string) error {
 
 func (f *fakeScheduler) RunNow(ctx context.Context, jobKey string) error { return nil }
 
+// NextDue is unused by this plugin: roles has one fixed sweep and nothing
+// that counts down to it.
+func (f *fakeScheduler) NextDue(ctx context.Context, jobKey string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
 func (f *fakeScheduler) Seed(ctx context.Context, jobKey string, at time.Time) error {
 	f.seeded[jobKey] = at
 	return nil
@@ -56,7 +63,19 @@ func newTestPlugin(ops *fakeOps, store *fakeStore, settings *fakeSettings, audit
 		now:               func() time.Time { return fixedNow },
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),
+		voice:             testVoice(),
 	}
+}
+
+// testVoice is the real catalog, not a stub. The DM a jailed member gets is
+// text that reaches an actual person, so substituting fixed strings here
+// would exercise the plumbing while leaving the message unchecked.
+func testVoice() voice.Source {
+	sp, err := voice.New(testLogger())
+	if err != nil {
+		panic("voice catalog does not load: " + err.Error())
+	}
+	return sp
 }
 
 func TestResolveJailRoleCreatesWhenMissing(t *testing.T) {
@@ -176,4 +195,63 @@ func TestSyncGuildIsIdempotentAcrossRepeatedCalls(t *testing.T) {
 	if len(sched.registered) != 1 {
 		t.Fatalf("expected exactly 1 registered job across repeated SyncGuild calls, got %v", sched.registered)
 	}
+}
+
+// The jail role ID is cached for the process lifetime once resolved, which
+// is deliberate: renaming the role must not spawn a duplicate. The cost is
+// that deleting it leaves the cache pointing at an ID Discord no longer
+// knows, and without this handler every jail in that guild keeps failing
+// against the dead ID until somebody restarts the process.
+func TestDeletingTheJailRoleDropsTheCachedID(t *testing.T) {
+	ops := newFakeOps()
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	first, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole: %v", err)
+	}
+
+	// The role really is gone from Discord's side, not just from the cache.
+	ops.deleteRole("g1", first)
+	p.HandleRoleDeleted("g1", first)
+
+	second, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole after deletion: %v", err)
+	}
+	if second == first {
+		t.Errorf("still resolving to the deleted role %s; the next jail would fail against an ID Discord does not know", first)
+	}
+}
+
+// Guilds delete roles all the time, and all but one of them are none of
+// this plugin's business. Dropping the cache on an unrelated deletion would
+// mean re-listing the guild's roles on the next jail for no reason, and in
+// the worst case creating a second marker role.
+func TestDeletingAnUnrelatedRoleLeavesTheCacheAlone(t *testing.T) {
+	ops := newFakeOps()
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	first, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole: %v", err)
+	}
+
+	p.HandleRoleDeleted("g1", "some-other-role")
+	p.HandleRoleDeleted("some-other-guild", first)
+
+	second, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole: %v", err)
+	}
+	if second != first {
+		t.Errorf("cache was dropped for an unrelated deletion: %s became %s", first, second)
+	}
+}
+
+// A deletion arriving for a guild this process has never jailed in must be
+// a no-op rather than a panic on a nil map read or a spurious warning.
+func TestRoleDeletedBeforeAnyJailIsHarmless(t *testing.T) {
+	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+	p.HandleRoleDeleted("never-seen", "some-role")
 }

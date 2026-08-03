@@ -181,7 +181,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// 5. Populate the still-hidden channel: sticky repost + pin, then
 		// the transparency notice. Any failure here leaves the OLD channel
 		// completely untouched and still live, with zero member-visible impact.
-		if err := p.populateIfNeeded(newChannel.ID, rc); err != nil {
+		if err := p.populateIfNeeded(ctx, newChannel.ID, rc); err != nil {
 			return fmt.Errorf("rotation: populate staging channel: %w", err)
 		}
 
@@ -336,7 +336,7 @@ func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Chann
 // the staging channel, unless it already has messages, which only happens
 // on a retry after a prior run got this far, and reposting would duplicate
 // content in what will shortly become a very-visible channel.
-func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel) error {
+func (p *Plugin) populateIfNeeded(ctx context.Context, channelID string, rc settings.RotationChannel) error {
 	existing, err := p.ops(rc.GuildID).ChannelMessages(channelID, 1, "", "", "")
 	if err != nil {
 		return fmt.Errorf("check existing messages: %w", err)
@@ -359,8 +359,20 @@ func (p *Plugin) populateIfNeeded(channelID string, rc settings.RotationChannel)
 		}
 	}
 
-	if _, err := p.ops(rc.GuildID).ChannelMessageSendEmbed(channelID, &discordgo.MessageEmbed{
-		Description: retentionNotice(rc),
+	// Sent through core.NewEmbed like every other embed this bot produces,
+	// rather than as a bare literal. This one is the most-read message
+	// Merlin sends: it lands in the busiest channel in the server on every
+	// single rotation, and until now it was the only embed with no colour,
+	// no footer and no timestamp, which made the server's own retention
+	// notice look less like the bot than the bot's error messages did.
+	//
+	// It needs SendComplex rather than SendEmbed because the footer icon is
+	// an attachment:// reference, so the file has to travel with it or the
+	// icon renders broken.
+	notice := core.NewEmbed(core.ColorPrimary, "", p.retentionNotice(ctx, rc))
+	if _, err := p.ops(rc.GuildID).ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Embed: notice,
+		Files: core.EmbedFiles(notice),
 	}); err != nil {
 		return fmt.Errorf("post retention notice: %w", err)
 	}

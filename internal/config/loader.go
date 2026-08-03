@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -20,6 +21,10 @@ type Loader struct {
 	path string
 	cur  *GlobalConfig
 	log  *slog.Logger
+	// onReload holds the hooks OnReload registered, run after every
+	// successful reload so values applied once at startup can follow the
+	// file instead of freezing at their boot-time value.
+	onReload []func(*GlobalConfig)
 }
 
 func NewLoader(path string, log *slog.Logger) (*Loader, error) {
@@ -77,8 +82,35 @@ func (l *Loader) reload() error {
 
 	l.mu.Lock()
 	l.cur = &next
+	hooks := slices.Clone(l.onReload)
 	l.mu.Unlock()
+
+	// Outside the lock: a hook is arbitrary caller code, and the obvious
+	// thing for one to do is read the config it was just handed, which would
+	// deadlock against the RLock in Global.
+	for _, fn := range hooks {
+		fn(&next)
+	}
 	return nil
+}
+
+// OnReload registers fn to run after every successful reload, and never
+// after a failed one, so a hook only ever sees a config that passed
+// validation.
+//
+// This exists because a value read once at startup silently stops tracking
+// the file it came from. LogLevel was exactly that: parsed, validated, used
+// to set the log level during startup, and then never consulted again, so
+// SIGHUP reloaded it into a struct nobody read and raising verbosity
+// mid-incident still meant a restart. A restart is the one thing you do not
+// want while reproducing a live problem.
+//
+// Hooks run in registration order on the goroutine that reloaded, which is
+// Watch's, so a slow hook delays later hooks and nothing else.
+func (l *Loader) OnReload(fn func(*GlobalConfig)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onReload = append(l.onReload, fn)
 }
 
 // isTruthy accepts the spellings an operator under pressure is likely to

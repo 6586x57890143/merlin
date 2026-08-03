@@ -61,3 +61,99 @@ func TestTruncateEmbedFieldCutsOnRuneBoundary(t *testing.T) {
 		t.Errorf("truncated value is %d bytes, over the %d limit", len(got), maxEmbedFieldValue)
 	}
 }
+
+// Every mood must resolve to a real embedded file. A Mood with no asset
+// silently produces an embed that references an image nobody uploaded,
+// which Discord renders as a broken frame to the whole channel.
+func TestEveryMoodHasAnAsset(t *testing.T) {
+	for _, m := range []Mood{MoodOK, MoodError, MoodWarn, MoodInfo, MoodNotice, MoodIdle} {
+		f := moodFile(m)
+		if f == nil {
+			t.Errorf("mood %d has no file", m)
+			continue
+		}
+		if f.Name == "" || f.Reader == nil {
+			t.Errorf("mood %d has an empty asset", m)
+		}
+		if url := moodAttachmentURL(m); url != "attachment://"+f.Name {
+			t.Errorf("mood %d URL %q does not match its file %q", m, url, f.Name)
+		}
+	}
+	if moodFile(MoodNone) != nil {
+		t.Error("MoodNone should have no file")
+	}
+}
+
+// The mapping from colour to mood is what lets every existing call site
+// pick up an icon without being touched, so each palette entry a responder
+// uses has to land somewhere sensible.
+func TestColorsMapToTheRightMood(t *testing.T) {
+	for color, want := range map[int]Mood{
+		ColorSuccess: MoodOK,
+		ColorError:   MoodError,
+		ColorWarning: MoodWarn,
+		ColorInfo:    MoodInfo,
+		ColorPrimary: MoodNotice,
+	} {
+		if got := moodForColor(color); got != want {
+			t.Errorf("moodForColor(%#x) = %d, want %d", color, got, want)
+		}
+	}
+}
+
+// The invariant that actually protects the channel: whatever an embed
+// references by attachment:// must be in the files that go with it.
+func TestEmbedFilesCoversEveryReference(t *testing.T) {
+	for name, embed := range map[string]*discordgo.MessageEmbed{
+		"ok":       NewEmbed(ColorSuccess, "t", "d"),
+		"error":    NewEmbed(ColorError, "t", "d"),
+		"warn":     NewEmbed(ColorWarning, "t", "d"),
+		"info":     NewEmbed(ColorInfo, "t", "d"),
+		"notice":   NewEmbed(ColorPrimary, "t", "d"),
+		"idle":     WithMood(NewEmbed(ColorWarning, "t", "d"), MoodIdle),
+		"landmark": NewLandmarkEmbed(ColorInfo, "t", "d"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			attached := map[string]bool{}
+			for _, f := range EmbedFiles(embed) {
+				attached[f.Name] = true
+			}
+			for _, url := range referencedAttachments(embed) {
+				if !attached[strings.TrimPrefix(url, "attachment://")] {
+					t.Errorf("embed references %q but EmbedFiles does not include it", url)
+				}
+			}
+		})
+	}
+}
+
+// A landmark embed carries the banner instead of a mood thumbnail: with
+// both it reads as cluttered.
+func TestLandmarkEmbedHasNoMoodThumbnail(t *testing.T) {
+	e := NewLandmarkEmbed(ColorInfo, "t", "d")
+	if e.Thumbnail != nil {
+		t.Errorf("landmark embed carries a thumbnail as well as its banner: %+v", e.Thumbnail)
+	}
+	if e.Image == nil {
+		t.Error("landmark embed lost its banner")
+	}
+}
+
+func referencedAttachments(e *discordgo.MessageEmbed) []string {
+	var out []string
+	add := func(u string) {
+		if strings.HasPrefix(u, "attachment://") {
+			out = append(out, u)
+		}
+	}
+	if e.Footer != nil {
+		add(e.Footer.IconURL)
+	}
+	if e.Thumbnail != nil {
+		add(e.Thumbnail.URL)
+	}
+	if e.Image != nil {
+		add(e.Image.URL)
+	}
+	return out
+}

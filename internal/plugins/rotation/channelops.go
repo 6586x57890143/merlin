@@ -17,6 +17,10 @@ type DiscordChannelOps interface {
 	ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
 	ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	// ChannelMessageSendComplex carries the retention notice, which is an
+	// embed plus the brand-icon file its footer references. SendEmbed can't
+	// express that pairing, and the icon renders broken without it.
+	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
 	// User, called with "@me", resolves the bot's own user ID, needed so

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +24,12 @@ func testLogger() *slog.Logger {
 // --- fakeOps: in-memory DiscordMemberOps ---
 
 type overwriteKey struct{ channelID, targetID string }
+
+// sentDM is one direct message the bot tried to deliver.
+type sentDM struct {
+	channelID string
+	data      *discordgo.MessageSend
+}
 
 type fakeOps struct {
 	mu sync.Mutex
@@ -45,6 +52,12 @@ type fakeOps struct {
 	// intent not being granted).
 	memberListErr   error
 	memberListCalls int
+
+	// guildErr and dmErr stand in for a member with DMs closed or a guild
+	// lookup that fails, both of which must leave the jail itself intact.
+	guildErr error
+	dmErr    error
+	dmSends  []sentDM
 
 	roleAddCalls    []string // "guildID:userID:roleID"
 	roleRemoveCalls []string
@@ -178,10 +191,50 @@ func (f *fakeOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildM
 	return &cp, nil
 }
 
+// The DM path: a fake guild name, an in-memory DM channel, and a record of
+// every notice sent, so a test can assert on what a jailed member is
+// actually told rather than only that something was attempted.
+func (f *fakeOps) Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.guildErr != nil {
+		return nil, f.guildErr
+	}
+	return &discordgo.Guild{ID: guildID, Name: "The Melting Pot"}, nil
+}
+
+func (f *fakeOps) UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dmErr != nil {
+		return nil, f.dmErr
+	}
+	return &discordgo.Channel{ID: "dm:" + recipientID, Type: discordgo.ChannelTypeDM}, nil
+}
+
+func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dmSends = append(f.dmSends, sentDM{channelID: channelID, data: data})
+	return &discordgo.Message{ID: "m1"}, nil
+}
+
 func (f *fakeOps) GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]*discordgo.Role(nil), f.roles[guildID]...), nil
+}
+
+// deleteRole removes a role from the guild, standing in for a mod deleting
+// it in Discord. Needed so a test can distinguish "the cache was dropped"
+// from "the role is actually gone": re-resolving finds the role by name, so
+// dropping the cache alone still lands on the same ID.
+func (f *fakeOps) deleteRole(guildID, roleID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.roles[guildID] = slices.DeleteFunc(f.roles[guildID], func(r *discordgo.Role) bool {
+		return r.ID == roleID
+	})
 }
 
 func (f *fakeOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {

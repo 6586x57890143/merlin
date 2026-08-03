@@ -21,6 +21,16 @@ type DiscordMemberOps interface {
 	GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error)
 	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 	GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
+
+	// Guild, UserChannelCreate and ChannelMessageSendComplex exist only to
+	// tell a member what happened to them. A jail that arrives as silently
+	// vanishing access is worse for the person on the receiving end and
+	// worse for the mods, who then field the question in modmail. Guild is
+	// there because a DM has to name the server: most members are in many,
+	// and "you have been jailed" on its own is not actionable.
+	Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error)
+	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
+	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	// GuildMemberRoleAdd/Remove are used for grant/revoke: a single
 	// additive role change, unlike jail/release's full Roles-list replace,
 	// so a grant never disturbs any other role the member independently

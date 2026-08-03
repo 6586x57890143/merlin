@@ -1,0 +1,34 @@
+# What Merlin says in a channel that has just rotated, and in one that is
+# about to.
+#
+# Every rotation.intro line MUST state both the reset cadence and, where
+# archives are kept for a bounded window, how long they survive. That is not
+# a style rule: it is the server's published retention policy, and dropping
+# half of it is how the code got this wrong once before. Startup validation
+# enforces it, so a line missing {cadence} or {retention} fails the build.
+
+rotation.intro.kept:
+  - "fresh channel, same as the old one. this place wipes itself every {cadence}, and anything that lands in the archive only sticks around {retention} after that before it's properly gone 🌿"
+  - "clean slate. everything in here disappears every {cadence}. the archive holds onto it for {retention} and then deletes it for real, not the fake kind of deleted"
+  - "new perch, no history. resets every {cadence}, archives last {retention}, and after that there is genuinely nothing left to find"
+  - "so this channel cleans itself every {cadence}. whatever gets tucked into the archive survives {retention} and then it's gone for good. you're welcome 😌"
+  - "starting over in here. wipes every {cadence}. the archived copy hangs on {retention} longer, purely so the mods can deal with anything that needs dealing with, and then it goes too"
+  - "consider this a fresh nest. clears every {cadence}, archive keeps things {retention}, nothing lingers past that 🪶"
+  - "everything you're about to say has a shelf life of {cadence}. the archive adds {retention} on top of that and then it's over"
+  - "empty channel, as scheduled. it does this every {cadence}, archives get {retention} and no more. post it and forget it exists ✨"
+
+rotation.intro.forever:
+  - "fresh channel. this one clears itself every {cadence}, and the old one gets tucked somewhere only the mods can reach 🌿"
+  - "clean slate, same as every {cadence}. the previous version is archived rather than deleted, out of sight but not gone"
+  - "new perch. resets every {cadence}. the old one is still around, just somewhere you can't get to"
+  - "this place starts over every {cadence}. what was here before is archived where only the flock's keepers can see it"
+  - "empty again, as it will be every {cadence}. nothing is deleted here, it just moves somewhere quieter 🪶"
+  - "blank slate. happens every {cadence}. the old channel is kept out of sight for the mods rather than wiped"
+
+rotation.headsup:
+  - "heads up, this channel resets in {when} 🕊️"
+  - "{when} until this place wipes itself. say your goodbyes"
+  - "rotating in {when}. if there's anything in here you actually want, now is the moment"
+  - "reminder that this channel clears in {when}. no action required, just don't be surprised"
+  - "{when} left on this one, then it starts again from nothing"
+  - "clearing out in {when} 🍃 carry on"

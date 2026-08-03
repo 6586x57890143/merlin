@@ -9,11 +9,14 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
-type Plugin struct{}
+type Plugin struct {
+	voice voice.Source
+}
 
-func New() *Plugin { return &Plugin{} }
+func New(speaker voice.Source) *Plugin { return &Plugin{voice: speaker} }
 
 func (p *Plugin) Name() string { return "ping" }
 
@@ -24,7 +27,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	})
 	// /ping is intentionally public: TierPublic, the only tier that never
 	// requires an Action, unlike every other command (spec.MD §4a).
-	deps.Commands.Handle("ping", "", core.PermSpec{Tier: core.TierPublic}, handlePing)
+	deps.Commands.Handle("ping", "", core.PermSpec{Tier: core.TierPublic}, p.handlePing)
 	return nil
 }
 
@@ -32,9 +35,24 @@ func (p *Plugin) Start(ctx context.Context) error { return nil }
 
 func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 
-func handlePing(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+// handlePing answers only the person who asked.
+//
+// It is the one command in this bot that everybody can run, which in a
+// server of a couple of thousand people makes a non-ephemeral reply a free
+// way for anyone to put bot noise in any channel, as often as they like,
+// out of the guild's own message budget. Ephemeral keeps the health check
+// useful (the invoker still learns the bot is alive and responding) and
+// costs the channel nothing.
+func (p *Plugin) handlePing(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	content := p.voice.Line(ctx, i.GuildID, voice.KeyPing, nil)
+	if content == "" {
+		content = "kik-ong!"
+	}
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: "kik-ong!"},
+		Data: &discordgo.InteractionResponseData{
+			Content: content,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
 	})
 }

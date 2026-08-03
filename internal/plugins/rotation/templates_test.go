@@ -1,11 +1,34 @@
 package rotation
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/6586x57890143/merlin/internal/settings"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
+
+// noticePluginPickingLine builds a Plugin whose voice always selects line
+// index i, so a test can walk the whole catalog instead of sampling
+// whichever line the RNG happened to hand it. A notice that is accurate
+// four times out of five is not accurate.
+func noticePluginPickingLine(t *testing.T, i int) *Plugin {
+	t.Helper()
+	sp, err := voice.New(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		voice.WithRand(func(n int) int { return i % n }))
+	if err != nil {
+		t.Fatalf("voice.New: %v", err)
+	}
+	return &Plugin{voice: sp}
+}
+
+// maxCatalogLines is comfortably above the largest key's line count, so
+// walking 0..maxCatalogLines with a modulo picker covers every line of
+// every key regardless of how many there are.
+const maxCatalogLines = 24
 
 // TestRetentionNoticeDescribesRetentionNotInterval is a regression for a
 // false public statement. The notice used to be handed rc.IntervalMinutes and
@@ -14,16 +37,24 @@ import (
 // independent settings. This bot's whole justification is being able to point
 // at what it actually does, so an inaccurate retention claim is worse than
 // none at all.
+//
+// Now that the wording varies, this checks every line the catalog could
+// possibly produce, which is the assertion that actually matters: one
+// tempting rewrite that drops the retention window would otherwise show up
+// only in production, on whichever rotation happened to draw it.
 func TestRetentionNoticeDescribesRetentionNotInterval(t *testing.T) {
 	hours := 3
-	rc := settings.RotationChannel{IntervalMinutes: 24 * 60, RetentionHours: &hours}
+	rc := settings.RotationChannel{GuildID: "g1", IntervalMinutes: 24 * 60, RetentionHours: &hours}
 
-	notice := retentionNotice(rc)
-	if !strings.Contains(notice, "3 hours") {
-		t.Fatalf("notice must state the actual 3-hour retention window, got: %s", notice)
-	}
-	if !strings.Contains(notice, "1 day") {
-		t.Fatalf("notice should still state the 1-day rotation cadence, got: %s", notice)
+	for i := range maxCatalogLines {
+		p := noticePluginPickingLine(t, i)
+		notice := p.retentionNotice(context.Background(), rc)
+		if !strings.Contains(notice, "3 hours") {
+			t.Fatalf("line %d does not state the actual 3-hour retention window: %s", i, notice)
+		}
+		if !strings.Contains(notice, "1 day") {
+			t.Fatalf("line %d does not state the 1-day rotation cadence: %s", i, notice)
+		}
 	}
 }
 
@@ -31,16 +62,24 @@ func TestRetentionNoticeDescribesRetentionNotInterval(t *testing.T) {
 // the old behavior: retention unset means archives are kept indefinitely, but
 // the notice still announced a deletion window derived from the interval,
 // telling members their content would be erased when nothing would erase it.
+//
+// Checked across the whole catalog, because "kept forever" and "deleted
+// eventually" are separate sets of lines and the risk is somebody writing a
+// nicely-worded deletion promise into the wrong one.
 func TestRetentionNoticeOnKeepForeverPromisesNoDeletion(t *testing.T) {
-	notice := retentionNotice(settings.RotationChannel{IntervalMinutes: 24 * 60, RetentionHours: nil})
+	rc := settings.RotationChannel{GuildID: "g1", IntervalMinutes: 24 * 60, RetentionHours: nil}
 
-	for _, claim := range []string{"gone for good", "roosts more than"} {
-		if strings.Contains(notice, claim) {
-			t.Fatalf("keep-forever notice must not promise deletion (%q), got: %s", claim, notice)
+	for i := range maxCatalogLines {
+		p := noticePluginPickingLine(t, i)
+		notice := p.retentionNotice(context.Background(), rc)
+		for _, claim := range []string{"gone for good", "deletes it", "permanently deleted", "nothing left to find"} {
+			if strings.Contains(notice, claim) {
+				t.Fatalf("keep-forever line %d promises deletion (%q): %s", i, claim, notice)
+			}
 		}
-	}
-	if !strings.Contains(notice, "1 day") {
-		t.Fatalf("notice should still state the rotation cadence, got: %s", notice)
+		if !strings.Contains(notice, "1 day") {
+			t.Fatalf("keep-forever line %d does not state the rotation cadence: %s", i, notice)
+		}
 	}
 }
 
@@ -79,5 +118,67 @@ func TestFormatRetentionDistinguishesForever(t *testing.T) {
 	week := 168
 	if got := formatRetention(&week); got != "7d" {
 		t.Errorf("formatRetention(168) = %q, want %q", got, "7d")
+	}
+}
+
+// The retention notice is the single most-read thing Merlin posts: it lands
+// in the busiest channel in the server on every rotation. It has to look
+// like the same bot as everything else, which means going through
+// core.NewEmbed and carrying the brand file its footer icon references. An
+// embed whose footer points at an attachment that was never uploaded shows
+// a broken icon to the whole server.
+func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
+	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
+
+	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	if len(ops.complexSends) != 1 {
+		t.Fatalf("complex sends = %d, want 1; the notice did not go out as an embed plus attachment", len(ops.complexSends))
+	}
+	sent := ops.complexSends[0]
+	if sent.Embed == nil {
+		t.Fatal("the notice was not sent as an embed")
+	}
+	if sent.Embed.Footer == nil || sent.Embed.Footer.Text != "Merlin" {
+		t.Error("the notice carries no Merlin footer, so it reads as a different bot than every other message")
+	}
+	if sent.Embed.Color == 0 {
+		t.Error("the notice has no colour, the one visual cue that ties it to the rest of the bot")
+	}
+	if !strings.Contains(sent.Embed.Description, "1 day") {
+		t.Errorf("the notice lost its cadence disclosure: %q", sent.Embed.Description)
+	}
+
+	// Every attachment:// URL in the embed has to have a matching upload in
+	// the same request. Discord renders a reference to a file that was not
+	// sent as a broken frame, and nothing about the code that built the
+	// embed would look wrong, so this asserts on the relationship rather
+	// than on a file count that changes whenever the design does.
+	attached := map[string]bool{}
+	for _, f := range sent.Files {
+		attached[f.Name] = true
+	}
+	referenced := []string{sent.Embed.Footer.IconURL}
+	if sent.Embed.Thumbnail != nil {
+		referenced = append(referenced, sent.Embed.Thumbnail.URL)
+	}
+	if sent.Embed.Image != nil {
+		referenced = append(referenced, sent.Embed.Image.URL)
+	}
+	for _, url := range referenced {
+		name, ok := strings.CutPrefix(url, "attachment://")
+		if !ok {
+			continue
+		}
+		if !attached[name] {
+			t.Errorf("embed references %q but that file was never uploaded, so it renders as a broken image", url)
+		}
+	}
+
+	// And the notice should carry a face, not just the footer mark.
+	if sent.Embed.Thumbnail == nil {
+		t.Error("the notice has no mood thumbnail")
 	}
 }

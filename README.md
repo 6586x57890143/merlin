@@ -247,6 +247,31 @@ A row still `pending` long after `started_at` is a call that never returned:
 the process died mid-mutation. It's the first thing worth checking after an
 unexplained restart.
 
+### Launch checklist
+
+Run in order. Everything above the line is reversible; the first live
+rotation is not.
+
+1. **Merge the open Dependabot PRs.** Until they are in, CI is testing with
+   older action versions than the ones it reports.
+2. **Confirm the gateway is actually connected.** Startup logs the
+   `GUILD_MEMBERS` intent request; if the Developer Portal toggle is off,
+   the READY watchdog fails startup within 45 seconds with a message naming
+   the toggle, rather than silently reconnect-looping.
+3. **Check `/config status`.** Database reachable, no failing jobs, not
+   paused, and no warning next to the audit-log or status channel. A
+   warning there means everyone can read it, which would publish every
+   jail and config change to the whole server.
+4. **Dry-run rehearsal on the real server** (see below). Let a full rotation
+   interval and a sweep window pass before turning it off.
+5. **Rehearse the rollback and the restore**, both in the Runbook above. An
+   untested runbook is not a runbook, and the moment you need either one is
+   the worst possible moment to discover a typo in it.
+6. **First live rotation on a low-traffic channel**, not `#general-chat`.
+   Watch one full cycle: the replacement lands in the same sidebar slot,
+   the heads-up arrives before it, the retention notice states the right
+   cadence and window, and the archive appears where you expect.
+
 ### Rehearsing a rotation before trusting it
 
 Channel rotation and the archive sweep permanently delete channels. Before
@@ -284,6 +309,23 @@ single guild's rotations would exhaust its channel-create budget and starve
 the sweep that deletes the archives they produce, and members lose the
 channel mid-conversation.
 
+**The channel is warned before it wipes.** `/rotation configure add|edit
+notice:` sets how long ahead, 10 minutes by default, `off` to disable. The
+warning fires once per rotation: the job that posts it runs every minute,
+and the claim that stops it repeating is a database constraint rather than
+an in-process check, because being told six times that a channel is about
+to wipe reads as a broken bot. A rotation that is already overdue gets no
+warning at all, since it fires on the next tick and a countdown would be
+wrong in the one direction that matters.
+
+**The intro message varies.** The notice posted into a freshly rotated
+channel comes from `internal/voice`, so it does not read like a form letter
+by the third day. What cannot vary is the content: every line in the
+catalog is required to state the reset cadence and, where archives expire,
+how long they last, and the bot refuses to start if one does not. That
+notice is the server's published retention policy, and this code has
+previously got it wrong in exactly that way.
+
 **The replacement keeps the original's place in the sidebar.** Discord
 breaks ties between equal channel positions by channel ID, so a replacement
 created at the same index as the channel it replaces still sorts below it;
@@ -304,6 +346,18 @@ jail/grants. Jail denies every channel except a guild-configured allowlist
 via one shared "Jailed" role's own permission overwrites rather than
 per-member overwrites, so jailing scales to any server size at a fixed
 Discord API cost.
+
+**Jailed and released members are told.** A DM, never a channel post,
+naming the server and when it ends (as a Discord relative timestamp, so the
+reader sees it in their own timezone). Deliberately plainer in tone than
+the rest of what Merlin says: the reader has just been punished, and a joke
+aimed at them is what turns a moderation action into a screenshot. Best
+effort throughout, so a member with DMs closed can never turn a successful
+jail or release into a failed one.
+
+Bulk jails do not DM. `/roles jail-role` exists to shut down a raid, and
+messaging fifty accounts would spend the guild's hourly message budget at
+exactly the moment the releases undoing a mistake need it.
 
 **Jailing several people at once.** `/roles jail` takes up to five members
 (`user`, `user2` to `user5`) with one duration and reason. `/roles jail-role`
@@ -357,6 +411,10 @@ extends it.
   the concrete implementation behind `Deps.Scheduler`.
 - `internal/audit`: minimal `core.AuditWriter`: DB insert + `#bird-audit-log`
   embed, behind `Deps.Audit`.
+- `internal/voice`: what Merlin says to members. Lines live as reviewable
+  YAML data, the contract lives in code, and a line that breaks the
+  contract fails startup rather than reaching a channel. See `PERSONA.md`
+  in that package for the brief the lines are written against.
 - `internal/plugins/ping`: reference plugin exercising the full lifecycle.
 - `internal/plugins/rotation`: channel rotation (see above).
 - `internal/plugins/roles`: jail + timed role grants (see above).

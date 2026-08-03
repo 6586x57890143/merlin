@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestGlobalConfigLevel(t *testing.T) {
@@ -98,5 +99,109 @@ func TestSupersededEnableVariableNoLongerSuppressesTheIntent(t *testing.T) {
 		if !cfg.GuildMembersIntent {
 			t.Errorf("MERLIN_ENABLE_GUILD_MEMBERS_INTENT=%q turned the intent off", v)
 		}
+	}
+}
+
+// LogLevel used to be read exactly once, during startup, so SIGHUP parsed a
+// new value into a struct nothing consulted again and raising verbosity to
+// look at a live problem still meant a restart. OnReload is what lets a
+// value keep tracking the file, so it has to fire on a real reload and hand
+// over the new config, not the one captured at boot.
+func TestOnReloadFiresWithTheNewConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("log_level: info\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("DISCORD_BOT_TOKEN", "test-token")
+	t.Setenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID", "1")
+	t.Setenv("LOG_LEVEL", "")
+
+	l, err := NewLoader(path, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+
+	var seen []string
+	l.OnReload(func(c *GlobalConfig) { seen = append(seen, c.LogLevel) })
+
+	// A hook registered after construction must not fire retroactively for
+	// the load that already happened.
+	if len(seen) != 0 {
+		t.Fatalf("hook fired on registration: %v", seen)
+	}
+
+	if err := os.WriteFile(path, []byte("log_level: debug\n"), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+	if err := l.reload(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != "debug" {
+		t.Fatalf("hook saw %v, want exactly [debug]", seen)
+	}
+	if got := l.Global().LogLevel; got != "debug" {
+		t.Errorf("Global() still reports %q after reload", got)
+	}
+}
+
+// A hook must never see a config that failed validation: the whole point of
+// keeping the previous config on a bad edit is that nothing downstream acts
+// on the broken one.
+func TestOnReloadDoesNotFireOnAFailedReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("log_level: info\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("DISCORD_BOT_TOKEN", "test-token")
+	t.Setenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID", "1")
+	t.Setenv("LOG_LEVEL", "")
+
+	l, err := NewLoader(path, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	fired := 0
+	l.OnReload(func(*GlobalConfig) { fired++ })
+
+	if err := os.WriteFile(path, []byte("log_level: not-a-level\n"), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+	if err := l.reload(); err == nil {
+		t.Fatal("an invalid log level was accepted")
+	}
+	if fired != 0 {
+		t.Errorf("hook ran %d times for a reload that failed validation", fired)
+	}
+	if got := l.Global().LogLevel; got != "info" {
+		t.Errorf("a failed reload changed the live config to %q", got)
+	}
+}
+
+// A hook that reads the config it was handed is the obvious thing to write,
+// and would deadlock if hooks ran while reload still held the write lock.
+func TestOnReloadHookCanReadTheLoader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("log_level: info\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("DISCORD_BOT_TOKEN", "test-token")
+	t.Setenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID", "1")
+	t.Setenv("LOG_LEVEL", "")
+
+	l, err := NewLoader(path, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	l.OnReload(func(*GlobalConfig) { _ = l.Global() })
+
+	done := make(chan error, 1)
+	go func() { done <- l.reload() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload deadlocked: hooks are running while the write lock is held")
 	}
 }

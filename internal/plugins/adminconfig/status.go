@@ -116,11 +116,51 @@ func (p *Plugin) channelState(channelID string) string {
 	if p.session == nil {
 		return fmt.Sprintf("<#%s>", channelID)
 	}
-	if _, err := p.session.Channel(channelID); err != nil {
+	ch, err := p.session.Channel(channelID)
+	if err != nil {
 		if core.IsUnknownResource(err) {
 			return fmt.Sprintf("❌ configured as `%s`, but that channel no longer exists. Re-run `/config setup`", channelID)
 		}
 		return fmt.Sprintf("<#%s> (couldn't verify: %v)", channelID, err)
 	}
+	if everyoneCanRead(ch) {
+		return fmt.Sprintf("<#%s> ⚠️ everyone can read this; moderation actions and alerts are public", channelID)
+	}
 	return fmt.Sprintf("<#%s> ✅", channelID)
+}
+
+// everyoneCanRead reports whether the guild's @everyone role can still see
+// ch.
+//
+// This is checked here, rather than only when the channel is chosen,
+// because it drifts: a channel that was private when an admin picked it
+// stops being private the moment someone removes the overwrite, and nothing
+// about the audit log continuing to fill up says otherwise. The wizard's
+// own "create it for me" path applies core.DenyEveryoneExceptBot, but
+// picking an existing channel deliberately changes no permissions on a
+// channel the guild already uses for something, so that path can leave a
+// perfectly public channel configured as the audit log.
+//
+// It answers "yes" whenever it is unsure, because the two mistakes are not
+// symmetric: a spurious warning costs an admin ten seconds, while a missed
+// one means every jail, every config change, and every job failure has been
+// published to the whole server without anyone noticing.
+//
+// Reading the channel's own overwrites is sufficient, including for
+// category-synced channels, since syncing copies the category's overwrites
+// onto the channel rather than leaving them to be inherited at read time.
+func everyoneCanRead(ch *discordgo.Channel) bool {
+	if ch == nil {
+		return true
+	}
+	// The @everyone role's ID is the guild's own ID.
+	for _, ow := range ch.PermissionOverwrites {
+		if ow.Type != discordgo.PermissionOverwriteTypeRole || ow.ID != ch.GuildID {
+			continue
+		}
+		if ow.Deny&discordgo.PermissionViewChannel != 0 {
+			return false
+		}
+	}
+	return true
 }

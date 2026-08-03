@@ -122,6 +122,18 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 				fmt.Sprintf("user=%s duration=%s reason=%q", userIDs[0], core.FormatDuration(duration), reason)); err != nil {
 				p.log.Error("roles: audit jail failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
 			}
+			// Only the individually-targeted path notifies. A jail is
+			// otherwise experienced as access silently vanishing, which is
+			// worse for the member and worse for the mods who then answer
+			// the question in modmail.
+			//
+			// Deliberately not done for bulk jails or /roles jail-role.
+			// Those exist to shut down a raid, and DMing fifty accounts
+			// would spend the guild's hourly message budget on notifying
+			// the raid, at the exact moment the releases that undo a
+			// mistake need that budget more. Same reasoning as the cap on
+			// batch size: reversibility beats completeness.
+			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.now().Add(duration), reason)
 		}
 		p.respondSingleJail(s, i, userIDs[0], duration, res)
 		return
@@ -453,6 +465,13 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 	if err := p.audit.Record(ctx, guildID, "system", "roles.release", "", fmt.Sprintf("user=%s restored=%v", userID, restore)); err != nil {
 		p.log.Error("roles: audit release failed", "guild", guildID, "user", userID, "err", err)
 	}
+
+	// Every release notifies, including the automatic ones, and unlike jail
+	// this does not skip batches. Releases arrive spread over time as each
+	// jail comes due rather than fifty at once, and the message is good
+	// news: somebody who was told they were jailed should be told when that
+	// has ended, or the only way to find out is to keep trying doors.
+	p.notifyReleased(ctx, guildID, userID)
 
 	return p.store.DeleteJail(ctx, guildID, userID)
 }

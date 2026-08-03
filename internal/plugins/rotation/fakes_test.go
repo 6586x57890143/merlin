@@ -15,6 +15,7 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 func testLogger() *slog.Logger {
@@ -52,6 +53,11 @@ type fakeOps struct {
 	// category; an assertion on the end state would pass even if the two
 	// were swapped.
 	editCalls []recordedEdit
+
+	// complexSends records the full MessageSend payloads, so a test can
+	// assert on the embed and its attachments rather than only on the fact
+	// that something was posted.
+	complexSends []*discordgo.MessageSend
 }
 
 type recordedEdit struct {
@@ -263,6 +269,24 @@ func (f *fakeOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.Mes
 	return f.appendMessage(channelID, "")
 }
 
+// ChannelMessageSendComplex records the whole payload, not just that a send
+// happened, so a test can check the retention notice actually carries the
+// file its footer icon references. Kept under the "ChannelMessageSendEmbed"
+// failure key: callers that inject a failure are simulating "the notice
+// could not be posted", and which discordgo method carries it is an
+// implementation detail they should not have to track.
+func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	if err := f.shouldFail("ChannelMessageSendEmbed"); err != nil {
+		return nil, err
+	}
+	f.complexSends = append(f.complexSends, data)
+	content := ""
+	if data != nil {
+		content = data.Content
+	}
+	return f.appendMessage(channelID, content)
+}
+
 func (f *fakeOps) ChannelMessagePin(channelID, messageID string, _ ...discordgo.RequestOption) error {
 	return f.shouldFail("ChannelMessagePin")
 }
@@ -455,6 +479,12 @@ type fakeScheduler struct {
 	registerCalls   map[string]int
 	unregisterCalls map[string]int
 	seedCalls       map[string]time.Time
+
+	// nextDue is what NextDue answers per job key. Absent means "no future
+	// instant", which is how both an unregistered job and an already-overdue
+	// one look to a caller.
+	nextDue    map[string]time.Time
+	nextDueErr error
 }
 
 func newFakeScheduler() *fakeScheduler {
@@ -462,6 +492,7 @@ func newFakeScheduler() *fakeScheduler {
 		registered:      make(map[string]bool),
 		registerCalls:   make(map[string]int),
 		unregisterCalls: make(map[string]int),
+		nextDue:         make(map[string]time.Time),
 		seedCalls:       make(map[string]time.Time),
 	}
 }
@@ -483,6 +514,16 @@ func (f *fakeScheduler) Unregister(jobKey string) error {
 	delete(f.registered, jobKey)
 	f.unregisterCalls[jobKey]++
 	return nil
+}
+
+func (f *fakeScheduler) NextDue(ctx context.Context, jobKey string) (time.Time, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.nextDueErr != nil {
+		return time.Time{}, false, f.nextDueErr
+	}
+	due, ok := f.nextDue[jobKey]
+	return due, ok, nil
 }
 
 func (f *fakeScheduler) RunNow(ctx context.Context, jobKey string) error {
@@ -508,5 +549,19 @@ func newTestPlugin(ops *fakeOps, archives ArchiveStore, audit *fakeAudit, fs *fa
 		bus:      core.NewEventBus(testLogger()),
 		log:      testLogger(),
 		now:      func() time.Time { return at },
+		voice:    testVoice(),
 	}
+}
+
+// testVoice is the real catalog, not a stub. Rotation's tests assert on the
+// text members actually see, so substituting fixed strings here would test
+// the plumbing while leaving the thing that reaches the server unchecked.
+// It also means a catalog that stops loading fails these tests too, not
+// only the voice package's own.
+func testVoice() voice.Source {
+	sp, err := voice.New(testLogger())
+	if err != nil {
+		panic("voice catalog does not load: " + err.Error())
+	}
+	return sp
 }
