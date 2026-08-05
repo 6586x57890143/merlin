@@ -79,25 +79,18 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 			break
 		}
 	}
-
 	if allowed {
-<<<<<<< HEAD
 		// Allowlisted: explicitly allow view and a minimal send/connect
 		// permission on the jailed role, and deny AttachFiles/EmbedLinks in
 		// text channels so jailed members can't post images/embeds into
 		// channels they remain allowed to read.
 		var allowBits int64 = int64(discordgo.PermissionViewChannel)
 		var denyBits int64 = 0
-=======
-		// Explicit allow: permit viewing and basic sending while denying file/embed uploads.
-		allow := int64(discordgo.PermissionViewChannel)
-		deny := int64(0)
->>>>>>> baf1ba6194e91da5e8f8e7310991e73e81b436dd
 		if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
 			allowBits |= int64(discordgo.PermissionVoiceConnect)
 		} else {
 			allowBits |= int64(discordgo.PermissionSendMessages)
-			denyBits = int64(discordgo.PermissionAttachFiles|discordgo.PermissionEmbedLinks)
+			denyBits = int64(discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks)
 		}
 		if err := p.ops(guildID).ChannelPermissionSet(channelID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits); err != nil {
 			return fmt.Errorf("roles: set jail allow overwrite on %s: %w", channelID, err)
@@ -140,17 +133,10 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 		}
 		var err error
 		if allowed[ch.ID] {
-<<<<<<< HEAD
 			// Explicit allow for allowlisted channels: view + send/connect,
 			// plus deny AttachFiles/EmbedLinks for text channels.
 			var allowBits int64 = int64(discordgo.PermissionViewChannel)
 			var denyBits int64 = 0
-=======
-			// Explicit allow overwrite so jailed members can view and type but
-			// are prevented from uploading attachments/embeds.
-			allow := int64(discordgo.PermissionViewChannel)
-			deny := int64(0)
->>>>>>> baf1ba6194e91da5e8f8e7310991e73e81b436dd
 			if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
 				allowBits |= int64(discordgo.PermissionVoiceConnect)
 			} else {
