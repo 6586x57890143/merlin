@@ -84,8 +84,8 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 		// permission on the jailed role, and deny AttachFiles/EmbedLinks in
 		// text channels so jailed members can't post images/embeds into
 		// channels they remain allowed to read.
-		var allowBits int64 = int64(discordgo.PermissionViewChannel)
-		var denyBits int64 = 0
+		allowBits := int64(discordgo.PermissionViewChannel)
+		denyBits := int64(0)
 		if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
 			allowBits |= int64(discordgo.PermissionVoiceConnect)
 		} else {
@@ -135,8 +135,8 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 		if allowed[ch.ID] {
 			// Explicit allow for allowlisted channels: view + send/connect,
 			// plus deny AttachFiles/EmbedLinks for text channels.
-			var allowBits int64 = int64(discordgo.PermissionViewChannel)
-			var denyBits int64 = 0
+			allowBits := int64(discordgo.PermissionViewChannel)
+			denyBits := int64(0)
 			if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
 				allowBits |= int64(discordgo.PermissionVoiceConnect)
 			} else {
