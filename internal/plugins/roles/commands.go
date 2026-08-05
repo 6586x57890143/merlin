@@ -284,6 +284,9 @@ func (p *Plugin) handleMarkerRole(ctx context.Context, s *discordgo.Session, i *
 		return
 	}
 	p.forgetJailRole(i.GuildID)
+	if _, err := p.resolveJailRole(i.GuildID); err != nil {
+		p.log.Error("roles: failed to resolve fallback jail role after clearing configured marker role", "guild", i.GuildID, "err", err)
+	}
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "marker_role=none"); err != nil {
 		p.log.Error("roles: audit clear marker role failed", "guild", i.GuildID, "err", err)
 	}

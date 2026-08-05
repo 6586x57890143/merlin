@@ -156,6 +156,36 @@ func TestResolveJailRoleUsesConfiguredMarkerRoleDirectly(t *testing.T) {
 	}
 }
 
+func TestClearingConfiguredMarkerRoleResolvesFallbackJailRole(t *testing.T) {
+	ops := newFakeOps()
+	ops.roles["g1"] = []*discordgo.Role{{ID: "marker-role", Name: "Marker"}, {ID: "birdjailed-role", Name: jailRoleName}}
+	opChan := &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	ops.channel["c1"] = opChan
+	settings := newFakeSettings()
+	settings.markerRole["g1"] = "marker-role"
+	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	if err := settings.ClearJailMarkerRole(context.Background(), "g1"); err != nil {
+		t.Fatalf("clear marker role: %v", err)
+	}
+	p.forgetJailRole("g1")
+
+	id, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole after clear: %v", err)
+	}
+	if id != "birdjailed-role" {
+		t.Fatalf("expected fallback jail role to be used, got %q", id)
+	}
+	overwrite, ok := ops.overwrites[overwriteKey{channelID: "c1", targetID: id}]
+	if !ok {
+		t.Fatal("expected jail overwrite set for channel c1 and fallback role")
+	}
+	if overwrite.allow != 0 || overwrite.deny != jailDenyFor(discordgo.ChannelTypeGuildText) {
+		t.Fatalf("expected deny overwrite for fallback jail role, got allow=%d deny=%d", overwrite.allow, overwrite.deny)
+	}
+}
+
 func TestResolveJailRoleUsesMeltingPotDefaultWhenPresent(t *testing.T) {
 	ops := newFakeOps()
 	ops.roles[meltingPotGuildID] = []*discordgo.Role{{ID: meltingPotDefaultJailRoleID, Name: "Melting Pot Jail Marker"}}
