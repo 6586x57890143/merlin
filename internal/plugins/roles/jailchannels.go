@@ -80,17 +80,14 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 		}
 	}
 	if allowed {
-		// Allowlisted: explicitly allow view and a minimal send/connect
-		// permission on the jailed role, and deny AttachFiles/EmbedLinks in
-		// text channels so jailed members can't post images/embeds into
-		// channels they remain allowed to read.
-		allowBits := int64(discordgo.PermissionViewChannel)
+		// Allowlisted: explicitly allow view and send/connect permission on the
+		// jailed role, and deny AttachFiles/EmbedLinks in text-like channels so
+		// jailed members can still type while jailed but cannot post images or
+		// embeds.
+		allowBits := int64(discordgo.PermissionViewChannel | discordgo.PermissionSendMessages)
 		denyBits := int64(0)
 		if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
-			allowBits |= int64(discordgo.PermissionVoiceConnect)
-		} else {
-			allowBits |= int64(discordgo.PermissionSendMessages)
-			denyBits = int64(discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks)
+			allowBits = int64(discordgo.PermissionViewChannel | discordgo.PermissionVoiceConnect)
 		}
 		if err := p.ops(guildID).ChannelPermissionSet(channelID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits); err != nil {
 			return fmt.Errorf("roles: set jail allow overwrite on %s: %w", channelID, err)
@@ -134,14 +131,11 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 		var err error
 		if allowed[ch.ID] {
 			// Explicit allow for allowlisted channels: view + send/connect,
-			// plus deny AttachFiles/EmbedLinks for text channels.
-			allowBits := int64(discordgo.PermissionViewChannel)
+			// plus deny AttachFiles/EmbedLinks for text-like channels.
+			allowBits := int64(discordgo.PermissionViewChannel | discordgo.PermissionSendMessages)
 			denyBits := int64(0)
 			if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
-				allowBits |= int64(discordgo.PermissionVoiceConnect)
-			} else {
-				allowBits |= int64(discordgo.PermissionSendMessages)
-				denyBits = int64(discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks)
+				allowBits = int64(discordgo.PermissionViewChannel | discordgo.PermissionVoiceConnect)
 			}
 			err = p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits)
 		} else {

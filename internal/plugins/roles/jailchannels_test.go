@@ -51,6 +51,27 @@ func TestSyncAllJailChannelOverwritesDeniesByDefaultAllowsListed(t *testing.T) {
 	}
 }
 
+func TestSyncAllJailChannelOverwritesAllowsSendOnNewsChannel(t *testing.T) {
+	ops := newFakeOps()
+	ops.channel["news1"] = &discordgo.Channel{ID: "news1", GuildID: "g1", Type: discordgo.ChannelTypeGuildNews}
+	settings := newFakeSettings()
+	settings.allowed["g1"] = []string{"news1"}
+
+	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	if err := p.syncAllJailChannelOverwrites("g1", "jail-role"); err != nil {
+		t.Fatalf("syncAllJailChannelOverwrites: %v", err)
+	}
+
+	ow, ok := ops.overwrites[overwriteKey{"news1", "jail-role"}]
+	if !ok {
+		t.Fatal("expected an overwrite on the allowlisted news channel")
+	}
+	if ow.allow&int64(discordgo.PermissionViewChannel) == 0 || ow.allow&int64(discordgo.PermissionSendMessages) == 0 {
+		t.Fatalf("expected allowlisted news channel to allow view+send, got allow=%d", ow.allow)
+	}
+}
+
 // TestSyncAllJailChannelOverwritesClearsRemovedAllowEntry verifies a
 // channel previously allowlisted, then removed from the allowlist, gets its
 // stale "no overwrite" state replaced with an explicit deny, which is the whole
