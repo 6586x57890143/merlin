@@ -135,7 +135,7 @@ func (p *Plugin) registerCommands() {
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "allow-channel",
-						Description: "Keep a channel visible to jailed members (e.g. an appeals channel). Optionally configure an existing role to be used as the jail marker.",
+						Description: "Keep a channel visible while jailed (e.g. appeals). Optional marker role.",
 						Options:     []*discordgo.ApplicationCommandOption{channelOpt("channel", "The channel to keep visible while jailed"), optionalRoleOpt("marker_role", "Optional: choose an existing role to assign when jailing members")},
 					},
 					{
