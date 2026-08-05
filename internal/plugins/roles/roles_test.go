@@ -113,6 +113,30 @@ func TestResolveJailRoleReusesExisting(t *testing.T) {
 	}
 }
 
+func TestResolveJailRoleSyncsExistingJailRoleOverwrites(t *testing.T) {
+	ops := newFakeOps()
+	ops.roles["g1"] = []*discordgo.Role{{ID: "existing-jail-role", Name: jailRoleName}}
+	ops.channel["c1"] = &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	settings := newFakeSettings()
+	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	id, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole: %v", err)
+	}
+	if id != "existing-jail-role" {
+		t.Fatalf("expected to reuse existing role, got %q", id)
+	}
+
+	overwrite, ok := ops.overwrites[overwriteKey{channelID: "c1", targetID: id}]
+	if !ok {
+		t.Fatalf("expected jail overwrite set for channel c1 and role %s", id)
+	}
+	if overwrite.allow != 0 || overwrite.deny != jailDenyFor(discordgo.ChannelTypeGuildText) {
+		t.Fatalf("expected deny overwrite for jail role, got allow=%d deny=%d", overwrite.allow, overwrite.deny)
+	}
+}
+
 func TestResolveJailRoleUsesConfiguredMarkerRoleDirectly(t *testing.T) {
 	ops := newFakeOps()
 	ops.roles["g1"] = []*discordgo.Role{{ID: "marker-role", Name: "Marker"}}

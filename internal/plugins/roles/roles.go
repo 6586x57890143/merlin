@@ -206,6 +206,9 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	for _, r := range rolesList {
 		if r.Name == jailRoleName {
 			p.jailRoleID[guildID] = r.ID
+			if err := p.syncAllJailChannelOverwrites(guildID, r.ID); err != nil {
+				p.log.Error("roles: sync existing jail role overwrites failed", "guild", guildID, "role", r.ID, "err", err)
+			}
 			return r.ID, nil
 		}
 	}
