@@ -128,6 +128,12 @@ func (p *Plugin) registerCommands() {
 				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "The member to inspect")},
 			},
 			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "marker-role",
+				Description: "Choose an existing role to use for jailing, or omit to use Merlin's own fallback role.",
+				Options:     []*discordgo.ApplicationCommandOption{optionalRoleOpt("marker_role", "The role to assign when jailing members")},
+			},
+			{
 				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
 				Name:        "configure",
 				Description: "Configure which channels stay visible to a jailed member",
@@ -175,6 +181,7 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("roles", "configure/allow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleAllowChannel)
 	p.commands.Handle("roles", "configure/disallow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleDisallowChannel)
 	p.commands.Handle("roles", "configure/list-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleListChannels)
+	p.commands.Handle("roles", "marker-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMarkerRole)
 	p.commands.Handle("roles", "configure/marker-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMarkerRole)
 	p.commands.Handle("roles", "configure/sync-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleSyncChannels)
 }
