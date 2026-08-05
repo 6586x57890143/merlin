@@ -51,11 +51,11 @@ func (p *Plugin) registerCommands() {
 	channelOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionChannel, Name: name, Description: desc, Required: true}
 	}
-		// optionalRoleOpt can be used to accept an existing role selection to
-		// serve as the configured jail marker role for this guild.
-		optionalRoleOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
-			return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionRole, Name: name, Description: desc}
-		}
+	// optionalRoleOpt can be used to accept an existing role selection to
+	// serve as the configured jail marker role for this guild.
+	optionalRoleOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
+		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionRole, Name: name, Description: desc}
+	}
 	durationOpt := func(name, desc string, required bool) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionString, Name: name, Description: desc, Required: required}
 	}
@@ -151,6 +151,12 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "marker-role",
+						Description: "Choose an existing role to use for jailing, or omit to use Merlin's own fallback role.",
+						Options:     []*discordgo.ApplicationCommandOption{optionalRoleOpt("marker_role", "The role to assign when jailing members")},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "sync-channels",
 						Description: "Recompute every channel's jail visibility (e.g. after creating new channels)",
 					},
@@ -169,6 +175,7 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("roles", "configure/allow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleAllowChannel)
 	p.commands.Handle("roles", "configure/disallow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleDisallowChannel)
 	p.commands.Handle("roles", "configure/list-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleListChannels)
+	p.commands.Handle("roles", "configure/marker-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMarkerRole)
 	p.commands.Handle("roles", "configure/sync-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleSyncChannels)
 }
 
@@ -227,6 +234,7 @@ func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i
 				core.RespondErr(s, i, "Failed to save marker role", err)
 				return
 			}
+			p.forgetJailRole(i.GuildID)
 			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "marker_role="+core.MentionRole(roleID)); err != nil {
 				p.log.Error("roles: audit set marker role failed", "guild", i.GuildID, "err", err)
 			}
@@ -242,6 +250,37 @@ func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i
 		p.log.Error("roles: audit allow-channel failed", "guild", i.GuildID, "err", err)
 	}
 	core.RespondOK(s, i, "Channel allowed", fmt.Sprintf("<#%s> will stay visible to jailed members.", channelID))
+}
+
+func (p *Plugin) handleMarkerRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	args := core.LeafArgs(i)
+	if opt, ok := args["marker_role"]; ok {
+		if roleID, _ := opt.Value.(string); roleID != "" {
+			if err := p.jailChannelConfig.SetJailMarkerRole(ctx, i.GuildID, roleID); err != nil {
+				core.RespondErr(s, i, "Failed to save marker role", err)
+				return
+			}
+			p.forgetJailRole(i.GuildID)
+			if err := p.syncAllJailChannelOverwrites(i.GuildID, roleID); err != nil {
+				p.log.Error("roles: failed to sync jail overwrites for configured role", "guild", i.GuildID, "role", roleID, "err", err)
+			}
+			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "marker_role="+core.MentionRole(roleID)); err != nil {
+				p.log.Error("roles: audit set marker role failed", "guild", i.GuildID, "err", err)
+			}
+			core.RespondOK(s, i, "Configured jail role", fmt.Sprintf("Jailed members will be assigned <@&%s>.", roleID))
+			return
+		}
+	}
+
+	if err := p.jailChannelConfig.ClearJailMarkerRole(ctx, i.GuildID); err != nil {
+		core.RespondErr(s, i, "Failed to clear marker role", err)
+		return
+	}
+	p.forgetJailRole(i.GuildID)
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "marker_role=none"); err != nil {
+		p.log.Error("roles: audit clear marker role failed", "guild", i.GuildID, "err", err)
+	}
+	core.RespondOK(s, i, "Cleared jail role", "Merlin will now use its own birdjailed role again.")
 }
 
 func (p *Plugin) handleDisallowChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
