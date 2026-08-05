@@ -108,7 +108,7 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 			return
 		}
 		// Ensure the bot can manage the configured marker role before attempting
-		// to jail — otherwise the GuildMemberEdit will fail and leave the
+		// to jail otherwise the GuildMemberEdit will fail and leave the
 		// recorded snapshot inconsistent. Report as a failure to the actor.
 		if err := p.perms.CanManageRole(i.GuildID, jailRoleID); err != nil {
 			fail("Cannot use configured jail role", err)
