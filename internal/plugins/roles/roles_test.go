@@ -113,6 +113,42 @@ func TestResolveJailRoleReusesExisting(t *testing.T) {
 	}
 }
 
+func TestResolveJailRoleUsesConfiguredMarkerRoleDirectly(t *testing.T) {
+	ops := newFakeOps()
+	ops.roles["g1"] = []*discordgo.Role{{ID: "marker-role", Name: "Marker"}}
+	settings := newFakeSettings()
+	settings.markerRole["g1"] = "marker-role"
+	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	id, err := p.resolveJailRole("g1")
+	if err != nil {
+		t.Fatalf("resolveJailRole: %v", err)
+	}
+	if id != "marker-role" {
+		t.Fatalf("expected configured marker role to be used directly, got %q", id)
+	}
+	if len(ops.roles["g1"]) != 1 {
+		t.Fatalf("expected no new role created, got %d roles", len(ops.roles["g1"]))
+	}
+}
+
+func TestResolveJailRoleUsesMeltingPotDefaultWhenPresent(t *testing.T) {
+	ops := newFakeOps()
+	ops.roles[meltingPotGuildID] = []*discordgo.Role{{ID: meltingPotDefaultJailRoleID, Name: "Melting Pot Jail Marker"}}
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	id, err := p.resolveJailRole(meltingPotGuildID)
+	if err != nil {
+		t.Fatalf("resolveJailRole: %v", err)
+	}
+	if id != meltingPotDefaultJailRoleID {
+		t.Fatalf("expected melting pot default jail role to be used, got %q", id)
+	}
+	if len(ops.roles[meltingPotGuildID]) != 1 {
+		t.Fatalf("expected no new role created, got %d roles", len(ops.roles[meltingPotGuildID]))
+	}
+}
+
 func TestResolveJailRoleIsCachedPerGuild(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())

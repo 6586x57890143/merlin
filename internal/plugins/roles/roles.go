@@ -24,7 +24,12 @@ const sweepInterval = time.Minute
 // rotation's defaultArchiveCategoryName pattern). A guild's jailed members
 // all share this one marker role, which every other role gets stripped in
 // favor of.
-const jailRoleName = "Jailed"
+const jailRoleName = "birdjailed"
+
+const (
+	meltingPotGuildID           = "1459404984943644747"
+	meltingPotDefaultJailRoleID = "1495522090667737218"
+)
 
 // Plugin implements core.Plugin: temporary role management (jail + timed
 // grants). See the package doc comment (store.go) for the overall design.
@@ -165,57 +170,19 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	}
 
 	// Prefer a configured marker role if present in settings.
+	rolesList, err := p.ops(guildID).GuildRoles(guildID)
+	if err != nil {
+		return "", fmt.Errorf("roles: list guild roles: %w", err)
+	}
 	if marker := p.jailChannelConfig.JailMarkerRoleID(guildID); marker != "" {
-		// Verify the role exists in the guild.
-		rolesList, err := p.ops(guildID).GuildRoles(guildID)
-		if err != nil {
-			return "", fmt.Errorf("roles: list guild roles: %w", err)
-		}
-		var markerRole *discordgo.Role
 		for _, r := range rolesList {
 			if r.ID == marker {
-				markerRole = r
-				break
-			}
-		}
-		if markerRole != nil {
-			// Ensure a dedicated plugin jail role exists (find or create by name).
-			var jailRole *discordgo.Role
-			for _, r := range rolesList {
-				if r.Name == jailRoleName {
-					jailRole = r
-					break
+				p.jailRoleID[guildID] = marker
+				if err := p.syncAllJailChannelOverwrites(guildID, marker); err != nil {
+					p.log.Error("roles: sync configured jail role overwrites failed", "guild", guildID, "role", marker, "err", err)
 				}
+				return marker, nil
 			}
-			if jailRole == nil {
-				perms := int64(0)
-				hoist := false
-				mentionable := false
-				created, err := p.ops(guildID).GuildRoleCreate(guildID, &discordgo.RoleParams{
-					Name:        jailRoleName,
-					Permissions: &perms,
-					Hoist:       &hoist,
-					Mentionable: &mentionable,
-				})
-				if err != nil {
-					return "", fmt.Errorf("roles: create jail role: %w", err)
-				}
-				jailRole = created
-			}
-			// Mirror permissions from the configured role onto the dedicated
-			// plugin jail role. Prefer to log-and-continue on failure rather
-			// than abort the operation entirely: permission sync is important
-			// for the intended behaviour but not fatal to the jail flow.
-			params := &discordgo.RoleParams{
-				Permissions: &markerRole.Permissions,
-				Hoist:       &markerRole.Hoist,
-				Mentionable: &markerRole.Mentionable,
-			}
-			if _, err := p.ops(guildID).GuildRoleEdit(guildID, jailRole.ID, params); err != nil {
-				p.log.Error("roles: failed to mirror configured role permissions to jail role", "guild", guildID, "err", err)
-			}
-			p.jailRoleID[guildID] = jailRole.ID
-			return jailRole.ID, nil
 		}
 		// Configured role not present: clear the configured value and fall
 		// through to the create/find-by-name path. This avoids repeatedly
@@ -226,10 +193,16 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 		}
 	}
 
-	rolesList, err := p.ops(guildID).GuildRoles(guildID)
-	if err != nil {
-		return "", fmt.Errorf("roles: list guild roles: %w", err)
+	// Melting Pot has a preferred default jail role if it exists.
+	if guildID == meltingPotGuildID {
+		for _, r := range rolesList {
+			if r.ID == meltingPotDefaultJailRoleID {
+				p.jailRoleID[guildID] = r.ID
+				return r.ID, nil
+			}
+		}
 	}
+
 	for _, r := range rolesList {
 		if r.Name == jailRoleName {
 			p.jailRoleID[guildID] = r.ID
