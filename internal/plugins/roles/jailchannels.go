@@ -48,11 +48,15 @@ func jailDenyFor(t discordgo.ChannelType) int64 {
 	return deny
 }
 
-// syncJailChannelOverwrite sets or clears channelID's permission overwrite
+// syncJailChannelOverwrite sets or updates channelID's permission overwrite
 // for the Jailed role to match whether it's currently in guildID's
 // allowlist, called after a single allow-channel/disallow-channel
 // configuration change, so a config edit costs exactly one Discord API
 // call, never a full-guild resync.
+//
+// For allowlisted channels we explicitly grant ViewChannel and a limited
+// SendMessages permission while denying AttachFiles and EmbedLinks so a
+// jailed member can read history and type but cannot post images or embeds.
 func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string) error {
 	ch, err := p.ops(guildID).Channel(channelID)
 	if err != nil {
@@ -71,11 +75,22 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 	}
 
 	if allowed {
-		if err := p.ops(guildID).ChannelPermissionDelete(channelID, jailRoleID); err != nil {
-			return fmt.Errorf("roles: clear jail overwrite on %s: %w", channelID, err)
+		// Explicit allow: permit viewing and basic sending while denying file/embed uploads.
+		var allow int64 = int64(discordgo.PermissionViewChannel)
+		var deny int64 = 0
+		if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
+			allow |= discordgo.PermissionVoiceConnect
+		} else {
+			allow |= discordgo.PermissionSendMessages
+			deny |= discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks
+		}
+		if err := p.ops(guildID).ChannelPermissionSet(channelID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allow, deny); err != nil {
+			return fmt.Errorf("roles: set allow jail overwrite on %s: %w", channelID, err)
 		}
 		return nil
 	}
+
+	// Not allowlisted: deny view (and connect for voice) explicitly.
 	if err := p.ops(guildID).ChannelPermissionSet(channelID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(ch.Type)); err != nil {
 		return fmt.Errorf("roles: set jail overwrite on %s: %w", channelID, err)
 	}
@@ -110,7 +125,17 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 		}
 		var err error
 		if allowed[ch.ID] {
-			err = p.ops(guildID).ChannelPermissionDelete(ch.ID, jailRoleID)
+			// Explicit allow overwrite so jailed members can view and type but
+			// are prevented from uploading attachments/embeds.
+			var allow int64 = int64(discordgo.PermissionViewChannel)
+			var deny int64 = 0
+			if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
+				allow |= discordgo.PermissionVoiceConnect
+			} else {
+				allow |= discordgo.PermissionSendMessages
+				deny |= discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks
+			}
+			err = p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allow, deny)
 		} else {
 			err = p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(ch.Type))
 		}
