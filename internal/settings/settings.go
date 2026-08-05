@@ -9,6 +9,7 @@ package settings
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -44,7 +45,9 @@ type GuildSettings struct {
 	JailAllowedChannelIDs []string
 	// Optional pre-configured jail marker role ID. If set, roles plugin will
 	// use this existing role as the marker rather than creating a new one.
-	JailMarkerRoleID string
+	// Pointer so NULL in the DB scans correctly; accessor JailMarkerRoleID
+	// returns the empty string when none is configured.
+	JailMarkerRoleID *string
 
 	// WritesPaused and WritesDryRun are this guild's emergency controls over
 	// destructive Discord actions, enforced centrally by
@@ -202,8 +205,15 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 
 	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, writes_paused, writes_dry_run
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-		switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &gc.settings.JailMarkerRoleID, &gc.settings.WritesPaused, &gc.settings.WritesDryRun); err {
+	var marker sql.NullString
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &gc.settings.WritesPaused, &gc.settings.WritesDryRun); err {
 	case nil, pgx.ErrNoRows:
+		if marker.Valid {
+			v := marker.String
+			gc.settings.JailMarkerRoleID = &v
+		} else {
+			gc.settings.JailMarkerRoleID = nil
+		}
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
 	}
@@ -388,7 +398,11 @@ func (s *Store) JailAllowedChannelIDs(guildID string) []string {
 // JailMarkerRoleID returns the configured jail marker role for the guild,
 // if any. Empty string when none configured.
 func (s *Store) JailMarkerRoleID(guildID string) string {
-	return s.guild(guildID).settings.JailMarkerRoleID
+	v := s.guild(guildID).settings.JailMarkerRoleID
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // ActionPolicy satisfies core.GuildAuthData: guildID's customization of
