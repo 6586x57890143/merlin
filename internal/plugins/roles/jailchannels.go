@@ -76,8 +76,8 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 
 	if allowed {
 		// Explicit allow: permit viewing and basic sending while denying file/embed uploads.
-		var allow int64 = int64(discordgo.PermissionViewChannel)
-		var deny int64 = 0
+		allow := int64(discordgo.PermissionViewChannel)
+		deny := int64(0)
 		if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
 			allow |= discordgo.PermissionVoiceConnect
 		} else {
@@ -127,8 +127,8 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 		if allowed[ch.ID] {
 			// Explicit allow overwrite so jailed members can view and type but
 			// are prevented from uploading attachments/embeds.
-			var allow int64 = int64(discordgo.PermissionViewChannel)
-			var deny int64 = 0
+			allow := int64(discordgo.PermissionViewChannel)
+			deny := int64(0)
 			if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
 				allow |= discordgo.PermissionVoiceConnect
 			} else {
