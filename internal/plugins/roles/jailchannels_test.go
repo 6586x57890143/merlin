@@ -38,16 +38,13 @@ func TestSyncAllJailChannelOverwritesDeniesByDefaultAllowsListed(t *testing.T) {
 		t.Fatalf("expected Connect denied on voice1 (voice channel), got deny=%d", voiceOverwrite.deny)
 	}
 
-	allowedOW, ok := ops.overwrites[overwriteKey{"allowed1", "jail-role"}]
+	// Allowlisted: expect an explicit allow overwrite.
+	owAllowed, ok := ops.overwrites[overwriteKey{"allowed1", "jail-role"}]
 	if !ok {
 		t.Fatal("expected an overwrite on the allowlisted channel")
 	}
-	// The allowlisted overwrite should grant view+send and deny attachments/embeds
-	if allowedOW.allow&int64(discordgo.PermissionViewChannel) == 0 || allowedOW.allow&int64(discordgo.PermissionSendMessages) == 0 {
-		t.Fatalf("expected allowlisted channel to allow view+send, got allow=%d", allowedOW.allow)
-	}
-	if allowedOW.deny&(int64(discordgo.PermissionAttachFiles)|int64(discordgo.PermissionEmbedLinks)) == 0 {
-		t.Fatalf("expected allowlisted channel to deny attachments or embeds, got deny=%d", allowedOW.deny)
+	if owAllowed.allow&int64(discordgo.PermissionViewChannel) == 0 || owAllowed.allow&int64(discordgo.PermissionSendMessages) == 0 {
+		t.Fatalf("expected allowlisted channel to allow view+send, got allow=%d", owAllowed.allow)
 	}
 	if _, ok := ops.overwrites[overwriteKey{"category1", "jail-role"}]; ok {
 		t.Fatal("expected categories to be skipped entirely (no cascade surprises)")

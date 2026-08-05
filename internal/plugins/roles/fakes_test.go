@@ -246,6 +246,27 @@ func (f *fakeOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, op
 	return r, nil
 }
 
+func (f *fakeOps) GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.roles[guildID] {
+		if r.ID == roleID {
+			if data.Permissions != nil {
+				r.Permissions = *data.Permissions
+			}
+			// RoleParams uses *bool for Hoist/Mentionable; if nil leave as-is
+			if data.Hoist != nil {
+				r.Hoist = *data.Hoist
+			}
+			if data.Mentionable != nil {
+				r.Mentionable = *data.Mentionable
+			}
+			return r, nil
+		}
+	}
+	return nil, fmt.Errorf("fakeOps: role %s not found in guild %s", roleID, guildID)
+}
+
 func (f *fakeOps) GuildMemberRoleAdd(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -442,12 +463,13 @@ func (f *fakeStore) ListGrants(ctx context.Context, guildID, userID string) ([]G
 // --- fakeSettings: in-memory JailChannelConfig ---
 
 type fakeSettings struct {
-	mu      sync.Mutex
-	allowed map[string][]string // guildID -> channel IDs
+	mu         sync.Mutex
+	allowed    map[string][]string // guildID -> channel IDs
+	markerRole map[string]string   // guildID -> configured jail marker role ID
 }
 
 func newFakeSettings() *fakeSettings {
-	return &fakeSettings{allowed: make(map[string][]string)}
+	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string)}
 }
 
 func (f *fakeSettings) JailAllowedChannelIDs(guildID string) []string {
@@ -478,6 +500,27 @@ func (f *fakeSettings) RemoveJailAllowedChannel(ctx context.Context, guildID, ch
 		}
 	}
 	f.allowed[guildID] = out
+	return nil
+}
+
+// Jail marker role helpers (new API)
+func (f *fakeSettings) JailMarkerRoleID(guildID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.markerRole[guildID]
+}
+
+func (f *fakeSettings) SetJailMarkerRole(ctx context.Context, guildID, roleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markerRole[guildID] = roleID
+	return nil
+}
+
+func (f *fakeSettings) ClearJailMarkerRole(ctx context.Context, guildID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.markerRole, guildID)
 	return nil
 }
 

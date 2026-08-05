@@ -51,6 +51,11 @@ func (p *Plugin) registerCommands() {
 	channelOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionChannel, Name: name, Description: desc, Required: true}
 	}
+		// optionalRoleOpt can be used to accept an existing role selection to
+		// serve as the configured jail marker role for this guild.
+		optionalRoleOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
+			return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionRole, Name: name, Description: desc}
+		}
 	durationOpt := func(name, desc string, required bool) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionString, Name: name, Description: desc, Required: required}
 	}
@@ -130,8 +135,8 @@ func (p *Plugin) registerCommands() {
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "allow-channel",
-						Description: "Keep a channel visible to jailed members (e.g. an appeals channel)",
-						Options:     []*discordgo.ApplicationCommandOption{channelOpt("channel", "The channel to keep visible while jailed")},
+						Description: "Keep a channel visible to jailed members (e.g. an appeals channel). Optionally configure an existing role to be used as the jail marker.",
+						Options:     []*discordgo.ApplicationCommandOption{channelOpt("channel", "The channel to keep visible while jailed"), optionalRoleOpt("marker_role", "Optional: choose an existing role to assign when jailing members")},
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
@@ -211,7 +216,23 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 }
 
 func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	channelID := core.LeafArgs(i)["channel"].Value.(string)
+	args := core.LeafArgs(i)
+	channelID := args["channel"].Value.(string)
+	// Optional marker role: if provided, persist it as the configured jail
+	// marker role for this guild so jailing uses that role instead of
+	// auto-creating one.
+	if opt, ok := args["marker_role"]; ok {
+		if roleID, _ := opt.Value.(string); roleID != "" {
+			if err := p.jailChannelConfig.SetJailMarkerRole(ctx, i.GuildID, roleID); err != nil {
+				core.RespondErr(s, i, "Failed to save marker role", err)
+				return
+			}
+			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "marker_role="+core.MentionRole(roleID)); err != nil {
+				p.log.Error("roles: audit set marker role failed", "guild", i.GuildID, "err", err)
+			}
+		}
+	}
+
 	if err := p.jailChannelConfig.AddJailAllowedChannel(ctx, i.GuildID, channelID); err != nil {
 		core.RespondErr(s, i, "Failed to save", err)
 		return

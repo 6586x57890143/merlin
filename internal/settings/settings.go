@@ -42,6 +42,9 @@ type GuildSettings struct {
 	// overwrite for the shared "Jailed" role. Empty means jail denies every
 	// channel until a mod configures exceptions.
 	JailAllowedChannelIDs []string
+	// Optional pre-configured jail marker role ID. If set, roles plugin will
+	// use this existing role as the marker rather than creating a new one.
+	JailMarkerRoleID string
 
 	// WritesPaused and WritesDryRun are this guild's emergency controls over
 	// destructive Discord actions, enforced centrally by
@@ -197,9 +200,9 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, writes_paused, writes_dry_run
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, writes_paused, writes_dry_run
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &gc.settings.WritesPaused, &gc.settings.WritesDryRun); err {
+		switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &gc.settings.JailMarkerRoleID, &gc.settings.WritesPaused, &gc.settings.WritesDryRun); err {
 	case nil, pgx.ErrNoRows:
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
@@ -380,6 +383,12 @@ func (s *Store) AdminUserIDs(guildID string) []string { return s.guild(guildID).
 // allowlist.
 func (s *Store) JailAllowedChannelIDs(guildID string) []string {
 	return s.guild(guildID).settings.JailAllowedChannelIDs
+}
+
+// JailMarkerRoleID returns the configured jail marker role for the guild,
+// if any. Empty string when none configured.
+func (s *Store) JailMarkerRoleID(guildID string) string {
+	return s.guild(guildID).settings.JailMarkerRoleID
 }
 
 // ActionPolicy satisfies core.GuildAuthData: guildID's customization of
@@ -591,6 +600,39 @@ func (s *Store) RemoveJailAllowedChannel(ctx context.Context, guildID, channelID
 		UPDATE settings_guild SET jail_allowed_channel_ids = array_remove(jail_allowed_channel_ids, $2), updated_at = now()
 		WHERE guild_id = $1`, guildID, channelID); err != nil {
 		return fmt.Errorf("settings: remove jail allowed channel: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// SetJailMarkerRole records an explicit role ID to use as the guild's jail
+// marker role. It upserts the settings row so a fresh guild gets the column
+// set without a separate create step.
+func (s *Store) SetJailMarkerRole(ctx context.Context, guildID, roleID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, jail_marker_role_id, updated_at) VALUES ($1, $2, now())
+		ON CONFLICT (guild_id) DO UPDATE SET jail_marker_role_id = $2, updated_at = now()`,
+		guildID, roleID); err != nil {
+		return fmt.Errorf("settings: set jail marker role: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// ClearJailMarkerRole removes any configured jail marker role from a guild.
+func (s *Store) ClearJailMarkerRole(ctx context.Context, guildID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_guild SET jail_marker_role_id = NULL, updated_at = now()
+		WHERE guild_id = $1`, guildID); err != nil {
+		return fmt.Errorf("settings: clear jail marker role: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		s.invalidate(guildID)

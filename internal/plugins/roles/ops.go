@@ -21,6 +21,7 @@ type DiscordMemberOps interface {
 	GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error)
 	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 	GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
+	GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
 
 	// Guild, UserChannelCreate and ChannelMessageSendComplex exist only to
 	// tell a member what happened to them. A jail that arrives as silently

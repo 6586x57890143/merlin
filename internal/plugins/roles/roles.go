@@ -164,6 +164,68 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 		return id, nil
 	}
 
+	// Prefer a configured marker role if present in settings.
+	if marker := p.jailChannelConfig.JailMarkerRoleID(guildID); marker != "" {
+		// Verify the role exists in the guild.
+		rolesList, err := p.ops(guildID).GuildRoles(guildID)
+		if err != nil {
+			return "", fmt.Errorf("roles: list guild roles: %w", err)
+		}
+		var markerRole *discordgo.Role
+		for _, r := range rolesList {
+			if r.ID == marker {
+				markerRole = r
+				break
+			}
+		}
+		if markerRole != nil {
+			// Ensure a dedicated plugin jail role exists (find or create by name).
+			var jailRole *discordgo.Role
+			for _, r := range rolesList {
+				if r.Name == jailRoleName {
+					jailRole = r
+					break
+				}
+			}
+			if jailRole == nil {
+				perms := int64(0)
+				hoist := false
+				mentionable := false
+				created, err := p.ops(guildID).GuildRoleCreate(guildID, &discordgo.RoleParams{
+					Name:        jailRoleName,
+					Permissions: &perms,
+					Hoist:       &hoist,
+					Mentionable: &mentionable,
+				})
+				if err != nil {
+					return "", fmt.Errorf("roles: create jail role: %w", err)
+				}
+				jailRole = created
+			}
+			// Mirror permissions from the configured role onto the dedicated
+			// plugin jail role. Prefer to log-and-continue on failure rather
+			// than abort the operation entirely: permission sync is important
+			// for the intended behaviour but not fatal to the jail flow.
+			params := &discordgo.RoleParams{
+				Permissions: &markerRole.Permissions,
+				Hoist:       &markerRole.Hoist,
+				Mentionable: &markerRole.Mentionable,
+			}
+			if _, err := p.ops(guildID).GuildRoleEdit(guildID, jailRole.ID, params); err != nil {
+				p.log.Error("roles: failed to mirror configured role permissions to jail role", "guild", guildID, "err", err)
+			}
+			p.jailRoleID[guildID] = jailRole.ID
+			return jailRole.ID, nil
+		}
+		// Configured role not present: clear the configured value and fall
+		// through to the create/find-by-name path. This avoids repeatedly
+		// returning a missing-role error while keeping stored config
+		// self-healing when an admin fixes it.
+		if err := p.jailChannelConfig.ClearJailMarkerRole(context.Background(), guildID); err != nil {
+			p.log.Error("roles: failed to clear missing configured jail role", "guild", guildID, "role", marker, "err", err)
+		}
+	}
+
 	rolesList, err := p.ops(guildID).GuildRoles(guildID)
 	if err != nil {
 		return "", fmt.Errorf("roles: list guild roles: %w", err)

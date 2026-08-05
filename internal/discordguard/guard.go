@@ -85,6 +85,7 @@ type Session interface {
 	GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error
 	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 	GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
+	GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
 	Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error)
 	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 }
@@ -393,5 +394,14 @@ func (o *GuildOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, o
 	}
 	jid := o.beginJournal(opRoleCreate, data.Name)
 	v, err := o.guard.session.GuildRoleCreate(guildID, data, options...)
+	return v, o.record(jid, err)
+}
+
+func (o *GuildOps) GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
+	if err := o.allow(opRoleEdit); err != nil {
+		return nil, err
+	}
+	jid := o.beginJournal(opRoleEdit, roleID)
+	v, err := o.guard.session.GuildRoleEdit(guildID, roleID, data, options...)
 	return v, o.record(jid, err)
 }

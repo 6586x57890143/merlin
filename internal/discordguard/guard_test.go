@@ -141,6 +141,11 @@ func (f *fakeSession) GuildRoleCreate(string, *discordgo.RoleParams, ...discordg
 	return &discordgo.Role{}, nil
 }
 
+func (f *fakeSession) GuildRoleEdit(string, string, *discordgo.RoleParams, ...discordgo.RequestOption) (*discordgo.Role, error) {
+	f.writes++
+	return &discordgo.Role{}, nil
+}
+
 type fakeGate struct {
 	paused map[string]bool
 	dryRun map[string]bool

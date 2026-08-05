@@ -44,6 +44,7 @@ var opCaps = map[string]int{
 	opMemberRoleAdd:      120,
 	opMemberRoleRemove:   120,
 	opRoleCreate:         10,
+	opRoleEdit:           30,
 }
 
 const (
@@ -57,6 +58,7 @@ const (
 	opMemberRoleAdd      = "member.role.add"
 	opMemberRoleRemove   = "member.role.remove"
 	opRoleCreate         = "role.create"
+	opRoleEdit           = "role.edit"
 )
 
 // capWindow is the period each cap is denominated over. Buckets refill
