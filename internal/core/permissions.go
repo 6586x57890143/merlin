@@ -322,7 +322,7 @@ func (p *Permissions) guild(guildID string) (*discordgo.Guild, error) {
 // CanManageRole enforces layer 3: the bot's own top role must sit strictly
 // above targetRoleID in the guild's role hierarchy, and the role must not be
 // managed by an integration (Nitro Booster, a bot's own role, a Twitch-sub
-// role, ...) — Discord rejects adding/removing those via the API regardless
+// role, etc.): Discord rejects adding/removing those via the API regardless
 // of hierarchy position. Discord enforces both conditions API-side too; this
 // check exists so we fail cleanly with a clear message instead of surfacing
 // a raw 403 from Discord.
