@@ -181,7 +181,7 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 
 	msg := fmt.Sprintf("<@%s> jailed for %s.", userID, core.FormatDuration(duration))
 	if res.unmanageable > 0 {
-		msg += " Some role(s) could not be stripped (positioned at/above Merlin's own top role)."
+		msg += " Some role(s) could not be stripped (positioned at/above Merlin's own top role, or managed by an integration)."
 	}
 	if err := core.FollowUpOK(s, i, "Member jailed", msg); err != nil {
 		p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)

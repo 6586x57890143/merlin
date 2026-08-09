@@ -217,6 +217,7 @@ func TestCanManageRoleHierarchy(t *testing.T) {
 			{ID: "low", Position: 1},
 			{ID: "bot-role", Position: 5},
 			{ID: "high", Position: 10},
+			{ID: "boosted", Position: 1, Managed: true},
 		},
 	}
 	if err := session.State.GuildAdd(guild); err != nil {
@@ -240,6 +241,9 @@ func TestCanManageRoleHierarchy(t *testing.T) {
 	}
 	if err := perms.CanManageRole("g1", "bot-role"); err == nil {
 		t.Fatal("expected denial for role at same position as bot's top role")
+	}
+	if err := perms.CanManageRole("g1", "boosted"); err == nil {
+		t.Fatal("expected denial for a role managed by an integration, even below bot's top role")
 	}
 }
 
