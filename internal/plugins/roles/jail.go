@@ -238,7 +238,7 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 
 // stripToJailRoles replaces userID's roles with newRoles (as computed by
 // jailRoles) and, on success, force-disconnects them from voice. The single
-// chokepoint every jail-(re)application path funnels through — applyJail,
+// chokepoint every jail-(re)application path funnels through: applyJail,
 // reapplyIfEvaded, and HandleMemberUpdate's onboarding-regrant reassertion
 // all call this rather than each hand-rolling the same GuildMemberEdit, so
 // none of them can forget the voice-kick, including whatever future call
@@ -263,8 +263,8 @@ func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*d
 
 // disconnectFromVoice force-kicks userID from any voice channel they're
 // currently connected to in guildID. Role and permission-overwrite changes
-// don't propagate to an already-established voice session — Discord only
-// evaluates Connect at connection time — so a jailed member who was mid-call
+// don't propagate to an already-established voice session: Discord only
+// evaluates Connect at connection time, so a jailed member who was mid-call
 // stays connected, audible, and (if streaming) visible until they leave on
 // their own unless explicitly disconnected here.
 //
@@ -484,7 +484,7 @@ func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 
 // HandleMemberUpdate re-strips userID back to their jail role set if
 // Discord's own GUILD_MEMBER_UPDATE shows roles were regranted while they
-// were jailed — most commonly a guild's Onboarding or Membership Screening
+// were jailed, most commonly a guild's Onboarding or Membership Screening
 // flow, which grants its configured roles the moment a member completes it,
 // entirely independent of and unseen by anything this bot does. Only ever
 // called while the GUILD_MEMBERS intent is in effect, same as
