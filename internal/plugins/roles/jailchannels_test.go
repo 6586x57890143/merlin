@@ -288,12 +288,12 @@ func TestClearMemberJailOverwrites(t *testing.T) {
 	}
 }
 
-// End-to-end: this is the actual bug report. A member holds an
-// onboarding-style access role whose own channel overwrite explicitly
-// allows View Channel; jailing them must not leave that channel visible
-// just because the access role's allow would otherwise beat the Jailed
-// role's deny.
-func TestApplyJailAddsMemberOverwriteOnConflictingAccessRoleChannel(t *testing.T) {
+// The regular jail path stays pure role-based, deliberately: member-level
+// overwrites cost one write per at-risk channel, and an ordinary jail that
+// nobody is evading shouldn't pay for hardening it doesn't need. Even when a
+// conflicting access-role overwrite exists, applyJail alone must not touch
+// channel overwrites at all.
+func TestApplyJailDoesNotSetMemberOverwrites(t *testing.T) {
 	ops := newFakeOps()
 	ops.channel["gated"] = &discordgo.Channel{ID: "gated", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
 		PermissionOverwrites: []*discordgo.PermissionOverwrite{
@@ -305,6 +305,63 @@ func TestApplyJailAddsMemberOverwriteOnConflictingAccessRoleChannel(t *testing.T
 	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"access-role"}, time.Hour, "mod1", "test"); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
+
+	if _, ok := ops.overwrites[overwriteKey{"gated", "u1"}]; ok {
+		t.Error("applyJail set a member-level overwrite; that hardening belongs to the evasion routine only")
+	}
+}
+
+// End-to-end: this is the actual bug report. A member rejoins (or has a
+// role regranted by a guild's Onboarding/Membership Screening flow) while
+// jailed, holding an access role whose own channel overwrite explicitly
+// allows View Channel. reapplyIfEvaded is the evasion routine, so unlike an
+// ordinary jail it must add the member-level deny that actually stops that
+// role from beating the Jailed role's own channel-level deny.
+func TestReapplyIfEvadedSetsMemberOverwriteOnConflictingAccessRoleChannel(t *testing.T) {
+	ops := newFakeOps()
+	ops.channel["gated"] = &discordgo.Channel{ID: "gated", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
+		PermissionOverwrites: []*discordgo.PermissionOverwrite{
+			{ID: "access-role", Type: discordgo.PermissionOverwriteTypeRole, Allow: int64(discordgo.PermissionViewChannel)},
+		}}
+	// Rejoined (JoinedAt after JailedAt) with the access role but no marker.
+	ops.setMemberJoined("g1", "u1", []string{"access-role"}, fixedNow.Add(-time.Minute))
+
+	store := newFakeStore()
+	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+		t.Fatalf("InsertJail: %v", err)
+	}
+
+	p := newEvasionPlugin(t, ops, store)
+	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+		t.Fatalf("reapplyEvadedJails: %v", err)
+	}
+
+	ow, ok := ops.overwrites[overwriteKey{"gated", "u1"}]
+	if !ok {
+		t.Fatal("expected a member-level deny on the channel the access role could otherwise unlock")
+	}
+	if ow.deny&int64(discordgo.PermissionViewChannel) == 0 {
+		t.Fatalf("expected ViewChannel denied for the member, got deny=%d", ow.deny)
+	}
+}
+
+// Same bug report, live-event path: HandleMemberUpdate is the other half of
+// the evasion routine and must set the same hardening.
+func TestHandleMemberUpdateSetsMemberOverwriteOnConflictingAccessRoleChannel(t *testing.T) {
+	ops := newFakeOps()
+	ops.channel["gated"] = &discordgo.Channel{ID: "gated", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
+		PermissionOverwrites: []*discordgo.PermissionOverwrite{
+			{ID: "access-role", Type: discordgo.PermissionOverwriteTypeRole, Allow: int64(discordgo.PermissionViewChannel)},
+		}}
+	ops.setMemberJoined("g1", "u1", []string{"jail-role", "access-role"}, jailedAt.Add(-24*time.Hour))
+
+	store := newFakeStore()
+	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+		t.Fatalf("InsertJail: %v", err)
+	}
+
+	p := newEvasionPlugin(t, ops, store)
+	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"jail-role", "access-role"})
 
 	ow, ok := ops.overwrites[overwriteKey{"gated", "u1"}]
 	if !ok {
