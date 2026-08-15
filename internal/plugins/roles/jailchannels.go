@@ -217,31 +217,6 @@ func (p *Plugin) clearMemberJailOverwrites(guildID, userID string) error {
 	return firstErr
 }
 
-// syncActiveJailMemberOverwrites re-runs syncMemberJailOverwrites for every
-// currently active jail in guildID. Called from /roles configure
-// sync-channels alongside the role-overwrite resync, so a channel that
-// gains a conflicting role overwrite (or is created) after a member was
-// already jailed gets covered without waiting for that member's jail to be
-// reasserted by some other trigger (a rejoin, a regrant). One member's
-// failure is logged and doesn't abort the rest, matching every other sweep
-// in this plugin.
-func (p *Plugin) syncActiveJailMemberOverwrites(ctx context.Context, guildID string) error {
-	active, err := p.store.ActiveJails(ctx, guildID, p.now())
-	if err != nil {
-		return fmt.Errorf("roles: list active jails for member overwrite sync: %w", err)
-	}
-	var firstErr error
-	for _, rec := range active {
-		if err := p.syncMemberJailOverwrites(guildID, rec.UserID); err != nil {
-			p.log.Error("roles: sync member jail overwrites failed", "guild", guildID, "user", rec.UserID, "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
-}
-
 // syncAllJailChannelOverwrites recomputes every managed channel's Jailed-role
 // overwrite in guildID against the current allowlist and channel list.
 // Run once when the Jailed role is first created (so a fresh setup starts

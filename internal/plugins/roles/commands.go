@@ -342,11 +342,7 @@ func (p *Plugin) handleSyncChannels(ctx context.Context, s *discordgo.Session, i
 	case err != nil:
 		followUpErr = core.FollowUpErr(s, i, "Failed to resolve jail role", err)
 	default:
-		syncErr := p.syncAllJailChannelOverwrites(i.GuildID, jailRoleID)
-		if memberErr := p.syncActiveJailMemberOverwrites(ctx, i.GuildID); memberErr != nil && syncErr == nil {
-			syncErr = memberErr
-		}
-		if syncErr != nil {
+		if syncErr := p.syncAllJailChannelOverwrites(i.GuildID, jailRoleID); syncErr != nil {
 			followUpErr = core.FollowUpErr(s, i, "Sync completed with errors", syncErr)
 		} else {
 			followUpErr = core.FollowUpOK(s, i, "Channels synced", "Every channel's jail visibility now matches the current allowlist.")

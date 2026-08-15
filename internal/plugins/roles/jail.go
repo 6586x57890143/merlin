@@ -237,17 +237,24 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 }
 
 // stripToJailRoles replaces userID's roles with newRoles (as computed by
-// jailRoles) and, on success, force-disconnects them from voice and adds a
-// member-level channel deny wherever one is actually needed (see
-// syncMemberJailOverwrites): a role alone is not enough, since Discord lets
-// any other role's channel-level allow beat the Jailed role's channel-level
-// deny regardless of role position, which is exactly what an onboarding- or
-// screening-granted access role does. The single chokepoint every
-// jail-(re)application path funnels through: applyJail, reapplyIfEvaded,
-// and HandleMemberUpdate's onboarding-regrant reassertion all call this
-// rather than each hand-rolling the same GuildMemberEdit, so none of them
-// can forget the voice-kick or the member-overwrite hardening, including
-// whatever future call site needs to reassert a jail next.
+// jailRoles) and, on success, force-disconnects them from voice. The single
+// chokepoint every jail-(re)application path funnels through: applyJail,
+// reapplyIfEvaded, and HandleMemberUpdate's onboarding-regrant reassertion
+// all call this rather than each hand-rolling the same GuildMemberEdit, so
+// none of them can forget the voice-kick, including whatever future call
+// site needs to reassert a jail next.
+//
+// Deliberately does not touch member-level channel overwrites itself
+// (contrast syncMemberJailOverwrites): that hardening is O(at-risk
+// channels) per call, and an ordinary jail that nobody ever tries to evade
+// should stay the O(1) role edit it always was. Only reapplyIfEvaded and
+// HandleMemberUpdate call syncMemberJailOverwrites themselves, after this
+// returns, because those two are specifically what fire when live state has
+// drifted from the jail: a rejoin, or a role a guild's Onboarding/Membership
+// Screening flow regranted. A member-level deny is what actually stops that
+// regranted role from beating the Jailed role's own channel-level deny (see
+// its doc comment), and paying that cost is worth it exactly there, not on
+// the common case of a jail nobody is fighting.
 func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*discordgo.Member, error) {
 	m, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles})
 	if err != nil {
@@ -263,9 +270,6 @@ func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*d
 		return nil, err
 	}
 	p.disconnectFromVoice(guildID, userID)
-	if err := p.syncMemberJailOverwrites(guildID, userID); err != nil {
-		p.log.Warn("roles: failed to set member-level jail overwrites", "guild", guildID, "user", userID, "err", err)
-	}
 	return m, nil
 }
 
@@ -445,6 +449,14 @@ func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRe
 	if _, err := p.stripToJailRoles(guildID, rec.UserID, expected); err != nil {
 		return fmt.Errorf("roles: re-apply jail to %s: %w", rec.UserID, err)
 	}
+	// Only reached once live state has actually drifted from the jail (a
+	// rejoin, or a regranted role): the member-level hardening isn't paid on
+	// an ordinary jail nobody is fighting, only here, where it's what
+	// actually stops a role a guild's Onboarding/Membership Screening flow
+	// hands back from beating the Jailed role's own channel-level deny.
+	if err := p.syncMemberJailOverwrites(guildID, rec.UserID); err != nil {
+		p.log.Warn("roles: failed to set member-level jail overwrites", "guild", guildID, "user", rec.UserID, "err", err)
+	}
 
 	action, reason := "roles.jail_reasserted", "roles were regranted while jailed (server onboarding/screening)"
 	if rejoined {
@@ -533,6 +545,14 @@ func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string,
 	if _, err := p.stripToJailRoles(guildID, userID, expected); err != nil {
 		p.log.Error("roles: re-strip roles regranted after jail", "guild", guildID, "user", userID, "err", err)
 		return
+	}
+	// This is the evasion routine, not an ordinary jail: onboarding/screening
+	// just proved it can hand a channel-unlocking role back, so the
+	// member-level deny that actually stops that role from beating the
+	// Jailed role's own channel-level deny is worth its per-channel cost
+	// here specifically.
+	if err := p.syncMemberJailOverwrites(guildID, userID); err != nil {
+		p.log.Warn("roles: failed to set member-level jail overwrites", "guild", guildID, "user", userID, "err", err)
 	}
 
 	p.log.Warn("roles: roles regranted to a jailed member were stripped again", "guild", guildID, "user", userID,
