@@ -266,6 +266,31 @@ func TestHandleMemberUpdateStripsRegrantedRoles(t *testing.T) {
 	}
 }
 
+// GetJail (unlike ActiveJails, which the sweep uses) does not filter by
+// expiry, so a jail whose ReleaseAt has already passed but hasn't been swept
+// out yet must still be left alone: the sentence is already served, and
+// HandleMemberJoin already guards this same window for the rejoin path.
+func TestHandleMemberUpdateIgnoresAnExpiredJail(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMemberJoined("g1", "u1", []string{"jail-role", "onboarding-role"}, jailedAt.Add(-24*time.Hour))
+
+	store := newFakeStore()
+	expired := fixedNow.Add(-time.Minute)
+	if err := store.InsertJail(context.Background(), JailRecord{
+		GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a"},
+		JailRoleID: "jail-role", JailedAt: jailedAt, ReleaseAt: &expired,
+	}); err != nil {
+		t.Fatalf("InsertJail: %v", err)
+	}
+
+	p := newEvasionPlugin(t, ops, store)
+	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"jail-role", "onboarding-role"})
+
+	if calls := ops.memberEditCalls["u1"]; len(calls) != 0 {
+		t.Errorf("re-stripped roles for a member whose jail had already expired: %v", calls)
+	}
+}
+
 // A missing marker means a manual release or a rejoin, both already owned by
 // reapplyIfEvaded's confused-deputy rule. HandleMemberUpdate must not fight
 // that by re-jailing on a guess.

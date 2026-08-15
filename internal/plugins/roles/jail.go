@@ -508,6 +508,14 @@ func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string,
 		// reapplyIfEvaded's confused-deputy rule. Don't fight it here.
 		return
 	}
+	if rec.ReleaseAt != nil && !rec.ReleaseAt.After(p.now()) {
+		// Sentence already served; the record just hasn't been swept out
+		// yet. GetJail doesn't filter by expiry (unlike ActiveJails, which
+		// is what reapplyEvadedJails' sweep uses), so without this check an
+		// update landing in that window would re-strip someone whose jail
+		// has already ended, mirroring the same guard HandleMemberJoin has.
+		return
+	}
 
 	expected, unmanageable := jailRoles(p.perms, guildID, rec.JailRoleID, roles)
 	if sameRoleSet(expected, roles) {
