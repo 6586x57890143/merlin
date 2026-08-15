@@ -62,6 +62,15 @@ type fakeOps struct {
 	roleAddCalls    []string // "guildID:userID:roleID"
 	roleRemoveCalls []string
 	memberEditCalls map[string][]string // userID -> Roles set on each GuildMemberEdit call
+
+	// voiceKickCalls records every disconnectFromVoice call (the
+	// ChannelID-only GuildMemberEdit), by userID, kept separate from
+	// memberEditCalls since it's a distinct API call carrying no Roles.
+	// voiceKickErr, when set, fails only that call, independent of
+	// memberEditErr, so a test can simulate a failing kick without also
+	// failing the role strip that precedes it.
+	voiceKickCalls []string
+	voiceKickErr   error
 }
 
 func newFakeOps() *fakeOps {
@@ -174,6 +183,16 @@ func (f *fakeOps) GuildMembers(guildID string, after string, limit int, options 
 }
 
 func (f *fakeOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error) {
+	if data.ChannelID != nil {
+		// The voice-disconnect call: a separate GuildMemberEdit carrying only
+		// ChannelID, never combined with a Roles change (see
+		// Plugin.disconnectFromVoice).
+		f.mu.Lock()
+		f.voiceKickCalls = append(f.voiceKickCalls, userID)
+		f.mu.Unlock()
+		return nil, f.voiceKickErr
+	}
+
 	if f.memberEditErr != nil {
 		return nil, f.memberEditErr
 	}

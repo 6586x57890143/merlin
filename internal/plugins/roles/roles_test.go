@@ -64,6 +64,7 @@ func newTestPlugin(ops *fakeOps, store *fakeStore, settings *fakeSettings, audit
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),
 		voice:             testVoice(),
+		voiceChannelOf:    func(string, string) (string, bool) { return "", false },
 	}
 }
 

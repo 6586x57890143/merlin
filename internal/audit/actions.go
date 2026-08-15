@@ -45,6 +45,7 @@ var actions = map[string]meta{
 	"roles.jail":                {title: "Member jailed", color: core.ColorWarning},
 	"roles.jail_bulk":           {title: "Members jailed", color: core.ColorWarning},
 	"roles.jail_reapplied":      {title: "Jail re-applied after a rejoin", color: core.ColorWarning},
+	"roles.jail_reasserted":     {title: "Jail reasserted (roles regranted)", color: core.ColorWarning},
 	"rotation.remove":           {title: "Channel rotation removed", color: core.ColorWarning},
 	"config.admin_removed":      {title: "Admin removed", color: core.ColorWarning},
 	"config.mod_role_removed":   {title: "Mod role removed", color: core.ColorWarning},

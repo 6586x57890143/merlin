@@ -163,6 +163,20 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		func(guildID string) roles.DiscordMemberOps { return guard.For(guildID) },
 		guard.DryRun,
 		speaker,
+		// Reads discordgo's gateway-cached voice state directly (session.State
+		// is a field, not embedded, so *discordgo.Session can't structurally
+		// satisfy an interface method for this the way it does for every REST
+		// call in DiscordMemberOps). Enrichment only: roles.disconnectFromVoice
+		// still force-disconnects unconditionally even when this reports
+		// nothing, so a cold or incomplete cache never costs a missed kick,
+		// only a less specific log line.
+		func(guildID, userID string) (string, bool) {
+			vs, err := session.State.VoiceState(guildID, userID)
+			if err != nil {
+				return "", false
+			}
+			return vs.ChannelID, true
+		},
 	)
 
 	registry := core.NewRegistry(deps, log)
@@ -278,9 +292,28 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			defer cancel()
 			rolesPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.User.ID)
 		})
+
+		// A guild's Onboarding or Membership Screening flow grants a member
+		// its configured roles the moment they complete it, arriving here as
+		// GUILD_MEMBER_UPDATE, entirely outside anything this bot does. For a
+		// member jailed on join, that regrant lands after HandleMemberJoin's
+		// strip already ran, so without this a jailed member walks straight
+		// back in with whatever onboarding hands out, some of which can carry
+		// real server access. reapplyEvadedJails' sweep is the backstop for
+		// this too (bounded to one minute), so it still closes even with the
+		// intent off, just not instantly.
+		session.AddHandler(func(s *discordgo.Session, mu *discordgo.GuildMemberUpdate) {
+			if mu.Member == nil || mu.User == nil {
+				return
+			}
+			updateCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			rolesPlugin.HandleMemberUpdate(updateCtx, mu.GuildID, mu.User.ID, mu.Roles)
+		})
 	} else {
 		log.Warn("GUILD_MEMBERS intent disabled by MERLIN_DISABLE_GUILD_MEMBERS_INTENT: " +
-			"a jailed member who rejoins keeps full access until the next sweep")
+			"a jailed member who rejoins keeps full access until the next sweep, and roles regranted by " +
+			"a guild's Onboarding/Membership Screening flow after a jail aren't stripped again until then either")
 	}
 
 	// A channel disappearing under a rotation config is otherwise only

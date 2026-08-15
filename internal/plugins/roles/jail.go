@@ -226,7 +226,26 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 		return nil, fmt.Errorf("roles: save jail record for %s: %w", userID, err)
 	}
 
-	if _, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles}); err != nil {
+	if _, err := p.stripToJailRoles(guildID, userID, newRoles); err != nil {
+		if delErr := p.store.DeleteJail(ctx, guildID, userID); delErr != nil {
+			p.log.Error("roles: roll back jail record after failed role update",
+				"guild", guildID, "user", userID, "err", delErr)
+		}
+		return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
+	}
+	return unmanageable, nil
+}
+
+// stripToJailRoles replaces userID's roles with newRoles (as computed by
+// jailRoles) and, on success, force-disconnects them from voice. The single
+// chokepoint every jail-(re)application path funnels through — applyJail,
+// reapplyIfEvaded, and HandleMemberUpdate's onboarding-regrant reassertion
+// all call this rather than each hand-rolling the same GuildMemberEdit, so
+// none of them can forget the voice-kick, including whatever future call
+// site needs to reassert a jail next.
+func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*discordgo.Member, error) {
+	m, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles})
+	if err != nil {
 		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownRole) {
 			// The cached Jailed role was deleted in Discord. Forget it so the
 			// next attempt resolves or recreates one instead of retrying
@@ -236,13 +255,59 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 			// about the role and would throw away a good cache entry.
 			p.forgetJailRole(guildID)
 		}
-		if delErr := p.store.DeleteJail(ctx, guildID, userID); delErr != nil {
-			p.log.Error("roles: roll back jail record after failed role update",
-				"guild", guildID, "user", userID, "err", delErr)
-		}
-		return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
+		return nil, err
 	}
-	return unmanageable, nil
+	p.disconnectFromVoice(guildID, userID)
+	return m, nil
+}
+
+// disconnectFromVoice force-kicks userID from any voice channel they're
+// currently connected to in guildID. Role and permission-overwrite changes
+// don't propagate to an already-established voice session — Discord only
+// evaluates Connect at connection time — so a jailed member who was mid-call
+// stays connected, audible, and (if streaming) visible until they leave on
+// their own unless explicitly disconnected here.
+//
+// A separate GuildMemberEdit call, deliberately not merged into the role
+// edit above: Discord's Modify Guild Member endpoint permission-checks the
+// whole request per field it touches, and channel_id needs Move Members
+// where roles only needs Manage Roles. Combining them would mean a guild
+// that has never re-authorized the bot with Move Members sees jail's core
+// role-strip start failing outright too, over a permission the strip itself
+// never needed. Best-effort and non-fatal for the same reason an
+// audit-post failure never fails the operation that triggered it: a jailed
+// member with intact voice access is a strictly better outcome than no jail
+// at all.
+func (p *Plugin) disconnectFromVoice(guildID, userID string) {
+	if channelID, ok := p.voiceChannelOf(guildID, userID); ok {
+		p.log.Info("roles: disconnecting jailed member from voice", "guild", guildID, "user", userID, "channel", channelID)
+	}
+	empty := ""
+	if _, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{ChannelID: &empty}); err != nil {
+		p.log.Warn("roles: failed to disconnect jailed member from voice", "guild", guildID, "user", userID, "err", err)
+	}
+}
+
+// sameRoleSet reports whether a and b hold the same roles, ignoring order.
+// Used to make every jail-reassertion path idempotent: if live roles already
+// equal what jailRoles would produce, there's nothing to do. This is what
+// stops HandleMemberUpdate from looping on its own edit (that edit fires its
+// own GUILD_MEMBER_UPDATE, re-entering the handler; the second pass sees
+// roles already matching and no-ops).
+func sameRoleSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]bool, len(a))
+	for _, r := range a {
+		seen[r] = true
+	}
+	for _, r := range b {
+		if !seen[r] {
+			return false
+		}
+	}
+	return true
 }
 
 // jailRoles decides what a jailed member ends up holding: the marker role,
@@ -321,8 +386,17 @@ func (p *Plugin) reapplyEvadedJails(ctx context.Context, guildID string) error {
 	return firstErr
 }
 
-// reapplyIfEvaded re-applies rec's marker role if userID is back in the guild
-// without it, having rejoined since being jailed.
+// reapplyIfEvaded re-jails userID against rec if live Discord state has
+// drifted from what the jail should look like: either they rejoined without
+// the marker (evasion), or the marker is still on them but they now hold
+// roles jailRoles wouldn't have left them with (most commonly a guild's
+// Onboarding or Membership Screening flow regranting roles once they
+// complete it, entirely outside this bot's control). This is the sweep's
+// backstop for both cases: HandleMemberJoin calls it for the rejoin case
+// near-instantly when the GUILD_MEMBERS intent allows it, and
+// HandleMemberUpdate does the same for the regrant case; this function is
+// what still catches both within one sweep tick when that intent is off and
+// neither event ever arrives.
 //
 // It deliberately does not touch the stored record. The snapshot holds the
 // member's real pre-jail roles and is the only copy of them. Overwriting it
@@ -342,31 +416,36 @@ func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRe
 		return fmt.Errorf("roles: fetch member %s for evasion check: %w", rec.UserID, err)
 	}
 
+	expected, unmanageable := jailRoles(p.perms, guildID, rec.JailRoleID, member.Roles)
+	rejoined := false
 	if slices.Contains(member.Roles, rec.JailRoleID) {
-		return nil // Still jailed, nothing to do.
-	}
-	if !rejoinedSinceJail(member, rec) {
+		if sameRoleSet(expected, member.Roles) {
+			return nil // Still exactly as jailed as they should be.
+		}
+		// Marker present but roles drifted beyond it: something (typically
+		// onboarding/screening) regranted roles after the strip. Falls
+		// through to the same reassertion below as the rejoin case.
+	} else if rejoinedSinceJail(member, rec) {
+		rejoined = true
+	} else {
 		// Marker gone without a rejoin: a mod released them by hand. That is
 		// the confused-deputy rescue hatch, and it stays honored: the
 		// existing sweep untracks them when the jail comes due.
 		return nil
 	}
 
-	newRoles, unmanageable := jailRoles(p.perms, guildID, rec.JailRoleID, member.Roles)
-	if _, err := p.ops(guildID).GuildMemberEdit(guildID, rec.UserID, &discordgo.GuildMemberParams{Roles: &newRoles}); err != nil {
-		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownRole) {
-			// The Jailed role itself was deleted. Drop the cached ID so the
-			// next jail recreates it; this record can't be re-applied until
-			// then, which /config status surfaces as a missing role.
-			p.forgetJailRole(guildID)
-		}
+	if _, err := p.stripToJailRoles(guildID, rec.UserID, expected); err != nil {
 		return fmt.Errorf("roles: re-apply jail to %s: %w", rec.UserID, err)
 	}
 
-	p.log.Warn("roles: re-applied jail after rejoin", "guild", guildID, "user", rec.UserID,
+	action, reason := "roles.jail_reasserted", "roles were regranted while jailed (server onboarding/screening)"
+	if rejoined {
+		action, reason = "roles.jail_reapplied", "left and rejoined while jailed"
+	}
+	p.log.Warn("roles: re-applied jail", "guild", guildID, "user", rec.UserID, "reason", reason,
 		"jailed_at", rec.JailedAt, "joined_at", member.JoinedAt)
-	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.jail_reapplied", core.MentionUser(rec.UserID),
-		fmt.Sprintf("left and rejoined while jailed; jail re-applied until %s unmanageable_roles=%v", releaseAtText(rec), unmanageable)); err != nil {
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, action, core.MentionUser(rec.UserID),
+		fmt.Sprintf("%s; jail re-applied until %s unmanageable_roles=%v", reason, releaseAtText(rec), unmanageable)); err != nil {
 		p.log.Error("roles: audit jail re-apply failed", "guild", guildID, "user", rec.UserID, "err", err)
 	}
 	return nil
@@ -400,6 +479,52 @@ func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 	}
 	if err := p.reapplyIfEvaded(ctx, guildID, rec); err != nil {
 		p.log.Error("roles: re-apply jail on member join", "guild", guildID, "user", userID, "err", err)
+	}
+}
+
+// HandleMemberUpdate re-strips userID back to their jail role set if
+// Discord's own GUILD_MEMBER_UPDATE shows roles were regranted while they
+// were jailed — most commonly a guild's Onboarding or Membership Screening
+// flow, which grants its configured roles the moment a member completes it,
+// entirely independent of and unseen by anything this bot does. Only ever
+// called while the GUILD_MEMBERS intent is in effect, same as
+// HandleMemberJoin; reapplyIfEvaded's sweep is this fix's backstop when the
+// intent is off, bounded to one minute instead of instant.
+//
+// roles is trusted directly from the event rather than re-fetched: unlike
+// reapplyIfEvaded's deliberate live-REST-not-cache policy (reading a local
+// cache that can go stale), a GUILD_MEMBER_UPDATE payload is Discord's own
+// authoritative push of the member's current state, not something read back
+// out of this bot's cache.
+func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string, roles []string) {
+	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
+	if err != nil {
+		p.log.Error("roles: look up jail on member update", "guild", guildID, "user", userID, "err", err)
+		return
+	}
+	if !ok || !slices.Contains(roles, rec.JailRoleID) {
+		// No active jail, or the marker itself is gone: that's a manual
+		// release or the rejoin path, both already owned by
+		// reapplyIfEvaded's confused-deputy rule. Don't fight it here.
+		return
+	}
+
+	expected, unmanageable := jailRoles(p.perms, guildID, rec.JailRoleID, roles)
+	if sameRoleSet(expected, roles) {
+		return // Nothing drifted; also what stops this handler looping on its own edit below.
+	}
+
+	if _, err := p.stripToJailRoles(guildID, userID, expected); err != nil {
+		p.log.Error("roles: re-strip roles regranted after jail", "guild", guildID, "user", userID, "err", err)
+		return
+	}
+
+	p.log.Warn("roles: roles regranted to a jailed member were stripped again", "guild", guildID, "user", userID,
+		"unmanageable_roles", unmanageable)
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.jail_reasserted", core.MentionUser(userID),
+		fmt.Sprintf("roles were regranted while jailed (server onboarding/screening); stripped again until %s unmanageable_roles=%v",
+			releaseAtText(rec), unmanageable)); err != nil {
+		p.log.Error("roles: audit jail reassert failed", "guild", guildID, "user", userID, "err", err)
 	}
 }
 
