@@ -102,6 +102,146 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 	return nil
 }
 
+// channelHasConflictingRoleAllow reports whether some role other than
+// @everyone has an explicit channel-level overwrite allowing a permission
+// deny is supposed to remove. Discord resolves conflicting role-tier
+// overwrites by combining every held role's deny bits, then every held
+// role's allow bits, applying deny then allow: an allow from any other role
+// beats the Jailed role's deny on the same channel, regardless of role
+// position ("permissions do not obey the role hierarchy" for this
+// resolution, per Discord's own docs). A member-tier overwrite is applied
+// after all role-tier overwrites and cannot be beaten by any role, which is
+// what syncMemberJailOverwrites adds, and only where it's actually needed:
+// a channel with no conflicting role overwrite is already correctly denied
+// by the Jailed role's own overwrite alone.
+//
+// everyoneRoleID is guildID itself: Discord gives the @everyone role the
+// same ID as the guild. Not scoped to one specific "access role" by design:
+// this catches any role with a conflicting allow, present now or granted
+// later by anything (a guild's Onboarding flow, a manual grant, a future
+// misconfiguration), not just whichever role happens to be causing trouble
+// today.
+func channelHasConflictingRoleAllow(ch *discordgo.Channel, everyoneRoleID string, deny int64) bool {
+	for _, ow := range ch.PermissionOverwrites {
+		if ow.Type != discordgo.PermissionOverwriteTypeRole || ow.ID == everyoneRoleID {
+			continue
+		}
+		if ow.Allow&deny != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// atRiskJailChannels returns guildID's jail-managed, non-allowlisted
+// channels that actually have a conflicting role-level allow overwrite (see
+// channelHasConflictingRoleAllow). In practice this is a small subset of a
+// guild's channels, since most channels carry no per-role overwrites at
+// all, which is what keeps syncMemberJailOverwrites cheap: it only ever
+// writes to channels where a member-tier overwrite is the sole thing that
+// can actually stop a competing role's allow from beating the Jailed role's
+// deny.
+func (p *Plugin) atRiskJailChannels(guildID string) ([]*discordgo.Channel, error) {
+	channels, err := p.ops(guildID).GuildChannels(guildID)
+	if err != nil {
+		return nil, fmt.Errorf("roles: list guild channels: %w", err)
+	}
+	allowed := make(map[string]bool)
+	for _, id := range p.jailChannelConfig.JailAllowedChannelIDs(guildID) {
+		allowed[id] = true
+	}
+
+	var out []*discordgo.Channel
+	for _, ch := range channels {
+		if !jailManagedChannelType(ch.Type) || allowed[ch.ID] {
+			continue
+		}
+		if channelHasConflictingRoleAllow(ch, guildID, jailDenyFor(ch.Type)) {
+			out = append(out, ch)
+		}
+	}
+	return out, nil
+}
+
+// syncMemberJailOverwrites adds a member-level deny for userID on every
+// at-risk channel (atRiskJailChannels): the hardening that makes a jail
+// unconditional regardless of what roles userID holds or is later granted,
+// since a member-tier overwrite is the only thing in Discord's permission
+// model that reliably wins over every role-tier overwrite at once. Called
+// from stripToJailRoles, so it runs on every jail (re)application: the
+// initial jail, a rejoin-evasion re-apply (Discord clears a member's own
+// channel overwrites when they leave the guild, so a rejoin needs this
+// reapplied too, not just the role), and a regrant reassertion. Per-channel
+// failures are logged and don't abort the rest, matching
+// syncAllJailChannelOverwrites' own policy; the caller treats this whole
+// call as best-effort, since the role strip it runs alongside is what must
+// not fail.
+func (p *Plugin) syncMemberJailOverwrites(guildID, userID string) error {
+	channels, err := p.atRiskJailChannels(guildID)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, ch := range channels {
+		if err := p.ops(guildID).ChannelPermissionSet(ch.ID, userID, discordgo.PermissionOverwriteTypeMember, 0, jailDenyFor(ch.Type)); err != nil {
+			p.log.Error("roles: set member jail overwrite failed", "guild", guildID, "user", userID, "channel", ch.ID, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+// clearMemberJailOverwrites removes userID's member-level deny from every
+// currently at-risk channel, called from releaseJail. Recomputing "at risk"
+// fresh rather than remembering what was set at jail time means a channel
+// whose conflicting role overwrite was removed while the member was jailed
+// is simply skipped here too: it no longer needs cleanup, which keeps
+// release scoped to the same small channel set jail itself touches instead
+// of a blanket sweep of every jail-managed channel.
+func (p *Plugin) clearMemberJailOverwrites(guildID, userID string) error {
+	channels, err := p.atRiskJailChannels(guildID)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, ch := range channels {
+		if err := p.ops(guildID).ChannelPermissionDelete(ch.ID, userID); err != nil {
+			p.log.Error("roles: clear member jail overwrite failed", "guild", guildID, "user", userID, "channel", ch.ID, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+// syncActiveJailMemberOverwrites re-runs syncMemberJailOverwrites for every
+// currently active jail in guildID. Called from /roles configure
+// sync-channels alongside the role-overwrite resync, so a channel that
+// gains a conflicting role overwrite (or is created) after a member was
+// already jailed gets covered without waiting for that member's jail to be
+// reasserted by some other trigger (a rejoin, a regrant). One member's
+// failure is logged and doesn't abort the rest, matching every other sweep
+// in this plugin.
+func (p *Plugin) syncActiveJailMemberOverwrites(ctx context.Context, guildID string) error {
+	active, err := p.store.ActiveJails(ctx, guildID, p.now())
+	if err != nil {
+		return fmt.Errorf("roles: list active jails for member overwrite sync: %w", err)
+	}
+	var firstErr error
+	for _, rec := range active {
+		if err := p.syncMemberJailOverwrites(guildID, rec.UserID); err != nil {
+			p.log.Error("roles: sync member jail overwrites failed", "guild", guildID, "user", rec.UserID, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
 // syncAllJailChannelOverwrites recomputes every managed channel's Jailed-role
 // overwrite in guildID against the current allowlist and channel list.
 // Run once when the Jailed role is first created (so a fresh setup starts

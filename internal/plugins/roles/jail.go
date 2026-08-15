@@ -237,12 +237,17 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 }
 
 // stripToJailRoles replaces userID's roles with newRoles (as computed by
-// jailRoles) and, on success, force-disconnects them from voice. The single
-// chokepoint every jail-(re)application path funnels through: applyJail,
-// reapplyIfEvaded, and HandleMemberUpdate's onboarding-regrant reassertion
-// all call this rather than each hand-rolling the same GuildMemberEdit, so
-// none of them can forget the voice-kick, including whatever future call
-// site needs to reassert a jail next.
+// jailRoles) and, on success, force-disconnects them from voice and adds a
+// member-level channel deny wherever one is actually needed (see
+// syncMemberJailOverwrites): a role alone is not enough, since Discord lets
+// any other role's channel-level allow beat the Jailed role's channel-level
+// deny regardless of role position, which is exactly what an onboarding- or
+// screening-granted access role does. The single chokepoint every
+// jail-(re)application path funnels through: applyJail, reapplyIfEvaded,
+// and HandleMemberUpdate's onboarding-regrant reassertion all call this
+// rather than each hand-rolling the same GuildMemberEdit, so none of them
+// can forget the voice-kick or the member-overwrite hardening, including
+// whatever future call site needs to reassert a jail next.
 func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*discordgo.Member, error) {
 	m, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles})
 	if err != nil {
@@ -258,6 +263,9 @@ func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*d
 		return nil, err
 	}
 	p.disconnectFromVoice(guildID, userID)
+	if err := p.syncMemberJailOverwrites(guildID, userID); err != nil {
+		p.log.Warn("roles: failed to set member-level jail overwrites", "guild", guildID, "user", userID, "err", err)
+	}
 	return m, nil
 }
 
@@ -600,6 +608,9 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 
 	if _, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &restore}); err != nil {
 		return fmt.Errorf("roles: restore roles for %s: %w", userID, err)
+	}
+	if err := p.clearMemberJailOverwrites(guildID, userID); err != nil {
+		p.log.Warn("roles: failed to clear member-level jail overwrites", "guild", guildID, "user", userID, "err", err)
 	}
 
 	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.release", "", fmt.Sprintf("user=%s restored=%v", core.MentionUser(userID), restore)); err != nil {
