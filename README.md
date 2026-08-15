@@ -22,13 +22,22 @@ just links to it rather than repeating it.
     none configured yet; also used by `/roles` (Milestone 9) to create/
     reuse a shared "Jailed" marker role and to strip/restore/grant/revoke
     member roles; no new bit needed, this one already covers it.
+  - `Move Members` (bit `16777216`): lets `/roles jail` force-disconnect a
+    member from voice at jail time. Channel permission overwrites (the
+    Jailed role's deny on `Connect`) only stop a *future* connection;
+    Discord never re-evaluates them against a session already in progress,
+    so without this a jailed member who was mid-call would stay connected,
+    audible, and (if streaming) visible until they left on their own. A
+    guild that hasn't re-authorized the bot with this bit yet still jails
+    correctly (roles strip as before); it just can't also disconnect a
+    member already in voice, and that failure is logged, not fatal.
   - Least-privilege, per spec.MD §4: never `Administrator`; this list only
     grows when a landed milestone genuinely needs a new bit, and this
     section (plus the invite link below) is updated in the same PR.
 
-  **Current invite link** (scopes + the bits above, `16 | 268435456 = 268435472`):
+  **Current invite link** (scopes + the bits above, `16 | 268435456 | 16777216 = 285212688`):
   ```
-  https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=268435472
+  https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=285212688
   ```
   Have a server admin click this link and re-authorize whenever the
   permission bits change; it updates the bot's existing role rather than
@@ -42,15 +51,23 @@ just links to it rather than repeating it.
   model and `/config`'s subcommands. Who counts as "mod"/"admin" is
   configured via `/config mod-roles`/`/config admins`; see "First-time
   setup" below.
-- **Gateway intents**: `GUILDS` and `GUILD_MEMBERS`. `MESSAGE_CONTENT` is
-  never requested.
+- **Gateway intents**: `GUILDS`, `GUILD_VOICE_STATES`, and `GUILD_MEMBERS`.
+  `MESSAGE_CONTENT` is never requested.
+  - `GUILD_VOICE_STATES` is unprivileged (no Developer Portal toggle, unlike
+    `GUILD_MEMBERS` below) and always requested. It keeps discordgo's
+    gateway-cached voice state populated, which `/roles jail` uses only to
+    name the channel a jailed member was disconnected from in its log line;
+    the disconnect itself is a plain REST call and works with or without
+    this intent, so nothing depends on the cache being complete.
   - `GUILD_MEMBERS` is privileged, so it must also be ticked as **"Server
     Members Intent"** under Bot in Discord's Developer Portal (a self-serve
     toggle below 100 servers; Discord approval above that). Ticking it there
     is all you need to do; the bot asks for it by default.
-  - It is what re-jails a member the moment they rejoin, rather than on the
-    next `roles-sweep` tick. Jail survives a rejoin either way, so the intent
-    narrows the window from "at most a minute" to "immediately"; it does not
+  - It is what re-jails a member the moment they rejoin, and what re-strips
+    roles a guild's Onboarding/Membership Screening flow regrants to a
+    jailed member after the fact, rather than waiting for the next
+    `roles-sweep` tick for either. Both survive without the intent either
+    way, so it narrows the window from "at most a minute" to "immediately"; it does not
     create the protection.
   - If the portal toggle is off, Discord refuses the connection and the bot
     **exits at startup with that explanation** rather than running on

@@ -48,6 +48,18 @@ type Plugin struct {
 	// An interface, not the concrete catalog, so a generator can replace it
 	// later without this plugin knowing (see internal/voice).
 	voice voice.Source
+	// voiceChannelOf looks up the voice channel userID is currently
+	// connected to in guildID, reading discordgo's gateway-cached
+	// session.State rather than a REST call. Used only to name the channel
+	// in disconnectFromVoice's log line: the disconnect itself always fires
+	// regardless of what this reports, so a cold or stale cache (nothing is
+	// tracked yet, or the GUILD_VOICE_STATES intent is off in a build that
+	// predates it) costs a less specific log line, never a missed kick. A
+	// function rather than a narrow interface for the same reason dryRun is
+	// one: this is the only piece of session.State this plugin ever reads,
+	// and *discordgo.Session has no method to satisfy structurally here
+	// (State is a field, not an embedded promoter of its methods).
+	voiceChannelOf func(guildID, userID string) (channelID string, ok bool)
 
 	mu              sync.Mutex
 	sweepRegistered map[string]bool // guild ID -> sweep job registered
@@ -67,13 +79,14 @@ type OpsProvider func(guildID string) DiscordMemberOps
 // slice of internal/settings.Store (mirrors rotation's own SettingsProvider
 // parameter) for the one piece of guild configuration this plugin has:
 // jail's channel-visibility allowlist.
-func New(store Store, jailChannelConfig JailChannelConfig, ops OpsProvider, dryRun func(guildID string) bool, speaker voice.Source) *Plugin {
+func New(store Store, jailChannelConfig JailChannelConfig, ops OpsProvider, dryRun func(guildID string) bool, speaker voice.Source, voiceChannelOf func(guildID, userID string) (string, bool)) *Plugin {
 	return &Plugin{
 		store:             store,
 		jailChannelConfig: jailChannelConfig,
 		ops:               ops,
 		dryRun:            dryRun,
 		voice:             speaker,
+		voiceChannelOf:    voiceChannelOf,
 		now:               func() time.Time { return time.Now().UTC() },
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),

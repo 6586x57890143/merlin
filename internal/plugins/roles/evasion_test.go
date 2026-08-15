@@ -226,6 +226,146 @@ func TestHandleMemberJoinReJailsImmediately(t *testing.T) {
 	}
 }
 
+// The regrant escape: a guild's Onboarding/Membership Screening flow hands a
+// jailed member roles back after the initial strip, entirely outside this
+// bot's control. The marker is still on them, but their live roles no longer
+// match what jailRoles computed, and HandleMemberUpdate has to notice and
+// strip again.
+func TestHandleMemberUpdateStripsRegrantedRoles(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMemberJoined("g1", "u1", []string{"jail-role", "onboarding-role"}, jailedAt.Add(-24*time.Hour))
+
+	store := newFakeStore()
+	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+		t.Fatalf("InsertJail: %v", err)
+	}
+
+	audit := newFakeAudit()
+	p := newTestPlugin(ops, store, newFakeSettings(), audit, newFakePerms(), newFakeScheduler())
+	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"jail-role", "onboarding-role"})
+
+	member, err := ops.GuildMember("g1", "u1")
+	if err != nil {
+		t.Fatalf("GuildMember: %v", err)
+	}
+	if slices.Contains(member.Roles, "onboarding-role") {
+		t.Errorf("regranted role survived the reassertion; roles = %v", member.Roles)
+	}
+	if !slices.Contains(member.Roles, "jail-role") {
+		t.Errorf("reassertion dropped the jail marker itself; roles = %v", member.Roles)
+	}
+
+	found := false
+	for _, rec := range audit.records {
+		if rec.action == "roles.jail_reasserted" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no roles.jail_reasserted audit record; got %+v", audit.records)
+	}
+}
+
+// GetJail (unlike ActiveJails, which the sweep uses) does not filter by
+// expiry, so a jail whose ReleaseAt has already passed but hasn't been swept
+// out yet must still be left alone: the sentence is already served, and
+// HandleMemberJoin already guards this same window for the rejoin path.
+func TestHandleMemberUpdateIgnoresAnExpiredJail(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMemberJoined("g1", "u1", []string{"jail-role", "onboarding-role"}, jailedAt.Add(-24*time.Hour))
+
+	store := newFakeStore()
+	expired := fixedNow.Add(-time.Minute)
+	if err := store.InsertJail(context.Background(), JailRecord{
+		GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a"},
+		JailRoleID: "jail-role", JailedAt: jailedAt, ReleaseAt: &expired,
+	}); err != nil {
+		t.Fatalf("InsertJail: %v", err)
+	}
+
+	p := newEvasionPlugin(t, ops, store)
+	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"jail-role", "onboarding-role"})
+
+	if calls := ops.memberEditCalls["u1"]; len(calls) != 0 {
+		t.Errorf("re-stripped roles for a member whose jail had already expired: %v", calls)
+	}
+}
+
+// A missing marker means a manual release or a rejoin, both already owned by
+// reapplyIfEvaded's confused-deputy rule. HandleMemberUpdate must not fight
+// that by re-jailing on a guess.
+func TestHandleMemberUpdateNoOpWhenMarkerAbsent(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMemberJoined("g1", "u1", []string{"some-other-role"}, jailedAt.Add(-24*time.Hour))
+
+	store := newFakeStore()
+	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+		t.Fatalf("InsertJail: %v", err)
+	}
+
+	p := newEvasionPlugin(t, ops, store)
+	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"some-other-role"})
+
+	if calls := ops.memberEditCalls["u1"]; len(calls) != 0 {
+		t.Errorf("edited roles for a member without the jail marker: %v", calls)
+	}
+}
+
+// Roles already matching what jail expects means nothing drifted, including
+// the case where this is the update event caused by HandleMemberUpdate's own
+// prior edit. Issuing another edit here would be a self-triggering loop.
+func TestHandleMemberUpdateNoOpWhenRolesAlreadyMatch(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMemberJoined("g1", "u1", []string{"jail-role"}, jailedAt.Add(-24*time.Hour))
+
+	store := newFakeStore()
+	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+		t.Fatalf("InsertJail: %v", err)
+	}
+
+	p := newEvasionPlugin(t, ops, store)
+	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"jail-role"})
+
+	if calls := ops.memberEditCalls["u1"]; len(calls) != 0 {
+		t.Errorf("issued a spurious edit for a member already matching the jail's expected roles: %v", calls)
+	}
+	if len(ops.voiceKickCalls) != 0 {
+		t.Errorf("issued a spurious voice kick for a member already matching the jail's expected roles: %v", ops.voiceKickCalls)
+	}
+}
+
+// The sweep is the backstop for a regrant when the GUILD_MEMBERS intent is
+// off and HandleMemberUpdate never fires: it must catch the same drift using
+// only the REST member fetch it already makes.
+func TestSweepCatchesRegrantedRolesViaREST(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMemberJoined("g1", "u1", []string{"jail-role", "onboarding-role"}, jailedAt.Add(-24*time.Hour))
+
+	store := newFakeStore()
+	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+		t.Fatalf("InsertJail: %v", err)
+	}
+
+	audit := newFakeAudit()
+	p := newTestPlugin(ops, store, newFakeSettings(), audit, newFakePerms(), newFakeScheduler())
+	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+		t.Fatalf("reapplyEvadedJails: %v", err)
+	}
+
+	member, err := ops.GuildMember("g1", "u1")
+	if err != nil {
+		t.Fatalf("GuildMember: %v", err)
+	}
+	if slices.Contains(member.Roles, "onboarding-role") {
+		t.Errorf("sweep backstop failed to strip a regranted role; roles = %v", member.Roles)
+	}
+	for _, rec := range audit.records {
+		if rec.action == "roles.jail_reapplied" {
+			t.Errorf("regrant (not a rejoin) was audited as roles.jail_reapplied: %+v", rec)
+		}
+	}
+}
+
 // Someone whose jail expired while they were away has served it. Rejoining
 // must not re-jail them: the ordinary sweep closes the record out instead.
 func TestHandleMemberJoinIgnoresAnExpiredJail(t *testing.T) {

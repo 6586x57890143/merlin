@@ -9,9 +9,16 @@ import (
 )
 
 // NewSession builds the single shared *discordgo.Session used by every
-// plugin. Intents are the minimum this binary needs: GUILDS always, plus
-// GUILD_MEMBERS unless the operator has turned it off. MESSAGE_CONTENT is
-// never requested at all.
+// plugin. Intents are the minimum this binary needs: GUILDS and
+// GUILD_VOICE_STATES always, plus GUILD_MEMBERS unless the operator has
+// turned it off. MESSAGE_CONTENT is never requested at all.
+//
+// GUILD_VOICE_STATES is unprivileged (no Developer Portal toggle, no
+// approval process, unlike GUILD_MEMBERS below), so it is always requested.
+// It is what keeps session.State's voice-connection cache populated, which
+// roles uses to name the channel a jailed member was disconnected from in
+// its log line; the disconnect itself is a plain REST call and works
+// without this intent, so nothing depends on the cache being complete.
 //
 // withMembers controls GUILD_MEMBERS, which is what lets the roles plugin
 // react to a rejoin the instant it happens rather than on the next sweep
@@ -26,7 +33,7 @@ func NewSession(token string, withMembers bool) (*discordgo.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
-	intents := discordgo.IntentsGuilds
+	intents := discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates
 	if withMembers {
 		intents |= discordgo.IntentsGuildMembers
 	}
