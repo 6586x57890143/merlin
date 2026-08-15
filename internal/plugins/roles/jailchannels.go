@@ -3,9 +3,52 @@ package roles
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+// channelSyncConcurrency bounds how many permission-overwrite writes run at
+// once during a guild-wide resync (syncAllJailChannelOverwrites,
+// syncMemberJailOverwrites, clearMemberJailOverwrites). Each channel has its
+// own Discord rate-limit bucket for permission writes, so concurrent writes
+// to different channels don't contend with each other; this cap exists only
+// to keep a large guild's fan-out well clear of Discord's global per-bot
+// rate limit, not because discordguard's own opChannelPermissions cap
+// (governor.go) is tight, while still being a large speedup over one write
+// at a time.
+const channelSyncConcurrency = 10
+
+// forEachChannelConcurrent runs fn for each channel across a bounded worker
+// pool (channelSyncConcurrency), rather than one Discord API call at a time.
+// One channel's failure is logged (via onErr) and doesn't stop the rest, and
+// the first error seen (if any) is returned once every channel has been
+// tried, matching the log-and-continue policy every jail-channel sync
+// already used before this existed, just without paying for it serially.
+func (p *Plugin) forEachChannelConcurrent(channels []*discordgo.Channel, fn func(*discordgo.Channel) error, onErr func(*discordgo.Channel, error)) error {
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
+	sem := make(chan struct{}, channelSyncConcurrency)
+	for _, ch := range channels {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			if err := fn(ch); err != nil {
+				onErr(ch, err)
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	return firstErr
+}
 
 // JailChannelConfig is the narrow slice of internal/settings.Store this
 // plugin depends on for jail's channel-visibility allowlist. Which channels
@@ -25,13 +68,21 @@ type JailChannelConfig interface {
 }
 
 // jailManagedChannelTypes are the channel kinds jail's deny-by-default
-// overwrite applies to. Categories are deliberately excluded: setting an
-// overwrite on a category cascades to any child channel that doesn't have
-// its own overwrite, which would fight per-channel overwrites in
-// unpredictable ways depending on child/category ordering. Explicit,
-// per-channel overwrites only, no cascade surprises. Threads aren't a
-// channel type Discord accepts permission overwrites on at all; they
-// inherit their parent channel's visibility.
+// overwrite applies to. Categories are deliberately excluded here, not
+// because it's unsafe to also touch them (see
+// syncAllJailChannelOverwrites' separate category pass) but because a
+// category overwrite doesn't do what it looks like it does: Discord's
+// permission check for a channel only ever reads that channel's own
+// permission_overwrites, never its parent category's, so setting an
+// overwrite on a category has zero effect on any existing channel under
+// it, jail-managed or not. The one thing a category overwrite is
+// documented to do is get copied onto a channel *at creation time* if
+// that channel is created with no overwrites of its own, which is a
+// real but narrow benefit, not a substitute for the per-channel
+// overwrites this function still has to write for every existing
+// channel to actually restrict anything. Threads aren't a channel type
+// Discord accepts permission overwrites on at all; they inherit their
+// parent channel's visibility.
 func jailManagedChannelType(t discordgo.ChannelType) bool {
 	switch t {
 	case discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildVoice, discordgo.ChannelTypeGuildNews,
@@ -181,16 +232,11 @@ func (p *Plugin) syncMemberJailOverwrites(guildID, userID string) error {
 	if err != nil {
 		return err
 	}
-	var firstErr error
-	for _, ch := range channels {
-		if err := p.ops(guildID).ChannelPermissionSet(ch.ID, userID, discordgo.PermissionOverwriteTypeMember, 0, jailDenyFor(ch.Type)); err != nil {
-			p.log.Error("roles: set member jail overwrite failed", "guild", guildID, "user", userID, "channel", ch.ID, "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
+	return p.forEachChannelConcurrent(channels, func(ch *discordgo.Channel) error {
+		return p.ops(guildID).ChannelPermissionSet(ch.ID, userID, discordgo.PermissionOverwriteTypeMember, 0, jailDenyFor(ch.Type))
+	}, func(ch *discordgo.Channel, err error) {
+		p.log.Error("roles: set member jail overwrite failed", "guild", guildID, "user", userID, "channel", ch.ID, "err", err)
+	})
 }
 
 // clearMemberJailOverwrites removes userID's member-level deny from every
@@ -205,28 +251,27 @@ func (p *Plugin) clearMemberJailOverwrites(guildID, userID string) error {
 	if err != nil {
 		return err
 	}
-	var firstErr error
-	for _, ch := range channels {
-		if err := p.ops(guildID).ChannelPermissionDelete(ch.ID, userID); err != nil {
-			p.log.Error("roles: clear member jail overwrite failed", "guild", guildID, "user", userID, "channel", ch.ID, "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
+	return p.forEachChannelConcurrent(channels, func(ch *discordgo.Channel) error {
+		return p.ops(guildID).ChannelPermissionDelete(ch.ID, userID)
+	}, func(ch *discordgo.Channel, err error) {
+		p.log.Error("roles: clear member jail overwrite failed", "guild", guildID, "user", userID, "channel", ch.ID, "err", err)
+	})
 }
 
 // syncAllJailChannelOverwrites recomputes every managed channel's Jailed-role
-// overwrite in guildID against the current allowlist and channel list.
-// Run once when the Jailed role is first created (so a fresh setup starts
-// deny-by-default everywhere) and again on demand via /roles configure
-// sync-channels (e.g. after creating new channels, which don't
-// automatically inherit a deny overwrite; this plugin has no gateway
-// listener for channel creation, by design: keeping this to an explicit,
-// mod-triggered action avoids a second event-handling surface to reason
-// about for a case a mod can just re-run after setting up new channels).
-// One row's failure is logged and doesn't abort the rest, matching
+// overwrite in guildID against the current allowlist and channel list, plus
+// a plain deny on every category (see below). Run once when the Jailed role
+// is first created (so a fresh setup starts deny-by-default everywhere) and
+// again on demand via /roles configure sync-channels (e.g. after creating
+// new channels, which don't automatically inherit a deny overwrite; this
+// plugin has no gateway listener for channel creation, by design: keeping
+// this to an explicit, mod-triggered action avoids a second event-handling
+// surface to reason about for a case a mod can just re-run after setting up
+// new channels). Writes fan out across a bounded worker pool
+// (channelSyncConcurrency): a guild's channel count can run into the
+// hundreds, and Discord gives each channel its own rate-limit bucket for
+// permission writes, so there's no reason to pay for them one at a time.
+// One channel's failure is logged and doesn't abort the rest, matching
 // rotation.sweep's policy.
 func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error {
 	channels, err := p.ops(guildID).GuildChannels(guildID)
@@ -238,13 +283,26 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 		allowed[id] = true
 	}
 
-	var firstErr error
+	var targets []*discordgo.Channel
 	for _, ch := range channels {
-		if !jailManagedChannelType(ch.Type) {
-			continue
+		if jailManagedChannelType(ch.Type) || ch.Type == discordgo.ChannelTypeGuildCategory {
+			targets = append(targets, ch)
 		}
-		var err error
-		if allowed[ch.ID] {
+	}
+
+	return p.forEachChannelConcurrent(targets, func(ch *discordgo.Channel) error {
+		switch {
+		case ch.Type == discordgo.ChannelTypeGuildCategory:
+			// Never permission-checked directly (see jailManagedChannelType's
+			// doc comment): Discord only copies a category's overwrites onto
+			// a channel created under it with no overwrites of its own.
+			// Denying both View Channel and Connect here (jailDenyFor's
+			// voice-channel bits are the superset of what any child type
+			// could need) means a channel created after this sync starts
+			// denied by default instead of visible until the next
+			// sync-channels run notices it.
+			return p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(discordgo.ChannelTypeGuildVoice))
+		case allowed[ch.ID]:
 			// Explicit allow for allowlisted channels: view + send/connect,
 			// plus deny AttachFiles/EmbedLinks for text-like channels.
 			allowBits := int64(discordgo.PermissionViewChannel | discordgo.PermissionSendMessages)
@@ -252,16 +310,11 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 			if ch.Type == discordgo.ChannelTypeGuildVoice || ch.Type == discordgo.ChannelTypeGuildStageVoice {
 				allowBits = int64(discordgo.PermissionViewChannel | discordgo.PermissionVoiceConnect)
 			}
-			err = p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits)
-		} else {
-			err = p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(ch.Type))
+			return p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits)
+		default:
+			return p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, 0, jailDenyFor(ch.Type))
 		}
-		if err != nil {
-			p.log.Error("roles: sync jail overwrite failed", "guild", guildID, "channel", ch.ID, "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
+	}, func(ch *discordgo.Channel, err error) {
+		p.log.Error("roles: sync jail overwrite failed", "guild", guildID, "channel", ch.ID, "err", err)
+	})
 }

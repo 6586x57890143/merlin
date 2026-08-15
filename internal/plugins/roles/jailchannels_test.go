@@ -48,8 +48,18 @@ func TestSyncAllJailChannelOverwritesDeniesByDefaultAllowsListed(t *testing.T) {
 	if owAllowed.allow&int64(discordgo.PermissionViewChannel) == 0 || owAllowed.allow&int64(discordgo.PermissionSendMessages) == 0 {
 		t.Fatalf("expected allowlisted channel to allow view+send, got allow=%d", owAllowed.allow)
 	}
-	if _, ok := ops.overwrites[overwriteKey{"category1", "jail-role"}]; ok {
-		t.Fatal("expected categories to be skipped entirely (no cascade surprises)")
+	// Categories get a plain deny too, so a channel created under one later
+	// starts denied by default (Discord copies a category's overwrites onto
+	// a channel created with none of its own) rather than visible until the
+	// next sync-channels run notices it. This has no effect on existing
+	// channels: Discord's live permission check never consults a channel's
+	// parent category.
+	categoryOverwrite, ok := ops.overwrites[overwriteKey{"category1", "jail-role"}]
+	if !ok {
+		t.Fatal("expected a deny overwrite on the category, for channels created under it later")
+	}
+	if categoryOverwrite.deny&int64(discordgo.PermissionViewChannel) == 0 || categoryOverwrite.deny&int64(discordgo.PermissionVoiceConnect) == 0 {
+		t.Fatalf("expected the category deny to cover both ViewChannel and Connect (any future child type), got deny=%d", categoryOverwrite.deny)
 	}
 }
 
