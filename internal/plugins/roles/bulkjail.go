@@ -324,6 +324,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 	}
 
 	res = res.merge(p.jailMany(ctx, i.GuildID, jailRoleID, allowed, duration, actorID(i), reason))
+	p.announceJail(ctx, i.GuildID, i.ChannelID, res.jailed, duration, reason)
 	p.recordBulkAudit(ctx, i.GuildID, actorID(i), fmt.Sprintf("role=%s", roleID), duration, reason, res)
 
 	title := fmt.Sprintf("Jailed %d member(s) from role", len(res.jailed))

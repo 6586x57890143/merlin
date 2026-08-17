@@ -228,6 +228,7 @@ func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i
 	// Optional marker role: if provided, persist it as the configured jail
 	// marker role for this guild so jailing uses that role instead of
 	// auto-creating one.
+	newMarkerRole := ""
 	if opt, ok := args["marker_role"]; ok {
 		if roleID, _ := opt.Value.(string); roleID != "" {
 			if err := p.jailChannelConfig.SetJailMarkerRole(ctx, i.GuildID, roleID); err != nil {
@@ -235,6 +236,7 @@ func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i
 				return
 			}
 			p.forgetJailRole(i.GuildID)
+			newMarkerRole = roleID
 			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "marker_role="+core.MentionRole(roleID)); err != nil {
 				p.log.Error("roles: audit set marker role failed", "guild", i.GuildID, "err", err)
 			}
@@ -245,7 +247,22 @@ func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i
 		core.RespondErr(s, i, "Failed to save", err)
 		return
 	}
-	p.syncOneChannelBestEffort(s, i, channelID)
+	if newMarkerRole != "" {
+		// The marker role just changed in this same command, so the cache
+		// forgetJailRole just cleared means syncOneChannelBestEffort's direct
+		// cache read would find nothing and silently no-op. Sync every
+		// managed channel against the new role and the allowlist (which
+		// already includes channelID from the AddJailAllowedChannel call
+		// above) in one pass instead, matching handleMarkerRole's own
+		// behavior: the sync happens exactly once, here, at the moment the
+		// role actually changes, not as a side effect of some later cold
+		// cache resolve.
+		if err := p.syncAllJailChannelOverwrites(i.GuildID, newMarkerRole); err != nil {
+			p.log.Error("roles: failed to sync jail overwrites for configured role", "guild", i.GuildID, "role", newMarkerRole, "err", err)
+		}
+	} else {
+		p.syncOneChannelBestEffort(s, i, channelID)
+	}
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "allow="+core.MentionChannel(channelID)); err != nil {
 		p.log.Error("roles: audit allow-channel failed", "guild", i.GuildID, "err", err)
 	}

@@ -133,6 +133,34 @@ func TestResolveJailRoleUsesConfiguredMarkerRoleDirectly(t *testing.T) {
 	}
 }
 
+// TestResolveJailRoleColdCacheDoesNotResyncConfiguredMarkerRole is a
+// regression test for a real production incident: a guild with a configured
+// marker role saw every managed channel's overwrite rewritten, flooding the
+// audit log, on what looked from the outside like an ordinary jail. The
+// cause was resolveJailRole resyncing every channel whenever its in-memory
+// cache was cold for a configured marker role, and that cache resets on
+// every process restart, not just the first time the role is configured.
+// handleMarkerRole and handleAllowChannel already sync once, explicitly, at
+// the moment the marker role is set; resolveJailRole finding that same role
+// again after a restart must be a cache-fill, not another full resync.
+func TestResolveJailRoleColdCacheDoesNotResyncConfiguredMarkerRole(t *testing.T) {
+	ops := newFakeOps()
+	ops.roles["g1"] = []*discordgo.Role{{ID: "marker-role", Name: "Marker"}}
+	ops.channel["chan1"] = &discordgo.Channel{ID: "chan1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	settings := newFakeSettings()
+	settings.markerRole["g1"] = "marker-role"
+	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+
+	// No prior sync has happened; this simulates the first resolve after a
+	// fresh process start finds an already-configured marker role.
+	if _, err := p.resolveJailRole("g1"); err != nil {
+		t.Fatalf("resolveJailRole: %v", err)
+	}
+	if len(ops.overwrites) != 0 {
+		t.Fatalf("expected no channel overwrites written resolving an already-configured marker role, got %d", len(ops.overwrites))
+	}
+}
+
 func TestResolveJailRoleUsesMeltingPotDefaultWhenPresent(t *testing.T) {
 	ops := newFakeOps()
 	ops.roles[meltingPotGuildID] = []*discordgo.Role{{ID: meltingPotDefaultJailRoleID, Name: "Melting Pot Jail Marker"}}
