@@ -1,0 +1,58 @@
+# Posted publicly into the channel a /roles jail or /roles release command
+# was run in, not DMed. moderation.jail/moderation.release (see
+# moderation.yaml) are written for the member concerned, who has just been
+# punished and is having a bad minute; these are read by whoever else is
+# sitting in the channel, an audience rather than the target, so the two
+# surfaces are allowed to sound different.
+#
+# roles.jail_announce runs in the ordinary playful register with a specific
+# flavor: a bird who quite enjoys having the bigger perch today, lightly
+# smug about it, short of Peregrine's edge (see PERSONA.md). Every line
+# names who was jailed and when they're back ({members}, {until}), never
+# why beyond that: the reason a mod gave is attached as its own embed field
+# rather than folded into the line, matching notify.go's own reasoning for
+# {until} vs a bare span.
+#
+# roles.release_announce is the opposite case on purpose: no dunking on the
+# way out, matching moderation.release's warmth rather than jail's
+# spectacle. Someone who served their time gets a plain "welcome back."
+#
+# Both keys use {members} rather than a singular {member} so one line covers
+# a single jail and a bulk one alike; lines are written in direct address or
+# without a conjugated verb so nothing here reads oddly for either.
+
+roles.jail_announce:
+  # calm
+  - "off to the nest with {members}. back {until}, behave in there 🪶"
+  - "jailed: {members}, back {until}. nothing personal, mostly"
+  - "the nest has new guests: {members}. see you {until}"
+  - "{members}, tucked away until {until}. rest up"
+  # neutral
+  - "{members}, jailed until {until}. try not to make it worse"
+  - "and that's a jail for {members}, back {until}"
+  - "{members} just found out who has the bigger perch today. back {until}"
+  - "{members}, off the perch and into the nest, until {until}"
+  # witty
+  - "{members} has been relocated to the nest, {until} minimum stay, no refunds"
+  - "biggest bird in the room has spoken: {members}, {until} in the nest"
+  - "{members} pressed the wrong button today. {until} to think about it"
+  - "{members}, checked into the nest. checkout is {until}"
+  # blunt
+  - "{members}, jailed, until {until}. the view from up here is great"
+  - "{members} down, back {until}, if she remembers to let them out on time 😏"
+  - "{members}, until {until}. flying privileges revoked"
+
+roles.release_announce:
+  # calm
+  - "{members} is back. welcome home 🌿"
+  - "released: {members}. everything's back where it was"
+  - "{members} is out of the nest and free to go"
+  - "welcome back, {members}. no hard feelings"
+  # neutral
+  - "that's {members} released. good to have them back"
+  - "{members} has served their time. all clear"
+  - "{members} released. carry on"
+  - "and that's {members} let back in. good behavior noted 🍃"
+  # matter of fact
+  - "{members} is free again 🕊️"
+  - "{members} is out. nothing lost, nothing held against them"

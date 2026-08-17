@@ -191,9 +191,19 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 		for _, r := range rolesList {
 			if r.ID == marker {
 				p.jailRoleID[guildID] = marker
-				if err := p.syncAllJailChannelOverwrites(guildID, marker); err != nil {
-					p.log.Error("roles: sync configured jail role overwrites failed", "guild", guildID, "role", marker, "err", err)
-				}
+				// Deliberately no sync here. The cache above is per process,
+				// not persisted, so this branch is reached on every process
+				// restart for a guild that has a marker role configured, not
+				// just the first time. A full resync used to run here every
+				// time, which meant every restart rewrote every managed
+				// channel's overwrite and flooded the audit log even though
+				// nothing had changed since the last sync. handleMarkerRole
+				// and handleAllowChannel already sync once, at the moment the
+				// marker role actually changes, which is the only time it
+				// needs to happen; an admin who suspects drift (e.g. new
+				// channels) still has /roles configure sync-channels on
+				// demand. Same reasoning as the find-by-name branch below,
+				// which has never synced here either.
 				return marker, nil
 			}
 		}

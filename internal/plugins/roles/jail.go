@@ -117,6 +117,13 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		res = res.merge(p.jailMany(ctx, i.GuildID, jailRoleID, allowed, duration, actorID(i), reason))
 	}
 
+	// Public spectacle, not the ephemeral command response: DeferResponse
+	// sets the ephemeral flag on the placeholder it replaces, so
+	// FollowUpOK/FollowUpErr below are only ever visible to the actor. This
+	// is the one place a jail is actually announced to the channel it was
+	// run in, covering both the single and bulk case the same way.
+	p.announceJail(ctx, i.GuildID, i.ChannelID, res.jailed, duration, reason)
+
 	// One member keeps the precise, actionable wording it always had, and its
 	// original roles.jail audit action, so existing audit history stays one
 	// queryable series rather than splitting the day this landed. Several get
@@ -581,6 +588,10 @@ func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *dis
 		core.RespondErr(s, i, "Failed to release", err)
 		return
 	}
+	// Only the manual command path announces publicly: it has an invoking
+	// channel to post into. Automatic release from the sweep does not, and
+	// stays DM-only (notifyReleased, inside releaseJail).
+	p.announceRelease(ctx, i.GuildID, i.ChannelID, []string{userID})
 	core.RespondOK(s, i, "Member released", fmt.Sprintf("<@%s> has been released and their prior roles restored.", userID))
 }
 

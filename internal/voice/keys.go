@@ -41,6 +41,16 @@ const (
 	KeyJailNotice    Key = "moderation.jail"
 	KeyReleaseNotice Key = "moderation.release"
 
+	// KeyJailAnnounce and KeyReleaseAnnounce are posted publicly into the
+	// channel a jail or release command was run in, read by whoever else is
+	// sitting in that channel rather than the member concerned. That is a
+	// different audience from moderation.jail/moderation.release above, so
+	// they run in the ordinary playful register instead of the plain one:
+	// see PERSONA.md's "Where the character stops" for why that split is
+	// deliberate rather than an oversight.
+	KeyJailAnnounce    Key = "roles.jail_announce"
+	KeyReleaseAnnounce Key = "roles.release_announce"
+
 	// The router's own refusals, which any member can trigger.
 	KeyDenied         Key = "system.denied"
 	KeyPluginDisabled Key = "system.plugin_disabled"
@@ -194,6 +204,23 @@ var specs = map[Key]spec{
 		required: []string{"guild"},
 		maxLen:   maxEmbedDescription,
 		fallback: "you are out. your roles in {guild} have been restored.",
+	},
+
+	KeyJailAnnounce: {
+		register: RegisterPlayful,
+		// until, not duration: matching KeyJailNotice's own {until}, this is
+		// Discord's own relative timestamp markup so the channel post and
+		// the DM describe the same moment the same way, each reader seeing
+		// it rendered in their own timezone.
+		required: []string{"members", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "{members} has been jailed. back {until}.",
+	},
+	KeyReleaseAnnounce: {
+		register: RegisterPlayful,
+		required: []string{"members"},
+		maxLen:   maxEmbedDescription,
+		fallback: "{members} has been released.",
 	},
 
 	KeyDenied: {
