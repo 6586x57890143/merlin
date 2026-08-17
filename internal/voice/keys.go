@@ -213,13 +213,17 @@ var specs = map[Key]spec{
 		// the DM describe the same moment the same way, each reader seeing
 		// it rendered in their own timezone.
 		required: []string{"members", "until"},
-		maxLen:   maxEmbedDescription,
+		// maxMessageContent, not maxEmbedDescription: this is posted as
+		// plain message content (announce.go), not an embed, so the real
+		// ceiling is Discord's 2000-byte message limit, not the 4096-byte
+		// embed description one.
+		maxLen:   maxMessageContent,
 		fallback: "{members} has been jailed. back {until}.",
 	},
 	KeyReleaseAnnounce: {
 		register: RegisterPlayful,
 		required: []string{"members"},
-		maxLen:   maxEmbedDescription,
+		maxLen:   maxMessageContent,
 		fallback: "{members} has been released.",
 	},
 
