@@ -6,16 +6,19 @@
 # surfaces are allowed to sound different.
 #
 # roles.jail_announce runs in the ordinary playful register with a specific
-# flavor: a bird who quite enjoys having the bigger perch today, lightly
-# smug about it, short of Peregrine's edge (see PERSONA.md). Every line
-# names who was jailed and when they're back ({members}, {until}), never
-# why beyond that: the reason a mod gave is attached as its own embed field
-# rather than folded into the line, matching notify.go's own reasoning for
+# flavor: a bird who quite enjoys having the bigger perch today, and takes a
+# real moment to enjoy it, short of Peregrine's edge (see PERSONA.md). Lines
+# run a full sentence or two, not a one-liner: there's room to actually land
+# the joke before naming the practical part. Every line names who was jailed
+# and when they're back ({members}, {until}), never why beyond that: the
+# reason a mod gave becomes its own line at the call site (announce.go)
+# rather than being folded in here, matching notify.go's own reasoning for
 # {until} vs a bare span.
 #
 # roles.release_announce is the opposite case on purpose: no dunking on the
 # way out, matching moderation.release's warmth rather than jail's
-# spectacle. Someone who served their time gets a plain "welcome back."
+# spectacle. Someone who served their time gets a plain "welcome back," and
+# stays short, so it's left alone even as jail_announce grows.
 #
 # Both keys use {members} rather than a singular {member} so one line covers
 # a single jail and a bulk one alike; lines are written in direct address or
@@ -23,24 +26,24 @@
 
 roles.jail_announce:
   # calm
-  - "off to the nest with {members}. back {until}, behave in there 🪶"
-  - "jailed: {members}, back {until}. nothing personal, mostly"
-  - "the nest has new guests: {members}. see you {until}"
-  - "{members}, tucked away until {until}. rest up"
+  - "well, {members} is off to the nest now. nothing dramatic, just a timeout that lasts until {until}, so the quiet time is best spent wisely"
+  - "{members} has been walked over to the nest for a little breather. back {until}, and the sky will still be there waiting for them"
+  - "turns out the bigger bird gets the final say around here. {members} is tucked away until {until}, no hard feelings, mostly"
+  - "{members} just learned who actually runs this perch today. nothing personal, just a timeout until {until} to sit with it"
   # neutral
-  - "{members}, jailed until {until}. try not to make it worse"
-  - "and that's a jail for {members}, back {until}"
-  - "{members} just found out who has the bigger perch today. back {until}"
-  - "{members}, off the perch and into the nest, until {until}"
+  - "and there it is. {members} is jailed until {until}, so whatever was about to be said can wait until then"
+  - "{members} pushed their luck a little too far, so now they get to sit with the consequences until {until}"
+  - "the view from the top perch is great, and {members} will be admiring the inside of the nest instead, until {until}"
+  - "{members} thought they had the run of the place. they did not, not until {until} anyway"
   # witty
-  - "{members} has been relocated to the nest, {until} minimum stay, no refunds"
-  - "biggest bird in the room has spoken: {members}, {until} in the nest"
-  - "{members} pressed the wrong button today. {until} to think about it"
-  - "{members}, checked into the nest. checkout is {until}"
+  - "{members} has officially been relocated to the nest, {until} minimum stay, no early checkout, and definitely no refunds"
+  - "biggest bird in the room has spoken, and {members} gets until {until} to think it over somewhere quieter"
+  - "{members} really said that, in this economy. now there's {until} of nest time to sit and regret it"
+  - "{members} pressed every wrong button available, so now there is {until} to work out which one exactly"
   # blunt
-  - "{members}, jailed, until {until}. the view from up here is great"
-  - "{members} down, back {until}, if she remembers to let them out on time 😏"
-  - "{members}, until {until}. flying privileges revoked"
+  - "{members}, jailed, no appeal. back {until}. the sky belongs to whichever bird can still see it"
+  - "{members} down, flying privileges revoked until {until}, and yes, she is enjoying this a little 😏"
+  - "{members}, until {until}. talk a big game somewhere else, the nest does not negotiate"
 
 roles.release_announce:
   # calm

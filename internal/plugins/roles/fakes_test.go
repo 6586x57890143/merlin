@@ -71,6 +71,10 @@ type fakeOps struct {
 	// failing the role strip that precedes it.
 	voiceKickCalls []string
 	voiceKickErr   error
+
+	// guildChannelsErr, when set, fails every GuildChannels call, standing in
+	// for a Discord outage or missing permission mid-fan-out.
+	guildChannelsErr error
 }
 
 func newFakeOps() *fakeOps {
@@ -330,6 +334,9 @@ func (f *fakeOps) Channel(channelID string, options ...discordgo.RequestOption) 
 func (f *fakeOps) GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.guildChannelsErr != nil {
+		return nil, f.guildChannelsErr
+	}
 	var out []*discordgo.Channel
 	for _, ch := range f.channel {
 		if ch.GuildID == guildID {
