@@ -22,6 +22,15 @@ channel gets a heads-up before it happens and a short note afterwards explaining
 what just happened. Handy if you run a channel where people would rather their
 history not sit around indefinitely.
 
+Archives are hidden from everyone except your mods and anyone with Discord's
+Administrator bit. If you want another role to be able to read them, add it with
+`/rotation configure allow-archive-role`. That grant is read-only, so the role
+can view the channel and read the history back and nothing else: no posting, no
+reactions, no threads. Permissions live on the archive category and every
+archived channel is kept in sync with it, so a role you add or remove applies to
+the archives that already exist, not just future ones. The bot also checks
+hourly that nothing has been added to that category by hand.
+
 **Jail.** `/roles jail @someone 2h` snapshots their roles, strips them and drops
 a shared "Jailed" role on them instead. That role's channel overwrites decide
 what a jailed member can still see, so jailing costs one API call no matter how
