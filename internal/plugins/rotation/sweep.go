@@ -112,6 +112,25 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 			}
 		}
 	}
+
+	// The lax half of the archive-permission check (archiveperms.go). The
+	// strict one runs during a rotation, where a channel is changing hands and
+	// getting it wrong exposes content immediately. Here it is only catching
+	// drift: a role an admin added to the archive category by hand, a mod role
+	// added since these channels were archived. It reads the category and the
+	// channel list and writes only what has actually drifted, so a correct
+	// guild pays two GETs an hour and writes nothing, to Discord or to the
+	// audit log.
+	//
+	// Runs after the deletion pass on purpose: no point resyncing a channel
+	// that was about to be deleted anyway.
+	// Logged, never returned: this is a drift check, and handing the Scheduler
+	// a failed job over one would spend the failure budget, trip the wedged-job
+	// alert, and back off the retention deletions that are this job's actual
+	// purpose. Same log-and-continue policy as the audit-failure rule.
+	if err := p.syncAllArchivePermissions(ctx, guildID); err != nil {
+		p.log.Error("rotation sweep: archive permission check failed", "guild", guildID, "err", err)
+	}
 	return firstErr
 }
 

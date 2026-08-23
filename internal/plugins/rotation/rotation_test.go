@@ -673,7 +673,7 @@ func TestReconcileAloneNeverSeeds(t *testing.T) {
 }
 
 func TestArchiveOverwritesGrantsBotViewAccess(t *testing.T) {
-	out := archiveOverwrites("g1", "bot-user-id", nil, finiteRetentionRC())
+	out := desiredArchiveOverwrites(nil, "g1", "bot-user-id", nil, nil)
 
 	found := false
 	for _, ow := range out {

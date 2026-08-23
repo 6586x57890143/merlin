@@ -43,6 +43,12 @@ type GuildSettings struct {
 	// overwrite for the shared "Jailed" role. Empty means jail denies every
 	// channel until a mod configures exceptions.
 	JailAllowedChannelIDs []string
+	// ArchiveViewerRoleIDs is which extra roles can see rotation's archive
+	// channels, on top of ModRoleIDs and anyone holding Discord's own
+	// Administrator bit. Guild-scoped rather than per rotating channel
+	// because archive permissions live on the archive category, which
+	// several rotating channels can share (migration 0020).
+	ArchiveViewerRoleIDs []string
 	// Optional pre-configured jail marker role ID. If set, roles plugin will
 	// use this existing role as the marker rather than creating a new one.
 	// Pointer so NULL in the DB scans correctly; accessor JailMarkerRoleID
@@ -203,10 +209,10 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, writes_paused, writes_dry_run
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, writes_paused, writes_dry_run, archive_viewer_role_ids
 		FROM settings_guild WHERE guild_id = $1`, guildID)
 	var marker sql.NullString
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &gc.settings.WritesPaused, &gc.settings.WritesDryRun); err {
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs); err {
 	case nil, pgx.ErrNoRows:
 		if marker.Valid {
 			v := marker.String
@@ -395,6 +401,12 @@ func (s *Store) JailAllowedChannelIDs(guildID string) []string {
 	return s.guild(guildID).settings.JailAllowedChannelIDs
 }
 
+// ArchiveViewerRoleIDs satisfies rotation.SettingsProvider: the extra roles
+// allowed to see this guild's archive channels, on top of the mod roles.
+func (s *Store) ArchiveViewerRoleIDs(guildID string) []string {
+	return s.guild(guildID).settings.ArchiveViewerRoleIDs
+}
+
 // JailMarkerRoleID returns the configured jail marker role for the guild,
 // if any. Empty string when none configured.
 func (s *Store) JailMarkerRoleID(guildID string) string {
@@ -572,6 +584,13 @@ func (s *Store) PruneDeletedRole(ctx context.Context, guildID, roleID string) ([
 		removed = append(removed, "mod role")
 	}
 
+	if slices.Contains(s.ArchiveViewerRoleIDs(guildID), roleID) {
+		if err := s.RemoveArchiveViewerRole(ctx, guildID, roleID); err != nil {
+			return removed, err
+		}
+		removed = append(removed, "archive viewer role")
+	}
+
 	for _, o := range s.Overrides(guildID) {
 		if slices.Contains(o.RoleIDs, roleID) {
 			if err := s.RevokeOverride(ctx, guildID, o.Action, roleID, ""); err != nil {
@@ -614,6 +633,39 @@ func (s *Store) RemoveJailAllowedChannel(ctx context.Context, guildID, channelID
 		UPDATE settings_guild SET jail_allowed_channel_ids = array_remove(jail_allowed_channel_ids, $2), updated_at = now()
 		WHERE guild_id = $1`, guildID, channelID); err != nil {
 		return fmt.Errorf("settings: remove jail allowed channel: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// AddArchiveViewerRole and RemoveArchiveViewerRole are the same shape again,
+// for the roles allowed to see rotation's archives (migration 0020).
+func (s *Store) AddArchiveViewerRole(ctx context.Context, guildID, roleID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, archive_viewer_role_ids, updated_at) VALUES ($1, ARRAY[$2], now())
+		ON CONFLICT (guild_id) DO UPDATE SET
+			archive_viewer_role_ids = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.archive_viewer_role_ids || $2) AS r),
+			updated_at = now()`,
+		guildID, roleID); err != nil {
+		return fmt.Errorf("settings: add archive viewer role: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+func (s *Store) RemoveArchiveViewerRole(ctx context.Context, guildID, roleID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_guild SET archive_viewer_role_ids = array_remove(archive_viewer_role_ids, $2), updated_at = now()
+		WHERE guild_id = $1`, guildID, roleID); err != nil {
+		return fmt.Errorf("settings: remove archive viewer role: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		s.invalidate(guildID)

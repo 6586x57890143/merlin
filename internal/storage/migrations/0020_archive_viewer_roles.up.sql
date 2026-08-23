@@ -1,0 +1,12 @@
+-- Which extra roles can see rotation's archive channels, beyond the guild's
+-- configured mod roles and anyone holding Discord's own Administrator bit
+-- (who bypasses channel overwrites entirely and so never needs an entry).
+--
+-- Guild-scoped rather than per rotating channel: archive permissions now live
+-- on the archive *category*, with every archived channel synced to it, and
+-- several rotating channels can legitimately share one category. A per-slot
+-- list would have two slots writing conflicting overwrites onto the same
+-- category. settings_rotation_channels.archive_whitelist_role_ids survives for
+-- guilds that carry it from /config import, and is folded into the same
+-- allowed set rather than being dropped.
+ALTER TABLE settings_guild ADD COLUMN archive_viewer_role_ids TEXT[] NOT NULL DEFAULT '{}';

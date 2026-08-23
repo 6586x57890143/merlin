@@ -88,8 +88,10 @@ func TestPositionRestoreHappensAfterTheOldChannelLeavesTheCategory(t *testing.T)
 // cosmetic misplacement for a duplicate channel on every retry.
 func TestRotationSucceedsEvenIfThePositionEditFails(t *testing.T) {
 	ops, archives, _, p, rc := setupRotation(t, finiteRetentionRC())
-	// Calls: 1 reveal, 2 archive, 3 position.
-	ops.failOnCall["ChannelEditComplex"] = 3
+	// Calls: 1 reveal, 2 the archive category's own permission reconcile
+	// (archiveperms.go, which the fake category starts out failing), 3
+	// archive, 4 position.
+	ops.failOnCall["ChannelEditComplex"] = 4
 
 	if err := p.rotate(context.Background(), "g1", rc); err != nil {
 		t.Fatalf("a failed position edit failed the whole rotation: %v", err)

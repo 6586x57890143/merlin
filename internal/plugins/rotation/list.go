@@ -154,7 +154,13 @@ func (p *Plugin) renderListPage(guildID string, channels []settings.RotationChan
 		components = append(components, row...)
 	}
 
-	return core.NewEmbed(core.ColorInfo, "Rotating channels", "", fields...), components
+	// Archive access is guild-wide (archiveperms.go), not per row, so it goes
+	// in the description rather than repeated on every field. This is also the
+	// only surface that mentions the setting exists, which is the point:
+	// nothing else would tell an admin that a role they granted is still
+	// granted.
+	return core.NewEmbed(core.ColorInfo, "Rotating channels",
+		strings.TrimPrefix(archiveViewerList(p.settings.ArchiveViewerRoleIDs(guildID)), "\n\n"), fields...), components
 }
 
 // renderRotationDetailEmbed is the one place an admin can see when a channel
