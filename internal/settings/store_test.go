@@ -847,3 +847,29 @@ func stringSlicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+func TestArchiveViewerRoleRoundTrip(t *testing.T) {
+	store, _, guildID := setupStore(t)
+	ctx := context.Background()
+
+	if err := store.AddArchiveViewerRole(ctx, guildID, "role-1"); err != nil {
+		t.Fatalf("AddArchiveViewerRole: %v", err)
+	}
+	// Adding twice must not duplicate: the overwrite set built from this list
+	// is compared for equality against Discord's live one to decide whether to
+	// write at all, and a duplicated role would make that comparison differ
+	// forever.
+	if err := store.AddArchiveViewerRole(ctx, guildID, "role-1"); err != nil {
+		t.Fatalf("AddArchiveViewerRole (again): %v", err)
+	}
+	if got := store.ArchiveViewerRoleIDs(guildID); len(got) != 1 || got[0] != "role-1" {
+		t.Fatalf("ArchiveViewerRoleIDs after add = %v, want [role-1]", got)
+	}
+
+	if err := store.RemoveArchiveViewerRole(ctx, guildID, "role-1"); err != nil {
+		t.Fatalf("RemoveArchiveViewerRole: %v", err)
+	}
+	if got := store.ArchiveViewerRoleIDs(guildID); len(got) != 0 {
+		t.Errorf("ArchiveViewerRoleIDs after remove = %v, want empty", got)
+	}
+}

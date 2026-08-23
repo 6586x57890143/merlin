@@ -220,8 +220,17 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	now := p.now()
 	if !alreadyArchived {
 		archiveName := archiveChannelName(originalName, now)
-		modRoleIDs := p.settings.ModRoleIDs(guildID)
-		if err := p.archiveOldChannel(oldChannel.ID, archiveName, rc.ArchiveCategoryID, guildID, modRoleIDs, rc); err != nil {
+		// Bring the archive category's own overwrites in line first, and
+		// archive the channel *with* that exact list, so it is born correctly
+		// restricted rather than sitting under its old, public overwrites
+		// until some later pass notices. This is the moment the check matters
+		// most: a rotation is precisely when a channel people could read
+		// becomes one only mods and the guild's archive viewer roles may.
+		desired, _, err := p.reconcileArchiveCategory(guildID, rc.ArchiveCategoryID)
+		if err != nil {
+			return fmt.Errorf("rotation: reconcile archive category: %w", err)
+		}
+		if err := p.archiveOldChannel(oldChannel.ID, archiveName, rc.ArchiveCategoryID, guildID, desired); err != nil {
 			return fmt.Errorf("rotation: archive old channel: %w", err)
 		}
 
@@ -434,53 +443,18 @@ func (p *Plugin) restorePosition(guildID, channelID string, position int) {
 	}
 }
 
-func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, guildID string, modRoleIDs []string, rc settings.RotationChannel) error {
-	botUserID, err := p.getBotUserID(guildID)
-	if err != nil {
-		return err
-	}
-	_, err = p.ops(guildID).ChannelEditComplex(channelID, &discordgo.ChannelEdit{
+// archiveOldChannel renames the outgoing channel, moves it under the archive
+// category, and replaces its overwrites with the category's own in one PATCH:
+// the same thing Discord's "sync permissions with category" does, and the
+// reason overwrites is passed in rather than computed here (see
+// archiveperms.go for why the category owns this).
+func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, guildID string, overwrites []*discordgo.PermissionOverwrite) error {
+	_, err := p.ops(guildID).ChannelEditComplex(channelID, &discordgo.ChannelEdit{
 		Name:                 archiveName,
 		ParentID:             archiveCategoryID,
-		PermissionOverwrites: archiveOverwrites(guildID, botUserID, modRoleIDs, rc),
+		PermissionOverwrites: overwrites,
 	})
 	return err
-}
-
-// archiveOverwrites builds a permission-overwrite set denying @everyone,
-// keeping the bot itself able to read it (needed later by sweep.go's
-// rescue-hatch check and eventual delete) via core.DenyEveryoneExceptBot,
-// always allowing the guild's configured mod roles, and, when
-// rc.ArchiveVisibility is "whitelist", additionally allowing
-// rc.ArchiveWhitelistRoleIDs/ArchiveWhitelistUserIDs (spec.MD §6's
-// "archive_visibility: mod_only | whitelist").
-func archiveOverwrites(guildID, botUserID string, modRoleIDs []string, rc settings.RotationChannel) []*discordgo.PermissionOverwrite {
-	out := core.DenyEveryoneExceptBot(nil, guildID, botUserID, discordgo.PermissionViewChannel)
-	for _, roleID := range modRoleIDs {
-		out = append(out, &discordgo.PermissionOverwrite{
-			ID:    roleID,
-			Type:  discordgo.PermissionOverwriteTypeRole,
-			Allow: discordgo.PermissionViewChannel,
-		})
-	}
-	if rc.ArchiveVisibility != "whitelist" {
-		return out
-	}
-	for _, roleID := range rc.ArchiveWhitelistRoleIDs {
-		out = append(out, &discordgo.PermissionOverwrite{
-			ID:    roleID,
-			Type:  discordgo.PermissionOverwriteTypeRole,
-			Allow: discordgo.PermissionViewChannel,
-		})
-	}
-	for _, userID := range rc.ArchiveWhitelistUserIDs {
-		out = append(out, &discordgo.PermissionOverwrite{
-			ID:    userID,
-			Type:  discordgo.PermissionOverwriteTypeMember,
-			Allow: discordgo.PermissionViewChannel,
-		})
-	}
-	return out
 }
 
 func findChannel(channels []*discordgo.Channel, match func(*discordgo.Channel) bool) *discordgo.Channel {

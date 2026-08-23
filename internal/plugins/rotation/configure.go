@@ -86,14 +86,16 @@ func (p *Plugin) registerCommands() {
 			Required:    required,
 		}
 	}
-	// "whitelist" is deliberately not offered. archiveOverwrites implements
+	// "whitelist" is deliberately not offered. archiveperms.go still honours
 	// it, but nothing except /config import's legacy YAML path has ever
 	// populated archive_whitelist_role_ids/user_ids, so choosing it from
 	// here produced a mode that behaved exactly like mod_only. Guilds that
 	// carry it from an import keep it, and validateRotationChannel still
 	// accepts it; see the comment there. spec.MD §6 lists it as a mode, so
 	// this is a deliberate narrowing of the command surface rather than a
-	// removal of the feature.
+	// removal of the feature. Granting a non-mod role archive access is what
+	// /rotation configure allow-archive-role does instead, guild-wide, since
+	// archive permissions live on the shared archive category.
 	visibilityOpt := func(required bool) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{
 			Type:        discordgo.ApplicationCommandOptionString,
@@ -171,6 +173,28 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "allow-archive-role",
+						Description: "Let a role see this server's archived channels, on top of the mod roles",
+						Options: []*discordgo.ApplicationCommandOption{{
+							Type:        discordgo.ApplicationCommandOptionRole,
+							Name:        "role",
+							Description: "The role to grant archive access",
+							Required:    true,
+						}},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "disallow-archive-role",
+						Description: "Stop a role seeing this server's archived channels",
+						Options: []*discordgo.ApplicationCommandOption{{
+							Type:        discordgo.ApplicationCommandOptionRole,
+							Name:        "role",
+							Description: "The role to remove archive access from",
+							Required:    true,
+						}},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "sticky",
 						Description: "Set the messages reposted and pinned each time this channel rotates",
 						Options: []*discordgo.ApplicationCommandOption{
@@ -199,6 +223,12 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("rotation", "configure/remove", core.PermSpec{Tier: core.TierAdmin, Action: actionStructural}, p.handleRemove)
 	p.commands.Handle("rotation", "configure/edit", core.PermSpec{Tier: core.TierAdmin, Action: actionAdjust}, p.handleEdit)
 	p.commands.Handle("rotation", "configure/sticky", core.PermSpec{Tier: core.TierAdmin, Action: actionAdjust}, p.handleSticky)
+	// Structural, not adjust: who can read an archive is a visibility
+	// decision with the same blast radius as adding or removing a rotating
+	// channel, and a guild that lowered rotation.configure to mod shouldn't
+	// have handed out the archive along with it.
+	p.commands.Handle("rotation", "configure/allow-archive-role", core.PermSpec{Tier: core.TierAdmin, Action: actionStructural}, p.handleAllowArchiveRole)
+	p.commands.Handle("rotation", "configure/disallow-archive-role", core.PermSpec{Tier: core.TierAdmin, Action: actionStructural}, p.handleDisallowArchiveRole)
 	p.commands.HandleComponent(p.Name(), rotationListComponentPrefix, core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleListPage)
 	p.commands.HandleComponent(p.Name(), rotationListSelectPrefix, core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleListSelect)
 	p.commands.HandleComponent(p.Name(), rotationListBackPrefix, core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleListBack)
@@ -308,7 +338,9 @@ func genericDisclosureNote(rc settings.RotationChannel) string {
 // separate manual step; the bird does it.
 func (p *Plugin) resolveArchiveCategory(guildID string, opts map[string]*discordgo.ApplicationCommandInteractionDataOption) (string, error) {
 	if v, ok := opts["archive_category"]; ok {
-		return v.Value.(string), nil
+		id := v.Value.(string)
+		p.hideArchiveCategory(guildID, id)
+		return id, nil
 	}
 	channels, err := p.ops(guildID).GuildChannels(guildID)
 	if err != nil {
@@ -326,7 +358,25 @@ func (p *Plugin) resolveArchiveCategory(guildID string, opts map[string]*discord
 	if err != nil {
 		return "", fmt.Errorf("create %q category: %w", defaultArchiveCategoryName, err)
 	}
+	p.hideArchiveCategory(guildID, created.ID)
 	return created.ID, nil
+}
+
+// hideArchiveCategory applies the archive permission policy to categoryID at
+// configure time, so a category described to the admin as "hidden" actually is
+// one from the moment it is picked or created. Before this, the category was
+// created with no overwrites at all and only the channels moved into it were
+// ever restricted.
+//
+// Deliberately log-and-continue: rotate() reconciles the category again (and
+// fails loudly there) before it archives anything into it, so a blip here
+// costs nothing but a temporarily visible empty category. Existing channels
+// under the category aren't resynced from here; the caller responds inside
+// Discord's 3-second window, and the hourly sweep covers them.
+func (p *Plugin) hideArchiveCategory(guildID, categoryID string) {
+	if _, _, err := p.reconcileArchiveCategory(guildID, categoryID); err != nil {
+		p.log.Error("rotation: could not apply archive permissions to category", "guild", guildID, "category", categoryID, "err", err)
+	}
 }
 
 func (p *Plugin) handleRemove(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -399,6 +449,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 	// retention setting.
 	if v, ok := opts["archive_category"]; ok {
 		rc.ArchiveCategoryID = v.Value.(string)
+		p.hideArchiveCategory(i.GuildID, rc.ArchiveCategoryID)
 	}
 
 	if err := validateRotationChannel(rc); err != nil {
@@ -448,6 +499,78 @@ func (p *Plugin) handleSticky(ctx context.Context, s *discordgo.Session, i *disc
 	}
 	p.auditConfigChange(ctx, i, "rotation.sticky", "", fmt.Sprintf("channel=<#%s> enabled=%v messages=%d", channelID, rc.StickyEnabled, len(rc.StickyMessages)))
 	core.RespondOK(s, i, "Sticky updated", fmt.Sprintf("Sticky settings for <#%s> updated.", channelID))
+}
+
+// handleAllowArchiveRole and handleDisallowArchiveRole edit the guild's
+// archive viewer roles, then immediately reconcile every archive category and
+// resync its channels, so the grant is visible the moment the command
+// returns rather than at the next rotation. That resync is O(channels) and
+// writes to Discord, so both defer first (spec.MD §4a: a handler has 3
+// seconds to respond at all).
+//
+// Same mutate-then-sync shape /roles configure allow-channel already uses for
+// jail's own allowlist.
+func (p *Plugin) handleAllowArchiveRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	p.changeArchiveViewerRole(ctx, s, i, true)
+}
+
+func (p *Plugin) handleDisallowArchiveRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	p.changeArchiveViewerRole(ctx, s, i, false)
+}
+
+func (p *Plugin) changeArchiveViewerRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, allow bool) {
+	roleID := core.LeafArgs(i)["role"].Value.(string)
+	if err := core.DeferResponse(s, i); err != nil {
+		p.log.Error("rotation: defer archive-role response failed", "guild", i.GuildID, "err", err)
+		return
+	}
+
+	var (
+		err    error
+		action = "rotation.archive_role_removed"
+		verb   = "can no longer see"
+	)
+	if allow {
+		err = p.settings.AddArchiveViewerRole(ctx, i.GuildID, roleID)
+		action, verb = "rotation.archive_role_allowed", "can now see"
+	} else {
+		err = p.settings.RemoveArchiveViewerRole(ctx, i.GuildID, roleID)
+	}
+	if err != nil {
+		if followUpErr := core.FollowUpErr(s, i, "Failed to save", err); followUpErr != nil {
+			p.log.Error("rotation: archive-role follow-up failed", "guild", i.GuildID, "err", followUpErr)
+		}
+		return
+	}
+	p.auditConfigChange(ctx, i, action, "", "role="+core.MentionRole(roleID))
+
+	var followUpErr error
+	if syncErr := p.syncAllArchivePermissions(ctx, i.GuildID); syncErr != nil {
+		// The setting is saved either way, and the hourly sweep retries the
+		// sync, so this reports a partial result rather than a failure.
+		followUpErr = core.FollowUpErr(s, i, "Saved, but the resync hit errors", syncErr)
+	} else {
+		followUpErr = core.FollowUpOK(s, i, "Archive access updated",
+			fmt.Sprintf("<@&%s> %s this server's archived channels.%s", roleID, verb, archiveViewerList(p.settings.ArchiveViewerRoleIDs(i.GuildID))))
+	}
+	if followUpErr != nil {
+		p.log.Error("rotation: archive-role follow-up failed", "guild", i.GuildID, "err", followUpErr)
+	}
+}
+
+// archiveViewerList renders the guild's current extra archive viewer roles as
+// a trailing line, empty when there are none. Mod roles and Discord
+// administrators are deliberately not listed: they always have access, and
+// repeating that on every edit buries the part that actually changed.
+func archiveViewerList(roleIDs []string) string {
+	if len(roleIDs) == 0 {
+		return "\n\nNo extra roles configured: mods and administrators only."
+	}
+	mentions := make([]string, len(roleIDs))
+	for idx, id := range roleIDs {
+		mentions[idx] = core.MentionRole(id)
+	}
+	return "\n\nExtra roles with archive access: " + strings.Join(mentions, ", ")
 }
 
 // rotationSummary renders the settings that decide how long content survives,
@@ -502,8 +625,9 @@ func validateRotationChannel(rc settings.RotationChannel) error {
 		return fmt.Errorf("a channel can't be its own archive category")
 	}
 	// "whitelist" is still accepted, even though visibilityOpt no longer
-	// offers it: archiveOverwrites implements it, and legacy guilds carry it
-	// from /config import. Rejecting it here would break /rotation configure
+	// offers it: archiveperms.go still folds it into the allowed set, and
+	// legacy guilds carry it from /config import. Rejecting it here would
+	// break /rotation configure
 	// edit for exactly those guilds, since edit is a read-modify-write of the
 	// whole struct and would fail validation on a field the admin never
 	// touched.

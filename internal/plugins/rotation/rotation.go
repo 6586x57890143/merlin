@@ -42,6 +42,11 @@ const sweepInterval = time.Hour
 // used in this package.
 type SettingsProvider interface {
 	ModRoleIDs(guildID string) []string
+	// ArchiveViewerRoleIDs is the guild's extra archive-visible roles, on top
+	// of the mod roles (migration 0020); see archiveperms.go.
+	ArchiveViewerRoleIDs(guildID string) []string
+	AddArchiveViewerRole(ctx context.Context, guildID, roleID string) error
+	RemoveArchiveViewerRole(ctx context.Context, guildID, roleID string) error
 	RotationChannels(guildID string) []settings.RotationChannel
 	RotationChannel(guildID, channelID string) (settings.RotationChannel, bool)
 	RotationChannelByID(guildID string, id int64) (settings.RotationChannel, bool)

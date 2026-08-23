@@ -54,20 +54,27 @@ var actions = map[string]meta{
 	"config.writes_paused":      {title: "Write pause changed", color: core.ColorWarning},
 
 	// Granting or restoring.
-	"roles.release":               {title: "Member released", color: core.ColorSuccess},
-	"roles.grant":                 {title: "Role granted", color: core.ColorSuccess},
-	"config.admin_added":          {title: "Admin added", color: core.ColorSuccess},
-	"config.mod_role_added":       {title: "Mod role added", color: core.ColorSuccess},
-	"config.permission_granted":   {title: "Permission granted", color: core.ColorSuccess},
-	"config.permission_unblocked": {title: "Permission un-denied", color: core.ColorSuccess},
-	"config.setup":                {title: "Setup step completed", color: core.ColorSuccess},
-	"config.plugin_enabled":       {title: "Plugin enabled", color: core.ColorSuccess},
-	"rotation.add":                {title: "Channel rotation configured", color: core.ColorSuccess},
+	"roles.release":                 {title: "Member released", color: core.ColorSuccess},
+	"roles.grant":                   {title: "Role granted", color: core.ColorSuccess},
+	"config.admin_added":            {title: "Admin added", color: core.ColorSuccess},
+	"config.mod_role_added":         {title: "Mod role added", color: core.ColorSuccess},
+	"config.permission_granted":     {title: "Permission granted", color: core.ColorSuccess},
+	"config.permission_unblocked":   {title: "Permission un-denied", color: core.ColorSuccess},
+	"config.setup":                  {title: "Setup step completed", color: core.ColorSuccess},
+	"config.plugin_enabled":         {title: "Plugin enabled", color: core.ColorSuccess},
+	"rotation.add":                  {title: "Channel rotation configured", color: core.ColorSuccess},
+	"rotation.archive_role_allowed": {title: "Archive access granted to role", color: core.ColorSuccess},
 
 	// Routine.
-	"channel.rotated":                {title: "Channel rotated", color: core.ColorInfo},
-	"rotation.edit":                  {title: "Rotation settings changed", color: core.ColorInfo},
-	"rotation.sticky":                {title: "Sticky messages changed", color: core.ColorInfo},
+	"channel.rotated":               {title: "Channel rotated", color: core.ColorInfo},
+	"rotation.edit":                 {title: "Rotation settings changed", color: core.ColorInfo},
+	"rotation.sticky":               {title: "Sticky messages changed", color: core.ColorInfo},
+	"rotation.archive_role_removed": {title: "Archive access removed from role", color: core.ColorWarning},
+	// Drift correction, recorded only when the periodic check actually had to
+	// change something. Info, not warning: an admin adding a role to the
+	// archive category by hand is a normal thing to do, and this line is how
+	// they find out the bot took it back off again.
+	"rotation.archive_perms_fixed":   {title: "Archive permissions resynced", color: core.ColorInfo},
 	"config.imported":                {title: "Legacy config imported", color: core.ColorInfo},
 	"config.permission_tier_set":     {title: "Required tier changed", color: core.ColorInfo},
 	"config.permission_tier_cleared": {title: "Required tier reset", color: core.ColorInfo},

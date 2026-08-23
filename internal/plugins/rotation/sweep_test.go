@@ -43,7 +43,16 @@ func TestSweepDeletesDueArchive(t *testing.T) {
 	if _, ok := archives.records["arch1"]; ok {
 		t.Fatal("expected the archive row to be removed after deletion")
 	}
-	if len(audit.records) != 1 || audit.records[0].action != "archive.deleted" {
+	// The sweep also runs the archive permission drift check, which on a fresh
+	// fake guild finds the category unrestricted and corrects it, so filter
+	// rather than asserting on the whole list.
+	deletions := 0
+	for _, rec := range audit.records {
+		if rec.action == "archive.deleted" {
+			deletions++
+		}
+	}
+	if deletions != 1 {
 		t.Fatalf("expected 1 archive.deleted audit record, got %+v", audit.records)
 	}
 }

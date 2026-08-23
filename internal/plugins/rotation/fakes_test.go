@@ -67,8 +67,15 @@ type recordedEdit struct {
 	position  *int
 }
 
+// testArchiveCategoryID is the archive category every rotation test's config
+// points at. It is pre-registered by newFakeOps because a real guild always
+// has one: rotate() reconciles the category's permissions before archiving
+// into it (archiveperms.go), so a fake guild where the category simply does
+// not exist is not a case worth making every test set up by hand.
+const testArchiveCategoryID = "archivecat"
+
 func newFakeOps() *fakeOps {
-	return &fakeOps{
+	f := &fakeOps{
 		channels:   make(map[string]*discordgo.Channel),
 		messages:   make(map[string][]*discordgo.Message),
 		callCounts: make(map[string]int),
@@ -76,6 +83,12 @@ func newFakeOps() *fakeOps {
 		failWith:   make(map[string]error),
 		nextID:     1000,
 	}
+	f.channels[testArchiveCategoryID] = &discordgo.Channel{
+		ID:   testArchiveCategoryID,
+		Name: defaultArchiveCategoryName,
+		Type: discordgo.ChannelTypeGuildCategory,
+	}
+	return f
 }
 
 func (f *fakeOps) addChannel(ch *discordgo.Channel) {
@@ -395,16 +408,18 @@ func (f *fakeAudit) Record(ctx context.Context, guildID, actorID, action, oldVal
 // fakeArchiveStore's role, standing in for internal/settings.Store without
 // a live Postgres.
 type fakeSettings struct {
-	mu        sync.Mutex
-	modRoles  map[string][]string
-	rotations map[string]map[string]settings.RotationChannel // guildID -> channelID -> config
-	nextID    int64
+	mu            sync.Mutex
+	modRoles      map[string][]string
+	archiveViewer map[string][]string
+	rotations     map[string]map[string]settings.RotationChannel // guildID -> channelID -> config
+	nextID        int64
 }
 
 func newFakeSettings() *fakeSettings {
 	return &fakeSettings{
-		modRoles:  make(map[string][]string),
-		rotations: make(map[string]map[string]settings.RotationChannel),
+		modRoles:      make(map[string][]string),
+		archiveViewer: make(map[string][]string),
+		rotations:     make(map[string]map[string]settings.RotationChannel),
 	}
 }
 
@@ -412,6 +427,28 @@ func (f *fakeSettings) ModRoleIDs(guildID string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.modRoles[guildID]
+}
+
+func (f *fakeSettings) ArchiveViewerRoleIDs(guildID string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.archiveViewer[guildID]
+}
+
+func (f *fakeSettings) AddArchiveViewerRole(_ context.Context, guildID, roleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Contains(f.archiveViewer[guildID], roleID) {
+		f.archiveViewer[guildID] = append(f.archiveViewer[guildID], roleID)
+	}
+	return nil
+}
+
+func (f *fakeSettings) RemoveArchiveViewerRole(_ context.Context, guildID, roleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.archiveViewer[guildID] = slices.DeleteFunc(f.archiveViewer[guildID], func(r string) bool { return r == roleID })
+	return nil
 }
 
 func (f *fakeSettings) RotationChannels(guildID string) []settings.RotationChannel {
