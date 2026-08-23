@@ -174,11 +174,11 @@ func (p *Plugin) registerCommands() {
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "allow-archive-role",
-						Description: "Let a role see this server's archived channels, on top of the mod roles",
+						Description: "Let a role read this server's archived channels. Read-only: no posting, reactions or threads",
 						Options: []*discordgo.ApplicationCommandOption{{
 							Type:        discordgo.ApplicationCommandOptionRole,
 							Name:        "role",
-							Description: "The role to grant archive access",
+							Description: "The role to grant read-only archive access",
 							Required:    true,
 						}},
 					},
@@ -532,7 +532,7 @@ func (p *Plugin) changeArchiveViewerRole(ctx context.Context, s *discordgo.Sessi
 	)
 	if allow {
 		err = p.settings.AddArchiveViewerRole(ctx, i.GuildID, roleID)
-		action, verb = "rotation.archive_role_allowed", "can now see"
+		action, verb = "rotation.archive_role_allowed", "can now read"
 	} else {
 		err = p.settings.RemoveArchiveViewerRole(ctx, i.GuildID, roleID)
 	}
@@ -550,18 +550,23 @@ func (p *Plugin) changeArchiveViewerRole(ctx context.Context, s *discordgo.Sessi
 		// sync, so this reports a partial result rather than a failure.
 		followUpErr = core.FollowUpErr(s, i, "Saved, but the resync hit errors", syncErr)
 	} else {
+		note := ""
+		if allow {
+			note = " Read-only: view and message history, nothing else."
+		}
 		followUpErr = core.FollowUpOK(s, i, "Archive access updated",
-			fmt.Sprintf("<@&%s> %s this server's archived channels.%s", roleID, verb, archiveViewerList(p.settings.ArchiveViewerRoleIDs(i.GuildID))))
+			fmt.Sprintf("<@&%s> %s this server's archived channels.%s%s", roleID, verb, note,
+				archiveViewerList(p.settings.ArchiveViewerRoleIDs(i.GuildID))))
 	}
 	if followUpErr != nil {
 		p.log.Error("rotation: archive-role follow-up failed", "guild", i.GuildID, "err", followUpErr)
 	}
 }
 
-// archiveViewerList renders the guild's current extra archive viewer roles as
-// a trailing line, empty when there are none. Mod roles and Discord
-// administrators are deliberately not listed: they always have access, and
-// repeating that on every edit buries the part that actually changed.
+// archiveViewerList renders the guild's current read-only archive viewer roles
+// as a trailing line, empty when there are none. Mod roles and Discord
+// administrators are not listed: they always have access, and repeating that
+// on every edit buries the part that actually changed.
 func archiveViewerList(roleIDs []string) string {
 	if len(roleIDs) == 0 {
 		return "\n\nNo extra roles configured: mods and administrators only."
@@ -570,7 +575,7 @@ func archiveViewerList(roleIDs []string) string {
 	for idx, id := range roleIDs {
 		mentions[idx] = core.MentionRole(id)
 	}
-	return "\n\nExtra roles with archive access: " + strings.Join(mentions, ", ")
+	return "\n\nRead-only archive access: " + strings.Join(mentions, ", ")
 }
 
 // rotationSummary renders the settings that decide how long content survives,

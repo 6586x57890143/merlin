@@ -26,69 +26,155 @@ import (
 // computed once at archive time could never fix: a mod role (or an archive
 // viewer role) added later never reached channels already archived, and a
 // stray allow added to the category by hand was invisible and permanent.
+//
+// Access comes in two shapes. Mods see an archive as part of moderating and
+// keep whatever their own role carries inside it. Anybody else granted access
+// is there to read it, so they get view and message history and are denied
+// everything else outright (archiveViewerDeny), because revealing a channel to
+// a role does not otherwise restrict that role: every permission it holds at
+// guild level applies the moment it can see the channel.
 
-// archiveViewAllow is the single permission an archive grants. Deliberately
-// read-only: an archive is a record, and core.DenyEveryoneExceptBot's doc
-// comment warns that a grant is only meaningful for bits the bot's own guild
-// role actually holds.
-const archiveViewAllow = discordgo.PermissionViewChannel
+// archiveModAllow is what a mod role gets on an archive: view, and whatever
+// else their own role already carries. Mods are the people who go back through
+// an archive to work out what happened, so nothing is taken off them here.
+const archiveModAllow = discordgo.PermissionViewChannel
+
+// archiveViewerAllow is what a non-mod archive viewer role gets: look at it and
+// read the history back, nothing more. ReadMessageHistory is granted rather
+// than assumed, since ViewChannel on its own shows an empty channel to anyone
+// whose roles do not already carry it.
+const archiveViewerAllow = discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory
+
+// archiveViewerDeny is everything else, taken away explicitly.
+//
+// Granting ViewChannel to a role does not restrict that role, it only reveals
+// the channel; every permission the role holds at guild level then applies
+// inside it. So a plain view grant hands a normal member role the ability to
+// post in the archive, react to old messages, open threads on them and pull in
+// webhooks. An archive is a record of what a channel used to be, and someone
+// added to it to read it should not be able to write to it, which means the
+// read-only part has to be spelled out rather than left to whatever the role
+// happens to hold elsewhere.
+//
+// Voice bits are in here because a category's overwrites are copied onto
+// anything created under it, and there is no reason for a viewer role to be
+// able to sit in a voice channel somebody makes inside the archive category.
+const archiveViewerDeny = discordgo.PermissionSendMessages |
+	discordgo.PermissionSendMessagesInThreads |
+	discordgo.PermissionSendTTSMessages |
+	discordgo.PermissionSendVoiceMessages |
+	discordgo.PermissionSendPolls |
+	discordgo.PermissionAddReactions |
+	discordgo.PermissionCreatePublicThreads |
+	discordgo.PermissionCreatePrivateThreads |
+	discordgo.PermissionManageThreads |
+	discordgo.PermissionManageMessages |
+	discordgo.PermissionEmbedLinks |
+	discordgo.PermissionAttachFiles |
+	discordgo.PermissionMentionEveryone |
+	discordgo.PermissionUseExternalEmojis |
+	discordgo.PermissionUseExternalStickers |
+	discordgo.PermissionUseApplicationCommands |
+	discordgo.PermissionUseExternalApps |
+	discordgo.PermissionCreateInstantInvite |
+	discordgo.PermissionManageWebhooks |
+	discordgo.PermissionManageChannels |
+	discordgo.PermissionManageRoles |
+	discordgo.PermissionVoiceConnect |
+	discordgo.PermissionVoiceSpeak |
+	discordgo.PermissionVoiceStreamVideo
+
+// archiveAccess is who may see one guild's archives, split by how much they
+// get. Mods read an archive as part of moderating and keep their own
+// permissions inside it; anyone else added to an archive is there to read it,
+// and gets read-only.
+type archiveAccess struct {
+	modRoleIDs    []string
+	viewerRoleIDs []string
+	viewerUserIDs []string // legacy /config import whitelist, read-only like the roles
+}
+
+func (a archiveAccess) grantsTo(id string, kind discordgo.PermissionOverwriteType) (allow, deny int64, ok bool) {
+	if kind == discordgo.PermissionOverwriteTypeMember {
+		if slices.Contains(a.viewerUserIDs, id) {
+			return archiveViewerAllow, archiveViewerDeny, true
+		}
+		return 0, 0, false
+	}
+	if slices.Contains(a.modRoleIDs, id) {
+		return archiveModAllow, 0, true
+	}
+	if slices.Contains(a.viewerRoleIDs, id) {
+		return archiveViewerAllow, archiveViewerDeny, true
+	}
+	return 0, 0, false
+}
 
 // desiredArchiveOverwrites is what an archive category, and every channel
 // synced to it, should carry.
 //
 // It starts from current rather than building a fresh list, because the two
 // kinds of entry are not symmetric. An *allow* of View on an archive is the
-// thing being governed: only the bot, the guild's mod roles, and the guild's
-// configured archive viewer roles get one, and anything else allowing View
-// has it taken away, whether an admin added it by hand or an older version of
-// this bot wrote it. A *deny* is never touched: a jailed role's deny, or one
-// member specifically shut out of the archive, is somebody's deliberate
-// decision and none of this function's business. Anyone holding Discord's
-// Administrator bit bypasses channel overwrites outright, so admins need no
-// entry here and never appear in one.
+// thing being governed: only the bot, the guild's mod roles and the guild's
+// configured archive viewer roles get one, and anything else allowing View has
+// it taken away, whether an admin added it by hand or an older version of this
+// bot wrote it. A *deny* belonging to somebody else is never touched: a jailed
+// role's deny, or one member specifically shut out of the archive, is a
+// decision somebody made and none of this function's business. The only denies
+// written here are archiveViewerDeny, and only onto the viewer roles that are
+// currently granted access. Anyone holding Discord's Administrator bit
+// bypasses channel overwrites outright, so admins need no entry and never
+// appear in one.
 //
 // The result is sorted, and applying it to its own output is a no-op, which is
 // what lets the periodic drift check write (and audit) only when something
 // genuinely changed.
-func desiredArchiveOverwrites(current []*discordgo.PermissionOverwrite, guildID, botUserID string, viewRoleIDs, viewUserIDs []string) []*discordgo.PermissionOverwrite {
+func desiredArchiveOverwrites(current []*discordgo.PermissionOverwrite, guildID, botUserID string, access archiveAccess) []*discordgo.PermissionOverwrite {
 	// Denies @everyone View and grants the bot itself View, merging into the
 	// existing entries for both rather than duplicating them.
-	out := core.DenyEveryoneExceptBot(current, guildID, botUserID, archiveViewAllow)
+	out := core.DenyEveryoneExceptBot(current, guildID, botUserID, archiveModAllow)
 
-	grant := func(id string, kind discordgo.PermissionOverwriteType) {
+	grant := func(id string, kind discordgo.PermissionOverwriteType, allow, deny int64) {
 		for _, ow := range out {
 			if ow.ID == id && ow.Type == kind {
-				ow.Allow |= archiveViewAllow
-				ow.Deny &^= archiveViewAllow
+				// A role promoted from read-only viewer to mod role still
+				// carries the clamp this file wrote for it, and would stay
+				// muted in the archive it can now moderate. Matching the whole
+				// mask is what tells the two cases apart: a deny somebody set
+				// by hand is never exactly archiveViewerDeny, so this lifts the
+				// clamp without touching a deliberate restriction.
+				if deny == 0 && ow.Deny&archiveViewerDeny == archiveViewerDeny {
+					ow.Deny &^= archiveViewerDeny
+				}
+				ow.Allow = ow.Allow&^deny | allow
+				ow.Deny = ow.Deny&^allow | deny
 				return
 			}
 		}
-		out = append(out, &discordgo.PermissionOverwrite{ID: id, Type: kind, Allow: archiveViewAllow})
+		out = append(out, &discordgo.PermissionOverwrite{ID: id, Type: kind, Allow: allow, Deny: deny})
 	}
-	for _, roleID := range viewRoleIDs {
-		if roleID == "" || roleID == guildID { // @everyone is never a viewer role
+	for _, roleID := range append(append([]string{}, access.modRoleIDs...), access.viewerRoleIDs...) {
+		if roleID == "" || roleID == guildID { // @everyone is never granted archive access
 			continue
 		}
-		grant(roleID, discordgo.PermissionOverwriteTypeRole)
+		allow, deny, _ := access.grantsTo(roleID, discordgo.PermissionOverwriteTypeRole)
+		grant(roleID, discordgo.PermissionOverwriteTypeRole, allow, deny)
 	}
-	for _, userID := range viewUserIDs {
+	for _, userID := range access.viewerUserIDs {
 		if userID == "" {
 			continue
 		}
-		grant(userID, discordgo.PermissionOverwriteTypeMember)
-	}
-
-	allowed := func(ow *discordgo.PermissionOverwrite) bool {
-		if ow.Type == discordgo.PermissionOverwriteTypeMember {
-			return ow.ID == botUserID || slices.Contains(viewUserIDs, ow.ID)
-		}
-		return slices.Contains(viewRoleIDs, ow.ID)
+		allow, deny, _ := access.grantsTo(userID, discordgo.PermissionOverwriteTypeMember)
+		grant(userID, discordgo.PermissionOverwriteTypeMember, allow, deny)
 	}
 
 	kept := out[:0]
 	for _, ow := range out {
-		if !allowed(ow) {
-			ow.Allow &^= archiveViewAllow
+		if _, _, ok := access.grantsTo(ow.ID, ow.Type); !ok && ow.ID != botUserID && ow.ID != guildID {
+			// Not on the list: it may not reveal the archive. Its own denies,
+			// including a read-only deny left behind by an earlier grant, are
+			// left where they are.
+			ow.Allow &^= discordgo.PermissionViewChannel
 		}
 		// An entry that now permits and forbids nothing says nothing. Dropping
 		// it is what keeps a stripped stray from lingering as a confusing
@@ -128,27 +214,41 @@ func overwritesEqual(a, b []*discordgo.PermissionOverwrite) bool {
 	return slices.Equal(ka, kb)
 }
 
-// archiveViewers is who may see guildID's archives: the configured mod roles,
-// the guild's archive viewer roles, and, for guilds carrying an imported
-// archive_visibility of "whitelist", that slot's whitelist too.
+// archiveViewers is who may see guildID's archives, split into the mod roles
+// (who keep their own permissions inside an archive) and the read-only viewer
+// roles the guild has added with /rotation configure allow-archive-role.
 //
-// The legacy whitelist is folded in rather than dropped because nothing but
-// /config import ever populated it, and a guild that has it is relying on it
-// today. It is unioned across every slot pointing at categoryID, since the
-// category is shared and there is no per-channel answer to give.
-func (p *Plugin) archiveViewers(guildID, categoryID string) (roleIDs, userIDs []string) {
-	roleIDs = append(roleIDs, p.settings.ModRoleIDs(guildID)...)
-	roleIDs = append(roleIDs, p.settings.ArchiveViewerRoleIDs(guildID)...)
+// A guild carrying an imported archive_visibility of "whitelist" has its
+// whitelist folded into the read-only side. Nothing but /config import ever
+// populated it, and a guild that has one is relying on it today, so dropping
+// it would quietly take access away. It is unioned across every slot pointing
+// at categoryID, since the category is shared and there is no per-channel
+// answer to give.
+//
+// A role that is both a mod role and an archive viewer role counts as a mod:
+// the mod list is subtracted from the viewer list rather than the other way
+// round, so adding a mod role here can never end up restricting it.
+func (p *Plugin) archiveViewers(guildID, categoryID string) archiveAccess {
+	// Copied, not aliased: settings.Store hands back the slice it caches, and
+	// the sort below would otherwise reorder the store's own copy underneath
+	// every other reader of it.
+	access := archiveAccess{modRoleIDs: slices.Clone(p.settings.ModRoleIDs(guildID))}
+	access.viewerRoleIDs = append(access.viewerRoleIDs, p.settings.ArchiveViewerRoleIDs(guildID)...)
 	for _, rc := range p.settings.RotationChannels(guildID) {
 		if rc.ArchiveCategoryID != categoryID || rc.ArchiveVisibility != "whitelist" {
 			continue
 		}
-		roleIDs = append(roleIDs, rc.ArchiveWhitelistRoleIDs...)
-		userIDs = append(userIDs, rc.ArchiveWhitelistUserIDs...)
+		access.viewerRoleIDs = append(access.viewerRoleIDs, rc.ArchiveWhitelistRoleIDs...)
+		access.viewerUserIDs = append(access.viewerUserIDs, rc.ArchiveWhitelistUserIDs...)
 	}
-	slices.Sort(roleIDs)
-	slices.Sort(userIDs)
-	return slices.Compact(roleIDs), slices.Compact(userIDs)
+	access.viewerRoleIDs = slices.DeleteFunc(access.viewerRoleIDs, func(id string) bool {
+		return slices.Contains(access.modRoleIDs, id)
+	})
+	for _, list := range []*[]string{&access.modRoleIDs, &access.viewerRoleIDs, &access.viewerUserIDs} {
+		slices.Sort(*list)
+		*list = slices.Compact(*list)
+	}
+	return access
 }
 
 // reconcileArchiveCategory computes what categoryID should carry, writes it
@@ -167,8 +267,7 @@ func (p *Plugin) reconcileArchiveCategory(guildID, categoryID string) ([]*discor
 	if err != nil {
 		return nil, false, fmt.Errorf("fetch archive category %s: %w", categoryID, err)
 	}
-	roleIDs, userIDs := p.archiveViewers(guildID, categoryID)
-	desired := desiredArchiveOverwrites(cat.PermissionOverwrites, guildID, botUserID, roleIDs, userIDs)
+	desired := desiredArchiveOverwrites(cat.PermissionOverwrites, guildID, botUserID, p.archiveViewers(guildID, categoryID))
 	if overwritesEqual(cat.PermissionOverwrites, desired) {
 		return desired, false, nil
 	}
