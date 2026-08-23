@@ -1,219 +1,202 @@
 # merlin
 
-A production-grade, modular Discord bot for "The Melting Pot." This README
-covers running, deploying, and navigating the codebase. For architecture,
-security model, and the reasoning behind any design choice, see
-[`spec.MD`](./spec.MD). That's the one place rationale lives; this file
-just links to it rather than repeating it.
+Merlin is a Discord bot I wrote for **The Melting Pot**, a free-speech server that
+attracts a fair amount of mass-reporting and brigading. Everything here started
+as something that server actually needed, which is why the defaults lean
+cautious: least privilege on the Discord side, nothing it posts can ping anyone
+and anything destructive can be stopped from three different places.
 
-## Bot permissions & intents
+It's one Go binary plus Postgres. Features are plugins compiled into the binary.
+There's no hot loading and no runtime plugin fetching, on purpose.
 
-- **OAuth2 scopes**: `bot`, `applications.commands`.
-- **Bot role permission bits**: what the bot's own Discord role can do,
-  requested via the invite URL's `permissions` parameter (Discord creates/
-  updates a managed role for the bot matching this bitmask; re-authorizing
-  the same invite link later updates that role in place, no need to
-  remove/re-add the bot):
-  - `Manage Channels` (bit `16`): create/rename/move/delete channels and
-    edit permission overwrites, needed for channel rotation (Milestone 3)
-    and for `/roles`'s per-channel jail-visibility overwrites (Milestone 9).
-  - `Manage Roles` (bit `268435456`): needed for `/config setup`
-    (Milestone 4) to create a default "Merlin Mod" role when a guild has
-    none configured yet; also used by `/roles` (Milestone 9) to create/
-    reuse a shared "Jailed" marker role and to strip/restore/grant/revoke
-    member roles; no new bit needed, this one already covers it.
-  - `Move Members` (bit `16777216`): lets `/roles jail` force-disconnect a
-    member from voice at jail time. Channel permission overwrites (the
-    Jailed role's deny on `Connect`) only stop a *future* connection;
-    Discord never re-evaluates them against a session already in progress,
-    so without this a jailed member who was mid-call would stay connected,
-    audible, and (if streaming) visible until they left on their own. A
-    guild that hasn't re-authorized the bot with this bit yet still jails
-    correctly (roles strip as before); it just can't also disconnect a
-    member already in voice, and that failure is logged, not fatal.
-  - Least-privilege, per spec.MD §4: never `Administrator`; this list only
-    grows when a landed milestone genuinely needs a new bit, and this
-    section (plus the invite link below) is updated in the same PR.
+If you want the design reasoning behind any of it, that lives in
+[`spec.MD`](./spec.MD). This file is just how to run the thing.
 
-  **Current invite link** (scopes + the bits above, `16 | 268435456 | 16777216 = 285212688`):
-  ```
-  https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=285212688
-  ```
-  Have a server admin click this link and re-authorize whenever the
-  permission bits change; it updates the bot's existing role rather than
-  creating a duplicate.
+## What it does
 
-- **Command-level gates** (separate from the bot's own permissions above;
-  these govern which *members* can invoke a command): every command
-  declares a `Public`/`Mod`/`Admin` tier, checked centrally before any
-  handler runs, plus a per-guild-configurable policy layer (tier overrides,
-  per-person grants/blocks, plugin on/off); see spec.MD §4/§4a for the full
-  model and `/config`'s subcommands. Who counts as "mod"/"admin" is
-  configured via `/config mod-roles`/`/config admins`; see "First-time
-  setup" below.
-- **Gateway intents**: `GUILDS`, `GUILD_VOICE_STATES`, and `GUILD_MEMBERS`.
-  `MESSAGE_CONTENT` is never requested.
-  - `GUILD_VOICE_STATES` is unprivileged (no Developer Portal toggle, unlike
-    `GUILD_MEMBERS` below) and always requested. It keeps discordgo's
-    gateway-cached voice state populated, which `/roles jail` uses only to
-    name the channel a jailed member was disconnected from in its log line;
-    the disconnect itself is a plain REST call and works with or without
-    this intent, so nothing depends on the cache being complete.
-  - `GUILD_MEMBERS` is privileged, so it must also be ticked as **"Server
-    Members Intent"** under Bot in Discord's Developer Portal (a self-serve
-    toggle below 100 servers; Discord approval above that). Ticking it there
-    is all you need to do; the bot asks for it by default.
-  - It is what re-jails a member the moment they rejoin, and what re-strips
-    roles a guild's Onboarding/Membership Screening flow regrants to a
-    jailed member after the fact, rather than waiting for the next
-    `roles-sweep` tick for either. Both survive without the intent either
-    way, so it narrows the window from "at most a minute" to "immediately"; it does not
-    create the protection.
-  - If the portal toggle is off, Discord refuses the connection and the bot
-    **exits at startup with that explanation** rather than running on
-    silently. To run without it, set `MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1`
-    and rely on the sweep.
-  - This used to be opt-in via `MERLIN_ENABLE_GUILD_MEMBERS_INTENT`, which
-    was a trap: ticking the portal toggle looked like it should be enough,
-    changed nothing on its own, and nothing reported the mismatch. That
-    variable is no longer read.
-- **Owner onboarding DM**: off unless `MERLIN_ENABLE_ONBOARDING_DM=1`. When
-  on, Merlin DMs the owner of a server nobody has configured yet, once,
-  pointing at `/config setup`. Deliberately opt-in rather than opt-out (see
-  `.env.example`): it is unsolicited outbound contact rather than a
-  capability, and nothing is broken while it is off, since an owner who never
-  gets the DM simply runs `/config setup`. Enabling it later nudges every
-  still-unconfigured guild on the next restart.
+**Channel rotation.** Point it at a channel and every so often it swaps that
+channel out for a fresh empty one under the same name, in the same place in the
+sidebar. The old one gets renamed, moved into a hidden archive category and
+deleted after a retention window you set (or kept forever if you'd rather). The
+channel gets a heads-up before it happens and a short note afterwards explaining
+what just happened. Handy if you run a channel where people would rather their
+history not sit around indefinitely.
 
-## Local development
+**Jail.** `/roles jail @someone 2h` snapshots their roles, strips them and drops
+a shared "Jailed" role on them instead. That role's channel overwrites decide
+what a jailed member can still see, so jailing costs one API call no matter how
+big the server is. They get their roles back automatically when the timer runs
+out, or when a mod runs `/roles release`. Leaving and rejoining doesn't shake it
+off. There's a bulk version and a `/roles jail-role` for when a raid shows up.
+
+**Timed role grants.** `/roles grant @someone @role 24h`, and it comes off by
+itself.
+
+**Everything is configured in Discord.** No YAML editing on the host for
+day-to-day stuff. `/config setup` walks you through the audit log channel,
+status channel, mod role and admins. After that it's `/config admins`,
+`/config mod-roles`, `/config permissions` and `/config plugins`. Every command
+declares a Public/Mod/Admin tier. You can override tiers per server, allow or
+deny specific people or roles per action, or switch a whole plugin off entirely.
+
+**An audit trail and an off switch.** Anything the bot does lands in
+`#bird-audit-log` as an embed and in Postgres as a row. `/config pause` refuses
+every destructive action instantly, `/config dryrun` makes it describe what it
+would have done without doing it, and there's a host-level env var for when
+Discord or the database is the thing that's broken.
+
+## Adding it to a server
+
+Invite link (a server admin has to click it):
+
+```
+https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=285212688
+```
+
+That asks for `Manage Channels`, `Manage Roles` and `Move Members`, and nothing
+else. Never `Administrator`. If the permission bits ever change, re-clicking the
+same link updates the bot's existing role rather than adding a second one.
+
+`Move Members` is only there so `/roles jail` can boot someone out of a voice
+call at jail time. Permission overwrites don't apply to a voice session that's
+already in progress, so without it a jailed member who was mid-call would stay
+in it.
+
+### Intents
+
+`GUILDS` and `GUILD_VOICE_STATES` are unprivileged and always requested.
+`MESSAGE_CONTENT` is never requested at all.
+
+`GUILD_MEMBERS` is privileged, so if you're self-hosting you need to tick
+**Server Members Intent** under Bot in the Discord Developer Portal. The bot
+asks for it by default. If the toggle is off, Discord silently refuses the
+gateway connection, so the bot gives up at startup and tells you which toggle to
+flip rather than sitting there reconnecting forever.
+
+What the intent buys you: a jailed member who rejoins gets re-jailed instantly
+instead of within a minute, and roles that a server's Onboarding flow hands back
+to a jailed member get stripped again right away. Both of those work without it,
+just a minute slower. If you can't enable it, set
+`MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1` and live with the sweep.
+
+## First run
+
+1. Invite the bot.
+2. Run `/config setup` as the server owner, any Administrator or the bootstrap
+   admin. It creates `#bird-audit-log`, `#bird-status` and a `Merlin Mod` role
+   for whatever's missing, and offers a picker for anything you already have. Safe
+   to re-run whenever, it doubles as a status screen.
+3. `/config admins add` and `/config mod-roles add` for everyone else.
+4. `/rotation configure add` if you want a rotating channel.
+5. `/config status` to check it's all wired up.
+
+Before you trust rotation on a real channel, turn on `/config dryrun
+enabled:true` and let a full interval pass. It'll write to the audit log
+describing exactly what it would have deleted, and touch nothing. Channel
+deletion has no undo, so this is worth the wait.
+
+## Running it yourself
+
+You need Docker and a Discord application. Postgres is not optional, the
+scheduler keeps its state there and the bot won't start without it. Migrations
+run automatically at startup.
 
 ```sh
-cp .env.example .env            # fill in DISCORD_BOT_TOKEN, DISCORD_APP_ID,
-                                 # and MERLIN_BOOTSTRAP_ADMIN_USER_ID (your
-                                 # own Discord user ID)
-cp config.example.yaml config.yaml   # bootstrap-only as of Milestone 4, just log_level
+git clone https://github.com/6586x57890143/merlin
+cd merlin
+cp .env.example .env                 # bot token, app ID, your own Discord user ID
+cp config.example.yaml config.yaml   # just log_level
 docker compose up --build
 ```
 
-Guild/role/channel config no longer lives in `config.yaml` (Milestone 4,
-spec.MD §4a). It's configured entirely through Discord commands once the
-bot is running. See "First-time setup" below.
+`MERLIN_BOOTSTRAP_ADMIN_USER_ID` in `.env` is your own Discord user ID. That
+identity always counts as admin in every server regardless of what's in the
+database, so a wiped or broken config can't lock you out permanently. It's the
+one thing that isn't database-backed.
 
-Or run natively (Postgres is a hard runtime requirement: the scheduler
-persists per-job last-run state there, and the bot exits at startup if
-`DATABASE_URL` isn't set; migrations run automatically on every startup):
+Natively, if you'd rather:
 
 ```sh
 go run ./cmd/bot
 ```
 
-## Testing
+Tests:
 
 ```sh
 go vet ./...
 go test ./... -race -cover
+golangci-lint run
 ```
 
-## Token rotation
+The Postgres-backed tests skip themselves when `TEST_DATABASE_URL` isn't set, so
+a plain `go test ./...` works with no setup. To actually run them, bring up the
+compose Postgres and point the variable at it.
 
-See [`SECURITY.md`](./SECURITY.md) for the token-compromise runbook.
+## Deploying
 
-## Deployment
+Push to `main`, CI does the rest. `lint-test`, `secret-scan`, `prose` and
+`docker-build` have to pass, then `push-image` builds a multi-arch image and
+pushes it to GHCR, and `deploy` SSHes into the VPS and runs
+`docker compose -f docker-compose.prod.yml pull && up -d`.
 
-Every push to `main` that passes CI (`lint-test`, `secret-scan`, `docker-build`)
-triggers two more CI jobs:
+The deploy pins the running image to the commit SHA in `deployed-tag.env` and
+keeps whatever it replaced in `previous-tag.env`, which is what makes rolling
+back a three-line job.
 
-1. `push-image` builds the Docker image and pushes it to GHCR as
-   `ghcr.io/6586x57890143/merlin:latest` and `:<commit-sha>`, using the
-   workflow's own `GITHUB_TOKEN`, with no separate registry secret.
-2. `deploy` copies `docker-compose.prod.yml` to the VPS and runs
-   `docker compose -f docker-compose.prod.yml pull && up -d` over SSH
-   (`VPS_HOST`/`VPS_SSH_KEY` repo secrets), logging into GHCR with the same
-   short-lived `GITHUB_TOKEN` so no long-lived registry credential is ever
-   stored on the VPS. It pins the deployed image to the commit SHA in
-   `deployed-tag.env` and keeps the tag it replaced in `previous-tag.env`,
-   which is what makes the rollback in the Runbook a one-liner.
-
-`docker-compose.prod.yml` differs from the local `docker-compose.yml` only in
-that `bot` pulls the prebuilt GHCR image instead of building from source.
-Deploys never touch `.env` or `config.yaml` on the VPS; those hold real
-secrets/guild config and must be created there once by hand:
+`docker-compose.prod.yml` is the same as the local compose file except `bot`
+pulls the prebuilt image instead of building from source. Deploys never touch
+`.env` or `config.yaml` on the host, those hold real secrets and you create them
+there once by hand:
 
 ```sh
-# one-time setup on the VPS, in /home/deploy/merlin
-cp .env.example .env                  # fill in real values, incl. MERLIN_BOOTSTRAP_ADMIN_USER_ID
-cp config.example.yaml config.yaml    # bootstrap-only (log_level), see "First-time setup"
+# once, on the VPS, in /home/deploy/merlin
+cp .env.example .env
+cp config.example.yaml config.yaml
 ```
 
-The `deploy` SSH user must be able to run `docker`/`docker compose` without an
-interactive sudo prompt (e.g. a member of the `docker` group).
+Repo secrets you'll need: `VPS_HOST` and `VPS_SSH_KEY`. GHCR auth uses the
+workflow's own `GITHUB_TOKEN`, so there's no long-lived registry credential
+sitting on the box. The SSH user needs to be able to run `docker compose`
+without an interactive sudo prompt.
 
-## Runbook
+## When something breaks
 
-Four things go wrong in production. Each has one procedure.
+**Make it stop.** `/config pause paused:true` refuses every rotation, archive
+deletion, jail and role change in that server, effective on the next attempted
+action. Read commands keep working. Scheduled jobs stay due rather than getting
+skipped, so they run on the first tick after you unpause.
 
-### 1. The bot is doing something destructive and must stop now
-
-Fastest first; each is stronger and slower than the one above it.
-
-```
-/config pause paused:true
-```
-Refuses every rotation, archive deletion, jail, and role change in that
-server. Takes effect on the next attempted action, no restart. Read and
-inspect commands keep working, so you can still see what it thinks is going
-on. Scheduled jobs stay *due*: nothing is skipped permanently, it runs on
-the first tick after you unpause. Reverse with `paused:false`.
-
-If Discord itself is unreachable or the database is the problem, do it on the
-host instead:
+If Discord or the database is the problem, do it on the host instead:
 
 ```sh
 cd /home/deploy/merlin
 echo 'MERLIN_PAUSE_ALL_WRITES=1' >> .env
 docker compose -f docker-compose.prod.yml up -d bot
 ```
-Same stop, process-wide, every guild, independent of the database. Remove the
-line and restart to release it.
 
-Last resort, if the above can't be reached: `docker compose -f
-docker-compose.prod.yml stop bot`. This also stops the scheduler, so anything
-that comes due while it's down fires on the next tick after it comes back.
-
-### 2. A bad deploy went out
-
-Deploys are pinned to the commit SHA, and the previous one is kept on the
-host.
+**Roll back a bad deploy.**
 
 ```sh
 cd /home/deploy/merlin
-cat deployed-tag.env      # what's running now
-cat previous-tag.env      # what it replaced
+cat deployed-tag.env previous-tag.env
 
 cp previous-tag.env deployed-tag.env
 set -a; . ./deployed-tag.env; set +a
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-To go back further, any commit SHA on `main` that CI built is a valid tag:
-`echo MERLIN_IMAGE_TAG=<sha> > deployed-tag.env` and re-run the last two
-lines. Note this rolls back *code only*: a deploy that ran a migration has
-already changed the schema, and Go builds don't un-apply it. Check whether
-the range you're rolling back over touched `internal/storage/migrations/`
-before assuming a code rollback is sufficient.
+Any commit SHA that CI built is a valid tag, so you can go further back by
+writing one into `deployed-tag.env` yourself. This rolls back code only. If the
+range you're skipping over added a migration, the schema has already moved and
+won't move back on its own, so check `internal/storage/migrations/` first.
 
-### 3. The database is lost or corrupted
-
-`pgbackup` writes a daily `pg_dump` to `/home/deploy/merlin/backups/`,
-keeping 14 days, outside the `pgdata` volume. Everything the bot knows that
-isn't reconstructible from Discord lives there: rotation config, permission
-policy, jail records with the role snapshots needed to restore members, and
-the audit trail.
+**Restore the database.** `pgbackup` drops a daily `pg_dump` into
+`/home/deploy/merlin/backups/` and keeps two weeks, outside the `pgdata` volume.
+That's where everything lives that Discord can't tell you: rotation config,
+permission policy, jail records with the role snapshots needed to give people
+their roles back and the audit trail.
 
 ```sh
-cd /home/deploy/merlin
-ls -la backups/                                   # newest last
-
 docker compose -f docker-compose.prod.yml stop bot
 docker compose -f docker-compose.prod.yml exec -T postgres \
   pg_restore -U "$POSTGRES_USER" -d merlin --clean --if-exists \
@@ -221,250 +204,54 @@ docker compose -f docker-compose.prod.yml exec -T postgres \
 docker compose -f docker-compose.prod.yml start bot
 ```
 
-Stop the bot first: restoring under a running bot races the scheduler against
-a half-restored schema. Migrations re-run automatically on the restart and
-are idempotent, so restoring an older dump and letting the bot catch the
-schema up is fine.
+Stop the bot first or the scheduler races a half-restored schema. Migrations
+re-run on the way back up and are idempotent, so restoring an older dump is
+fine. Rehearse this into a scratch database at some point, an untested restore
+isn't a backup.
 
-**Rehearse this before you need it.** Restore a dump into a scratch database
-and confirm it comes back; an untested restore is not a backup.
-
-### 4. Something is wrong and you don't know what
-
-Start inside Discord:
-
-```
-/config status
-```
-One embed: is the database reachable, is any scheduled job failing, is the
-server paused or in dry-run, and do the configured audit-log/status channels
-and mod roles still exist. That last one matters because a deleted audit-log
-channel is otherwise silent: the audit trail just stops appearing.
-
-Then the logs:
+**Work out what happened.** `/config status` in Discord first: database
+reachable, any failing jobs, paused or dry-run state and whether the configured
+channels and roles still exist. Then `/scheduler list` for last-run, next-due and
+failure counts per job, which is usually the quickest way to tell a wedged job
+from one that simply wasn't due. Then the logs:
 
 ```sh
 docker compose -f docker-compose.prod.yml logs -f --tail=200 bot
 ```
 
-To raise verbosity, set `LOG_LEVEL=debug` in `.env` and restart the bot
-(`docker compose -f docker-compose.prod.yml up -d bot`). It overrides
+`LOG_LEVEL=debug` in `.env` plus a restart turns the volume up. It overrides
 `config.yaml`, which is mounted read-only.
 
-`/scheduler list` shows every registered job with last-run, next-due, and
-consecutive-failure count, usually the fastest way to tell "wedged job" from
-"nothing was due yet."
+For "it did something and I don't know why", the `action_journal` table has every
+destructive Discord call it attempted, including ones the rate cap or circuit
+breaker refused before anything reached the audit log. Rows stick around 30 days.
+A row still marked `pending` long after it started is a call that never returned,
+which usually means the process died mid-write.
 
-For "the bot did something and I don't know why", the `action_journal` table
-records every destructive Discord call it attempted, including the ones
-refused by the rate cap or circuit breaker before any audit entry was
-written. Rows kept 30 days:
+## Code layout
 
-```sh
-docker compose -f docker-compose.prod.yml exec -T postgres \
-  psql -U "$POSTGRES_USER" -d merlin -c \
-  "SELECT started_at, op, target_id, state, error FROM action_journal
-   ORDER BY started_at DESC LIMIT 50;"
-```
+Every plugin implements `core.Plugin` and gets registered in `cmd/bot/main.go`.
+Plugins never import each other, they talk through injected dependencies and an
+event bus.
 
-A row still `pending` long after `started_at` is a call that never returned:
-the process died mid-mutation. It's the first thing worth checking after an
-unexplained restart.
+| Package | What's in it |
+|---|---|
+| `internal/core` | plugin lifecycle, event bus, permissions, the command router, embeds |
+| `internal/config` | bootstrap config only: token, app ID, DSN, log level, bootstrap admin |
+| `internal/settings` | per-guild config in Postgres, cached in memory, invalidated on write |
+| `internal/storage` | connection pool, migration runner, SQL migrations |
+| `internal/discordguard` | every destructive Discord call goes through here, enforces pause and dry-run |
+| `internal/scheduler` | cron core with persisted last-run state, backoff and failure alerts |
+| `internal/audit` | audit rows and the `#bird-audit-log` embeds |
+| `internal/voice` | what Merlin says to members, lines as reviewable YAML, contract in code |
+| `internal/plugins/rotation` | channel rotation and the archive sweep |
+| `internal/plugins/roles` | jail and timed role grants |
+| `internal/plugins/adminconfig` | the `/config` command tree |
+| `internal/plugins/ping` | reference plugin, exercises the full lifecycle |
 
-### Launch checklist
+## Contributing
 
-Run in order. Everything above the line is reversible; the first live
-rotation is not.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md). Short version: small PRs, `main` is
+protected, run vet, tests and the linter before you open one.
 
-1. **Merge the open Dependabot PRs.** Until they are in, CI is testing with
-   older action versions than the ones it reports.
-2. **Confirm the gateway is actually connected.** Startup logs the
-   `GUILD_MEMBERS` intent request; if the Developer Portal toggle is off,
-   the READY watchdog fails startup within 45 seconds with a message naming
-   the toggle, rather than silently reconnect-looping.
-3. **Check `/config status`.** Database reachable, no failing jobs, not
-   paused, and no warning next to the audit-log or status channel. A
-   warning there means everyone can read it, which would publish every
-   jail and config change to the whole server.
-4. **Dry-run rehearsal on the real server** (see below). Let a full rotation
-   interval and a sweep window pass before turning it off.
-5. **Rehearse the rollback and the restore**, both in the Runbook above. An
-   untested runbook is not a runbook, and the moment you need either one is
-   the worst possible moment to discover a typo in it.
-6. **First live rotation on a low-traffic channel**, not `#general-chat`.
-   Watch one full cycle: the replacement lands in the same sidebar slot,
-   the heads-up arrives before it, the retention notice states the right
-   cadence and window, and the archive appears where you expect.
-
-### Rehearsing a rotation before trusting it
-
-Channel rotation and the archive sweep permanently delete channels. Before
-the first live rotation on a real server:
-
-```
-/config dryrun enabled:true
-```
-
-Rotations and sweeps then make their full decision and write to
-`#bird-audit-log` describing exactly what they *would* have done, and change
-nothing. Let a full rotation interval and a sweep window pass, read the audit
-log, then `/config dryrun enabled:false`.
-
-## Scheduler
-
-`internal/scheduler` is the generic cron core other plugins register
-recurring jobs with: persisted last-run state, retry with backoff, and a
-status-channel alert past repeated failures (spec.MD §5). `/scheduler
-run-now` (autocomplete over registered job keys) and `/scheduler list`
-cover manual triggering and inspection for every registered job, including
-rotation's.
-
-## Channel rotation
-
-`internal/plugins/rotation` implements spec.MD §6's "Refresh": a configured
-channel is periodically given a clean history while preserving a moderation
-trail. Configured per guild via `/rotation configure add|edit|remove|sticky`
-and inspected with `/rotation list`; see spec.MD §6 for the full rotation
-process, visibility/retention semantics, and archive sweep behavior.
-
-**Interval** accepts anything from one hour upward, to the minute: `90m`,
-`2h30m`, `24h`, `3d`. One hour is a floor, not a granularity: below it a
-single guild's rotations would exhaust its channel-create budget and starve
-the sweep that deletes the archives they produce, and members lose the
-channel mid-conversation.
-
-**The channel is warned before it wipes.** `/rotation configure add|edit
-notice:` sets how long ahead, 10 minutes by default, `off` to disable. The
-warning fires once per rotation: the job that posts it runs every minute,
-and the claim that stops it repeating is a database constraint rather than
-an in-process check, because being told six times that a channel is about
-to wipe reads as a broken bot. A rotation that is already overdue gets no
-warning at all, since it fires on the next tick and a countdown would be
-wrong in the one direction that matters.
-
-**The intro message varies.** The notice posted into a freshly rotated
-channel comes from `internal/voice`, so it does not read like a form letter
-by the third day. What cannot vary is the content: every line in the
-catalog is required to state the reset cadence and, where archives expire,
-how long they last, and the bot refuses to start if one does not. That
-notice is the server's published retention policy, and this code has
-previously got it wrong in exactly that way.
-
-**The replacement keeps the original's place in the sidebar.** Discord
-breaks ties between equal channel positions by channel ID, so a replacement
-created at the same index as the channel it replaces still sorts below it;
-the position is re-asserted explicitly once the old channel has moved to the
-archive category and the slot is genuinely free. If that last step fails the
-rotation still succeeds: the channel is live and correctly named, and
-failing the job would have the scheduler retry and create a second
-replacement.
-
-## Role management
-
-`internal/plugins/roles` implements jail (snapshot-and-strip a member's
-roles and channel access for a period, then restore both automatically or on
-demand, via `/roles jail|release`) and timed single-role grants
-(`/roles grant|revoke`), with `/roles list` to inspect a member's active
-jail/grants. Jail denies every channel except a guild-configured allowlist
-(`/roles configure allow-channel|disallow-channel|list-channels`), enforced
-via one shared "Jailed" role's own permission overwrites rather than
-per-member overwrites, so jailing scales to any server size at a fixed
-Discord API cost.
-
-**Jailed and released members are told.** A DM, never a channel post,
-naming the server and when it ends (as a Discord relative timestamp, so the
-reader sees it in their own timezone). Deliberately plainer in tone than
-the rest of what Merlin says: the reader has just been punished, and a joke
-aimed at them is what turns a moderation action into a screenshot. Best
-effort throughout, so a member with DMs closed can never turn a successful
-jail or release into a failed one.
-
-Bulk jails do not DM. `/roles jail-role` exists to shut down a raid, and
-messaging fifty accounts would spend the guild's hourly message budget at
-exactly the moment the releases undoing a mistake need it.
-
-**Jailing several people at once.** `/roles jail` takes up to five members
-(`user`, `user2` to `user5`) with one duration and reason. `/roles jail-role`
-jails everyone holding a given role: the raid button. Both report every
-member individually: jailed, already jailed, skipped for outranking you, or
-failed. Nothing is omitted, because a summary that lists only successes lets
-a mod believe a raid was contained when it wasn't.
-
-`jail-role` is **Admin-tier by default** while `/roles jail` stays Mod-tier:
-one command silencing a large slice of the server is a different kind of
-action from jailing one person. Lower it deliberately with
-`/config permissions set-tier roles.jail_role mod` if your mods should hold
-it. It refuses `@everyone` outright, refuses any role positioned at or above
-Merlin's own (its members would keep the role and the jail wouldn't do its
-job), skips you and the bot, and caps a batch at 50 members. That cap exists
-because jail and release draw on the same per-guild rate budget: a batch big
-enough to drain it would leave you unable to run the releases that undo it.
-Over the cap it refuses rather than jailing an arbitrary subset. Finding a
-role's members needs the privileged `GUILD_MEMBERS` intent (see Gateway
-intents above).
-
-**Jail survives leaving and rejoining.** Discord drops every role a member
-holds when they leave, so without this a jailed member could shed the Jailed
-role, and with it every channel restriction, simply by leaving and coming
-back, while Merlin's own record still said they were jailed. The sweep
-compares each active jail against the member's `JoinedAt`: a join later than
-the jail began is a rejoin, and the marker goes back on. A member whose
-marker is gone *without* a later join is treated as a deliberate manual
-release by a mod, exactly as before. Re-applying never touches the stored
-role snapshot or the release time; leaving neither serves the sentence nor
-extends it.
-
-## Package layout
-
-- `internal/core`: plugin registry/lifecycle, event bus, tiered+whitelist
-  permissions (`permissions.go`), the single command router/dispatcher
-  (`commands.go`, spec.MD §4a), shared Discord session.
-- `internal/config`: process-bootstrap-only config as of Milestone 4: log
-  level, Discord token/App ID, DB DSN, and the bootstrap admin user ID.
-  No guild/role/channel config here anymore.
-- `internal/settings`: DB-backed, per-guild config (mod roles, admins,
-  permission whitelists, rotation settings), in-memory cached and
-  invalidated on every mutation via `core.EventConfigChanged`; the thing
-  `/config` and `/rotation configure` actually read/write.
-- `internal/storage`: Postgres connection pool, migration runner
-  (`storage.Migrate`, applied automatically at startup), and SQL migrations.
-- `internal/discordguard`: the chokepoint every destructive Discord call
-  passes through, enforcing the pause and dry-run controls above. Plugins get
-  a guild-bound view of it in place of the raw session.
-- `internal/scheduler`: cron core (see above); itself a `core.Plugin` and
-  the concrete implementation behind `Deps.Scheduler`.
-- `internal/audit`: minimal `core.AuditWriter`: DB insert + `#bird-audit-log`
-  embed, behind `Deps.Audit`.
-- `internal/voice`: what Merlin says to members. Lines live as reviewable
-  YAML data, the contract lives in code, and a line that breaks the
-  contract fails startup rather than reaching a channel. See `PERSONA.md`
-  in that package for the brief the lines are written against.
-- `internal/plugins/ping`: reference plugin exercising the full lifecycle.
-- `internal/plugins/rotation`: channel rotation (see above).
-- `internal/plugins/roles`: jail + timed role grants (see above).
-- `internal/plugins/adminconfig`: the cross-cutting `/config` command tree
-  (admins/mod-roles/permissions/setup/import), the one exception to "one
-  top-level command per plugin," since these concepts don't belong to any
-  single feature plugin (spec.MD §4a).
-
-Every plugin implements the `core.Plugin` interface and is registered at
-startup in `cmd/bot/main.go`, with no dynamic/hot-loading, per `spec.MD`
-Design Principle 1.
-
-## First-time setup
-
-Once the bot is invited (see the invite link above) and running:
-
-1. **Invite the bot** (a server admin must do this). If nothing is
-   configured yet, it DMs the guild owner once pointing at `/config setup`.
-   See spec.MD §4a for why the owner, specifically.
-2. **Run `/config setup`** as the owner, any other Administrator, or the
-   bootstrap admin. Creates `#bird-audit-log`, `#bird-status`, and a mod
-   role for whatever's missing; safe to re-run any time as a status check.
-3. **`/config admins add`** / **`/config mod-roles add`** to bring in
-   others beyond the Administrator/bootstrap paths.
-4. **`/rotation configure add`** for any channel you want periodically
-   refreshed.
-5. Optionally fine-tune access per action with `/config permissions
-   set-tier|allow|deny` or turn a whole plugin off with `/config plugins
-   set`; see spec.MD §4a for the full model.
+Token compromise runbook is in [`SECURITY.md`](./SECURITY.md).
