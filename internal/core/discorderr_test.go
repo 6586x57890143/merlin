@@ -9,7 +9,11 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-func restErr(status int, code int) *discordgo.RESTError {
+// restErr returns error, not *discordgo.RESTError, so a %w call site takes a
+// plain error. discordgo declares Error() on the value receiver, which go vet
+// (1.27+) flags as a %w operand because errors.Is would then compare pointers;
+// every consumer here goes through errors.As, exactly as the production paths do.
+func restErr(status int, code int) error {
 	e := &discordgo.RESTError{Response: &http.Response{StatusCode: status}}
 	if code != 0 {
 		e.Message = &discordgo.APIErrorMessage{Code: code, Message: "test"}
