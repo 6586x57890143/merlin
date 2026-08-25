@@ -39,3 +39,48 @@ moderation.release:
   # matter of fact
   - "you've been released in {guild}. everything you had is back where it was."
   - "done. your roles in {guild} are restored, exactly as they were before."
+
+# Sent to the member whose message Merlin's AI moderation removed or edited.
+#
+# Same plain register as the jail notices above, with one thing on top of
+# them: no person decided this. Something they wrote was taken down by
+# software, and the line has to own that rather than let them picture a
+# moderator reading it and choosing. That honesty is the whole job here: a
+# member who thinks they were singled out by a person argues with a person,
+# and a member told plainly that a filter did it goes and reads the reason.
+#
+# So every line names the server, says a rule was matched rather than a
+# judgement made, and none of them apologises or lectures. The reason and
+# their original text arrive as separate embed fields, so the sentence never
+# has to carry either, which is also why nothing here speculates about what
+# they did.
+
+moderation.aimod_removed:
+  # warm
+  - "a message you posted in {guild} was taken down automatically. it matched one of Discord's own rules, and no moderator was involved. the reason is below, and your text is there too so nothing is lost."
+  - "heads up: something you wrote in {guild} was removed by an automatic check against Discord's rules. what it matched is below, along with what you posted."
+  - "one of your messages in {guild} has been removed automatically. that was a rule match rather than anyone's judgement, and both the reason and your original are below."
+  # plain
+  - "a message of yours in {guild} was removed automatically for matching one of Discord's rules. the details are below."
+  - "your message in {guild} matched one of Discord's rules and was removed by an automatic check. the reason and your original text are below."
+  - "this is an automatic notice: a message you posted in {guild} was removed. what it matched is below."
+  # matter of fact
+  - "removed automatically from {guild}. it matched a Discord rule, no moderator reviewed it, and the reason is below."
+  - "an automatic check removed one of your messages in {guild}. the rule it matched and your original text are both below."
+  - "a message you posted in {guild} has been removed by Merlin's automatic rule check. details below."
+  - "automatic removal in {guild}. the specific rule is below, and your text is kept there so you can repost a version that clears it."
+
+moderation.aimod_rewritten:
+  # warm
+  - "part of a message you posted in {guild} was edited out automatically. the rest of it is still there, under your name, exactly as you wrote it. the reason is below."
+  - "one line of what you wrote in {guild} matched a Discord rule and was edited out by an automatic check. everything else stayed. your original is below."
+  - "heads up: a message of yours in {guild} was tidied rather than removed. only the part that matched a rule went, and your original is below if you want to try again."
+  # plain
+  - "a message you posted in {guild} was edited automatically: the part that matched one of Discord's rules was taken out and the rest reposted under your name. the reason is below."
+  - "part of your message in {guild} matched a Discord rule and was removed. the message itself is still up. details and your original are below."
+  - "this is an automatic notice: something in a message you posted in {guild} was edited out for matching one of Discord's rules."
+  # matter of fact
+  - "edited automatically in {guild}. the matching part was removed, the rest was reposted as you wrote it, and the reason is below."
+  - "an automatic check edited one line out of a message you posted in {guild}. your original is below."
+  - "a message of yours in {guild} was rewritten rather than removed. only the rule-matching part is gone."
+  - "automatic edit in {guild}. what matched is below, and your full original is kept there too."

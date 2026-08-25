@@ -26,6 +26,12 @@ import (
 // before that happened.
 var ErrAlreadyJailed = errors.New("roles: member is already jailed")
 
+// ErrNotJailed reports that there was no jail record to update. Only
+// SetJailRelease returns it, and only in the narrow window where a member was
+// released between a jail attempt losing to ErrAlreadyJailed and the re-date
+// that follows it: the sentence being moved no longer exists.
+var ErrNotJailed = errors.New("roles: member is not jailed")
+
 // JailRecord tracks one member currently jailed in a guild: the roles they
 // held before being stripped (so release can restore exactly what was
 // removed), and the marker role applied in their place.
@@ -62,6 +68,16 @@ type Store interface {
 	// record: the caller lost a race with a concurrent jail, and must not
 	// treat that as success.
 	InsertJail(ctx context.Context, rec JailRecord) error
+	// SetJailRelease moves an existing jail's release_at and touches nothing
+	// else. Re-jailing a member mid-sentence moves the end of their sentence
+	// rather than being refused, but snapshot_role_ids holds their real
+	// pre-jail roles and is the only copy, so this must never rewrite it with
+	// what they hold now (the marker alone). Same reasoning as InsertJail's
+	// ON CONFLICT DO NOTHING, for the same column.
+	//
+	// Returns ErrNotJailed if no record exists rather than reporting success
+	// for an update that changed nothing.
+	SetJailRelease(ctx context.Context, guildID, userID string, releaseAt *time.Time) error
 	GetJail(ctx context.Context, guildID, userID string) (JailRecord, bool, error)
 	DeleteJail(ctx context.Context, guildID, userID string) error
 	DueJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
@@ -111,6 +127,19 @@ func (s *pgStore) InsertJail(ctx context.Context, rec JailRecord) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("roles store: insert jail for %s: %w", rec.UserID, ErrAlreadyJailed)
+	}
+	return nil
+}
+
+func (s *pgStore) SetJailRelease(ctx context.Context, guildID, userID string, releaseAt *time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE role_jails SET release_at = $3 WHERE guild_id = $1 AND user_id = $2
+	`, guildID, userID, releaseAt)
+	if err != nil {
+		return fmt.Errorf("roles store: set jail release: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("roles store: set jail release for %s: %w", userID, ErrNotJailed)
 	}
 	return nil
 }

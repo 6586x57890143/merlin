@@ -1,0 +1,25 @@
+# Community Guidelines 13 through 18, and the Platform Manipulation,
+# Identity and Authenticity, and Misinformation policy explainers.
+#
+# Off by default. Discord's own automod and rate limits already catch most
+# of the mechanical end of this, and the judgement end (misinformation,
+# impersonation) is where a language model is least reliable and a
+# free-speech server least wants one deciding.
+bucket: spam
+severity: low
+short: "Unsolicited bulk messaging, inauthentic engagement, impersonation, or harmful false information."
+definitions:
+  - "Platform abuse covers activity that disrupts the experience of others, including spam from spambots, manual accounts or self-bots."
+  - "Inauthentic engagement is engagement that is purchased, induced by a promise of payment, or faked using fake accounts."
+violations:
+  - "Unsolicited bulk or repeated advertising, including mass direct message campaigns"
+  - "Advertising engagement services, join-for-join schemes or artificial member inflation"
+  - "Advertising self-bots, client modifications or automation tools"
+  - "Impersonating a specific real person, brand or Discord staff in a deceptive or harmful way"
+  - "False or misleading claims that could cause significant physical or societal harm"
+not_violations:
+  - "Sharing a link, an invite or a project once, or where the server allows it"
+  - "Enthusiastic repetition, copypasta, memes and running jokes among people who know each other"
+  - "Being wrong, or holding an unpopular, contrarian or fringe view about anything"
+  - "Parody and satire accounts that are not passing themselves off as the real person"
+  - "Roleplay and alternate personas within a server that expects them"

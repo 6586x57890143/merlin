@@ -1,0 +1,27 @@
+# Community Guideline 4 and the Hateful Conduct policy explainer.
+#
+# Off by default. This is the bucket where a server's own culture and
+# Discord's rule are furthest apart, and switching it on is a decision a
+# guild should make deliberately rather than inherit. Note that the
+# explainer grants real exceptions here, which most of the others do not:
+# "reclaimed language, satire, or for educational or documentary purposes",
+# with the caveat that "satire must be obvious".
+bucket: hate_speech
+severity: high
+short: "Degrading, dehumanizing or inciting hostility against people for a protected characteristic."
+definitions:
+  - "Hate speech is any expression that degrades, vilifies or dehumanizes individuals, incites hostility towards specific groups, or promotes harm based on protected characteristics."
+  - "Protected characteristics are age, caste, colour, disability, ethnicity, family responsibilities, gender and gender identity, housing status, national origin, race, refugee or immigration status, religious affiliation, serious illness, sex, sexual orientation, socioeconomic status, source of income, status as a victim of domestic or sexual violence or stalking, and weight or size."
+violations:
+  - "Slurs or dehumanizing language aimed at people for a protected characteristic"
+  - "Claiming one group is inherently superior or inferior to another"
+  - "Hate symbols or imagery used to target, threaten or intimidate"
+  - "Inciting fear, hatred, discrimination or violence against a protected group"
+  - "Glorifying violence committed against a protected group"
+  - "Denying that a violent historical atrocity such as the Holocaust occurred"
+not_violations:
+  - "Reclaimed language used by a member of the group it refers to"
+  - "Obvious satire, or educational, historical, newsworthy or documentary use of a symbol or a slur"
+  - "Criticism of a religion, an ideology, a government, a policy or an institution rather than of people for what they are"
+  - "Rude, hostile, offensive or extreme opinions that name no protected characteristic"
+  - "Quoting or reporting hate speech in order to condemn it or ask a moderator to act"

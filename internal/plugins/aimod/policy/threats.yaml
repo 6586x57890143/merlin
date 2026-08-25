@@ -1,0 +1,28 @@
+# Community Guidelines 1 and 2 and the Bullying, Harassment and Threats
+# policy explainer, plus the glorification and incitement half of the
+# Violence and Graphic Content explainer.
+#
+# The definition Discord uses is built on intent: harassment is "intentional
+# actions meant to cause distress to or intimidate". That word is what
+# separates this bucket from an argument, and it is the single most
+# important line in this file for a server whose members argue for sport.
+bucket: threats
+severity: critical
+short: "Credible threats to harm a person, targeted harassment campaigns, or incitement to violence."
+definitions:
+  - "Bullying and harassment are intentional actions meant to cause distress to or intimidate a specific person."
+  - "Glorification is praising or celebrating physical harm that causes death or injury to others. Incitement is organizing, promoting or encouraging others to carry out violent acts."
+violations:
+  - "Threatening to physically harm a specific person or group"
+  - "Threatening to hack someone's account, network or system"
+  - "Threatening to reveal someone's personal information or private sexual content"
+  - "Organizing or joining a coordinated campaign of abuse against a specific person, including raiding"
+  - "Encouraging others to attack, swat or harm a named person"
+  - "Celebrating a violent attack or its perpetrator, or praising a mass shooter or serial killer"
+  - "Sexual harassment of a specific person"
+not_violations:
+  - "Insults, mockery, hostility or an aggressive argument between people, however rude"
+  - "Obvious hyperbole and figures of speech that name no real target and describe no real plan"
+  - "In-game threats, trash talk about a match, or threats between fictional characters"
+  - "Anger at a public figure, institution, government or company that stops short of calling for harm"
+  - "Discussing or condemning violence that happened, or reporting a threat someone else made"

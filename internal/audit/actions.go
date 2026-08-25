@@ -45,6 +45,30 @@ var actions = map[string]meta{
 	"roles.jail":                {title: "Member jailed", color: core.ColorWarning},
 	"roles.jail_bulk":           {title: "Members jailed", color: core.ColorWarning},
 	"roles.jail_reapplied":      {title: "Jail re-applied after a rejoin", color: core.ColorWarning},
+	"roles.jail_resentenced":    {title: "Jail sentence moved", color: core.ColorWarning},
+
+	// internal/plugins/aimod. Colours track what actually happened to the
+	// message, not how serious the policy area was: a moderator scanning
+	// this channel needs to find the irreversible ones, and a removal is
+	// irreversible whether it was a slur or a phishing link.
+	"aimod.remove":            {title: "AI moderation: message removed", color: core.ColorError},
+	"aimod.rewrite":           {title: "AI moderation: message rewritten", color: core.ColorWarning},
+	"aimod.flagged":           {title: "AI moderation: message flagged", color: core.ColorWarning},
+	"aimod.sanctioned":        {title: "AI moderation: member jailed", color: core.ColorError},
+	"aimod.abuse_detected":    {title: "AI moderation: scan budget abuse", color: core.ColorWarning},
+	"aimod.undone":            {title: "AI moderation: reversed by a moderator", color: core.ColorSuccess},
+	"aimod.budget_exhausted":  {title: "AI moderation: daily budget spent", color: core.ColorWarning},
+	"aimod.dryrun":            {title: "AI moderation: would have acted", color: core.ColorInfo, mood: core.MoodIdle},
+	"aimod.key_set":           {title: "AI moderation: API key set", color: core.ColorSuccess},
+	"aimod.mode_set":          {title: "AI moderation: mode changed", color: core.ColorWarning},
+	"aimod.policy_set":        {title: "AI moderation: policy changed", color: core.ColorWarning},
+	"aimod.sanction_action_set": {title: "AI moderation: sanction response changed", color: core.ColorWarning},
+	"aimod.budget_set":        {title: "AI moderation: budget changed", color: core.ColorSuccess},
+	"aimod.evidence_set":      {title: "AI moderation: evidence retention changed", color: core.ColorWarning},
+	"aimod.models_set":        {title: "AI moderation: models changed", color: core.ColorSuccess},
+	"aimod.exempt_channel":    {title: "AI moderation: channel exemption changed", color: core.ColorSuccess},
+	"aimod.exempt_role":       {title: "AI moderation: role exemption changed", color: core.ColorSuccess},
+	"aimod.optin_changed":     {title: "AI moderation: sanction opt-in changed", color: core.ColorWarning},
 	"roles.jail_reasserted":     {title: "Jail reasserted (roles regranted)", color: core.ColorWarning},
 	"rotation.remove":           {title: "Channel rotation removed", color: core.ColorWarning},
 	"config.admin_removed":      {title: "Admin removed", color: core.ColorWarning},

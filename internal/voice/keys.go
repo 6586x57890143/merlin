@@ -41,6 +41,17 @@ const (
 	KeyJailNotice    Key = "moderation.jail"
 	KeyReleaseNotice Key = "moderation.release"
 
+	// KeyAIModRemoved and KeyAIModRewritten are DMs to the member whose
+	// message the AI moderation plugin acted on. Plain register, like the
+	// jail notices above and for the same reason, with one thing on top:
+	// nobody decided this by hand. A member reading it has just had
+	// something they wrote taken down by software, with no person in the
+	// loop, and the line has to carry that honestly rather than pretend a
+	// moderator was involved. The reason and the original text ride along as
+	// embed fields, so the wording never has to carry them.
+	KeyAIModRemoved   Key = "moderation.aimod_removed"
+	KeyAIModRewritten Key = "moderation.aimod_rewritten"
+
 	// KeyJailAnnounce and KeyReleaseAnnounce are posted publicly into the
 	// channel a jail or release command was run in, read by whoever else is
 	// sitting in that channel rather than the member concerned. That is a
@@ -204,6 +215,19 @@ var specs = map[Key]spec{
 		required: []string{"guild"},
 		maxLen:   maxEmbedDescription,
 		fallback: "you are out. your roles in {guild} have been restored.",
+	},
+
+	KeyAIModRemoved: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "a message you posted in {guild} was removed automatically, because it matched one of Discord's own rules. no moderator saw it first.",
+	},
+	KeyAIModRewritten: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "part of a message you posted in {guild} was edited out automatically, because it matched one of Discord's own rules. the rest of it is still there.",
 	},
 
 	KeyJailAnnounce: {

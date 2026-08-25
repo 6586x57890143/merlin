@@ -344,6 +344,15 @@ func FollowUpErr(s *discordgo.Session, i *discordgo.InteractionCreate, title str
 	return followUp(s, i, NewEmbed(ColorError, title, err.Error()))
 }
 
+// FollowUpEmbed replaces a DeferResponse placeholder with an arbitrary
+// embed, for the deferred commands whose answer is a built-up report rather
+// than a title and a sentence (/aimod status, /aimod models show). Without
+// it those had to choose between deferring and answering richly, and a
+// command that reaches a third-party API cannot safely skip the defer.
+func FollowUpEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
+	return followUp(s, i, embed)
+}
+
 func followUp(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
 	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},

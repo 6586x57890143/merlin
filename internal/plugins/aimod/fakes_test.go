@@ -1,0 +1,499 @@
+package aimod
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/6586x57890143/merlin/internal/voice"
+)
+
+// In-memory doubles for the whole plugin, in the shape of
+// internal/plugins/roles' fakes_test.go: every seam this package defines has
+// one here, so the ladder can be exercised end to end with no database, no
+// Discord session and no API key.
+
+func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// --- fakeStore ---
+
+type fakeStore struct {
+	mu        sync.Mutex
+	cfg       map[string]Config
+	spend     map[string]Spend
+	incidents []Incident
+	nextID    int64
+
+	configErr   error
+	spendErr    error
+	incidentErr error
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{cfg: make(map[string]Config), spend: make(map[string]Spend)}
+}
+
+func (f *fakeStore) setConfig(cfg Config) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if cfg.BucketActions == nil {
+		cfg.BucketActions = map[Bucket]Action{}
+	}
+	f.cfg[cfg.GuildID] = cfg
+}
+
+func (f *fakeStore) Config(_ context.Context, guildID string) (Config, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.configErr != nil {
+		return Config{}, f.configErr
+	}
+	if cfg, ok := f.cfg[guildID]; ok {
+		return cfg, nil
+	}
+	return defaultConfig(guildID), nil
+}
+
+func (f *fakeStore) mutate(guildID string, fn func(*Config)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cfg, ok := f.cfg[guildID]
+	if !ok {
+		cfg = defaultConfig(guildID)
+	}
+	fn(&cfg)
+	f.cfg[guildID] = cfg
+	return nil
+}
+
+func (f *fakeStore) SetAPIKey(_ context.Context, g string, sealed []byte) error {
+	return f.mutate(g, func(c *Config) { c.APIKeySealed = sealed })
+}
+func (f *fakeStore) SetMode(_ context.Context, g string, m Mode) error {
+	return f.mutate(g, func(c *Config) { c.Mode = m })
+}
+func (f *fakeStore) SetBudget(_ context.Context, g string, usd float64) error {
+	return f.mutate(g, func(c *Config) { c.DailyBudgetUSD = usd })
+}
+func (f *fakeStore) SetEvidenceHours(_ context.Context, g string, h int) error {
+	return f.mutate(g, func(c *Config) { c.EvidenceHours = h })
+}
+func (f *fakeStore) SetModels(_ context.Context, g string, fast, deep []string) error {
+	return f.mutate(g, func(c *Config) { c.FastModels, c.DeepModels = fast, deep })
+}
+func (f *fakeStore) SetBucketAction(_ context.Context, g string, b Bucket, a Action) error {
+	return f.mutate(g, func(c *Config) {
+		if c.BucketActions == nil {
+			c.BucketActions = map[Bucket]Action{}
+		}
+		c.BucketActions[b] = a
+	})
+}
+func (f *fakeStore) SetExemptChannels(_ context.Context, g string, ids []string) error {
+	return f.mutate(g, func(c *Config) { c.ExemptChannelIDs = ids })
+}
+func (f *fakeStore) SetExemptRoles(_ context.Context, g string, ids []string) error {
+	return f.mutate(g, func(c *Config) { c.ExemptRoleIDs = ids })
+}
+func (f *fakeStore) SetSanctionAction(_ context.Context, g string, a SanctionAction) error {
+	return f.mutate(g, func(c *Config) { c.SanctionAction = a })
+}
+func (f *fakeStore) SetSanctionOptIn(_ context.Context, g string, ids []string) error {
+	return f.mutate(g, func(c *Config) { c.SanctionOptInUserIDs = ids })
+}
+
+func spendKey(guildID string, day time.Time) string { return guildID + "|" + day.Format("2006-01-02") }
+
+func (f *fakeStore) AddSpend(_ context.Context, g string, day time.Time, u Usage, deep bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sp := f.spend[spendKey(g, day)]
+	sp.Day = day
+	sp.SpentUSD += u.Cost
+	if deep {
+		sp.DeepCalls++
+		sp.DeepPromptTokens += u.PromptTokens
+		sp.DeepCompletionTokens += u.CompletionTokens
+	} else {
+		sp.FastCalls++
+		sp.FastPromptTokens += u.PromptTokens
+		sp.FastCompletionTokens += u.CompletionTokens
+	}
+	f.spend[spendKey(g, day)] = sp
+	return nil
+}
+
+func (f *fakeStore) AddScanned(_ context.Context, g string, day time.Time, n int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sp := f.spend[spendKey(g, day)]
+	sp.Day = day
+	sp.Scanned += n
+	f.spend[spendKey(g, day)] = sp
+	return nil
+}
+
+func (f *fakeStore) SpendToday(_ context.Context, g string, day time.Time) (Spend, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.spendErr != nil {
+		return Spend{}, f.spendErr
+	}
+	return f.spend[spendKey(g, day)], nil
+}
+
+func (f *fakeStore) SpendSince(_ context.Context, g string, since time.Time) ([]Spend, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Spend
+	for _, sp := range f.spend {
+		if !sp.Day.Before(since) {
+			out = append(out, sp)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) RecordIncident(_ context.Context, inc Incident) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.incidentErr != nil {
+		return 0, f.incidentErr
+	}
+	f.nextID++
+	inc.ID = f.nextID
+	f.incidents = append(f.incidents, inc)
+	return inc.ID, nil
+}
+
+func (f *fakeStore) IncidentByMessage(_ context.Context, g, messageID string) (Incident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, inc := range f.incidents {
+		if inc.GuildID == g && inc.MessageID == messageID {
+			return inc, nil
+		}
+	}
+	return Incident{}, ErrNoIncident
+}
+
+func (f *fakeStore) MarkUndone(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.incidents {
+		if f.incidents[i].ID == id {
+			f.incidents[i].Undone = true
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) CountSanctions(_ context.Context, g, userID string, since time.Time) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, inc := range f.incidents {
+		if inc.GuildID == g && inc.AuthorID == userID && inc.Action != ActionFlag && !inc.Undone && !inc.CreatedAt.Before(since) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeStore) PruneEvidence(context.Context) (int64, error) { return 0, nil }
+
+func (f *fakeStore) PruneBefore(context.Context, time.Time) (int64, error) { return 0, nil }
+
+func (f *fakeStore) recorded() []Incident {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]Incident, len(f.incidents))
+	copy(out, f.incidents)
+	return out
+}
+
+// --- fakeClassifier: a scripted model ---
+
+type fakeClassifier struct {
+	mu sync.Mutex
+	// fast and deep are the raw JSON bodies returned, in order. A shorter
+	// list than the number of calls repeats the last entry, so a test only
+	// has to script the answers it cares about.
+	fast, deep  []string
+	fastErr     error
+	deepErr     error
+	usage       Usage
+	fastCalls   int
+	deepCalls   int
+	lastFastReq chatRequest
+	lastDeepReq chatRequest
+}
+
+// isDeep distinguishes the two passes by the schema each one asks for, which
+// is the same thing the real client sends and so cannot drift from it.
+func isDeep(req chatRequest) bool {
+	return req.ResponseFormat != nil && req.ResponseFormat.JSONSchema.Name == "verdict"
+}
+
+func (f *fakeClassifier) Chat(_ context.Context, _ string, req chatRequest) (string, Usage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if isDeep(req) {
+		f.deepCalls++
+		f.lastDeepReq = req
+		if f.deepErr != nil {
+			return "", f.usage, f.deepErr
+		}
+		return pick(f.deep, f.deepCalls), f.usage, nil
+	}
+	f.fastCalls++
+	f.lastFastReq = req
+	if f.fastErr != nil {
+		return "", f.usage, f.fastErr
+	}
+	return pick(f.fast, f.fastCalls), f.usage, nil
+}
+
+func pick(list []string, nth int) string {
+	if len(list) == 0 {
+		return `{"v":[]}`
+	}
+	if nth > len(list) {
+		return list[len(list)-1]
+	}
+	return list[nth-1]
+}
+
+func (f *fakeClassifier) counts() (fast, deep int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fastCalls, f.deepCalls
+}
+
+// --- fakeOps: in-memory DiscordOps ---
+
+type fakeOps struct {
+	mu sync.Mutex
+
+	deleted   []string // message IDs
+	posted    []*discordgo.WebhookParams
+	timeouts  map[string]time.Duration
+	dms       []*discordgo.MessageSend
+	webhooks  int
+	deleteErr error
+
+	guild   *discordgo.Guild
+	members map[string]*discordgo.Member
+	history []*discordgo.Message
+}
+
+func newFakeOps() *fakeOps {
+	return &fakeOps{
+		timeouts: make(map[string]time.Duration),
+		members:  make(map[string]*discordgo.Member),
+		guild:    &discordgo.Guild{ID: "g1", Name: "Test Guild", OwnerID: "owner"},
+	}
+}
+
+func (f *fakeOps) ChannelMessageDelete(_, messageID string, _ ...discordgo.RequestOption) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, messageID)
+	return nil
+}
+
+func (f *fakeOps) ChannelMessages(string, int, string, string, string, ...discordgo.RequestOption) ([]*discordgo.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.history, nil
+}
+
+func (f *fakeOps) ChannelWebhooks(string, ...discordgo.RequestOption) ([]*discordgo.Webhook, error) {
+	return nil, nil
+}
+
+func (f *fakeOps) WebhookCreate(string, string, string, ...discordgo.RequestOption) (*discordgo.Webhook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.webhooks++
+	return &discordgo.Webhook{ID: "w1", Token: "t1"}, nil
+}
+
+func (f *fakeOps) WebhookExecute(_, _ string, data *discordgo.WebhookParams, _ ...discordgo.RequestOption) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.posted = append(f.posted, data)
+	return nil
+}
+
+func (f *fakeOps) GuildMember(_, userID string, _ ...discordgo.RequestOption) (*discordgo.Member, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m, ok := f.members[userID]; ok {
+		return m, nil
+	}
+	return &discordgo.Member{User: &discordgo.User{ID: userID, Username: "member" + userID}}, nil
+}
+
+func (f *fakeOps) GuildMemberTimeout(_, userID string, until *time.Time, _ ...discordgo.RequestOption) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if until == nil {
+		delete(f.timeouts, userID)
+		return nil
+	}
+	f.timeouts[userID] = time.Until(*until)
+	return nil
+}
+
+func (f *fakeOps) Guild(string, ...discordgo.RequestOption) (*discordgo.Guild, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.guild, nil
+}
+
+func (f *fakeOps) UserChannelCreate(recipientID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	return &discordgo.Channel{ID: "dm-" + recipientID}, nil
+}
+
+func (f *fakeOps) ChannelMessageSendComplex(_ string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dms = append(f.dms, data)
+	return &discordgo.Message{}, nil
+}
+
+func (f *fakeOps) snapshot() (deleted []string, posted []*discordgo.WebhookParams) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.deleted...), append([]*discordgo.WebhookParams(nil), f.posted...)
+}
+
+// --- fakeAudit ---
+
+type fakeAudit struct {
+	mu      sync.Mutex
+	entries []auditEntry
+	err     error
+}
+
+type auditEntry struct {
+	guildID, actorID, action, oldValue, newValue string
+}
+
+func (f *fakeAudit) Record(_ context.Context, guildID, actorID, action, oldValue, newValue string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = append(f.entries, auditEntry{guildID, actorID, action, oldValue, newValue})
+	return f.err
+}
+
+func (f *fakeAudit) actions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.entries))
+	for _, e := range f.entries {
+		out = append(out, e.action)
+	}
+	return out
+}
+
+// --- fakeJailer ---
+
+type fakeJailer struct {
+	mu        sync.Mutex
+	calls     []jailCall
+	err       error
+	refuseAll bool
+}
+
+type jailCall struct {
+	userID    string
+	duration  time.Duration
+	consented bool
+}
+
+func (f *fakeJailer) JailAutomatic(_ context.Context, _, userID string, d time.Duration, _ string, consented bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refuseAll && !consented {
+		return errors.New("roles: automatic jail refused: target is an admin")
+	}
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, jailCall{userID: userID, duration: d, consented: consented})
+	return nil
+}
+
+func (f *fakeJailer) jailed() []jailCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]jailCall(nil), f.calls...)
+}
+
+// The real voice catalogue, not a fake one. It is cheap to load and it is
+// also the thing that would break if a required placeholder went missing, so
+// exercising it here costs nothing and catches something.
+func testVoice(t testingT) voice.Source {
+	t.Helper()
+	speaker, err := voice.New(testLogger())
+	if err != nil {
+		t.Fatalf("voice.New: %v", err)
+	}
+	return speaker
+}
+
+// --- fakePrivilege ---
+
+type fakePrivilege struct{ bootstrapID string }
+
+func (f fakePrivilege) IsBootstrapAdmin(userID string) bool {
+	return f.bootstrapID != "" && userID == f.bootstrapID
+}
+
+// testPlugin assembles a Plugin over the fakes above, with the real policy
+// catalogue loaded (a fake one would let a test pass against definitions the
+// production build does not have).
+func testPlugin(t testingT, store *fakeStore, client classifier, ops *fakeOps, audit *fakeAudit) *Plugin {
+	t.Helper()
+	policies, err := LoadPolicies()
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	return &Plugin{
+		store:         store,
+		client:        client,
+		ops:           func(string) DiscordOps { return ops },
+		policies:      policies,
+		voice:         testVoice(t),
+		auditWriter:   audit,
+		log:           testLogger(),
+		now:           func() time.Time { return testNow },
+		scanning:      true,
+		dedupe:        newDedupeCache(),
+		meter:         newUserMeter(),
+		models:        newModelCache(),
+		webhooks:      make(map[string]*discordgo.Webhook),
+		batches:       make(map[string]*batch),
+		inFlight:      make(map[string]chan struct{}),
+		budgetNoticed: make(map[string]time.Time),
+		stopped:       make(chan struct{}),
+	}
+}
+
+// testNow is fixed so spend day keys and sliding windows are deterministic.
+var testNow = time.Date(2026, 3, 14, 12, 0, 0, 0, time.UTC)
+
+type testingT interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}

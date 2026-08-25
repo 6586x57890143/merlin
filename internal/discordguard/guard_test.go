@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -17,6 +18,7 @@ func testLogger() *slog.Logger {
 // guard is that this counter stays at zero while paused or rehearsing, so
 // the tests below assert on it rather than on the returned errors alone.
 type fakeSession struct {
+	lastWebhook *discordgo.WebhookParams
 	writes int
 	reads  int
 	// sends records the full payload of every message send, so a test can
@@ -146,6 +148,31 @@ func (f *fakeSession) GuildRoleEdit(string, string, *discordgo.RoleParams, ...di
 	return &discordgo.Role{}, nil
 }
 
+func (f *fakeSession) ChannelMessageDelete(string, string, ...discordgo.RequestOption) error {
+	f.writes++
+	return nil
+}
+
+func (f *fakeSession) ChannelWebhooks(string, ...discordgo.RequestOption) ([]*discordgo.Webhook, error) {
+	return nil, nil
+}
+
+func (f *fakeSession) WebhookCreate(string, string, string, ...discordgo.RequestOption) (*discordgo.Webhook, error) {
+	f.writes++
+	return &discordgo.Webhook{ID: "w", Token: "t"}, nil
+}
+
+func (f *fakeSession) WebhookExecute(_, _ string, _ bool, data *discordgo.WebhookParams, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	f.writes++
+	f.lastWebhook = data
+	return &discordgo.Message{}, nil
+}
+
+func (f *fakeSession) GuildMemberTimeout(string, string, *time.Time, ...discordgo.RequestOption) error {
+	f.writes++
+	return nil
+}
+
 type fakeGate struct {
 	paused map[string]bool
 	dryRun map[string]bool
@@ -178,7 +205,50 @@ func callEveryWrite(o *GuildOps) []error {
 	errs = append(errs, o.GuildMemberRoleRemove("g", "u", "r"))
 	_, err = o.GuildRoleCreate("g", &discordgo.RoleParams{})
 	errs = append(errs, err)
+	errs = append(errs, o.ChannelMessageDelete("c", "m"))
+	_, err = o.WebhookCreate("c", "n", "")
+	errs = append(errs, err)
+	errs = append(errs, o.WebhookExecute("w", "t", &discordgo.WebhookParams{}))
+	errs = append(errs, o.GuildMemberTimeout("g", "u", nil))
 	return errs
+}
+
+// The webhook sender carries text a *member* wrote, reposted under that
+// member's own name, which makes it the one place where a missing mention
+// suppression would let somebody make Merlin ping on their behalf. Asserted
+// rather than assumed for that reason.
+func TestWebhookExecuteSuppressesMentions(t *testing.T) {
+	sess := &fakeSession{}
+	g := New(sess, fakeGate{}, testLogger(), false)
+
+	if err := g.For("g1").WebhookExecute("w", "t", &discordgo.WebhookParams{Content: "hi @everyone"}); err != nil {
+		t.Fatalf("WebhookExecute: %v", err)
+	}
+	if sess.lastWebhook == nil || sess.lastWebhook.AllowedMentions == nil {
+		t.Fatal("AllowedMentions was left nil, so Discord will parse every mention in the content")
+	}
+	if len(sess.lastWebhook.AllowedMentions.Parse) != 0 {
+		t.Errorf("AllowedMentions.Parse = %v, want empty", sess.lastWebhook.AllowedMentions.Parse)
+	}
+}
+
+// A caller must not be able to opt back into pinging by supplying its own
+// AllowedMentions, for the same reason ChannelMessageSendComplex overwrites
+// rather than defaults it.
+func TestWebhookExecuteOverridesCallerMentions(t *testing.T) {
+	sess := &fakeSession{}
+	g := New(sess, fakeGate{}, testLogger(), false)
+
+	err := g.For("g1").WebhookExecute("w", "t", &discordgo.WebhookParams{
+		Content:         "hi",
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeEveryone}},
+	})
+	if err != nil {
+		t.Fatalf("WebhookExecute: %v", err)
+	}
+	if len(sess.lastWebhook.AllowedMentions.Parse) != 0 {
+		t.Errorf("caller's AllowedMentions survived: %v", sess.lastWebhook.AllowedMentions.Parse)
+	}
 }
 
 func TestPausedRefusesEveryWrite(t *testing.T) {

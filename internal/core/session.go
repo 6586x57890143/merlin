@@ -8,10 +8,24 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+// Intents is which privileged gateway intents this process asks Discord for.
+//
+// A struct rather than two positional bools, because the call site is one
+// line in main.go and "NewSession(token, true, false)" is unreadable at
+// exactly the place where getting it wrong means either a bot that silently
+// cannot do its job or one asking to read every message in every server it
+// is in.
+type Intents struct {
+	// Members enables the roles plugin's instant re-jail on rejoin.
+	Members bool
+	// MessageContent enables the aimod plugin to read messages at all.
+	MessageContent bool
+}
+
 // NewSession builds the single shared *discordgo.Session used by every
 // plugin. Intents are the minimum this binary needs: GUILDS and
-// GUILD_VOICE_STATES always, plus GUILD_MEMBERS unless the operator has
-// turned it off. MESSAGE_CONTENT is never requested at all.
+// GUILD_VOICE_STATES always, plus the two privileged ones the caller asks
+// for.
 //
 // GUILD_VOICE_STATES is unprivileged (no Developer Portal toggle, no
 // approval process, unlike GUILD_MEMBERS below), so it is always requested.
@@ -20,7 +34,17 @@ import (
 // its log line; the disconnect itself is a plain REST call and works
 // without this intent, so nothing depends on the cache being complete.
 //
-// withMembers controls GUILD_MEMBERS, which is what lets the roles plugin
+// intents.MessageContent controls MESSAGE_CONTENT, which is what lets
+// internal/plugins/aimod read message text. Without it that plugin registers
+// its commands and scans nothing, and says so in /aimod status rather than
+// appearing to work. It is the larger of the two asks by a wide margin (it
+// is every message in every server, and Discord reviews it above 100
+// guilds), which is why it is off unless MERLIN_ENABLE_MESSAGE_CONTENT_INTENT
+// says otherwise while GUILD_MEMBERS below is on unless told not to. GUILD_MESSAGES
+// rides along with it: MESSAGE_CONTENT only fills in the content field of
+// message events, it does not deliver the events themselves.
+//
+// intents.Members controls GUILD_MEMBERS, which is what lets the roles plugin
 // react to a rejoin the instant it happens rather than on the next sweep
 // (roles.reapplyEvadedJails remains the fallback either way; the intent
 // narrows the window, it does not create the protection). It is privileged:
@@ -28,16 +52,19 @@ import (
 // portal has not granted it, Discord rejects the connection outright, which
 // is why callers must pair this with a readiness check rather than trusting
 // Open to report the problem.
-func NewSession(token string, withMembers bool) (*discordgo.Session, error) {
+func NewSession(token string, intents Intents) (*discordgo.Session, error) {
 	s, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
-	intents := discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates
-	if withMembers {
-		intents |= discordgo.IntentsGuildMembers
+	want := discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates
+	if intents.Members {
+		want |= discordgo.IntentsGuildMembers
 	}
-	s.Identify.Intents = intents
+	if intents.MessageContent {
+		want |= discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
+	}
+	s.Identify.Intents = want
 	return s, nil
 }
 
@@ -98,10 +125,15 @@ func watchReady(s readyWatcher, timeout time.Duration) func() error {
 		case <-ready:
 			return nil
 		case <-time.After(timeout):
+			// Both privileged intents are named. Only one of them was ever
+			// requested when this message was written, and an operator who
+			// has just enabled the other and hit close code 4014 would
+			// otherwise be sent to check a toggle that was already correct.
 			return fmt.Errorf("no READY from Discord within %s: the gateway is refusing this connection. "+
-				"The usual cause is a privileged intent the application has not been granted. Enable "+
-				"\"Server Members Intent\" under Bot in the Discord Developer Portal, or set "+
-				"MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1 to run without it", timeout)
+				"The usual cause is a privileged intent the application has not been granted. Under Bot in the "+
+				"Discord Developer Portal, enable \"Server Members Intent\" (or set "+
+				"MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1 to run without it) and, if "+
+				"MERLIN_ENABLE_MESSAGE_CONTENT_INTENT is set, \"Message Content Intent\" as well", timeout)
 		}
 	}
 }

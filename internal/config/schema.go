@@ -72,6 +72,31 @@ type GlobalConfig struct {
 	// a successful send. That is correct, and worth knowing before flipping
 	// it on a bot that is already in several servers.
 	OnboardingDM bool `yaml:"-"`
+	// MessageContentIntent requests Discord's privileged MESSAGE_CONTENT
+	// gateway intent, without which internal/plugins/aimod can read nothing
+	// and scans nothing.
+	//
+	// Opt-in, the opposite default from GuildMembersIntent, and the reasoning
+	// that made opt-in a bug there does not transfer. This intent is a far
+	// larger ask: it is every message in every server, it needs Discord's
+	// approval above 100 guilds rather than a portal tick, and spec.MD's
+	// least-privilege section names it specifically as the one to request
+	// only if a plugin genuinely needs it. A deployment not running AI
+	// moderation should not be asking for the ability to read its members'
+	// conversations, and defaulting it on would mean every existing
+	// deployment silently started doing so on upgrade.
+	//
+	// The failure mode opt-out was protecting against there is covered here
+	// too: /aimod status says in as many words that nothing is being scanned
+	// because this is off, so an operator who ticked the portal box and saw
+	// no change is told why.
+	MessageContentIntent bool `yaml:"-"`
+	// SecretKey is a base64 32-byte key used to encrypt per-guild
+	// third-party API keys at rest (today: OpenRouter, in
+	// internal/plugins/aimod). Unset means those keys cannot be stored at
+	// all, and the command that would store one refuses rather than falling
+	// back to plaintext.
+	SecretKey string `yaml:"-"`
 }
 
 // Level maps LogLevel onto slog. The value is validated at load time, so an

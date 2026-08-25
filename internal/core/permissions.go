@@ -282,6 +282,22 @@ func (p *Permissions) CanModerate(guildID string, actor *discordgo.Member, targe
 	return nil
 }
 
+// IsBootstrapAdmin reports whether userID is the operator identity from
+// MERLIN_BOOTSTRAP_ADMIN_USER_ID: the one account that satisfies TierAdmin in
+// every guild regardless of DB state, that no deny list can block, and that
+// CanModerate refuses as a target for everyone including itself.
+//
+// Exported because two callers outside this package need the identity itself
+// rather than an authorization answer: roles.JailAutomatic, which must refuse
+// it as a target even when a consent flag has waived every other rank check,
+// and aimod, which lets only this identity add somebody *else* to the
+// sanction opt-in list. Both are cases where "is this that account" is the
+// actual question, so answering it directly beats inferring it from the text
+// of an error.
+func (p *Permissions) IsBootstrapAdmin(userID string) bool {
+	return userID != "" && userID == p.bootstrapID
+}
+
 // isAdminMember answers "would this member satisfy TierAdmin here?" for an
 // *arbitrary* member, as opposed to Authorize's invoker. It can't reuse
 // Authorize's cheap member.Permissions check: that bitmask is computed by

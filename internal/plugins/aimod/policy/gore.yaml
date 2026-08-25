@@ -1,0 +1,18 @@
+# Community Guideline 12 and the Violence and Graphic Content policy
+# explainer. Off by default: this is almost entirely about images, and this
+# plugin reads text, so on a text-only pass it fires rarely and mostly on
+# links.
+bucket: gore
+severity: medium
+short: "Real depictions of violence, gore or animal cruelty, especially posted to shock or harass."
+definitions:
+  - "Covers material depicting real violence, gore or animal cruelty, especially where it is posted with the intention to harass or shock others."
+violations:
+  - "Sharing real footage or images of killings, mutilation, torture or animal cruelty"
+  - "Linking to a gore site or shock site"
+  - "Sending graphic violent material at someone to distress them"
+not_violations:
+  - "News, documentary, medical, forensic or historical material presented as such"
+  - "Violence in games, films, art or fiction, and discussion of it"
+  - "Describing a violent event in words rather than depicting it"
+  - "Hunting, fishing, farming, butchery or veterinary content in an ordinary context"

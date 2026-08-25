@@ -55,14 +55,14 @@ type jailTarget struct {
 // would leave a mod believing people are jailed who are not.
 type bulkJailResult struct {
 	jailed       []string
-	alreadyIn    []string // already jailed; left exactly as they were
+	redated      []string // already jailed; sentence moved to the one just given
 	protected    []string // CanModerate refused, target outranks the actor
 	failed       []string // "userID: reason"
 	unmanageable int      // members who kept at least one role the bot can't touch
 }
 
 func (r bulkJailResult) attempted() int {
-	return len(r.jailed) + len(r.alreadyIn) + len(r.protected) + len(r.failed)
+	return len(r.jailed) + len(r.redated) + len(r.protected) + len(r.failed)
 }
 
 // merge folds another result into this one, so the outcomes collected before
@@ -70,7 +70,7 @@ func (r bulkJailResult) attempted() int {
 // mutation itself end up in a single report.
 func (r bulkJailResult) merge(other bulkJailResult) bulkJailResult {
 	r.jailed = append(r.jailed, other.jailed...)
-	r.alreadyIn = append(r.alreadyIn, other.alreadyIn...)
+	r.redated = append(r.redated, other.redated...)
 	r.protected = append(r.protected, other.protected...)
 	r.failed = append(r.failed, other.failed...)
 	r.unmanageable += other.unmanageable
@@ -98,7 +98,21 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 		unmanageable, err := p.applyJail(ctx, guildID, t.userID, jailRoleID, t.roles, duration, actorID, reason)
 		switch {
 		case errors.Is(err, ErrAlreadyJailed):
-			res.alreadyIn = append(res.alreadyIn, t.userID)
+			// Already serving a sentence, so re-jailing moves the end of it
+			// to the one just given (shortening it too, if that is what the
+			// mod asked for: how long someone is jailed is their call). The
+			// alternative a refusal left was releasing first and jailing
+			// again, which hands every stripped role back in between.
+			//
+			// Only release_at moves. The member is already stripped, and the
+			// snapshot on record is the only copy of what they held before
+			// that: re-recording it now would capture the marker role alone.
+			releaseAt := p.now().Add(duration)
+			if serr := p.store.SetJailRelease(ctx, guildID, t.userID, &releaseAt); serr != nil {
+				res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, serr))
+				continue
+			}
+			res.redated = append(res.redated, t.userID)
 		case err != nil:
 			res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, err))
 		default:
@@ -377,7 +391,7 @@ func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope stri
 	}
 	detail := fmt.Sprintf("%s duration=%s reason=%q jailed=%d already_jailed=%d protected=%d failed=%d users=%s",
 		scope, core.FormatDuration(duration), reason,
-		len(res.jailed), len(res.alreadyIn), len(res.protected), len(res.failed),
+		len(res.jailed), len(res.redated), len(res.protected), len(res.failed),
 		strings.Join(mentions, " "))
 	if err := p.audit.Record(ctx, guildID, actor, "roles.jail_bulk", "", detail); err != nil {
 		p.log.Error("roles: audit bulk jail failed", "guild", guildID, "err", err)
@@ -396,8 +410,8 @@ func summarizeBulkJail(res bulkJailResult, duration time.Duration) string {
 	if res.unmanageable > 0 {
 		fmt.Fprintf(&b, "\n⚠️ %d of them kept at least one role Merlin can't strip (positioned at/above her own top role).\n", res.unmanageable)
 	}
-	if len(res.alreadyIn) > 0 {
-		fmt.Fprintf(&b, "\n**Already jailed, left untouched (%d):** %s\n", len(res.alreadyIn), mentionList(res.alreadyIn))
+	if len(res.redated) > 0 {
+		fmt.Fprintf(&b, "\n**Already jailed, sentence moved to this one (%d):** %s\n", len(res.redated), mentionList(res.redated))
 	}
 	if len(res.protected) > 0 {
 		fmt.Fprintf(&b, "\n**Skipped, outranks you (%d):** %s\n", len(res.protected), mentionList(res.protected))

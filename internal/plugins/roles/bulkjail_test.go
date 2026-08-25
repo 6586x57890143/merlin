@@ -114,14 +114,22 @@ func TestJailManyReportsPerTargetOutcomesAndKeepsGoing(t *testing.T) {
 	if !slices.Equal(res.jailed, []string{"u1", "u3"}) {
 		t.Errorf("jailed = %v, want [u1 u3]", res.jailed)
 	}
-	if !slices.Equal(res.alreadyIn, []string{"u2"}) {
-		t.Errorf("alreadyIn = %v, want [u2]", res.alreadyIn)
+	if !slices.Equal(res.redated, []string{"u2"}) {
+		t.Errorf("redated = %v, want [u2]", res.redated)
 	}
-	// The pre-existing record must be untouched: re-jailing would overwrite
-	// its snapshot with the stripped state.
 	rec, _, _ := store.GetJail(context.Background(), "g1", "u2")
+	// The sentence moves to the one just given...
+	if rec.ReleaseAt == nil || !rec.ReleaseAt.Equal(fixedNow.Add(time.Hour)) {
+		t.Errorf("re-jailing did not move the release to the new sentence: %v", rec.ReleaseAt)
+	}
+	// ...and nothing else does. The snapshot is the only copy of what u2 held
+	// before being stripped; re-recording it now would capture the marker
+	// alone, and release would restore nothing.
 	if !slices.Equal(rec.SnapshotRoleIDs, []string{"real-role"}) {
 		t.Errorf("an already-jailed member's snapshot was overwritten: %v", rec.SnapshotRoleIDs)
+	}
+	if !rec.JailedAt.Equal(fixedNow.Add(-time.Hour)) {
+		t.Errorf("re-jailing moved jailed_at, which rejoinedSinceJail reads to spot evasion: %v", rec.JailedAt)
 	}
 }
 
@@ -321,7 +329,7 @@ func TestExcludeSelfAndBotDropsBothAndKeepsOthers(t *testing.T) {
 func TestSummaryAccountsForEveryNonJailedMember(t *testing.T) {
 	res := bulkJailResult{
 		jailed:       []string{"u1"},
-		alreadyIn:    []string{"u2"},
+		redated:      []string{"u2"},
 		protected:    []string{"u3"},
 		failed:       []string{"u4: boom"},
 		unmanageable: 1,
@@ -361,13 +369,13 @@ func TestDescribeCountDistinguishesAFloorFromATotal(t *testing.T) {
 
 func TestMergeCombinesEveryCategory(t *testing.T) {
 	a := bulkJailResult{jailed: []string{"u1"}, protected: []string{"p1"}, unmanageable: 1}
-	b := bulkJailResult{jailed: []string{"u2"}, alreadyIn: []string{"a1"}, failed: []string{"f1"}, unmanageable: 2}
+	b := bulkJailResult{jailed: []string{"u2"}, redated: []string{"a1"}, failed: []string{"f1"}, unmanageable: 2}
 	got := a.merge(b)
 
 	if !slices.Equal(got.jailed, []string{"u1", "u2"}) {
 		t.Errorf("jailed = %v", got.jailed)
 	}
-	if !slices.Equal(got.protected, []string{"p1"}) || !slices.Equal(got.alreadyIn, []string{"a1"}) || !slices.Equal(got.failed, []string{"f1"}) {
+	if !slices.Equal(got.protected, []string{"p1"}) || !slices.Equal(got.redated, []string{"a1"}) || !slices.Equal(got.failed, []string{"f1"}) {
 		t.Errorf("merge dropped a category: %+v", got)
 	}
 	if got.unmanageable != 3 {

@@ -130,6 +130,104 @@ Jail (snapshot-and-strip a member's roles, restore automatically or on demand) a
 - Grant escalates (any role the bot can manage), jail only restricts, so grant/revoke are `TierAdmin`, jail/release are `TierMod`.
 - **Bulk jail** (`bulkjail.go`): `/roles jail` takes up to five members via separate native `User` options (`collectJailUserIDs`; Discord has no multi-user option type, and spec.MD §4a forbids taking IDs as raw strings), and `/roles jail-role` jails every holder of one role. Both funnel into `jailMany`, so single and bulk can't diverge in behaviour, only in *reporting*, where one member keeps the original precise wording and its `roles.jail` audit action, and a batch gets one `roles.jail_bulk` entry (per-member audit records would post one embed each, blowing the guild's `message.send` budget for no gain; per-member state stays in `role_jails`). `jail-role` is a separate leaf, not an option on `jail`: Discord requires required options before optional ones, so folding it in would push `duration` ahead of the far more common single-member path, and a separate leaf gets its own `PermSpec`: `TierAdmin`/`roles.jail_role`, by the same blast-radius reasoning that already isolates `configure_jail_channels`, lowerable per guild via `set-tier`. `partitionByRank` runs the per-target `CanModerate` check **before** `resolveJailRole`, because resolving can *create* the role and write an overwrite to every channel: a batch the actor outranks nobody in must leave nothing behind. The `maxBulkJailTargets` cap is about reversibility, not Discord's limits: jail and release share the guild's `member.edit` budget, so a batch big enough to drain it would block the releases undoing it; over the cap the command refuses rather than jailing an arbitrary subset. `membersWithRole` pages the member list (Discord has no "members with role" endpoint, and this needs `GUILD_MEMBERS`), stops one past the cap, and returns `complete=false` rather than letting a truncated scan read as "this is everyone". The cap is checked on the **raw** match count before self/bot exclusion, or trimming two names could bring an apparent 200 down to 50.
 
+### AI Moderation (`internal/plugins/aimod`)
+
+Milestone 10. Reads messages and checks them against Discord's own Community
+Guidelines, removing or rewriting what breaches them. Requested intent is
+`MESSAGE_CONTENT`, **opt-in** via `MERLIN_ENABLE_MESSAGE_CONTENT_INTENT` (the
+opposite default from `GUILD_MEMBERS`, because it is every message in every
+guild and spec.MD's least-privilege section names it specifically). Without it
+the plugin registers its commands, scans nothing, and says so in `/aimod
+status` rather than appearing to work.
+
+- **The ladder, and the one rule that must not move.** Rung 0 is a free skip
+  filter (bot/webhook author, exempt channel/role, too short, content-hash
+  dedupe); rung 1 is a deliberately tiny regex table for things that are
+  unambiguous *and* urgent (leaked bot token, phishing/IP-grabber domains, an
+  SSN); rung 2 is a cheap model over a 1.5s micro-batch of up to 20 messages;
+  rung 3 is a better model on one message with the full policy file and five
+  lines of channel context. **A rung-2 hit can only ever `flag`.** Deleting or
+  rewriting requires rung 3 to have confirmed above `actThreshold`. That single
+  rule is what keeps a nano model's false positives off a free-speech server,
+  and it is also why the expensive tier stays affordable: it only ever sees the
+  ~1% that already tripped. A failed or unparseable deep pass acts on nothing;
+  treating an outage as a confirmation would let Discord being down delete
+  messages.
+- **The policy catalogue is data, validated like `internal/voice`'s.** Ten
+  `policy/*.yaml` files, `go:embed`ed, each carrying `violations` **and**
+  `not_violations`, both with a `minListItems` floor. The second list is the
+  half that matters here: Discord's own explainers mostly state no exceptions,
+  so those lines are derived from the definitions' own qualifiers ("with the
+  intention to cause harm", "intentional actions meant to cause distress").
+  Without them a general-purpose model reads "hate speech" as "rude" and this
+  plugin becomes the thing it was built to protect the server from. A file
+  missing a boundary fails `LoadPolicies` at startup, exactly as a voice line
+  missing a required placeholder does. `child_safety` is not disableable, the
+  same guard shape as `adminconfig` refusing to disable itself.
+- **Two-stage token use is the whole cost design.** The fast prompt carries one
+  `short` line per *enforced* bucket and nothing else (~350 tokens, amortized
+  across the batch); the full policy file is sent only to the deep pass, only
+  for the one flagged bucket. Turning a bucket off is therefore a cost saving
+  as well as a policy choice. Every request pins `provider: {zdr: true,
+  data_collection: "deny", require_parameters: true}` and `temperature: 0`:
+  privacy enforced at the request rather than trusted to model choice, and a
+  classifier that answers the same twice.
+- **Budget and its failure directions.** `usage.cost` comes back on every
+  OpenRouter response, so the per-guild daily cap is an exact figure rather
+  than an estimate. Usage is booked for any response carrying it, *including*
+  one whose body failed to parse: the money left the account either way, and a
+  budget that only counts successes is one a misbehaving model walks through.
+  An unreadable spend row fails **closed** (`checkBudget` returns exhausted),
+  because assuming zero spent turns an unreachable database into an uncapped
+  budget. Over the cap the plugin degrades to rungs 0-1 and posts one audit
+  entry per day, never a silent downgrade.
+- **Cost-drain abuse is a first-class attack, not spam.** The daily budget caps
+  the bill; the damage it does not cap is the hours of unprotected server after
+  somebody exhausts it, which is exactly what a person planning to post
+  something reportable would arrange first. So `userMeter` adds per-member
+  sliding-window ceilings, tighter on the deep rung (`maxUserDeep`) than the
+  fast one because the two cost two orders of magnitude apart. A member over
+  the deep ceiling is still **recorded as flagged**, never silently dropped, or
+  the ceiling itself becomes a way to bury a real violation inside a flood.
+- **Sanctions use jail, not Discord's timeout.** `roles.JailAutomatic` (added
+  for this) is reached through the narrow `aimod.Jailer` interface wired in
+  `cmd/bot/main.go`, so this package never imports `roles`. Duration scales
+  with the policy file's own `severity` and doubles per prior sanction in
+  `repeatWindow`, capped. A timeout is the fallback for when jail is genuinely
+  unavailable. The sanction row is written **whether or not the jail lands**,
+  because it is what the next offence counts; losing it to a brief Discord
+  outage would quietly reset somebody's history. Reversed incidents do not
+  count, so one false positive cannot lengthen every future sentence.
+- **Automatic actions must never be aimable at staff.** `JailAutomatic` runs
+  `CanModerate` with a nil actor (which refuses every admin-equivalent target
+  and allows everyone else, precisely the rule an automated caller needs) and
+  `timeoutMember` refuses the owner and anyone holding Administrator, Moderate
+  Members or Manage Messages, failing closed on roles it cannot resolve. The
+  `/aimod moderate-me` opt-in list waives *only* the rank check and is **purely
+  additive**: nothing reads it to decide whether to protect anyone, anybody can
+  add themselves, and only the bootstrap operator can add somebody else. The
+  bootstrap identity is never sanctionable, listed or not.
+- **Rewrite is delete-and-repost through a channel webhook** wearing the
+  author's name and avatar, because a bot cannot edit another user's message.
+  The webhook is resolved *before* the delete, so a webhook failure does not
+  silently downgrade a rewrite into a removal. `discordguard.WebhookExecute`
+  zeroes `AllowedMentions`, which matters more here than anywhere else in that
+  file: the reposted text is member-authored and moments old. The
+  "edited by Merlin" marker is not optional; the repost carries somebody's name
+  and is not what they wrote.
+- **The incident is recorded before the message is touched** (same ordering
+  argument as `roles.applyJail`): the other order leaves the message gone with
+  no copy of it, nothing for `/aimod undo`, and nothing to show the member.
+  Evidence retention is per guild and **re-derived on every prune** by joining
+  `aimod_config`, never frozen into a per-row column: that is the
+  `rotation_archives.delete_after` mistake pointing the other way, and here the
+  direction that has to work is *shortening* the window.
+- **Config is cached** (`cachingStore`, `configTTL`) because this is the only
+  hot path in the codebase: without it a busy guild pays a Postgres round trip
+  per message. Every setter invalidates; a new setter added to `Store` and not
+  listed there serves a stale config for up to the TTL, which is most of why
+  the TTL exists at all.
+
 ### Rotation disclosure modes
 
 `settings_rotation_channels.disclosure` (migration 0018, default `full`) is how much a freshly rotated channel is told about its own rotation: `full` (cadence + archival window), `cadence`, `retention`, or `generic` (neither). Per channel rather than per guild, matching `retention_hours` itself. Set via `/rotation configure add|edit`, a fixed four-value `Choices` option rather than autocomplete, since §4a's autocomplete rule is about values that come from bot state and cannot be enumerated at compile time.

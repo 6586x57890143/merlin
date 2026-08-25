@@ -107,33 +107,60 @@ func TestWatchReadyToleratesRepeatedReadyEvents(t *testing.T) {
 	}
 }
 
-func TestNewSessionRequestsGuildMembersOnlyWhenAsked(t *testing.T) {
-	// A syntactically valid token shape; discordgo.New does no network I/O.
-	const token = "MTIzNDU2Nzg5MDEyMzQ1Njc4.Xxxxxx.yyyyyyyyyyyyyyyyyyyyyyyyyyy"
+// A syntactically valid token shape; discordgo.New does no network I/O.
+const testToken = "MTIzNDU2Nzg5MDEyMzQ1Njc4.Xxxxxx.yyyyyyyyyyyyyyyyyyyyyyyyyyy"
 
-	with, err := NewSession(token, true)
+func TestNewSessionRequestsGuildMembersOnlyWhenAsked(t *testing.T) {
+	with, err := NewSession(testToken, Intents{Members: true})
 	if err != nil {
-		t.Fatalf("NewSession(withMembers=true): %v", err)
+		t.Fatalf("NewSession(Members=true): %v", err)
 	}
 	if with.Identify.Intents&discordgo.IntentsGuildMembers == 0 {
 		t.Error("GUILD_MEMBERS was requested but is missing from the identify intents")
 	}
 
-	without, err := NewSession(token, false)
+	without, err := NewSession(testToken, Intents{})
 	if err != nil {
-		t.Fatalf("NewSession(withMembers=false): %v", err)
+		t.Fatalf("NewSession(Members=false): %v", err)
 	}
 	if without.Identify.Intents&discordgo.IntentsGuildMembers != 0 {
 		t.Error("GUILD_MEMBERS was declined but is still being requested")
 	}
 
-	// MESSAGE_CONTENT is never requested, on either path.
 	for name, s := range map[string]*discordgo.Session{"with": with, "without": without} {
-		if s.Identify.Intents&discordgo.IntentsMessageContent != 0 {
-			t.Errorf("%s members: MESSAGE_CONTENT must never be requested", name)
-		}
 		if s.Identify.Intents&discordgo.IntentsGuilds == 0 {
 			t.Errorf("%s members: GUILDS is required for the bot to see any guild at all", name)
 		}
+	}
+}
+
+// MESSAGE_CONTENT is the largest ask this bot makes of a server: every
+// message in it. Nothing but an explicit request may turn it on, and asking
+// for it must also ask for GUILD_MESSAGES, since MESSAGE_CONTENT only fills
+// in the content field of message events rather than delivering them.
+func TestNewSessionRequestsMessageContentOnlyWhenAsked(t *testing.T) {
+	off, err := NewSession(testToken, Intents{Members: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if off.Identify.Intents&discordgo.IntentsMessageContent != 0 {
+		t.Error("MESSAGE_CONTENT was not asked for but is being requested")
+	}
+	if off.Identify.Intents&discordgo.IntentsGuildMessages != 0 {
+		t.Error("GUILD_MESSAGES is being requested with nothing to read")
+	}
+
+	on, err := NewSession(testToken, Intents{MessageContent: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if on.Identify.Intents&discordgo.IntentsMessageContent == 0 {
+		t.Error("MESSAGE_CONTENT was asked for but is missing")
+	}
+	if on.Identify.Intents&discordgo.IntentsGuildMessages == 0 {
+		t.Error("MESSAGE_CONTENT without GUILD_MESSAGES delivers no message events to read")
+	}
+	if on.Identify.Intents&discordgo.IntentsGuildMembers != 0 {
+		t.Error("asking for MESSAGE_CONTENT must not drag GUILD_MEMBERS along with it")
 	}
 }
