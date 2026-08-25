@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`merlin` is a production-grade, modular Discord bot (Go, `discordgo` v0.29+, Go 1.25). Full design doc: [`spec.MD`](./spec.MD). Read it before any non-trivial change, especially §4 (security model), §4a (command/permission framework), and §9 (milestone plan). The project is built for a high-free-speech community with real exposure to weaponized/mass reporting, so **fail-safe behavior and defense in depth are first-class requirements**, not polish.
+`merlin` is a production-grade, modular Discord bot (Go, `discordgo` v0.29+, Go 1.27). Full design doc: [`spec.MD`](./spec.MD). Read it before any non-trivial change, especially §4 (security model), §4a (command/permission framework), and §9 (milestone plan). The project is built for a high-free-speech community with real exposure to weaponized/mass reporting, so **fail-safe behavior and defense in depth are first-class requirements**, not polish.
 
 ## Commands
 
 ```sh
 go build ./...                              # compile everything
 go vet ./...
-golangci-lint run                           # matches CI's golangci-lint v2.12.2
+golangci-lint run                           # matches CI's golangci-lint v2.13.1
 go test ./...  -cover                       # full suite
 go test ./... -race -cover -covermode=atomic  # matches CI exactly (needs CGO_ENABLED=1 / a C toolchain)
 go test ./internal/plugins/rotation/... -run TestRotateFullCycle -v   # single package / single test

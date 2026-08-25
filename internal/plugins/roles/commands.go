@@ -108,7 +108,7 @@ func (p *Plugin) registerCommands() {
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to grant a role to"),
 					roleOpt("role", "The role to grant"),
-					durationOpt("duration", "How long before automatic revocation. Needs a unit: \"3d\", \"24h\". Omit for permanent.", false),
+					durationOpt("duration", "How long before automatic revocation. Needs a unit: \"3d\", \"24h\", \"90m\". Omit for permanent.", false),
 					reasonOpt,
 				},
 			},

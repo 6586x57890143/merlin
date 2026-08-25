@@ -190,7 +190,13 @@ func (p *Plugin) membersWithRole(guildID, roleID string) (matches []jailTarget, 
 		if len(page) < memberPageSize {
 			return matches, true, nil // Last page.
 		}
-		after = page[len(page)-1].User.ID
+		last := page[len(page)-1].User
+		if last == nil {
+			// No cursor to page from. Report incomplete rather than
+			// re-requesting the same page or claiming this is everyone.
+			return matches, false, nil
+		}
+		after = last.ID
 	}
 	return matches, false, nil
 }

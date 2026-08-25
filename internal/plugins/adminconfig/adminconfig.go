@@ -705,6 +705,9 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 	_, err = p.session.ChannelMessageSendComplex(dmChannel.ID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{embed},
 		Files:  core.EmbedFiles(embed),
+		// Raw session, so the discordguard suppression does not apply here.
+		// Zeroed explicitly, as audit.Writer.Record and scheduler.alert do.
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	})
 	if err != nil {
 		p.log.Warn("adminconfig: onboarding DM failed, owner may have DMs closed",
