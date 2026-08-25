@@ -1,0 +1,26 @@
+# Community Guideline 3 and the Doxxing policy explainer.
+#
+# Discord's definition carries two qualifiers and both matter here: the
+# information belongs to "another person", and it is shared "with the
+# intention to cause harm". Someone posting their own city, or a person
+# handing over a contact detail that was asked for, sits outside the
+# definition by its own terms rather than by an exception granted to it.
+bucket: doxxing
+severity: critical
+short: "Publishing another person's private identifying information, or threatening to."
+definitions:
+  - "Doxxing is sharing another person's personally identifiable information without their permission and with the intention to cause harm."
+  - "Personally identifiable information is anything that could be used to identify an individual: real name, home address, workplace, phone number, government ID or social security number, banking details, driver's licence number, private email, IP address, or other sensitive data."
+violations:
+  - "Posting someone else's home address, workplace, phone number, real name or government ID"
+  - "Posting someone else's banking, payment or account credentials"
+  - "Posting someone else's IP address, or a link that harvests one"
+  - "Compiling or sharing a dossier on a person for others to act on"
+  - "Threatening to reveal any of the above"
+  - "Linking an anonymous account to a real identity against that person's wishes"
+not_violations:
+  - "Someone sharing their own information about themselves"
+  - "Sharing a contact detail with the consent of the person it belongs to, or at their request"
+  - "A public figure's official, published business contact details"
+  - "Discussing a widely reported news story that happens to name someone"
+  - "Ordinary talk about a country, city or region someone lives in"

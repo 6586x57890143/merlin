@@ -75,6 +75,11 @@ type Session interface {
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
+	ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error
+	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
+	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
+	WebhookExecute(webhookID, token string, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
 	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
 	ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error
 	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
@@ -404,4 +409,70 @@ func (o *GuildOps) GuildRoleEdit(guildID, roleID string, data *discordgo.RolePar
 	jid := o.beginJournal(opRoleEdit, roleID)
 	v, err := o.guard.session.GuildRoleEdit(guildID, roleID, data, options...)
 	return v, o.record(jid, err)
+}
+
+// ChannelMessageDelete removes somebody else's message.
+//
+// Gated like every other destructive call, and worth saying why explicitly:
+// this is the only operation in this bot that destroys something a member
+// wrote, and unlike a rotated channel there is no archive behind it. Discord
+// offers no undelete. aimod keeps its own copy for the guild's evidence
+// window precisely because this call is final.
+func (o *GuildOps) ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error {
+	if err := o.allow(opMessageDelete); err != nil {
+		return err
+	}
+	jid := o.beginJournal(opMessageDelete, messageID)
+	return o.record(jid, o.guard.session.ChannelMessageDelete(channelID, messageID, options...))
+}
+
+// ChannelWebhooks lists a channel's webhooks. A read, so ungated.
+func (o *GuildOps) ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error) {
+	return o.guard.session.ChannelWebhooks(channelID, options...)
+}
+
+func (o *GuildOps) WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error) {
+	if err := o.allow(opWebhookCreate); err != nil {
+		return nil, err
+	}
+	jid := o.beginJournal(opWebhookCreate, channelID)
+	v, err := o.guard.session.WebhookCreate(channelID, name, avatar, options...)
+	return v, o.record(jid, err)
+}
+
+// WebhookExecute posts through a webhook with every mention suppressed.
+//
+// The AllowedMentions override matters more here than anywhere else in this
+// file. The other senders carry text this bot wrote or an operator
+// configured; this one carries text a *member* wrote, moments ago, reposted
+// under that member's own name and avatar. Without the zero-value
+// MessageAllowedMentions (which marshals as {"parse":[]}, see
+// ChannelMessageSend for why the field cannot simply be left nil), a
+// rewritten message would ping everyone it originally pinged a second time,
+// and a member who worked that out would have found a way to make Merlin
+// mass-ping on their behalf.
+//
+// The signature drops discordgo's wait parameter and the returned message:
+// no caller wants either, and false is the cheaper call.
+func (o *GuildOps) WebhookExecute(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
+	if err := o.allow(opWebhookExecute); err != nil {
+		return err
+	}
+	if data == nil {
+		data = &discordgo.WebhookParams{}
+	}
+	data.AllowedMentions = &discordgo.MessageAllowedMentions{}
+	jid := o.beginJournal(opWebhookExecute, webhookID)
+	_, err := o.guard.session.WebhookExecute(webhookID, token, false, data, options...)
+	return o.record(jid, err)
+}
+
+// GuildMemberTimeout applies or clears Discord's own communication timeout.
+// A nil until clears it.
+func (o *GuildOps) GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error {
+	if err := o.allow(opMemberTimeout); err != nil {
+		return err
+	}
+	jid := o.beginJournal(opMemberTimeout, userID)
+	return o.record(jid, o.guard.session.GuildMemberTimeout(guildID, userID, until, options...))
 }

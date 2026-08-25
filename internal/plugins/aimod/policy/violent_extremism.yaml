@@ -1,0 +1,24 @@
+# Community Guideline 5 and the Violent Extremism policy explainer.
+#
+# The explainer states no exceptions of its own. The not_violations list
+# below is derived from the definition rather than granted against it: a
+# group that "tolerates, advocates for, or uses violence to achieve" an
+# agenda is the subject of the rule, and talking about one is not the same
+# act as supporting it. Without that line this bucket flags every history
+# channel on the server.
+bucket: violent_extremism
+severity: critical
+short: "Organizing, promoting or supporting violent extremist groups, activity or ideology."
+definitions:
+  - "A violent extremist group promotes a political, ideological or religious agenda and tolerates, advocates for, or uses violence to achieve it."
+violations:
+  - "Organizing, promoting or materially supporting a violent extremist or terrorist organization"
+  - "Claiming membership of a terrorist or violent extremist group"
+  - "Sharing or circulating propaganda produced by such a group, including manifestos and attack footage"
+  - "Advocating for violent extremist beliefs or recruiting for them"
+  - "Promoting a conspiracy theory that is being used to incite violence against a group of people"
+not_violations:
+  - "Naming, describing, criticizing or condemning an extremist group or its ideology"
+  - "News, history, academic or documentary discussion of extremism and its consequences"
+  - "Counter-speech, deradicalization talk, or a former member describing leaving"
+  - "Fiction, or discussion of a video game, film or book in which such groups appear"

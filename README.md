@@ -54,6 +54,34 @@ every destructive action instantly, `/config dryrun` makes it describe what it
 would have done without doing it, and there's a host-level env var for when
 Discord or the database is the thing that's broken.
 
+**AI moderation.** Optional, off until you turn it on, and it needs an
+OpenRouter key you provide. It reads messages and checks them against
+[Discord's own Community Guidelines](https://discord.com/guidelines), removing
+or cleaning up the ones that breach them. The point is narrow: it is there to
+stop the server being reported off the platform, not to police how people talk.
+Rudeness, hostility, profanity, dark humour and opinions you dislike are not
+violations and it is told so explicitly.
+
+Each of the ten policy areas is a file in `internal/plugins/aimod/policy/`
+saying both what the rule covers and where it stops, and you choose per area
+whether Merlin ignores it, flags it, cleans it up or removes it. Only child
+safety is fixed on. Hate speech, gore, self-harm and spam are **off** by
+default: those are questions about what kind of room you're running, and you
+should switch them on deliberately rather than find out later.
+
+It is built to be cheap for whoever is paying. Most messages never reach a
+model at all (a skip filter and a small pattern list handle them for free);
+what does is batched and read by a cheap model that can only ever *flag*;
+nothing is deleted until a better model has re-read it against the full policy
+text. You set a daily USD cap per server, and past it Merlin falls back to the
+free checks rather than spending more. `/aimod models show` prices your current
+setup against your server's own measured traffic, and `/aimod models compare`
+prices any other model before you switch.
+
+Every action is explained to the member in a DM, recorded in the audit log, and
+reversible with `/aimod undo` while the evidence window lasts. Start with
+`/aimod configure mode flag` and watch it for a week before letting it act.
+
 ## Adding it to a server
 
 Invite link (a server admin has to click it):
@@ -71,10 +99,27 @@ call at jail time. Permission overwrites don't apply to a voice session that's
 already in progress, so without it a jailed member who was mid-call would stay
 in it.
 
+### If you're running AI moderation
+
+`/aimod` needs more than the link above grants, so it has its own:
+
+```
+https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=1100333786128
+```
+
+That's the same three, plus `View Channel` and `Read Message History` (to see
+messages at all, and to read the few lines of context before a flagged one),
+`Manage Messages` (to delete one), `Manage Webhooks` (to repost a rewritten
+message under its author's name), and `Moderate Members` (the timeout that the
+sanction ladder falls back to when jail can't be applied).
+
+Two links rather than one on purpose. The plugin is off until an admin turns it
+on, and a deployment that never will shouldn't be handing the bot the ability to
+delete messages and time people out. Use the narrow link unless you need this.
+
 ### Intents
 
 `GUILDS` and `GUILD_VOICE_STATES` are unprivileged and always requested.
-`MESSAGE_CONTENT` is never requested at all.
 
 `GUILD_MEMBERS` is privileged, so if you're self-hosting you need to tick
 **Server Members Intent** under Bot in the Discord Developer Portal. The bot
@@ -87,6 +132,18 @@ instead of within a minute, and roles that a server's Onboarding flow hands back
 to a jailed member get stripped again right away. Both of those work without it,
 just a minute slower. If you can't enable it, set
 `MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1` and live with the sweep.
+
+`MESSAGE_CONTENT` is privileged too, and is **off unless you ask for it**:
+`MERLIN_ENABLE_MESSAGE_CONTENT_INTENT=1` plus **Message Content Intent** ticked
+in the same Developer Portal page. It's the opposite default from the one above
+because it's a far larger ask (every message in every server, and Discord
+reviews it above 100 guilds), and nothing but `/aimod` reads it. Without it that
+plugin registers its commands, scans nothing, and says so in `/aimod status`
+rather than looking like it's working.
+
+Same failure mode as the other one if the portal toggle is missing: Discord
+refuses the connection and the bot exits at startup naming both toggles instead
+of reconnect-looping.
 
 ## First run
 

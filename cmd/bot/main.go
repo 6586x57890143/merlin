@@ -21,6 +21,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
+	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
@@ -103,7 +104,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
-	session, err := core.NewSession(cfg.Discord.Token, cfg.GuildMembersIntent)
+	session, err := core.NewSession(cfg.Discord.Token, core.Intents{
+		Members:        cfg.GuildMembersIntent,
+		MessageContent: cfg.MessageContentIntent,
+	})
 	if err != nil {
 		return err
 	}
@@ -128,10 +132,13 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	journal := discordguard.NewPostgresJournal(db.Pool)
 	auditWriter := audit.New(db.Pool, session, settingsStore)
-	// audit_log and action_journal both grow forever otherwise. Housekeeping,
-	// not a Scheduler job: neither table is per guild, and missing a tick just
-	// means the next one prunes the same rows.
-	auditWriter.StartRetention(ctx, log, journal)
+	// audit_log, action_journal and aimod's stored evidence all grow forever
+	// otherwise. Housekeeping, not a Scheduler job: none of these tables is
+	// per guild, and missing a tick just means the next one prunes the same
+	// rows. aimodStore ignores the cutoff it is handed, because its window is
+	// per guild and admin-settable; see aimod.PruneEvidence.
+	aimodStore := aimod.NewPostgresStore(db.Pool)
+	auditWriter.StartRetention(ctx, log, journal, aimodStore)
 
 	deps := core.Deps{
 		Session:   session,
@@ -179,12 +186,42 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		},
 	)
 
+	// AI moderation. Constructed even when MESSAGE_CONTENT is off: the
+	// plugin then registers its commands, scans nothing, and /aimod status
+	// says exactly why, which is a far better failure than a command that is
+	// simply not there. The policy catalogue is validated in New, so a
+	// malformed policy file stops the bot here rather than mid-classification
+	// on a live server, the same contract voice.New has.
+	aimodPlugin, err := aimod.New(
+		// Wrapped so guild config is not re-read from Postgres for every
+		// message on every server. The Pruner above keeps the unwrapped
+		// store: it only ever writes.
+		aimod.NewCachingStore(aimodStore),
+		aimod.NewClient(),
+		func(guildID string) aimod.DiscordOps { return guard.For(guildID) },
+		cfg.SecretKey,
+		speaker,
+		cfg.MessageContentIntent,
+	)
+	if err != nil {
+		return fmt.Errorf("start ai moderation: %w", err)
+	}
+	// The sanction ladder prefers this bot's own jail over Discord's timeout.
+	// Wired here rather than imported, so aimod depends on the behaviour and
+	// not on the package: *roles.Plugin satisfies aimod.Jailer structurally.
+	aimodPlugin.WithJailer(rolesPlugin)
+	// /config plugins set aimod false has to stop the scanning too, not just
+	// the commands: HandleMessage below is the one plugin entry point the
+	// CommandRouter's own gate check never sees. See aimod.PluginGate.
+	aimodPlugin.WithGate(settingsStore)
+
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New(speaker))
 	registry.Register(rotationPlugin)
 	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
+	registry.Register(aimodPlugin)
 	registry.Register(adminconfigPlugin)
 
 	if err := registry.InitAll(); err != nil {
@@ -316,6 +353,24 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			"a guild's Onboarding/Membership Screening flow after a jail aren't stripped again until then either")
 	}
 
+	// Message scanning. Registered only when the intent was actually
+	// requested, so the handler's presence always matches reality: without
+	// MESSAGE_CONTENT Discord delivers no content to read, and a handler that
+	// ran anyway would scan a stream of empty strings and report a healthy,
+	// entirely useless filter.
+	if cfg.MessageContentIntent {
+		log.Info("MESSAGE_CONTENT intent requested: AI moderation can read messages")
+		session.AddHandler(func(s *discordgo.Session, mc *discordgo.MessageCreate) {
+			// Returns immediately; the paid work happens on aimod's own batch
+			// timer. discordgo dispatches events serially per shard, so
+			// blocking here would stall every other handler behind it.
+			aimodPlugin.HandleMessage(mc.Message)
+		})
+	} else {
+		log.Info("MESSAGE_CONTENT intent not requested: AI moderation will scan nothing. " +
+			"Set MERLIN_ENABLE_MESSAGE_CONTENT_INTENT=1 and enable Message Content Intent in the Developer Portal.")
+	}
+
 	// A channel disappearing under a rotation config is otherwise only
 	// noticed as a job that quietly fails for five runs before alerting.
 	session.AddHandler(func(s *discordgo.Session, cd *discordgo.ChannelDelete) {
@@ -325,6 +380,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		rotationPlugin.HandleChannelDeleted(guildCtx, cd.GuildID, cd.ID)
+		// Drops the cached webhook for that channel, which would otherwise
+		// keep failing every rewrite until the process restarted.
+		aimodPlugin.HandleChannelDeleted(cd.ID)
 	})
 
 	// A deleted role is invisible to this bot otherwise, and it leaves two
@@ -374,6 +432,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		dropped := sched.UnregisterGuild(gd.ID)
 		rotationPlugin.ForgetGuild(gd.ID)
 		rolesPlugin.ForgetGuild(gd.ID)
+		aimodPlugin.ForgetGuild(gd.ID)
 		settingsStore.Forget(gd.ID)
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
 	})

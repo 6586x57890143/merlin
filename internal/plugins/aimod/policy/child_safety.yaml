@@ -1,0 +1,30 @@
+# Discord Community Guidelines 6, 7, 8 and 9, and the Teen and Child Safety
+# policy explainer.
+#
+# This is the one bucket a guild cannot switch off. Everything else here is a
+# judgement call a server gets to make about its own culture; this one is a
+# termination offence for the server and a reporting obligation for Discord,
+# and a guild that turned it off would have done nothing except remove its
+# own last line of defence.
+bucket: child_safety
+severity: critical
+short: "Sexual content involving anyone under 18, or an adult pursuing a minor sexually."
+definitions:
+  - "CSAM is illegal child sexual abuse material involving anyone under 18, real, drawn or AI generated."
+  - "Sexualization of a minor is any content putting someone under 18 in a sexual context, in text or media, authentic or synthetic."
+  - "Grooming is manipulating a minor in order to have a sexual interaction with them."
+  - "Sextortion is threatening a minor to make them share sexual content or perform sexual acts."
+violations:
+  - "Sharing, requesting, soliciting or offering sexual content involving anyone under 18"
+  - "An adult sending sexual content to a minor, or asking a minor for it"
+  - "Sexual or erotic roleplay with someone who is or is presented as a minor"
+  - "Grooming: building trust with a minor toward a sexual end"
+  - "Sextortion of a minor"
+  - "Arranging a real world sexual meeting with a minor"
+  - "Minors sharing sexual or suggestive images of themselves or each other"
+  - "Running or advertising a server for teen dating or teen romantic pairing"
+not_violations:
+  - "A minor talking about their own age, school, hobbies or identity with nothing sexual attached"
+  - "A survivor describing abuse they experienced, or asking where to get help"
+  - "Reporting, warning others about, or asking a moderator to act on this kind of content"
+  - "Child safeguarding, education or news discussion that describes the harm rather than depicting it"

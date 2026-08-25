@@ -1,0 +1,28 @@
+# Community Guideline 11 and the Suicide and Self-Harm policy explainer.
+#
+# Off by default, and the not_violations list here is doing more work than
+# anywhere else in this directory. The explainer states no exceptions, but
+# every violation it lists is about promoting, encouraging or instructing,
+# and a filter that could not tell that apart from someone saying they are
+# struggling would delete the message of the person most in need of a reply.
+# That is a worse outcome than the one the rule exists to prevent, so the
+# boundary is spelled out at length.
+bucket: self_harm
+severity: high
+short: "Promoting, glorifying, normalizing or instructing self-harm, suicide or disordered eating."
+definitions:
+  - "Self-harm is when one intentionally hurts or causes themselves pain, including self-inflicted injury and disordered eating."
+  - "Suicide is the intentional act of ending one's life."
+violations:
+  - "Offering or sharing methods, instructions or advice for self-harm or suicide"
+  - "Encouraging a specific person to hurt themselves"
+  - "Glorifying, romanticizing or normalizing self-harm or suicide"
+  - "Discouraging someone from seeking treatment or help"
+  - "Promoting eating disorders, or sharing strategies for engaging in one"
+  - "Posting graphic depictions of self-harm, or coordinating it"
+not_violations:
+  - "Someone saying they are struggling, in pain, or having these thoughts"
+  - "Asking for help, or asking where to find it"
+  - "Offering support, checking on someone, or sharing a helpline"
+  - "Describing one's own past experience or recovery without method detail"
+  - "Awareness, prevention, clinical, journalistic or memorial discussion"

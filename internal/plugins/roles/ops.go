@@ -56,4 +56,9 @@ type DiscordMemberOps interface {
 type RoleManager interface {
 	CanManageRole(guildID, targetRoleID string) error
 	CanModerate(guildID string, actor *discordgo.Member, targetUserID string, targetRoleIDs []string) error
+	// IsBootstrapAdmin is only consulted by JailAutomatic, and only on the
+	// path where a target has consented to being sanctioned despite their
+	// rank. The bootstrap identity is the operator's guaranteed way back into
+	// every guild, so it stays untargetable even then.
+	IsBootstrapAdmin(userID string) bool
 }

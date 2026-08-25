@@ -45,6 +45,19 @@ var opCaps = map[string]int{
 	opMemberRoleRemove:   120,
 	opRoleCreate:         10,
 	opRoleEdit:           30,
+	// aimod deletes one message per confirmed violation, and reposts one
+	// per rewrite. A guild bumping these is either under a raid or has a
+	// filter misconfigured badly enough that stopping it is the right
+	// outcome; both are exactly what this cap is for. Sized well above a
+	// bad afternoon and well below "the bot deleted the channel".
+	opMessageDelete: 300,
+	// One webhook per channel, created once and reused for the life of the
+	// process, so this only moves when a guild is churning channels.
+	opWebhookCreate:  20,
+	opWebhookExecute: 300,
+	// Discord's own timeout, applied automatically only by aimod's abuse
+	// ceiling, which is itself rate limited per member.
+	opMemberTimeout: 60,
 }
 
 const (
@@ -59,6 +72,10 @@ const (
 	opMemberRoleRemove   = "member.role.remove"
 	opRoleCreate         = "role.create"
 	opRoleEdit           = "role.edit"
+	opMessageDelete      = "message.delete"
+	opWebhookCreate      = "webhook.create"
+	opWebhookExecute     = "webhook.execute"
+	opMemberTimeout      = "member.timeout"
 )
 
 // capWindow is the period each cap is denominated over. Buckets refill

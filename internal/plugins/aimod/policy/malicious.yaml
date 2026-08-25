@@ -1,0 +1,31 @@
+# Community Guidelines 20 through 27, and the Deceptive Practices and
+# Dangerous and Regulated Goods policy explainers.
+#
+# Discord's regulated goods policy targets the transaction, not the
+# conversation: "we do not allow the buying, selling, or trading of dangerous
+# or regulated goods". That distinction is the whole of the not_violations
+# list below, and it is what a server about firearms, drugs or security
+# research depends on to keep talking at all.
+bucket: malicious
+severity: critical
+short: "Scams, phishing, malware, fraud, or the sale of drugs, weapons and other regulated goods."
+definitions:
+  - "Phishing is a deceptive technique used to trick others into revealing sensitive information."
+  - "Dangerous goods could reasonably cause or assist in causing real world physical harm. Regulated goods are legally restricted to buy, sell, trade or own: firearms, explosives, imitation firearms, illicit drugs, marijuana, alcohol and tobacco."
+violations:
+  - "Phishing links, fake login pages, or fake giveaway and Nitro pages"
+  - "Distributing malware, token stealers, remote access trojans, or account cracking tools"
+  - "Offering or advertising a denial of service or booter service"
+  - "Financial scams: Ponzi and pyramid schemes, advance fee fraud, pump and dump, romance and employment scams"
+  - "Selling stolen accounts, credentials, payment data or personal information"
+  - "Buying, selling or trading firearms, explosives, drugs or other regulated goods"
+  - "Sharing instructions for building a weapon, an explosive or an illegal drug"
+  - "Money laundering, counterfeit goods, forgery, or chargeback fraud services"
+  - "Coordinating or advertising illegal gambling"
+  - "Selling or buying Discord accounts, servers, usernames or vanity invites"
+not_violations:
+  - "Talking about drugs, alcohol, firearms, hacking or fraud without offering, seeking or facilitating a transaction"
+  - "Security research, capture the flag discussion, malware analysis, and warning others about a scam or a malicious link"
+  - "Harm reduction and addiction recovery conversation"
+  - "Ordinary legitimate links, server invites, storefronts and self-promotion"
+  - "Discussion of legal gambling, or of a game that contains gambling mechanics"

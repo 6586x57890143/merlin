@@ -1,0 +1,20 @@
+# Community Guidelines 9 and 10, and the Non-Consensual Adult Intimate Media
+# policy explainer.
+bucket: ncii
+severity: critical
+short: "Sexual imagery of an adult shared without their consent, or explicit content left reachable by minors."
+definitions:
+  - "Non-consensual intimate media is media of an adult in a nude or sexually explicit situation, taken or created without their explicit and informed consent."
+  - "Consent can change at any time, so earlier permission does not make later sharing consensual."
+violations:
+  - "Sharing nude or sexually explicit images of an adult without their consent"
+  - "Hidden camera content, creepshots or upskirting"
+  - "Sexualized edits of a real person made without consent, including AI generated deepfakes"
+  - "Reposting paywalled explicit content without the creator's permission"
+  - "Sextortion: threatening to share intimate media for money, more images, or any other demand"
+  - "Posting sexually explicit content in a channel that is not age restricted"
+not_violations:
+  - "Consensual adult content posted by its subject or creator in a properly age restricted channel"
+  - "Discussing image based abuse, reporting it, or pointing someone at help"
+  - "Non-sexual nudity in an artistic, medical or educational context"
+  - "Crude sexual talk between adults that involves no images of a real person"

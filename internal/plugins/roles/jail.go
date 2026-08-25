@@ -149,6 +149,18 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 			// batch size: reversibility beats completeness.
 			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.now().Add(duration), reason)
 		}
+		// A moved sentence is its own audit action rather than a second
+		// roles.jail: nobody was jailed here, and a reader counting jails in
+		// the log would otherwise count this member twice. The DM is the same
+		// one, because the thing it tells them (when they get out) is exactly
+		// what just changed.
+		if len(res.redated) == 1 {
+			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.jail_resentenced", "",
+				fmt.Sprintf("user=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), core.FormatDuration(duration), reason)); err != nil {
+				p.log.Error("roles: audit jail re-sentence failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
+			}
+			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.now().Add(duration), reason)
+		}
 		p.respondSingleJail(s, i, userIDs[0], duration, res)
 		return
 	}
@@ -173,16 +185,20 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	case len(res.protected) > 0:
 		fail("Cannot jail that member", fmt.Errorf("<@%s> outranks you", userID))
 		return
-	case len(res.alreadyIn) > 0:
-		// Losing the insert race means a concurrent jail already recorded this
-		// member and stripped their roles. Nothing was changed here, and the
-		// snapshot on record is the one taken before they were stripped.
-		// Reporting it as a plain failure would invite a retry that could only
-		// overwrite that snapshot with the stripped state.
-		fail("Already jailed", fmt.Errorf("<@%s> is already jailed. Use `/roles release` first", userID))
-		return
 	case len(res.failed) > 0:
 		fail("Failed to jail member", errors.New(res.failed[0]))
+		return
+	}
+
+	// Already serving a sentence, so this call moved the end of it rather
+	// than jailing anyone. Reported as its own outcome, not folded into the
+	// "Member jailed" wording below: the roles were stripped by the earlier
+	// jail, and the snapshot restored at release is still that one's.
+	if len(res.redated) > 0 {
+		if err := core.FollowUpOK(s, i, "Sentence updated",
+			fmt.Sprintf("<@%s> was already jailed. Their sentence now ends %s from now.", userID, core.FormatDuration(duration))); err != nil {
+			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+		}
 		return
 	}
 

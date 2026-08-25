@@ -367,7 +367,10 @@ type fakeStore struct {
 	// insertJailErr, when set, fails every InsertJail, for testing what the
 	// jail mutation leaves behind when the record can't be written.
 	insertJailErr error
-	jails         map[string]JailRecord  // guildID+":"+userID
+	// setJailReleaseErr, when set, fails every SetJailRelease, for testing
+	// what a re-jail reports when the sentence can't be moved.
+	setJailReleaseErr error
+	jails             map[string]JailRecord  // guildID+":"+userID
 	grants        map[string]GrantRecord // guildID+":"+userID+":"+roleID
 	nextID        int64
 }
@@ -392,6 +395,23 @@ func (f *fakeStore) InsertJail(ctx context.Context, rec JailRecord) error {
 	if _, exists := f.jails[key]; exists {
 		return fmt.Errorf("fake store: insert jail for %s: %w", rec.UserID, ErrAlreadyJailed)
 	}
+	f.jails[key] = rec
+	return nil
+}
+
+func (f *fakeStore) SetJailRelease(ctx context.Context, guildID, userID string, releaseAt *time.Time) error {
+	if f.setJailReleaseErr != nil {
+		return f.setJailReleaseErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := jailKey(guildID, userID)
+	rec, ok := f.jails[key]
+	if !ok {
+		return fmt.Errorf("fake store: set jail release for %s: %w", userID, ErrNotJailed)
+	}
+	// Mirrors the real UPDATE: release_at only, never the snapshot.
+	rec.ReleaseAt = releaseAt
 	f.jails[key] = rec
 	return nil
 }
@@ -579,6 +599,9 @@ type fakePerms struct {
 	// moderateErr, when set, fails every CanModerate call with it, for the
 	// fail-closed case where the guild's state can't be resolved at all.
 	moderateErr error
+	// bootstrapID is the one identity nothing may target, not even with the
+	// consent flag JailAutomatic otherwise honours.
+	bootstrapID string
 }
 
 func newFakePerms() *fakePerms {
@@ -590,6 +613,12 @@ func (f *fakePerms) CanManageRole(guildID, targetRoleID string) error {
 		return core.ErrForbidden{Reason: "target role at/above bot's top role"}
 	}
 	return nil
+}
+
+// bootstrapID stands in for MERLIN_BOOTSTRAP_ADMIN_USER_ID. Empty in most
+// tests: only JailAutomatic consults it.
+func (f *fakePerms) IsBootstrapAdmin(userID string) bool {
+	return f.bootstrapID != "" && userID == f.bootstrapID
 }
 
 func (f *fakePerms) CanModerate(guildID string, actor *discordgo.Member, targetUserID string, targetRoleIDs []string) error {
