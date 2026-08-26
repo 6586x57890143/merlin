@@ -498,6 +498,19 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 			return
 		}
 
+		// Only what the fast pass cleared is remembered, so an identical
+		// repeat of a *flagged* message is scanned and flagged again rather
+		// than silently swallowed by the cache. See dedupeCache.markClean.
+		flagged := make(map[int]bool, len(hits))
+		for _, hit := range hits {
+			flagged[hit.Index] = true
+		}
+		for i, c := range batch {
+			if !flagged[i+1] {
+				p.dedupe.markClean(guildID, c.Content, p.now())
+			}
+		}
+
 		for _, hit := range hits {
 			select {
 			case <-p.stopped:

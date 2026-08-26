@@ -97,15 +97,22 @@ func TestShouldSkip(t *testing.T) {
 // Copypasta, a member repeating themselves, and fifty raid accounts posting
 // one line all collapse to a single model call. This is the cheapest of the
 // cost levers and the easiest to break by moving the check.
-func TestDuplicateTextIsScannedOnce(t *testing.T) {
+func TestCleanDuplicateTextIsScannedOnce(t *testing.T) {
 	p := &Plugin{dedupe: newDedupeCache()}
 	cfg := Config{GuildID: "g1", Mode: ModeEnforce}
+	const line = "join my server for free nitro now"
 
-	if got := p.shouldSkip(cfg, msg("join my server for free nitro now"), testNow); got != skipNone {
+	if got := p.shouldSkip(cfg, msg(line), testNow); got != skipNone {
 		t.Fatalf("first sighting = %q, want it scanned", got)
 	}
-	if got := p.shouldSkip(cfg, msg("join my server for free nitro now"), testNow.Add(time.Minute)); got != skipDuplicate {
-		t.Errorf("second sighting = %q, want skipDuplicate", got)
+	// Nothing is deduped until a scan has actually cleared it.
+	if got := p.shouldSkip(cfg, msg(line), testNow); got != skipNone {
+		t.Fatalf("second sighting before any verdict = %q, want it scanned too", got)
+	}
+	p.dedupe.markClean("g1", line, testNow)
+
+	if got := p.shouldSkip(cfg, msg(line), testNow.Add(time.Minute)); got != skipDuplicate {
+		t.Errorf("repeat of cleared text = %q, want skipDuplicate", got)
 	}
 	// Case and surrounding whitespace are not a way around it.
 	if got := p.shouldSkip(cfg, msg("  JOIN MY SERVER FOR FREE NITRO NOW  "), testNow.Add(2*time.Minute)); got != skipDuplicate {
@@ -113,8 +120,32 @@ func TestDuplicateTextIsScannedOnce(t *testing.T) {
 	}
 	// Past the window it is a fresh message again: the same words genuinely
 	// can mean something different in a different conversation.
-	if got := p.shouldSkip(cfg, msg("join my server for free nitro now"), testNow.Add(dedupeWindow+time.Second)); got != skipNone {
+	if got := p.shouldSkip(cfg, msg(line), testNow.Add(dedupeWindow+time.Second)); got != skipNone {
 		t.Errorf("after the window = %q, want it scanned again", got)
+	}
+}
+
+// The bug this split exists to prevent, stated directly. Somebody repeated a
+// slur four times on a live server: the first was flagged and the rest
+// produced no record at all, because the cache had recorded the text on its
+// way past regardless of the verdict. Repetition is aggravating, not
+// exculpatory, and it must never be what buys silence.
+func TestRepeatedViolationIsScannedEveryTime(t *testing.T) {
+	store := newFakeStore()
+	client := &fakeClassifier{fast: []string{`{"v":[{"i":1,"b":"threats","c":0.9}]}`}}
+	p := intakePlugin(t, store, client, newFakeOps())
+
+	const line = "a message that trips the filter every single time"
+	for range 3 {
+		p.classify("g1", []candidate{{MessageID: "m", ChannelID: "c1", AuthorID: "u1", Content: line}})
+		p.wg.Wait()
+	}
+
+	if fast, _ := client.counts(); fast != 3 {
+		t.Errorf("made %d fast calls for 3 copies of a flagged message, want 3: repeats were swallowed by the cache", fast)
+	}
+	if p.dedupe.seenClean("g1", line, testNow) {
+		t.Error("a flagged message was remembered as clean")
 	}
 }
 
@@ -122,11 +153,12 @@ func TestDuplicateTextIsScannedOnce(t *testing.T) {
 // meaningful against one guild's own policy.
 func TestDedupeIsPerGuild(t *testing.T) {
 	c := newDedupeCache()
-	if c.seenRecently("g1", "hello there everyone", testNow) {
-		t.Fatal("first sighting reported as a duplicate")
+	c.markClean("g1", "hello there everyone", testNow)
+	if !c.seenClean("g1", "hello there everyone", testNow) {
+		t.Fatal("a cleared text was not remembered for its own guild")
 	}
-	if c.seenRecently("g2", "hello there everyone", testNow) {
-		t.Error("a different guild's identical text was treated as already decided")
+	if c.seenClean("g2", "hello there everyone", testNow) {
+		t.Error("a different guild's identical text was treated as already cleared")
 	}
 }
 
