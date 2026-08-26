@@ -1,6 +1,7 @@
 package aimod
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -125,27 +126,102 @@ func TestCleanDuplicateTextIsScannedOnce(t *testing.T) {
 	}
 }
 
-// The bug this split exists to prevent, stated directly. Somebody repeated a
-// slur four times on a live server: the first was flagged and the rest
-// produced no record at all, because the cache had recorded the text on its
-// way past regardless of the verdict. Repetition is aggravating, not
-// exculpatory, and it must never be what buys silence.
-func TestRepeatedViolationIsScannedEveryTime(t *testing.T) {
+// The behaviour two earlier designs got wrong in opposite directions, and
+// the reason the cache holds a verdict rather than a sighting.
+//
+// The first recorded every message as seen and skipped repeats outright, so
+// somebody who posted the same slur four times had one flagged and three
+// silently dropped. The second only remembered clean text, which fixed that
+// but made every repeat pay full price, so a flood could exhaust a scan
+// ceiling with copies of one line. Both copies must be acted on, and only
+// the first may cost anything.
+func TestRepeatedViolationIsActedOnWithoutPayingAgain(t *testing.T) {
 	store := newFakeStore()
-	client := &fakeClassifier{fast: []string{`{"v":[{"i":1,"b":"threats","c":0.9}]}`}}
-	p := intakePlugin(t, store, client, newFakeOps())
+	ops := newFakeOps()
+	client := &fakeClassifier{
+		fast: []string{`{"v":[{"i":1,"b":"threats","c":0.9}]}`},
+		deep: []string{`{"violation":true,"bucket":"threats","confidence":0.95,"reason":"a specific threat"}`},
+	}
+	p := intakePlugin(t, store, client, ops)
 
 	const line = "a message that trips the filter every single time"
-	for range 3 {
-		p.classify("g1", []candidate{{MessageID: "m", ChannelID: "c1", AuthorID: "u1", Content: line}})
+	send := func(id string) {
+		p.HandleMessage(&discordgo.Message{
+			ID: id, GuildID: "g1", ChannelID: "c1", Content: line,
+			Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+		})
+		p.flush("c1")
 		p.wg.Wait()
 	}
 
-	if fast, _ := client.counts(); fast != 3 {
-		t.Errorf("made %d fast calls for 3 copies of a flagged message, want 3: repeats were swallowed by the cache", fast)
+	for _, id := range []string{"m1", "m2", "m3", "m4"} {
+		send(id)
 	}
-	if p.dedupe.seenClean("g1", line, testNow) {
-		t.Error("a flagged message was remembered as clean")
+
+	// One classification, four removals.
+	fast, deep := client.counts()
+	if fast != 1 || deep != 1 {
+		t.Errorf("calls: fast=%d deep=%d, want 1 and 1 for four copies of one message", fast, deep)
+	}
+	deleted, _ := ops.snapshot()
+	if len(deleted) != 4 {
+		t.Errorf("deleted %v, want all four copies acted on", deleted)
+	}
+	// And the repeats never touched the member's ceiling, which stays for
+	// content nobody has judged yet.
+	if _, crossed := p.meter.allowDeep("g1", "u1", testNow); crossed {
+		t.Error("repeats consumed the deep ceiling despite costing nothing")
+	}
+}
+
+// A message the deep pass cleared is genuinely clean, so later copies must
+// not pay to be told so a second time.
+func TestClearedTextIsRememberedAsClean(t *testing.T) {
+	store := newFakeStore()
+	client := &fakeClassifier{
+		fast: []string{`{"v":[{"i":1,"b":"threats","c":0.9}]}`},
+		deep: []string{`{"violation":false,"bucket":"threats","confidence":0.1,"reason":"hyperbole"}`},
+	}
+	p := intakePlugin(t, store, client, newFakeOps())
+
+	const line = "i will end you at mario kart later tonight"
+	p.classify("g1", []candidate{{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: line}})
+	p.wg.Wait()
+
+	if !p.dedupe.seenClean("g1", line, testNow) {
+		t.Error("text the deep pass cleared was not remembered, so every copy pays again")
+	}
+}
+
+// A guild that switches a policy area off after a verdict was cached must
+// stop acting on it, so the action is re-read from live config rather than
+// taken from the cache.
+func TestCachedVerdictHonoursACurrentPolicyChange(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	p := intakePlugin(t, store, &fakeClassifier{}, ops)
+
+	const line = "a message somebody already had a verdict on"
+	p.dedupe.remember("g1", line, testNow, &cachedVerdict{
+		bucket: BucketGore, action: ActionRemove,
+		deep: deepVerdict{Violation: true, Bucket: BucketGore, Confidence: 0.99, Reason: "r"},
+	})
+
+	cfg, err := store.Config(context.Background(), "g1")
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+	cfg.BucketActions[BucketGore] = ActionOff
+	store.setConfig(cfg)
+
+	p.HandleMessage(&discordgo.Message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1", Content: line,
+		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+	})
+	p.wg.Wait()
+
+	if deleted, _ := ops.snapshot(); len(deleted) != 0 {
+		t.Errorf("deleted %v on a bucket the guild has since switched off", deleted)
 	}
 }
 

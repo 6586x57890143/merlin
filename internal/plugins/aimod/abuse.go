@@ -37,10 +37,20 @@ const (
 	// channel is well under this) and far below what it takes to matter.
 	maxUserScans = 40
 	// maxUserDeep is how many of one member's messages reach the deep pass
-	// per window. A member who genuinely trips the filter five times in ten
-	// minutes has a moderation problem a human should be looking at, which
-	// is what crossing this triggers.
-	maxUserDeep = 5
+	// per window.
+	//
+	// Raised from five, because what it counts changed. Repeats of text
+	// already judged are now answered from the cached verdict and cost
+	// nothing (see dedupeCache), so this is consumed only by *distinct*
+	// content nobody has looked at yet. Five was throttling real moderation
+	// during an argument on a server spending five percent of its budget,
+	// which is the wrong thing to be protecting.
+	//
+	// Still bounded, because the ceiling is what stops one member driving
+	// the expensive rung on demand once they have worked out a phrasing that
+	// trips it, and a dozen distinct flagged messages from one person in ten
+	// minutes is a moderation problem a human should see either way.
+	maxUserDeep = 12
 	// meterMax bounds the meter map, like dedupeMax bounds the dedupe cache.
 	meterMax = 8192
 )

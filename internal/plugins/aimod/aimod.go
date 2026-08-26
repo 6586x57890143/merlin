@@ -15,13 +15,25 @@ import (
 // batchWindow is how long messages in one channel are collected before being
 // classified together.
 //
-// The single biggest cost lever after the free rungs. A classifier prompt is
-// a few hundred tokens of policy plus a few dozen of message, so sending one
-// message per call means paying for the policy every time; twenty in a batch
-// amortizes it to near nothing. Short enough that a removal still lands
-// while the message is on screen, which is the other half of what this
-// feature is for.
-const batchWindow = 1500 * time.Millisecond
+// The single biggest cost lever after the free rungs, and it was set too
+// tight to work. A classifier prompt is a few hundred tokens of policy plus
+// a few dozen of message, so the per-call overhead is most of the bill. At
+// a second and a half a real server produced 1.1 messages per call: the
+// policy prompt was being paid for almost every message individually, which
+// is the shape of not batching at all.
+//
+// Six seconds is chosen against how conversation actually arrives. Traffic
+// worth scanning is bursty (an argument produces a dozen messages in a
+// minute, not one every six), and a window has to be wider than the gaps
+// inside a burst to collapse one. Three messages per call is already 2.4x
+// cheaper per message than one, and five is 3.3x.
+//
+// The cost is latency on the quiet case: a removal now lands up to six
+// seconds after the message rather than two. That is still while the
+// message is on screen, which is the property that matters, and a full
+// batch flushes immediately regardless, so the busy case gets faster rather
+// than slower.
+const batchWindow = 6 * time.Second
 
 // batchMax is the ceiling on one call. Past this the prompt starts costing
 // more in latency than the batching saves, and a model's index-tracking gets
@@ -369,6 +381,24 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	if len(enforcedBuckets(cfg)) == 0 {
 		return
 	}
+
+	// A verdict already reached on this exact text is applied again, to this
+	// message, for nothing. That is what lets the filter keep up with a flood
+	// without a budget to match it: fifty copies of one line cost one
+	// classification and produce fifty enforcements, and none of them draw on
+	// the member's scan ceiling, which stays for content nobody has judged
+	// yet. The bucket's action is re-read from live config rather than taken
+	// from the cache, so a policy changed since the verdict still governs.
+	if e, ok := p.dedupe.lookup(cfg.GuildID, c.Content, p.now()); ok && e.verdict != nil {
+		action := EffectiveAction(cfg.BucketActions, e.verdict.bucket)
+		if action == ActionOff {
+			return
+		}
+		p.spawn(func(bg context.Context) {
+			p.enforce(bg, cfg, c, e.verdict.bucket, action, e.verdict.deep)
+		})
+		return
+	}
 	// The per-member ceiling sits here rather than in shouldSkip, so it
 	// gates only the paid rungs: a member who has spent their scan quota is
 	// still matched against the free patterns above, which is what stops the
@@ -574,8 +604,16 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, apiKey string, c cand
 		return
 	}
 	if !v.Violation || v.Confidence < actThreshold {
+		// Cleared by the deep pass, so identical text is genuinely clean and
+		// later copies should not pay to be told so a second time.
+		p.dedupe.markClean(cfg.GuildID, c.Content, p.now())
 		return
 	}
+	// Remembered before acting, so a flood arriving while this one is still
+	// in flight finds the verdict rather than queueing more classifications.
+	p.dedupe.remember(cfg.GuildID, c.Content, p.now(), &cachedVerdict{
+		bucket: hit.Bucket, action: action, deep: v,
+	})
 	p.enforce(ctx, cfg, c, hit.Bucket, action, v)
 }
 
