@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -108,13 +110,36 @@ type chatRequest struct {
 	// the same verdict twice, or a mod comparing two identical incidents
 	// has no way to reason about the filter at all.
 	Temperature float64 `json:"temperature"`
+	// Reasoning is switched off for the same reason temperature is zero.
+	//
+	// Both passes answer a strict JSON schema, so chain-of-thought buys
+	// nothing that the schema does not already pin down, and it costs twice:
+	// reasoning tokens are billed, and they count against max_tokens. A
+	// reasoning model can therefore spend the whole ceiling thinking and
+	// return an empty content field, which arrives here as a completion that
+	// parses to nothing. That is not hypothetical; see ErrEmptyCompletion.
+	Reasoning reasoningPrefs `json:"reasoning"`
+}
+
+// reasoningPrefs is a pointer-free struct with an explicit false, so the
+// field is always sent. Omitting it lets the model decide, which is the
+// behaviour being ruled out here.
+type reasoningPrefs struct {
+	Enabled bool `json:"enabled"`
 }
 
 type chatResponse struct {
 	Choices []struct {
 		Message chatMessage `json:"message"`
+		// FinishReason is what separates "the model had nothing to say" from
+		// "the model was cut off mid-answer". Without it an empty completion
+		// is indistinguishable from a truncated one, and the two have
+		// opposite fixes.
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage Usage  `json:"usage"`
+	Usage Usage `json:"usage"`
+	// Model is which model actually answered, which is not necessarily the
+	// first entry of the request's fallback array.
 	Model string `json:"model"`
 	Error *struct {
 		Code    int    `json:"code"`
@@ -175,8 +200,31 @@ func (c *Client) Chat(ctx context.Context, apiKey string, req chatRequest) (stri
 	if len(parsed.Choices) == 0 {
 		return "", parsed.Usage, fmt.Errorf("openrouter: no choices in response")
 	}
-	return parsed.Choices[0].Message.Content, parsed.Usage, nil
+
+	// An empty completion is a 200 with nothing in it, so OpenRouter's own
+	// fallback array does not treat it as a failure and never tries the next
+	// model. Reporting it here, named and with the model and finish reason
+	// attached, is the difference between a log line somebody can act on and
+	// "unexpected end of JSON input", which says only that the caller tried
+	// to parse an empty string and tells nobody why it was empty.
+	choice := parsed.Choices[0]
+	if strings.TrimSpace(choice.Message.Content) == "" {
+		return "", parsed.Usage, fmt.Errorf("%w: %s answered with %d completion tokens and finish_reason %q",
+			ErrEmptyCompletion, parsed.Model, parsed.Usage.CompletionTokens, choice.FinishReason)
+	}
+	return choice.Message.Content, parsed.Usage, nil
 }
+
+// ErrEmptyCompletion reports that a model returned a successful response
+// carrying no content.
+//
+// Transient in practice (roughly one call in a hundred when it was first
+// seen), and it fails in the safe direction: the batch is simply not
+// classified, so nothing is acted on. It is worth its own error rather than
+// a parse failure because the two have different causes and different fixes,
+// and because a parse failure implies the model said something malformed
+// when in fact it said nothing at all.
+var ErrEmptyCompletion = errors.New("openrouter: model returned an empty completion")
 
 // maxResponseBytes caps what is read back. The classifier's replies are a
 // few hundred bytes; anything approaching this is a misrouted request or a
