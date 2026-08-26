@@ -140,13 +140,28 @@ func (p *Plugin) sanction(ctx context.Context, cfg Config, c candidate, bucket B
 		"automatic: %s (Discord %s policy)", reason, strings.ReplaceAll(string(bucket), "_", " ")))
 }
 
-// sanctionForAbuse jails a member for exhausting their scan ceiling.
+// sanctionForAbuse jails a member for exhausting their scan ceiling, and
+// clears the messages that got them there.
+//
+// The clearing is the point, and without it the ceiling was an exploit. Past
+// it this plugin stops paying to confirm anything that member posts, so their
+// messages carry on being flagged and stop being removed: five deliberate
+// trips bought ten minutes of saying whatever you liked. The free rungs still
+// ran throughout, so a phishing link or a leaked token was still deleted, but
+// anything that needed a model to read it was not.
+//
+// A jail alone does not fix that. It stops the next message and leaves every
+// message already posted during the window sitting in the channel, which is
+// the half a moderator would have to clean up by hand. So the flags raised
+// while the member was over the ceiling are collected and acted on together,
+// with the jail, in one pass.
 func (p *Plugin) sanctionForAbuse(ctx context.Context, cfg Config, c candidate) {
 	priors, err := p.store.CountSanctions(ctx, cfg.GuildID, c.AuthorID, p.now().Add(-repeatWindow))
 	if err != nil {
 		p.log.Error("aimod: count prior sanctions", "guild", cfg.GuildID, "err", err)
 		priors = 0
 	}
+	p.clearPendingFlags(ctx, cfg, c.AuthorID)
 	// BucketSpam, which is where Discord's own platform-manipulation rules
 	// live, and the closest honest label for "generating flagged content
 	// faster than this server can afford to read it".
@@ -217,4 +232,53 @@ func (p *Plugin) jailOrTimeout(ctx context.Context, cfg Config, userID string, d
 			"guild", cfg.GuildID, "user", userID, "err", err)
 	}
 	return p.timeoutMember(ctx, cfg.GuildID, userID, duration, consented)
+}
+
+// clearPendingFlags removes the messages a member had flagged while they were
+// over their scan ceiling.
+//
+// Bounded by the meter window rather than by all of history: these are the
+// messages of this incident, not a licence to go back through somebody's
+// record and delete it. Deliberately narrow in three more ways, all of them
+// in PendingFlags: only flags, never something already acted on, and never
+// something a moderator reversed, because re-deleting a message a human
+// deliberately restored would be the bot overruling them.
+//
+// Best-effort throughout. The jail is the part that stops the flood; a
+// message that cannot be deleted is a message a moderator can still delete,
+// and none of it may fail the sanction.
+func (p *Plugin) clearPendingFlags(ctx context.Context, cfg Config, userID string) {
+	pending, err := p.store.PendingFlags(ctx, cfg.GuildID, userID, p.now().Add(-meterWindow))
+	if err != nil {
+		p.log.Error("aimod: read pending flags", "guild", cfg.GuildID, "user", userID, "err", err)
+		return
+	}
+
+	var removed int
+	for _, inc := range pending {
+		// The bucket's own action still decides. A guild that set a policy
+		// area to flag meant flag, and somebody tripping a ceiling is not a
+		// reason to start enforcing a rule they switched off.
+		if !EffectiveAction(cfg.BucketActions, inc.Bucket).acts() {
+			continue
+		}
+		err := p.ops(cfg.GuildID).ChannelMessageDelete(inc.ChannelID, inc.MessageID)
+		switch {
+		case err == nil:
+			removed++
+			if merr := p.store.MarkActioned(ctx, inc.ID, ActionRemove); merr != nil {
+				p.log.Error("aimod: mark flag actioned", "guild", cfg.GuildID, "incident", inc.ID, "err", merr)
+			}
+		case discordguard.Skipped(err), core.IsUnknownResource(err):
+			// Paused, dry-run, or somebody got there first. Neither is a
+			// failure and neither should be retried.
+		default:
+			p.log.Error("aimod: clear pending flag", "guild", cfg.GuildID, "message", inc.MessageID, "err", err)
+		}
+	}
+
+	if removed > 0 {
+		p.log.Info("aimod: cleared flagged messages after a scan-ceiling sanction",
+			"guild", cfg.GuildID, "user", userID, "removed", removed)
+	}
 }

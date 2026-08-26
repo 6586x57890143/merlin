@@ -205,6 +205,30 @@ func (f *fakeStore) CountSanctions(_ context.Context, g, userID string, since ti
 	return n, nil
 }
 
+func (f *fakeStore) PendingFlags(_ context.Context, g, userID string, since time.Time) ([]Incident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Incident
+	for _, inc := range f.incidents {
+		if inc.GuildID == g && inc.AuthorID == userID && inc.Action == ActionFlag &&
+			!inc.Undone && !inc.CreatedAt.Before(since) {
+			out = append(out, inc)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) MarkActioned(_ context.Context, id int64, action Action) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.incidents {
+		if f.incidents[i].ID == id {
+			f.incidents[i].Action = action
+		}
+	}
+	return nil
+}
+
 func (f *fakeStore) PruneEvidence(context.Context) (int64, error) { return 0, nil }
 
 func (f *fakeStore) PruneBefore(context.Context, time.Time) (int64, error) { return 0, nil }
