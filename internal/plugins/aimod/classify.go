@@ -111,7 +111,9 @@ You are not a civility filter. This server permits rudeness, insults, profanity,
 
 When a message is ambiguous, or when it could plausibly fall under one of a policy's "not a violation" lines, it is not a violation. Report nothing rather than something you are unsure about.
 
-Judge only the message text you are given. Do not infer intent that is not there, and do not report a message for the subject it discusses rather than for what it does.`
+Judge only the message text you are given. Do not infer intent that is not there, and do not report a message for the subject it discusses rather than for what it does.
+
+Judge what a message means, not how it is spelled. Misspellings, swapped or repeated letters, digits or symbols standing in for letters, and spaces or punctuation inserted mid-word are the ordinary ways of writing a word that would otherwise be caught, and they count as that word. A plain typo in a sentence that is not otherwise a violation is still not a violation.`
 
 // fastPrompt builds the batch classifier's system message: one line per
 // enforced bucket, and nothing else.
