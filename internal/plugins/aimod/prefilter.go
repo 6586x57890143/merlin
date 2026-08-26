@@ -73,11 +73,12 @@ func newDedupeCache() *dedupeCache {
 	return &dedupeCache{seen: make(map[uint64]time.Time)}
 }
 
-// seenRecently reports whether this text was decided inside the window, and
-// records it either way. Swept on write rather than on a ticker: there is no
-// goroutine to leak, and the sweep only runs when the map is actually
-// growing.
-func (c *dedupeCache) seenRecently(guildID, content string, now time.Time) bool {
+// dedupeKey hashes guild plus normalized text.
+//
+// A hash, not the text: this cache lives for the process lifetime and would
+// otherwise be a copy of the server's chat sitting in memory, which is
+// exactly what this plugin's privacy property rules out.
+func dedupeKey(guildID, content string) uint64 {
 	h := fnv.New64a()
 	// Guild-scoped so two servers running the same copypasta do not mask
 	// each other, and because a verdict is only meaningful against one
@@ -85,13 +86,41 @@ func (c *dedupeCache) seenRecently(guildID, content string, now time.Time) bool 
 	_, _ = h.Write([]byte(guildID))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(strings.ToLower(strings.TrimSpace(content))))
-	key := h.Sum64()
+	return h.Sum64()
+}
+
+// seenClean reports whether this exact text was scanned inside the window
+// and came back with nothing against it.
+//
+// Only clean text is ever remembered; see markClean. The check and the
+// record are separate calls for that reason, where they used to be one, and
+// that split is the whole fix: the combined version recorded every message
+// as it went past, so the second and later copies of a message that was
+// about to be flagged were dropped before anything looked at them. On a
+// server where somebody repeated a slur four times, the first was flagged
+// and the rest produced no record at all, which reads from the outside as
+// the filter having stopped working. Repetition is aggravating, not
+// exculpatory, and it must never be the thing that buys silence.
+func (c *dedupeCache) seenClean(guildID, content string, now time.Time) bool {
+	key := dedupeKey(guildID, content)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at, ok := c.seen[key]
+	return ok && now.Sub(at) < dedupeWindow
+}
+
+// markClean records that this text was scanned and had nothing against it,
+// so identical copies inside the window cost nothing. Copypasta, a member
+// repeating themselves and a raid posting one line from fifty accounts all
+// collapse to a single model call, which is where most of the saving is.
+//
+// Swept on write rather than on a ticker: no goroutine to leak, and the
+// sweep only runs when the map is actually growing.
+func (c *dedupeCache) markClean(guildID, content string, now time.Time) {
+	key := dedupeKey(guildID, content)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if at, ok := c.seen[key]; ok && now.Sub(at) < dedupeWindow {
-		return true
-	}
 	if len(c.seen) >= dedupeMax {
 		for k, at := range c.seen {
 			if now.Sub(at) >= dedupeWindow {
@@ -106,7 +135,6 @@ func (c *dedupeCache) seenRecently(guildID, content string, now time.Time) bool 
 		}
 	}
 	c.seen[key] = now
-	return false
 }
 
 // shouldSkip runs rung 0: everything that can be decided from the message
@@ -142,7 +170,7 @@ func (p *Plugin) shouldSkip(cfg Config, m *discordgo.Message, now time.Time) ski
 	if len([]rune(content)) < minScanLen {
 		return skipShort
 	}
-	if p.dedupe.seenRecently(m.GuildID, content, now) {
+	if p.dedupe.seenClean(m.GuildID, content, now) {
 		return skipDuplicate
 	}
 	return skipNone
