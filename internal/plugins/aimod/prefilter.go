@@ -27,14 +27,19 @@ import (
 // suppresses the model call.
 const minScanLen = 12
 
-// dedupeWindow is how long an identical message counts as already decided.
+// dedupeWindow is how long a verdict on an exact piece of text stands.
 //
-// Copypasta, a member repeating themselves, and a raid posting the same line
-// from fifty accounts all collapse to one model call inside this window. The
-// window is short because the same text genuinely can mean different things
-// in different conversations, and long enough to cover the shape a raid
-// actually takes.
-const dedupeWindow = 5 * time.Minute
+// Half an hour rather than the five minutes it started at, and the reason it
+// could be widened is that a repeat is no longer a message that goes
+// unexamined. A cached verdict is now applied to every copy (see
+// dedupeCache), so a longer window means more messages moderated for the
+// same money rather than more messages let through.
+//
+// Bounded rather than indefinite because identical text genuinely can mean
+// different things in different conversations, and because a verdict that
+// outlived a policy change would keep enforcing a rule a guild had already
+// turned off.
+const dedupeWindow = 30 * time.Minute
 
 // dedupeMax bounds the cache so a long-running process cannot grow it
 // without limit. Well above what any real guild needs inside the window.
@@ -64,13 +69,40 @@ const (
 // exactly what this plugin's privacy property rules out. A collision costs
 // one skipped scan inside a five minute window, which is a fair trade for
 // not holding the content.
+// A verdict, not just a sighting. This is what lets the filter moderate a
+// flood without paying for it: the first copy of a message is classified,
+// and every later copy inside the window is acted on from the remembered
+// answer, with no model call and nothing drawn from the member's scan
+// ceiling.
+//
+// It replaces two earlier designs, both wrong in instructive ways. The first
+// recorded every message as seen and skipped the repeats outright, so a
+// member who posted the same slur four times had one flagged and three
+// silently dropped. The second only remembered clean text, which fixed that
+// but made every repeat pay full price again, so a raid could exhaust a
+// ceiling with fifty copies of one line. Remembering the verdict gets both:
+// every copy is acted on, and only the first one costs anything.
+type dedupeEntry struct {
+	at time.Time
+	// verdict is nil when the text was scanned and had nothing against it.
+	verdict *cachedVerdict
+}
+
+// cachedVerdict is everything enforce needs to act on a repeat without
+// asking a model again.
+type cachedVerdict struct {
+	bucket Bucket
+	action Action
+	deep   deepVerdict
+}
+
 type dedupeCache struct {
 	mu   sync.Mutex
-	seen map[uint64]time.Time
+	seen map[uint64]dedupeEntry
 }
 
 func newDedupeCache() *dedupeCache {
-	return &dedupeCache{seen: make(map[uint64]time.Time)}
+	return &dedupeCache{seen: make(map[uint64]dedupeEntry)}
 }
 
 // dedupeKey hashes guild plus normalized text.
@@ -102,11 +134,30 @@ func dedupeKey(guildID, content string) uint64 {
 // the filter having stopped working. Repetition is aggravating, not
 // exculpatory, and it must never be the thing that buys silence.
 func (c *dedupeCache) seenClean(guildID, content string, now time.Time) bool {
+	e, ok := c.lookup(guildID, content, now)
+	return ok && e.verdict == nil
+}
+
+// lookup returns a live entry for this text, if there is one.
+func (c *dedupeCache) lookup(guildID, content string, now time.Time) (dedupeEntry, bool) {
 	key := dedupeKey(guildID, content)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	at, ok := c.seen[key]
-	return ok && now.Sub(at) < dedupeWindow
+	e, ok := c.seen[key]
+	if !ok || now.Sub(e.at) >= dedupeWindow {
+		return dedupeEntry{}, false
+	}
+	return e, true
+}
+
+// remember records a verdict against this text. A nil verdict means clean.
+func (c *dedupeCache) remember(guildID, content string, now time.Time, v *cachedVerdict) {
+	key := dedupeKey(guildID, content)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sweepLocked(now)
+	c.seen[key] = dedupeEntry{at: now, verdict: v}
 }
 
 // markClean records that this text was scanned and had nothing against it,
@@ -117,24 +168,26 @@ func (c *dedupeCache) seenClean(guildID, content string, now time.Time) bool {
 // Swept on write rather than on a ticker: no goroutine to leak, and the
 // sweep only runs when the map is actually growing.
 func (c *dedupeCache) markClean(guildID, content string, now time.Time) {
-	key := dedupeKey(guildID, content)
+	c.remember(guildID, content, now, nil)
+}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.seen) >= dedupeMax {
-		for k, at := range c.seen {
-			if now.Sub(at) >= dedupeWindow {
-				delete(c.seen, k)
-			}
-		}
-		// Still full after sweeping means the window is genuinely saturated
-		// (a raid). Drop everything rather than growing: the cost is that
-		// the next few duplicates get scanned, which is the safe direction.
-		if len(c.seen) >= dedupeMax {
-			clear(c.seen)
+// sweepLocked bounds the map. Swept on write rather than on a ticker: no
+// goroutine to leak, and it only runs when the map is actually growing.
+func (c *dedupeCache) sweepLocked(now time.Time) {
+	if len(c.seen) < dedupeMax {
+		return
+	}
+	for k, e := range c.seen {
+		if now.Sub(e.at) >= dedupeWindow {
+			delete(c.seen, k)
 		}
 	}
-	c.seen[key] = now
+	// Still full after sweeping means the window is genuinely saturated (a
+	// raid). Drop everything rather than growing: the cost is that the next
+	// few duplicates get classified again, which is the safe direction.
+	if len(c.seen) >= dedupeMax {
+		clear(c.seen)
+	}
 }
 
 // shouldSkip runs rung 0: everything that can be decided from the message
