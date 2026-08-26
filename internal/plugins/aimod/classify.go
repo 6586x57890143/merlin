@@ -67,9 +67,16 @@ const (
 // confidence each, which is tiny; the deep pass may also return a rewritten
 // message, so it gets room for one. Capping them is not politeness, it is
 // the difference between a runaway model costing cents and costing dollars.
+//
+// Both carry far more headroom than the answer needs, because reasoning
+// cannot be switched off (see chatRequest) and reasoning tokens are drawn
+// from this same budget. A model that thinks its way through the ceiling and
+// has nothing left for the answer returns empty content, which is a scan
+// that silently did not happen. Headroom is free on a model that does not
+// reason: this is a cap, not an allocation.
 const (
-	fastMaxTokens = 400
-	deepMaxTokens = 900
+	fastMaxTokens = 1500
+	deepMaxTokens = 3000
 )
 
 // Verdict is one message's classification.

@@ -232,3 +232,53 @@ func TestPerMillionConvertsAndSurvivesJunk(t *testing.T) {
 		t.Errorf("an unparseable price gave %v, want 0", got)
 	}
 }
+
+// The current stack's cost is a matter of record, not of arithmetic:
+// OpenRouter returns the cost of every call. Estimating it anyway reported
+// six times under what a real account had been charged, because a model
+// missing from the catalogue silently priced at zero.
+func TestActualSpendIsReportedFromTheReceipts(t *testing.T) {
+	// The real numbers from the guild where this was found.
+	history := []Spend{{
+		Day: testNow, SpentUSD: 0.02514737, Scanned: 251,
+		FastCalls: 225, DeepCalls: 12,
+		FastPromptTokens: 90067, FastCompletionTokens: 2453,
+		DeepPromptTokens: 11641, DeepCompletionTokens: 809,
+	}}
+
+	// Neither model priced, which is what produced the undercount.
+	est := estimateFor(history, Model{ID: "some/fast"}, Model{ID: "some/deep"})
+
+	if math.Abs(est.ActualPerDay-0.02514737) > 1e-9 {
+		t.Errorf("ActualPerDay = %v, want what was billed", est.ActualPerDay)
+	}
+	if len(est.Unpriced) != 2 {
+		t.Errorf("Unpriced = %v, want both models named rather than silently costed at zero", est.Unpriced)
+	}
+	if est.USDPerDay >= est.ActualPerDay {
+		t.Errorf("projection %v is not below the billed %v, so this test is no longer reproducing the bug",
+			est.USDPerDay, est.ActualPerDay)
+	}
+}
+
+// A free model is priced at zero legitimately and must not be reported as
+// missing a price.
+func TestFreeModelIsNotReportedAsUnpriced(t *testing.T) {
+	est := estimateFor([]Spend{{Day: testNow, Scanned: 10, FastCalls: 1}},
+		Model{ID: "a/model:free", Free: true}, Model{ID: "b/model", PromptPerM: 1})
+	if len(est.Unpriced) != 0 {
+		t.Errorf("Unpriced = %v, want none: a free model has a price and it is zero", est.Unpriced)
+	}
+}
+
+// With no history at all there is nothing billed, so the projection is what
+// there is to show.
+func TestNoHistoryLeavesActualAtZero(t *testing.T) {
+	est := estimateFor(nil, Model{ID: "a", PromptPerM: 1}, Model{ID: "b", PromptPerM: 1})
+	if est.ActualPerDay != 0 {
+		t.Errorf("ActualPerDay = %v with no history, want 0", est.ActualPerDay)
+	}
+	if est.USDPerDay <= 0 {
+		t.Error("no projection either, so there is nothing to show a new guild")
+	}
+}

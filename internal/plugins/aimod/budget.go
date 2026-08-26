@@ -88,6 +88,20 @@ type Estimate struct {
 	DeepRate float64
 	// USDPerDay is the projection for the stack it was computed against.
 	USDPerDay float64
+	// ActualPerDay is what was really billed per day, averaged over the
+	// measured days. Zero when there is no history.
+	//
+	// This is the number to show somebody about the stack they are already
+	// running, and USDPerDay is only for pricing one they are not.
+	// OpenRouter returns the cost of every call, so for the current setup
+	// there are receipts, and deriving a figure from a price list instead is
+	// strictly worse: it was doing so, and came out six times under what the
+	// account was actually charged.
+	ActualPerDay float64
+	// Unpriced names any model in the stack whose price could not be looked
+	// up. They contribute nothing to USDPerDay, so a projection carrying one
+	// is an undercount and has to say so rather than look authoritative.
+	Unpriced []string
 }
 
 // assumedScannedPerDay and the token figures below are only used when a
@@ -116,6 +130,7 @@ func estimateFor(history []Spend, fast, deep Model) Estimate {
 		DeepRate:         assumedDeepRate,
 	}
 
+	var spent float64
 	var days, scanned, fastCalls, deepCalls float64
 	var fastPrompt, fastCompletion, deepPrompt, deepCompletion float64
 	for _, s := range history {
@@ -123,6 +138,7 @@ func estimateFor(history []Spend, fast, deep Model) Estimate {
 			continue
 		}
 		days++
+		spent += s.SpentUSD
 		scanned += float64(s.Scanned)
 		fastCalls += float64(s.FastCalls)
 		deepCalls += float64(s.DeepCalls)
@@ -132,6 +148,9 @@ func estimateFor(history []Spend, fast, deep Model) Estimate {
 		deepCompletion += float64(s.DeepCompletionTokens)
 	}
 
+	if days > 0 {
+		est.ActualPerDay = spent / days
+	}
 	if days > 0 && scanned > 0 {
 		est.Measured = true
 		est.Basis = fmt.Sprintf("measured over %.0f day(s) of this server's own traffic", days)
@@ -142,6 +161,15 @@ func estimateFor(history []Spend, fast, deep Model) Estimate {
 			est.DeepTokensPerMsg = (deepPrompt + deepCompletion) / deepCalls
 		} else {
 			est.DeepTokensPerMsg = assumedDeepTokensPerMsg
+		}
+	}
+
+	// A model with no price contributes nothing, which would quietly drag the
+	// projection down. Named instead, so the caller can say the number is a
+	// floor rather than presenting it as the answer.
+	for _, m := range []Model{fast, deep} {
+		if m.ID != "" && !m.Free && m.PromptPerM == 0 && m.CompletionPerM == 0 {
+			est.Unpriced = append(est.Unpriced, m.ID)
 		}
 	}
 

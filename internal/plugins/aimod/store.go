@@ -106,6 +106,12 @@ type Spend struct {
 	FastCompletionTokens int64
 	DeepPromptTokens     int64
 	DeepCompletionTokens int64
+	// ReasoningTokens is the share of the completion tokens above that was
+	// the model thinking rather than answering. Billed at the completion
+	// rate and already counted inside them; broken out because it is the one
+	// part of the bill that buys nothing a JSON schema does not already pin
+	// down, and an admin deciding on a model should be able to see it.
+	ReasoningTokens int64
 }
 
 // ErrNoIncident reports that no incident exists for a message, which is what
