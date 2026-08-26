@@ -116,6 +116,27 @@ func (p *Plugin) keyInfo(ctx context.Context, apiKey string) (KeyInfo, error) {
 	return client.KeyInfo(ctx, apiKey)
 }
 
+// reasoningLine says whether this stack is paying for the model to think.
+//
+// Shown next to the price because the two multiply: reasoning tokens are
+// billed at the completion rate, so a stack that cannot have it switched off
+// costs more per message than its headline price suggests, and an admin
+// comparing models should be able to see which they are looking at.
+//
+// The answer is only known after a stack has been used once, since it is
+// learned from the endpoint rejecting the attempt rather than read from
+// metadata. Before that it reports the intent, which is what will be tried.
+func (p *Plugin) reasoningLine(models []string) string {
+	client, ok := p.client.(*Client)
+	if !ok {
+		return ""
+	}
+	if client.ReasoningDisabled(models) {
+		return "_Reasoning switched off: you pay for the answer, not for the thinking._"
+	}
+	return "_This endpoint requires reasoning, so thinking tokens are billed on every message it reads._"
+}
+
 func findModel(models []Model, id string) (Model, bool) {
 	for _, m := range models {
 		if m.ID == id {
@@ -168,8 +189,10 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 	}
 
 	fields := []*discordgo.MessageEmbedField{
-		{Name: "Cheap pass, reads everything", Value: core.TruncateEmbedField(stackLines(fastIDs, catalogue, cfg.FastModels))},
-		{Name: "Deep pass, confirms before acting", Value: core.TruncateEmbedField(stackLines(deepIDs, catalogue, cfg.DeepModels))},
+		{Name: "Cheap pass, reads everything", Value: core.TruncateEmbedField(
+			stackLines(fastIDs, catalogue, cfg.FastModels) + "\n" + p.reasoningLine(fastIDs))},
+		{Name: "Deep pass, confirms before acting", Value: core.TruncateEmbedField(
+			stackLines(deepIDs, catalogue, cfg.DeepModels) + "\n" + p.reasoningLine(deepIDs))},
 	}
 
 	// The projection. Measured traffic where there is any, clearly labelled
@@ -186,20 +209,35 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 		history = scaleHistory(history, float64(override.IntValue()))
 	}
 
-	fastModel, fastFound := findModel(catalogue, fastIDs[0])
-	deepModel, deepFound := findModel(catalogue, deepIDs[0])
-	if fastFound || deepFound {
-		est := estimateFor(history, fastModel, deepModel)
-		fields = append(fields, &discordgo.MessageEmbedField{
-			Name: "Projected cost",
-			Value: core.TruncateEmbedField(fmt.Sprintf(
-				"**%s per day**, about %s a month\n"+
-					"Based on %s\n"+
-					"%.0f messages/day reaching a model, %.0f tokens each, %.1f%% of them escalating to the deep pass",
-				formatUSD(est.USDPerDay), formatUSD(est.USDPerDay*30), est.Basis,
-				est.ScannedPerDay, est.FastTokensPerMsg, est.DeepRate*100)),
-		})
+	fastModel, _ := findModel(catalogue, fastIDs[0])
+	deepModel, _ := findModel(catalogue, deepIDs[0])
+	est := estimateFor(history, fastModel, deepModel)
+
+	// What the current stack costs comes from the receipts, not from a price
+	// list. OpenRouter returns the cost of every call, so for a stack the
+	// guild is already running there is nothing to estimate, and estimating
+	// anyway was reporting six times under what the account had been charged:
+	// a model missing from the catalogue silently priced at zero and dragged
+	// the whole figure down. The projection is kept for the case it is
+	// actually needed, which is a guild that has not spent anything yet.
+	var costLine string
+	if est.ActualPerDay > 0 {
+		costLine = fmt.Sprintf("**%s per day**, about %s a month\nActually billed, %s",
+			formatUSD(est.ActualPerDay), formatUSD(est.ActualPerDay*30), est.Basis)
+	} else {
+		costLine = fmt.Sprintf("**%s per day** projected, about %s a month\nBased on %s",
+			formatUSD(est.USDPerDay), formatUSD(est.USDPerDay*30), est.Basis)
 	}
+	costLine += fmt.Sprintf("\n%.0f messages/day reaching a model, %.0f tokens each, %.1f%% of them escalating to the deep pass",
+		est.ScannedPerDay, est.FastTokensPerMsg, est.DeepRate*100)
+	if len(est.Unpriced) > 0 {
+		costLine += "\nNo price listed for " + strings.Join(est.Unpriced, ", ") +
+			", so any projection is a floor rather than a figure."
+	}
+	fields = append(fields, &discordgo.MessageEmbedField{
+		Name:  "Cost",
+		Value: core.TruncateEmbedField(costLine),
+	})
 
 	var spentWeek float64
 	for _, sp := range history {

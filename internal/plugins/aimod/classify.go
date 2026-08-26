@@ -67,9 +67,16 @@ const (
 // confidence each, which is tiny; the deep pass may also return a rewritten
 // message, so it gets room for one. Capping them is not politeness, it is
 // the difference between a runaway model costing cents and costing dollars.
+//
+// Both carry far more headroom than the answer needs, because reasoning
+// cannot be switched off (see chatRequest) and reasoning tokens are drawn
+// from this same budget. A model that thinks its way through the ceiling and
+// has nothing left for the answer returns empty content, which is a scan
+// that silently did not happen. Headroom is free on a model that does not
+// reason: this is a cap, not an allocation.
 const (
-	fastMaxTokens = 400
-	deepMaxTokens = 900
+	fastMaxTokens = 1500
+	deepMaxTokens = 3000
 )
 
 // Verdict is one message's classification.
@@ -111,7 +118,9 @@ You are not a civility filter. This server permits rudeness, insults, profanity,
 
 When a message is ambiguous, or when it could plausibly fall under one of a policy's "not a violation" lines, it is not a violation. Report nothing rather than something you are unsure about.
 
-Judge only the message text you are given. Do not infer intent that is not there, and do not report a message for the subject it discusses rather than for what it does.`
+Judge only the message text you are given. Do not infer intent that is not there, and do not report a message for the subject it discusses rather than for what it does.
+
+Judge what a message means, not how it is spelled. Misspellings, swapped or repeated letters, digits or symbols standing in for letters, and spaces or punctuation inserted mid-word are the ordinary ways of writing a word that would otherwise be caught, and they count as that word. A plain typo in a sentence that is not otherwise a violation is still not a violation.`
 
 // fastPrompt builds the batch classifier's system message: one line per
 // enforced bucket, and nothing else.

@@ -191,3 +191,86 @@ func TestForgetGuildClearsMeters(t *testing.T) {
 		t.Error("forgetting one guild dropped another guild's meters")
 	}
 }
+
+// The exploit the scan ceiling created, and the reason clearing exists: past
+// the ceiling this plugin stops paying to confirm anything, so a member's
+// messages carry on being flagged and stop being removed. Five deliberate
+// trips bought ten minutes of saying whatever you liked.
+func TestSanctionClearsWhatTheCeilingLetThrough(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	jailer := &fakeJailer{}
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
+	p.jailer = jailer
+
+	cfg := sanctioningConfig()
+	cfg.BucketActions[BucketThreats] = ActionRemove
+	cfg.BucketActions[BucketGore] = ActionFlag
+
+	// Three messages flagged while the member was over their ceiling: two on
+	// a bucket this guild removes, one on a bucket it only watches.
+	for _, tc := range []struct {
+		id     string
+		bucket Bucket
+	}{{"m1", BucketThreats}, {"m2", BucketThreats}, {"m3", BucketGore}} {
+		if _, err := store.RecordIncident(context.Background(), Incident{
+			GuildID: "g1", ChannelID: "c1", MessageID: tc.id, AuthorID: "u1",
+			Bucket: tc.bucket, Action: ActionFlag, CreatedAt: testNow,
+		}); err != nil {
+			t.Fatalf("RecordIncident: %v", err)
+		}
+	}
+
+	p.handleAbuse(context.Background(), cfg, candidate{MessageID: "m4", ChannelID: "c1", AuthorID: "u1"})
+
+	deleted, _ := ops.snapshot()
+	if len(deleted) != 2 {
+		t.Errorf("deleted %v, want the two on a bucket this guild removes", deleted)
+	}
+	for _, id := range deleted {
+		if id == "m3" {
+			t.Error("deleted a message on a bucket the guild set to flag: a ceiling trip is not a reason to enforce a rule they switched off")
+		}
+	}
+	if len(jailer.jailed()) != 1 {
+		t.Error("the member was not jailed, so the next message is unaffected")
+	}
+	// The rows stop being flags, so a second trip does not delete them twice.
+	var stillFlagged int
+	for _, inc := range store.recorded() {
+		if inc.MessageID != "m4:sanction" && inc.Action == ActionFlag && inc.MessageID != "m3" {
+			stillFlagged++
+		}
+	}
+	if stillFlagged != 0 {
+		t.Errorf("%d cleared messages are still recorded as flags", stillFlagged)
+	}
+}
+
+// A moderator who restored something has overruled the filter, and a later
+// ceiling trip must not quietly undo that.
+func TestClearingSkipsWhatAModeratorReversed(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
+	p.jailer = &fakeJailer{}
+
+	cfg := sanctioningConfig()
+	cfg.BucketActions[BucketThreats] = ActionRemove
+	id, err := store.RecordIncident(context.Background(), Incident{
+		GuildID: "g1", ChannelID: "c1", MessageID: "m1", AuthorID: "u1",
+		Bucket: BucketThreats, Action: ActionFlag, CreatedAt: testNow,
+	})
+	if err != nil {
+		t.Fatalf("RecordIncident: %v", err)
+	}
+	if err := store.MarkUndone(context.Background(), id); err != nil {
+		t.Fatalf("MarkUndone: %v", err)
+	}
+
+	p.handleAbuse(context.Background(), cfg, candidate{MessageID: "m2", ChannelID: "c1", AuthorID: "u1"})
+
+	if deleted, _ := ops.snapshot(); len(deleted) != 0 {
+		t.Errorf("deleted %v, which a moderator had already restored", deleted)
+	}
+}

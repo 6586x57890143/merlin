@@ -288,3 +288,24 @@ func TestEveryRequestPinsPrivacy(t *testing.T) {
 		}
 	}
 }
+
+// Deliberately misspelled slurs were getting through on a live server
+// ("neggers"). Character-swapping is the ordinary way of writing a word that
+// would otherwise be caught, so both passes are told to judge meaning rather
+// than spelling. The guard against the obvious over-correction rides in the
+// same paragraph: a plain typo in an otherwise fine sentence is still fine.
+func TestPromptsTellTheModelToSeeThroughMisspellings(t *testing.T) {
+	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+
+	for name, prompt := range map[string]string{
+		"fast": p.fastPrompt([]Bucket{BucketHateSpeech}),
+		"deep": p.deepPrompt(BucketHateSpeech, false),
+	} {
+		if !strings.Contains(prompt, "not how it is spelled") {
+			t.Errorf("%s prompt does not tell the model to see through obfuscated spellings", name)
+		}
+		if !strings.Contains(prompt, "plain typo") {
+			t.Errorf("%s prompt lost the guard that keeps ordinary typos from being violations", name)
+		}
+	}
+}

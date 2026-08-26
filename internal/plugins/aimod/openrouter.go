@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,11 +38,20 @@ const httpTimeout = 20 * time.Second
 type Client struct {
 	http *http.Client
 	base string
+
+	// reasoningMu guards noDisable, which remembers the model stacks that
+	// refused to have reasoning switched off. See Chat.
+	reasoningMu sync.Mutex
+	noDisable   map[string]bool
 }
 
 // NewClient builds the production client.
 func NewClient() *Client {
-	return &Client{http: &http.Client{Timeout: httpTimeout}, base: openRouterBase}
+	return &Client{
+		http:      &http.Client{Timeout: httpTimeout},
+		base:      openRouterBase,
+		noDisable: make(map[string]bool),
+	}
 }
 
 // Usage is the cost and token accounting OpenRouter returns on every
@@ -53,6 +63,13 @@ type Usage struct {
 	CompletionTokens int64   `json:"completion_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`
 	Cost             float64 `json:"cost"`
+	// CompletionTokensDetails breaks out how much of the completion was the
+	// model thinking rather than answering. Reasoning tokens are billed at
+	// the completion rate and are already inside CompletionTokens, so this is
+	// the only way to see what thinking is costing.
+	CompletionTokensDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 type chatMessage struct {
@@ -110,22 +127,69 @@ type chatRequest struct {
 	// the same verdict twice, or a mod comparing two identical incidents
 	// has no way to reason about the filter at all.
 	Temperature float64 `json:"temperature"`
-	// Reasoning is switched off for the same reason temperature is zero.
-	//
-	// Both passes answer a strict JSON schema, so chain-of-thought buys
-	// nothing that the schema does not already pin down, and it costs twice:
-	// reasoning tokens are billed, and they count against max_tokens. A
-	// reasoning model can therefore spend the whole ceiling thinking and
-	// return an empty content field, which arrives here as a completion that
-	// parses to nothing. That is not hypothetical; see ErrEmptyCompletion.
-	Reasoning reasoningPrefs `json:"reasoning"`
+	// Reasoning is set by Chat rather than by callers, because whether it can
+	// be sent at all is a property of the endpoint that answers. Nil omits it.
+	Reasoning *reasoningPrefs `json:"reasoning,omitempty"`
 }
 
-// reasoningPrefs is a pointer-free struct with an explicit false, so the
-// field is always sent. Omitting it lets the model decide, which is the
-// behaviour being ruled out here.
 type reasoningPrefs struct {
 	Enabled bool `json:"enabled"`
+}
+
+// Reasoning is decided per model stack, by trying and remembering.
+//
+// Both passes answer a strict JSON schema, so chain-of-thought buys nothing
+// the schema does not already pin down, while reasoning tokens are billed at
+// the completion rate and count against max_tokens. Switching it off is
+// therefore worth real money.
+//
+// It cannot simply be switched off everywhere. Some endpoints reject the
+// attempt outright:
+//
+//	HTTP 400: Reasoning is mandatory for this endpoint and cannot be disabled.
+//
+// which took the fast pass down for a guild when this was sent
+// unconditionally. Nor can it be decided from the model list: a model can
+// accept the reasoning parameter for raising effort while refusing to have
+// it disabled, and /models does not distinguish those.
+//
+// So Chat asks, once, and remembers the answer. The first request for a
+// stack carries reasoning disabled; if that specific rejection comes back,
+// the stack is marked and the request is retried immediately without the
+// field, and every later request for that stack omits it. Self-correcting,
+// costs one wasted call per stack per process, and needs no metadata that
+// might be wrong.
+
+// reasoningRejected reports whether an API error is the endpoint refusing to
+// have reasoning disabled, as opposed to any other 400. Matched on the text
+// because there is no distinct code for it; kept narrow so an unrelated bad
+// request is never silently retried.
+func reasoningRejected(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(apiErr.Message)
+	return strings.Contains(msg, "reasoning") &&
+		(strings.Contains(msg, "mandatory") || strings.Contains(msg, "cannot be disabled"))
+}
+
+// ReasoningDisabled reports whether this client is currently able to switch
+// reasoning off for a stack. Surfaced by /aimod models show, because it is
+// the difference between paying for thinking on every scanned message and
+// not, and an admin reading a cost figure should be able to see which.
+func (c *Client) ReasoningDisabled(models []string) bool {
+	key := strings.Join(models, ",")
+	c.reasoningMu.Lock()
+	defer c.reasoningMu.Unlock()
+	return !c.noDisable[key]
+}
+
+func (c *Client) markReasoningMandatory(models []string) {
+	key := strings.Join(models, ",")
+	c.reasoningMu.Lock()
+	defer c.reasoningMu.Unlock()
+	c.noDisable[key] = true
 }
 
 type chatResponse struct {
@@ -165,6 +229,22 @@ func (e *APIError) Error() string {
 // usage. The usage is returned even on a parse failure upstream, because the
 // call was still billed and the budget has to know.
 func (c *Client) Chat(ctx context.Context, apiKey string, req chatRequest) (string, Usage, error) {
+	if c.ReasoningDisabled(req.Models) {
+		req.Reasoning = &reasoningPrefs{Enabled: false}
+	}
+	out, usage, err := c.chatOnce(ctx, apiKey, req)
+	if err != nil && req.Reasoning != nil && reasoningRejected(err) {
+		// This endpoint will not have reasoning switched off. Remember it, so
+		// this costs one wasted call per stack per process rather than one
+		// per message, and answer the caller from the retry.
+		c.markReasoningMandatory(req.Models)
+		req.Reasoning = nil
+		return c.chatOnce(ctx, apiKey, req)
+	}
+	return out, usage, err
+}
+
+func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (string, Usage, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("openrouter: encode request: %w", err)

@@ -106,6 +106,12 @@ type Spend struct {
 	FastCompletionTokens int64
 	DeepPromptTokens     int64
 	DeepCompletionTokens int64
+	// ReasoningTokens is the share of the completion tokens above that was
+	// the model thinking rather than answering. Billed at the completion
+	// rate and already counted inside them; broken out because it is the one
+	// part of the bill that buys nothing a JSON schema does not already pin
+	// down, and an admin deciding on a model should be able to see it.
+	ReasoningTokens int64
 }
 
 // ErrNoIncident reports that no incident exists for a message, which is what
@@ -146,6 +152,13 @@ type Store interface {
 	// cutoff, which is what the escalation ladder in sanction.go multiplies
 	// by. Flags do not count: being looked at is not a punishment.
 	CountSanctions(ctx context.Context, guildID, userID string, since time.Time) (int, error)
+	// PendingFlags returns a member's flagged-but-unactioned incidents since
+	// a cutoff: the messages the scan ceiling stopped this plugin confirming.
+	// See sanctionForAbuse, which is what clears them.
+	PendingFlags(ctx context.Context, guildID, userID string, since time.Time) ([]Incident, error)
+	// MarkActioned records that an incident stopped being a flag and became
+	// something that was done.
+	MarkActioned(ctx context.Context, id int64, action Action) error
 	MarkUndone(ctx context.Context, id int64) error
 	// PruneEvidence clears stored message text past each guild's own
 	// retention window. Takes no cutoff: the window is per guild and is
@@ -423,6 +436,46 @@ func (s *pgStore) CountSanctions(ctx context.Context, guildID, userID string, si
 		return 0, fmt.Errorf("aimod store: count sanctions: %w", err)
 	}
 	return n, nil
+}
+
+// PendingFlags is deliberately narrow: flags only, never something already
+// acted on, and never something a moderator reversed. Re-deleting a message
+// a mod deliberately restored would be the bot overruling a human.
+func (s *pgStore) PendingFlags(ctx context.Context, guildID, userID string, since time.Time) ([]Incident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, channel_id, message_id, bucket, confidence, reason, content, replacement, created_at
+		FROM aimod_incidents
+		WHERE guild_id = $1 AND author_id = $2 AND created_at >= $3
+		  AND action = 'flag' AND NOT undone
+		ORDER BY created_at
+	`, guildID, userID, since)
+	if err != nil {
+		return nil, fmt.Errorf("aimod store: pending flags: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Incident
+	for rows.Next() {
+		inc := Incident{GuildID: guildID, AuthorID: userID, Action: ActionFlag}
+		var bucket string
+		if err := rows.Scan(&inc.ID, &inc.ChannelID, &inc.MessageID, &bucket, &inc.Confidence,
+			&inc.Reason, &inc.Content, &inc.Replacement, &inc.CreatedAt); err != nil {
+			return nil, fmt.Errorf("aimod store: scan pending flag: %w", err)
+		}
+		inc.Bucket = Bucket(bucket)
+		out = append(out, inc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("aimod store: iterate pending flags: %w", err)
+	}
+	return out, nil
+}
+
+func (s *pgStore) MarkActioned(ctx context.Context, id int64, action Action) error {
+	if _, err := s.pool.Exec(ctx, `UPDATE aimod_incidents SET action = $2 WHERE id = $1`, id, string(action)); err != nil {
+		return fmt.Errorf("aimod store: mark actioned: %w", err)
+	}
+	return nil
 }
 
 func (s *pgStore) MarkUndone(ctx context.Context, id int64) error {

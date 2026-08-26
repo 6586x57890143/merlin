@@ -41,6 +41,22 @@ const rewriteMarker = "\n-# edited by Merlin - `/aimod why` for details"
 // other way, leaving a row for a message that is still there, which reads
 // correctly in /aimod why and is undone by nothing at all.
 func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bucket, action Action, v deepVerdict) {
+	// A rewrite with nothing publishable left is a removal, and has to be
+	// recorded, audited and explained as one.
+	//
+	// rewriteMessage degrades to a delete on an empty replacement, which is
+	// correct: the deep pass is explicitly told to return an empty string
+	// when the whole message was the violation, and a message that is
+	// nothing but a slur has no cleaned-up version. What was wrong was that
+	// the decision happened further down, after the action had already been
+	// baked into the incident row, the audit title and the choice of DM. A
+	// moderator then read "message rewritten" for a message that was
+	// deleted, and went looking for a broken webhook. Deciding here keeps
+	// all four in agreement.
+	if action == ActionRewrite && strings.TrimSpace(v.Rewrite) == "" {
+		action = ActionRemove
+	}
+
 	inc := Incident{
 		GuildID:    cfg.GuildID,
 		ChannelID:  c.ChannelID,

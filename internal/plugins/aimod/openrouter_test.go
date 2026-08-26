@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,29 +73,14 @@ func TestWhitespaceOnlyCompletionIsEmpty(t *testing.T) {
 	}
 }
 
-// Reasoning is billed and counts against max_tokens, so a reasoning model
-// can spend the whole ceiling thinking and return nothing. Both passes send
-// it explicitly disabled; omitting the field lets the model decide, which is
-// the behaviour being ruled out.
-func TestClassifierRequestsDisableReasoning(t *testing.T) {
-	c, got := stubOpenRouter(t, http.StatusOK, `{"choices":[{"message":{"content":"{\"v\":[]}"}}]}`)
-	p := testPlugin(t, newFakeStore(), c, newFakeOps(), &fakeAudit{})
-
-	if _, _, err := p.classifyFast(context.Background(), "k", enforcingConfig(),
-		[]candidate{{MessageID: "m1", Content: "a message long enough to scan"}}); err != nil {
-		t.Fatalf("classifyFast: %v", err)
+// The ceilings have to leave room for a model that reasons before it
+// answers, or it returns empty content and the scan silently did not happen.
+func TestTokenCeilingsLeaveRoomForReasoning(t *testing.T) {
+	if fastMaxTokens < 1000 {
+		t.Errorf("fastMaxTokens = %d, too tight for a reasoning model to answer after thinking", fastMaxTokens)
 	}
-	if got.Reasoning.Enabled {
-		t.Error("the fast pass asked for reasoning, which is billed and eats max_tokens for no gain")
-	}
-
-	raw, err := json.Marshal(chatRequest{})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	// Explicitly present rather than omitted, which is the whole point.
-	if !strings.Contains(string(raw), `"reasoning":{"enabled":false}`) {
-		t.Errorf("reasoning is not being sent on every request: %s", raw)
+	if deepMaxTokens <= fastMaxTokens {
+		t.Errorf("deepMaxTokens = %d, not above the fast ceiling despite also returning a rewrite", deepMaxTokens)
 	}
 }
 
@@ -144,5 +130,81 @@ func TestPrivacyPrefsReachTheWire(t *testing.T) {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("request body is missing %s: %s", want, raw)
 		}
+	}
+}
+
+// Reasoning cannot be decided from metadata: a model can accept the
+// parameter for raising effort while refusing to have it disabled, and
+// /models does not distinguish those. So it is tried once per stack and the
+// answer remembered.
+func TestReasoningIsDisabledUntilAnEndpointRefuses(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(raw))
+		if strings.Contains(string(raw), `"reasoning"`) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Reasoning is mandatory for this endpoint and cannot be disabled."}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"v\":[]}"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient()
+	c.base = srv.URL
+	req := chatRequest{Models: []string{"some/reasoner"}}
+
+	// First call: tries to disable, is refused, retries without and succeeds.
+	out, _, err := c.Chat(context.Background(), "k", req)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if out == "" {
+		t.Error("the retry did not produce an answer")
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("made %d requests, want 2 (the attempt and the retry)", len(bodies))
+	}
+	if !strings.Contains(bodies[0], `"reasoning"`) || strings.Contains(bodies[1], `"reasoning"`) {
+		t.Error("expected the first request to carry the preference and the retry to drop it")
+	}
+
+	// Second call: the answer is remembered, so no wasted attempt.
+	if _, _, err := c.Chat(context.Background(), "k", req); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if len(bodies) != 3 {
+		t.Errorf("made %d requests total, want 3: the rejection was not remembered", len(bodies))
+	}
+	if strings.Contains(bodies[2], `"reasoning"`) {
+		t.Error("still sending a preference the endpoint has already rejected")
+	}
+	if c.ReasoningDisabled(req.Models) {
+		t.Error("ReasoningDisabled still reports true, so /aimod models show would claim thinking is not billed")
+	}
+}
+
+// An unrelated 400 must not be mistaken for the reasoning rejection, or a
+// genuinely bad request gets silently retried and reported as something else.
+func TestOtherBadRequestsAreNotRetried(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"model not found"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient()
+	c.base = srv.URL
+	if _, _, err := c.Chat(context.Background(), "k", chatRequest{Models: []string{"a/b"}}); err == nil {
+		t.Fatal("a bad request was reported as success")
+	}
+	if calls != 1 {
+		t.Errorf("made %d requests for an unrelated 400, want 1", calls)
+	}
+	if !c.ReasoningDisabled([]string{"a/b"}) {
+		t.Error("an unrelated 400 was recorded as a reasoning rejection")
 	}
 }

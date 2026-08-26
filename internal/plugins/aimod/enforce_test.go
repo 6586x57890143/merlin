@@ -356,3 +356,73 @@ func TestDisplayNamePrefersNickThenGlobalName(t *testing.T) {
 		}
 	}
 }
+
+// A message that is entirely the violation has no cleaned-up version, so the
+// deep pass returns an empty rewrite and this degrades to a removal. That was
+// always the behaviour; what was wrong was that it still called itself a
+// rewrite afterwards, so a moderator read "message rewritten" for a message
+// that had been deleted and went looking for a broken webhook.
+func TestEmptyRewriteIsRecordedAndAuditedAsARemoval(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	audit := &fakeAudit{}
+	p := testPlugin(t, store, &fakeClassifier{}, ops, audit)
+
+	v := confirmed("the whole message was the slur")
+	v.Rewrite = ""
+	p.enforce(context.Background(), enforcingConfig(),
+		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "the whole message"},
+		BucketHateSpeech, ActionRewrite, v)
+
+	inc := store.recorded()
+	if len(inc) != 1 {
+		t.Fatalf("recorded %d incidents, want 1", len(inc))
+	}
+	if inc[0].Action != ActionRemove {
+		t.Errorf("incident action = %q, want remove: nothing was reposted", inc[0].Action)
+	}
+	if !contains(audit.actions(), "aimod.remove") {
+		t.Errorf("audit actions = %v, want aimod.remove", audit.actions())
+	}
+	for _, a := range audit.actions() {
+		if a == "aimod.rewrite" {
+			t.Error("audited as a rewrite for a message that was deleted")
+		}
+	}
+	// And the member is told it was removed, not edited.
+	if len(ops.dms) != 1 {
+		t.Fatalf("sent %d DMs, want 1", len(ops.dms))
+	}
+	// Asserted against the rewritten register rather than an exact word,
+	// because the removal lines vary ("removed", "taken down") by design and
+	// pinning one of them would break every time somebody adds a line.
+	if strings.Contains(ops.dms[0].Embeds[0].Description, "edited") {
+		t.Errorf("the DM tells the member their message was edited, when it was deleted: %q",
+			ops.dms[0].Embeds[0].Description)
+	}
+}
+
+// A rewrite that does have something left still rewrites, and still reports
+// itself as one.
+func TestNonEmptyRewriteStaysARewrite(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	audit := &fakeAudit{}
+	p := testPlugin(t, store, &fakeClassifier{}, ops, audit)
+
+	v := confirmed("one line had a phone number in it")
+	v.Rewrite = "the rest of what they said"
+	p.enforce(context.Background(), enforcingConfig(),
+		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "original"},
+		BucketDoxxing, ActionRewrite, v)
+
+	if inc := store.recorded(); len(inc) != 1 || inc[0].Action != ActionRewrite {
+		t.Errorf("incident = %+v, want a rewrite", inc)
+	}
+	if !contains(audit.actions(), "aimod.rewrite") {
+		t.Errorf("audit actions = %v, want aimod.rewrite", audit.actions())
+	}
+	if _, posted := ops.snapshot(); len(posted) != 1 {
+		t.Errorf("posted %d webhook messages, want 1", len(posted))
+	}
+}
