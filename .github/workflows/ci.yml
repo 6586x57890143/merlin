@@ -53,7 +53,13 @@ jobs:
           version: v2.13.1
 
       - name: go test (race + cover)
-        run: go test ./... -race -cover -covermode=atomic
+        run: go test ./... -race -cover -covermode=atomic -coverprofile=coverage.out
+
+      # Reads the profile the step above already produced, so this is
+      # arithmetic rather than a second test run. See the script for why the
+      # floor applies to plugins and how the baseline works.
+      - name: plugin coverage floor
+        run: scripts/coverage-floor.sh coverage.out
 
       - name: govulncheck
         uses: golang/govulncheck-action@v1

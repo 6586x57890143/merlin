@@ -4,3 +4,6 @@ config.yaml
 /bin/
 /dist/
 AI_CODE_REVIEW.md
+
+# Coverage profiles, written by the test and floor commands in CLAUDE.md.
+coverage.out
