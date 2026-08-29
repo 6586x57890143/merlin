@@ -76,7 +76,7 @@ func TestEverySetterCreatesTheRowAndRoundTrips(t *testing.T) {
 		set   func(*pgStore, string) error
 		check func(Config) bool
 	}{
-		{"api key", func(s *pgStore, g string) error { return s.SetAPIKey(ctx, g, []byte("sealed")) },
+		{"api key", func(s *pgStore, g string) error { return s.SetAPIKey(ctx, g, "openrouter", []byte("sealed")) },
 			func(c Config) bool { return string(c.APIKeySealed) == "sealed" }},
 		{"mode", func(s *pgStore, g string) error { return s.SetMode(ctx, g, ModeEnforce) },
 			func(c Config) bool { return c.Mode == ModeEnforce }},

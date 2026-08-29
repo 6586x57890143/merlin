@@ -340,11 +340,13 @@ func capturingSession(t *testing.T) (*discordgo.Session, *capturingStub) {
 
 // showTheJar renders /aimod funding against a fully populated jar and returns
 // everything that went to Discord.
-func showTheJar(t *testing.T) []string {
+func showTheJar(t *testing.T) []string { return showTheJarAt(t, testWallet) }
+
+func showTheJarAt(t *testing.T, address string) []string {
 	t.Helper()
 	store := newFakeStore()
 	setFunding(store, Funding{
-		GuildID: "g1", Address: testWallet, SetBy: "owner",
+		GuildID: "g1", Address: address, SetBy: "owner",
 		SetAt:      testNow.Add(-30 * 24 * time.Hour),
 		CheckedAt:  testNow,
 		BalanceUSD: 41.20, ReceivedUSD: 128.60, Donations: 7,
@@ -381,7 +383,7 @@ func TestFundingShowFormatsTheJar(t *testing.T) {
 
 	for _, want := range []string{
 		testWallet,                      // the address itself
-		"**Base network only.**",        // the money-losing mistake, at full weight
+		"**" + baseUSDC.note + "**",     // the money-losing mistake, at full weight
 		"-# ",                           // Discord's small grey style is in use
 		"-# Set by ",                    // provenance, demoted
 		"merlin only reads this wallet", // the disclaimer is still present
@@ -540,5 +542,46 @@ func TestFundingClearIsOpenToAnyAdmin(t *testing.T) {
 
 	if f := getFunding(t, store, "g1"); f.Configured() {
 		t.Fatalf("an admin could not clear the jar, it still points at %s", f.Address)
+	}
+}
+
+// Chains are separate ledgers. Money sent on the wrong one lands somewhere
+// this gauge cannot see and no checkout can spend, and it does not come back,
+// so every word naming a network has to come from the address on screen
+// rather than from a constant written when there was only one chain.
+func TestJarNamesTheChainOfItsOwnAddress(t *testing.T) {
+	base := strings.Join(showTheJarAt(t, testWallet), "\n")
+	tron := strings.Join(showTheJarAt(t, defaultUSDTContract), "\n")
+
+	// The field heading is the instruction, so that is what is pinned. The
+	// other chain's name may still appear further down, in the operator note
+	// below, and that is the point rather than a leak.
+	if !strings.Contains(base, "Send "+baseUSDC.label+" to") {
+		t.Errorf("an EVM address is not headed %q:\n%s", baseUSDC.label, base)
+	}
+	if !strings.Contains(tron, "Send "+tronUSDT.label+" to") {
+		t.Errorf("a TRON address is not headed %q:\n%s", tronUSDT.label, tron)
+	}
+	if strings.Contains(base, "**"+tronUSDT.note+"**") || strings.Contains(tron, "**"+baseUSDC.note+"**") {
+		t.Error("a jar is carrying the other chain's warning at full weight")
+	}
+
+	// The gateway and the jar have to agree, or donations land on a ledger the
+	// credits cannot be bought from. These fixtures run on OpenRouter, so the
+	// TRON jar is the mismatched one and has to say so.
+	if !strings.Contains(tron, "will need swapping and bridging") {
+		t.Errorf("a jar on the wrong chain for its gateway does not say so:\n%s", tron)
+	}
+	if strings.Contains(base, "will need swapping and bridging") {
+		t.Errorf("a jar on the right chain is warning about a mismatch:\n%s", base)
+	}
+	// The full-weight warning is the one line a donor must not misread.
+	if !strings.Contains(tron, "**"+tronUSDT.note+"**") {
+		t.Errorf("the TRON jar carries no chain warning at full weight:\n%s", tron)
+	}
+	// The swap advice is per chain rather than one sentence with the network
+	// swapped in: the cheapest route onto each is a different route.
+	if strings.Contains(tron, swapAdvice(baseUSDC)) {
+		t.Errorf("a TRON jar is giving Base's routing advice:\n%s", tron)
 	}
 }

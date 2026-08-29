@@ -183,9 +183,10 @@ type Plugin struct {
 	calibrateMu         sync.Mutex
 	calibrateRegistered map[string]bool
 
-	// eth reads the tip jar's wallet balance. Always non-nil: New defaults it
-	// to Base, and WithFundingChain overrides the endpoint and token address
-	// together for a different EVM chain. See funding.go.
+	// eth reads the tip jar's wallet balance on whichever chain the guild's
+	// address is on. Always non-nil: New defaults both chains, and
+	// WithFundingChains overrides their endpoints and token addresses. See
+	// funding.go.
 	eth *ethClient
 
 	// fundingMu guards fundingRegistered, mirroring calibrateMu above: the
@@ -247,7 +248,7 @@ func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker
 		calibrateRegistered: make(map[string]bool),
 		fundingRegistered:   make(map[string]bool),
 		fundingNoticed:      make(map[string]time.Time),
-		eth:                 newETHClient("", ""),
+		eth:                 newETHClient("", "", "", ""),
 		stopped:             make(chan struct{}),
 	}, nil
 }
@@ -260,16 +261,17 @@ func (p *Plugin) WithGate(g PluginGate) *Plugin {
 	return p
 }
 
-// WithFundingChain points the tip jar at a different EVM chain.
+// WithFundingChains points the tip jar's two chains at different endpoints.
 //
-// The endpoint and the token address travel together on purpose: they are
+// Each endpoint and its token address travel together on purpose: they are
 // what a chain is, and an endpoint on one chain with a token address from
 // another reports a zero balance rather than an error, which is the worst way
 // for a misconfiguration to present. Wired in cmd/bot/main.go from
-// MERLIN_ETH_RPC_URL and MERLIN_USDC_CONTRACT; unset leaves the Base defaults
-// that match what OpenRouter's own checkout settles USDC on.
-func (p *Plugin) WithFundingChain(rpcURL, contract string) *Plugin {
-	p.eth = newETHClient(rpcURL, contract)
+// MERLIN_ETH_RPC_URL/MERLIN_USDC_CONTRACT and
+// MERLIN_TRON_RPC_URL/MERLIN_USDT_CONTRACT; unset leaves the defaults, which
+// are what each gateway's own crypto checkout settles in.
+func (p *Plugin) WithFundingChains(ethRPC, usdc, tronRPC, usdt string) *Plugin {
+	p.eth = newETHClient(ethRPC, usdc, tronRPC, usdt)
 	return p
 }
 
@@ -619,7 +621,7 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 			return
 		}
 
-		hits, usage, err := p.classifyFast(ctx, state.APIKey, cfg, batch)
+		hits, usage, err := p.classifyFast(ctx, state, cfg, batch)
 		// Booked before the error is handled: a call that returned usage was
 		// billed whether or not its body parsed.
 		//
@@ -692,7 +694,7 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 				defer wg.Done()
 				slots <- struct{}{}
 				defer func() { <-slots }()
-				p.escalate(ctx, cfg, state.APIKey, batch[hit.Index-1], hit)
+				p.escalate(ctx, cfg, state, batch[hit.Index-1], hit)
 			}()
 		}
 		wg.Wait()
@@ -706,7 +708,7 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 // having read the message against the full policy text and returned above
 // actThreshold. A cheap model is being used to decide what is worth looking
 // at, never what is worth acting on.
-func (p *Plugin) escalate(ctx context.Context, cfg Config, apiKey string, c candidate, hit Verdict) {
+func (p *Plugin) escalate(ctx context.Context, cfg Config, state budgetState, c candidate, hit Verdict) {
 	action := EffectiveAction(cfg.BucketActions, hit.Bucket)
 	if action == ActionOff {
 		return
@@ -739,10 +741,35 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, apiKey string, c cand
 	}
 
 	priorLines, self := p.recentContext(cfg.GuildID, c)
-	v, usage, err := p.classifyDeep(ctx, apiKey, cfg, hit.Bucket, c,
+	v, usage, err := p.classifyDeep(ctx, state, cfg, hit.Bucket, c,
 		priorLines, self, action == ActionRewrite)
 	if usage.Cost > 0 || usage.TotalTokens > 0 {
 		p.recordUsage(ctx, cfg.GuildID, usage, true)
+	}
+	// One retry on the other gateway, for the deep rung only.
+	//
+	// This is the rung whose verdict can delete or rewrite, and its default
+	// gateway is a free tier: rate limited on a bucket shared with every
+	// other call this workspace makes, and with no way to require that the
+	// endpoint answering honours the JSON schema it was handed. Both of
+	// those arrive here as an error, and an unparseable answer is one of
+	// them, so no attempt is made to tell them apart. Nothing is acted on
+	// either way, which is the safe direction and also the useless one: a
+	// message that tripped the first pass goes unjudged.
+	//
+	// Deliberately not extended to the fast rung. That rung can only flag,
+	// everything it flags is re-read here, and re-running a twenty message
+	// batch at OpenRouter prices is the bill this gateway exists to avoid.
+	if err != nil && state.FallbackKey != "" && worthFallback(err) {
+		p.log.Info("aimod: deep pass falling back",
+			"guild", cfg.GuildID, "from", providerName(state.Spec), "err", err)
+		fb := state
+		fb.APIKey, fb.Spec = state.FallbackKey, state.fallback()
+		v, usage, err = p.classifyDeep(ctx, fb, cfg, hit.Bucket, c,
+			priorLines, self, action == ActionRewrite)
+		if usage.Cost > 0 || usage.TotalTokens > 0 {
+			p.recordUsage(ctx, cfg.GuildID, usage, true)
+		}
 	}
 	if err != nil {
 		// No action. A deep pass that failed is not a verdict, and treating

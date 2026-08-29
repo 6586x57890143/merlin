@@ -153,7 +153,7 @@ func TestOverTheDeepCeilingStillRecordsAFlag(t *testing.T) {
 
 	// Burn the deep ceiling, then send one more.
 	for range maxUserDeep + 2 {
-		p.escalate(context.Background(), cfg, "key",
+		p.escalate(context.Background(), cfg, testState(), 
 			candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "x"},
 			Verdict{Index: 1, Bucket: BucketThreats, Confidence: 0.9})
 	}

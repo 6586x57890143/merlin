@@ -26,6 +26,10 @@ func (p *Plugin) registerCommands() {
 	for _, m := range Modes {
 		modeChoices = append(modeChoices, &discordgo.ApplicationCommandOptionChoice{Name: string(m), Value: string(m)})
 	}
+	providerChoices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(providers))
+	for _, spec := range providers {
+		providerChoices = append(providerChoices, &discordgo.ApplicationCommandOptionChoice{Name: spec.label, Value: spec.name})
+	}
 	// A fixed Choices list rather than autocomplete, matching rotation's
 	// disclosure option: these are a closed set known at compile time, and
 	// spec.MD section 4a reserves autocomplete for values that come from bot
@@ -204,12 +208,24 @@ func (p *Plugin) registerCommands() {
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "key",
-						Description: "Set this server's OpenRouter API key (stored encrypted, never shown again)",
+						Description: "Set this server's model provider API key (stored encrypted, never shown again)",
 						Options: []*discordgo.ApplicationCommandOption{
 							{
 								Type: discordgo.ApplicationCommandOptionString, Name: "key",
-								Description: "An OpenRouter key. Give it its own spend limit on openrouter.ai first.",
+								Description: "An OrcaRouter or OpenRouter key. Which one is read off the key itself.",
 								Required:    true,
+							},
+							{
+								// Optional, and normally unused: the prefix says which
+								// gateway a key belongs to. This is the escape hatch for
+								// the day a gateway changes what its keys look like, so
+								// that a valid key is never refused for being unfamiliar.
+								// A fixed pair of values, so Choices rather than
+								// autocomplete: spec.MD 4a's autocomplete rule is about
+								// values that come from bot state.
+								Type: discordgo.ApplicationCommandOptionString, Name: "provider",
+								Description: "Only needed if the key's prefix is not recognised",
+								Choices:     providerChoices,
 							},
 						},
 					},

@@ -35,9 +35,25 @@ const budgetCeiling = 100.0
 const evidenceCeiling = 24 * 14
 
 func (p *Plugin) handleSetKey(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	key := strings.TrimSpace(core.LeafArgs(i)["key"].Value.(string))
+	args := core.LeafArgs(i)
+	key := strings.TrimSpace(args["key"].Value.(string))
 	if key == "" {
-		core.RespondErr(s, i, "No key given", errors.New("paste an OpenRouter API key"))
+		core.RespondErr(s, i, "No key given", errors.New("paste an OrcaRouter or OpenRouter API key"))
+		return
+	}
+
+	// Which gateway this key belongs to is read off the key itself, so the
+	// common case is one option. The explicit choice is the escape hatch for
+	// the day a gateway changes what its keys look like: sniffing wrong and
+	// refusing a valid key would be the worse failure, so an unrecognised
+	// prefix asks rather than guesses.
+	spec := providerForKey(key)
+	if opt, ok := args["provider"]; ok {
+		spec = providerByName(opt.Value.(string))
+	}
+	if spec == nil {
+		core.RespondErr(s, i, "Not sure whose key this is",
+			errors.New("that does not start with `sk-orca-` or `sk-or-`. Run this again with the `provider` option set"))
 		return
 	}
 
@@ -49,19 +65,33 @@ func (p *Plugin) handleSetKey(ctx context.Context, s *discordgo.Session, i *disc
 		core.RespondErr(s, i, "Cannot store the key", err)
 		return
 	}
-	if err := p.store.SetAPIKey(ctx, i.GuildID, sealed); err != nil {
+	if err := p.store.SetAPIKey(ctx, i.GuildID, spec.name, sealed); err != nil {
 		core.RespondErr(s, i, "Failed to store the key", err)
 		return
 	}
 
 	// The key itself never reaches the audit row or the log. maskKey's tail
 	// is enough to tell two keys apart, which is all an audit trail needs.
-	p.auditConfig(ctx, i, "aimod.key_set", "", maskKey(key))
-	core.RespondOK(s, i, "Key stored",
+	p.auditConfig(ctx, i, "aimod.key_set", "", spec.label+" "+maskKey(key))
+	core.RespondOK(s, i, spec.label+" key stored",
 		fmt.Sprintf("Stored encrypted as `%s`. It is never shown again, and never written to the logs.\n\n"+
-			"Give this key its own spend limit on openrouter.ai as well: this bot's daily budget is a second line of "+
-			"defence, not the only one.\n\nRun `/aimod configure mode flag` next and watch it for a week before enforcing.",
-			maskKey(key)))
+			"%s\n\nGive this key its own spend limit with the provider as well: this bot's daily budget is a "+
+			"second line of defence, not the only one.\n\nRun `/aimod configure mode flag` next and watch it "+
+			"for a week before enforcing.",
+			maskKey(key), routingNote(spec)))
+}
+
+// routingNote says what storing this key just changed, because an OrcaRouter
+// key silently repoints every model call the guild makes.
+func routingNote(spec *providerSpec) string {
+	if spec == orcaRouter {
+		return "Scanning now runs through OrcaRouter. Its free models cost nothing, so the daily budget will " +
+			"mostly read zero: what limits you there is a request rate, not a balance. An OpenRouter key, if " +
+			"you add one, is used only when OrcaRouter cannot answer a confirmation."
+	}
+	return "This is the fallback gateway while an OrcaRouter key is stored, and the only one otherwise. It is " +
+		"also the only one that can be told, per request, to route only to endpoints that will not retain " +
+		"what is sent."
 }
 
 func (p *Plugin) handleSetMode(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -327,20 +357,34 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		{Name: "Sanctions", Value: string(cfg.SanctionAction), Inline: true},
 	}
 
+	// Which gateway this guild's traffic goes through, and what that costs
+	// it in guarantees. Named rather than assumed: the two differ on the one
+	// thing this plugin promises about member text, and an admin reading a
+	// status screen should not have to infer it from which key they pasted.
+	spec, sealed := route(cfg)
+	fields = append(fields, &discordgo.MessageEmbedField{
+		Name:  "Provider",
+		Value: core.TruncateEmbedField(spec.label + "\n" + privacyLine(spec)),
+	})
+
 	// The live account balance, which is a different question from this
 	// server's own cap and the one that actually stops the key working.
-	if len(cfg.APIKeySealed) > 0 {
-		if plain, err := p.sealer.open(cfg.APIKeySealed); err != nil {
+	if len(sealed) > 0 {
+		if plain, err := p.sealer.open(sealed); err != nil {
 			color = core.ColorError
 			fields = append(fields, &discordgo.MessageEmbedField{Name: "API key", Value: "stored, but cannot be decrypted: " + err.Error()})
-		} else if info, err := p.keyInfo(ctx, plain); err != nil {
+		} else if info, err := p.keyInfo(ctx, spec, plain); err != nil {
 			color = core.ColorWarning
-			fields = append(fields, &discordgo.MessageEmbedField{Name: "OpenRouter", Value: core.TruncateEmbedField("could not reach OpenRouter: " + err.Error())})
+			fields = append(fields, &discordgo.MessageEmbedField{Name: spec.label, Value: core.TruncateEmbedField("could not reach " + spec.label + ": " + err.Error())})
 		} else {
 			// A key with no limit set reports LimitRemaining nil, so there is
 			// no denominator and no balance to gauge. Saying so beats inventing
-			// a bar out of an unknown.
+			// a bar out of an unknown, and on a free tier there is genuinely
+			// nothing to draw: what runs out there is a request rate.
 			balance := "no limit set on this key"
+			if spec == orcaRouter {
+				balance = "free tier: no balance to run down, only a request rate"
+			}
 			if info.LimitRemaining != nil {
 				balance = formatUSD(*info.LimitRemaining) + " left on this key"
 				if info.Limit != nil && *info.Limit > 0 {
@@ -359,7 +403,7 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 				}
 			}
 			fields = append(fields, &discordgo.MessageEmbedField{
-				Name:  "OpenRouter account",
+				Name:  spec.label + " account",
 				Value: core.TruncateEmbedField(fmt.Sprintf("%s\n%s used across all uses of this key today", balance, formatUSD(info.UsageDaily))),
 			})
 		}
