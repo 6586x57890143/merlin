@@ -146,6 +146,17 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "announce-channel",
+						Description: "Where jail/release notices are echoed, besides the channel the command was run in. Omit to clear.",
+						Options: []*discordgo.ApplicationCommandOption{{
+							Type:         discordgo.ApplicationCommandOptionChannel,
+							Name:         "channel",
+							Description:  "The one channel to echo jail and release notices into (usually the jail channel)",
+							ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews},
+						}},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "list-channels",
 						Description: "List channels currently visible to jailed members",
 					},
@@ -174,6 +185,7 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("roles", "list", core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleList)
 	p.commands.Handle("roles", "configure/allow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleAllowChannel)
 	p.commands.Handle("roles", "configure/disallow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleDisallowChannel)
+	p.commands.Handle("roles", "configure/announce-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleAnnounceChannel)
 	p.commands.Handle("roles", "configure/list-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleListChannels)
 	p.commands.Handle("roles", "configure/marker-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMarkerRole)
 	p.commands.Handle("roles", "configure/sync-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleSyncChannels)
@@ -330,16 +342,48 @@ func (p *Plugin) syncOneChannelBestEffort(s *discordgo.Session, i *discordgo.Int
 	}
 }
 
-func (p *Plugin) handleListChannels(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	ids := p.jailChannelConfig.JailAllowedChannelIDs(i.GuildID)
-	if len(ids) == 0 {
-		core.RespondInfo(s, i, "No allowed channels", "No channels are configured to stay visible to jailed members, so jail currently hides every channel.")
+// handleAnnounceChannel sets, or with the option omitted clears, the one
+// extra channel jail and release notices are echoed into
+// (announceDestinations). Omitting to clear mirrors configure/marker-role,
+// rather than spending a second subcommand on it.
+func (p *Plugin) handleAnnounceChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	channelID := ""
+	if opt, ok := core.LeafArgs(i)["channel"]; ok {
+		channelID, _ = opt.Value.(string)
+	}
+	if err := p.jailChannelConfig.SetJailAnnounceChannel(ctx, i.GuildID, channelID); err != nil {
+		core.RespondErr(s, i, "Failed to save", err)
 		return
 	}
-	lines := make([]string, len(ids))
-	for idx, id := range ids {
-		lines[idx] = fmt.Sprintf("<#%s>", id)
+	detail := "none"
+	if channelID != "" {
+		detail = core.MentionChannel(channelID)
 	}
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "announce_channel="+detail); err != nil {
+		p.log.Error("roles: audit announce-channel failed", "guild", i.GuildID, "err", err)
+	}
+	if channelID == "" {
+		core.RespondOK(s, i, "Announcement channel cleared", "Jail and release notices will only be posted in the channel the command was run in.")
+		return
+	}
+	core.RespondOK(s, i, "Announcement channel set", fmt.Sprintf("Jail and release notices will also be posted in <#%s>.", channelID))
+}
+
+func (p *Plugin) handleListChannels(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	announce := "Announcements: the invoking channel only."
+	if id := p.jailChannelConfig.JailAnnounceChannelID(i.GuildID); id != "" {
+		announce = fmt.Sprintf("Announcements also go to <#%s>.", id)
+	}
+	ids := p.jailChannelConfig.JailAllowedChannelIDs(i.GuildID)
+	if len(ids) == 0 {
+		core.RespondInfo(s, i, "No allowed channels", "No channels are configured to stay visible to jailed members, so jail currently hides every channel.\n\n"+announce)
+		return
+	}
+	lines := make([]string, 0, len(ids)+2)
+	for _, id := range ids {
+		lines = append(lines, fmt.Sprintf("<#%s>", id))
+	}
+	lines = append(lines, "", announce)
 	core.RespondInfo(s, i, "Channels visible while jailed", strings.Join(lines, "\n"))
 }
 

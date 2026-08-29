@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 func TestAnnounceJailPostsToInvokingChannel(t *testing.T) {
@@ -129,36 +127,23 @@ func TestAnnounceReleaseNoOpWhenNobodyReleased(t *testing.T) {
 
 // --- announceDestinations ---
 
-func TestAnnounceDestinationsIncludesOnlyAllowlistedTextChannels(t *testing.T) {
-	ops := newFakeOps()
-	ops.channel["text1"] = &discordgo.Channel{ID: "text1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
-	ops.channel["news1"] = &discordgo.Channel{ID: "news1", GuildID: "g1", Type: discordgo.ChannelTypeGuildNews}
-	ops.channel["voice1"] = &discordgo.Channel{ID: "voice1", GuildID: "g1", Type: discordgo.ChannelTypeGuildVoice}
-	ops.channel["stage1"] = &discordgo.Channel{ID: "stage1", GuildID: "g1", Type: discordgo.ChannelTypeGuildStageVoice}
-	ops.channel["forum1"] = &discordgo.Channel{ID: "forum1", GuildID: "g1", Type: discordgo.ChannelTypeGuildForum}
+func TestAnnounceDestinationsIncludesConfiguredAnnounceChannel(t *testing.T) {
 	settings := newFakeSettings()
-	settings.allowed["g1"] = []string{"text1", "news1", "voice1", "stage1", "forum1", "missing1"}
-	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+	settings.announce["g1"] = "jail-talk"
+	p := newTestPlugin(newFakeOps(), newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	got := p.announceDestinations("g1", "invoking1")
 
-	want := []string{"invoking1", "text1", "news1"}
-	if len(got) != len(want) {
+	want := []string{"invoking1", "jail-talk"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("expected %v, got %v", want, got)
-	}
-	for i, id := range want {
-		if got[i] != id {
-			t.Fatalf("expected %v, got %v", want, got)
-		}
 	}
 }
 
-func TestAnnounceDestinationsDedupesWhenInvokingChannelIsAllowlisted(t *testing.T) {
-	ops := newFakeOps()
-	ops.channel["chan1"] = &discordgo.Channel{ID: "chan1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+func TestAnnounceDestinationsDedupesWhenAnnounceChannelIsTheInvokingOne(t *testing.T) {
 	settings := newFakeSettings()
-	settings.allowed["g1"] = []string{"chan1"}
-	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+	settings.announce["g1"] = "chan1"
+	p := newTestPlugin(newFakeOps(), newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	got := p.announceDestinations("g1", "chan1")
 
@@ -167,23 +152,12 @@ func TestAnnounceDestinationsDedupesWhenInvokingChannelIsAllowlisted(t *testing.
 	}
 }
 
-func TestAnnounceDestinationsFallsBackToInvokingChannelOnListError(t *testing.T) {
-	ops := newFakeOps()
-	ops.guildChannelsErr = context.DeadlineExceeded
+// The visibility allowlist decides what a jailed member can see, not where a
+// jail is announced: several visible rooms must not each get a copy.
+func TestAnnounceDestinationsIgnoresTheVisibilityAllowlist(t *testing.T) {
 	settings := newFakeSettings()
-	settings.allowed["g1"] = []string{"text1"}
-	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
-
-	got := p.announceDestinations("g1", "chan1")
-
-	if len(got) != 1 || got[0] != "chan1" {
-		t.Fatalf("expected only the invoking channel when the channel list can't be fetched, got %v", got)
-	}
-}
-
-func TestAnnounceDestinationsIsJustInvokingChannelWhenNothingAllowlisted(t *testing.T) {
-	ops := newFakeOps()
-	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+	settings.allowed["g1"] = []string{"text1", "text2"}
+	p := newTestPlugin(newFakeOps(), newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	got := p.announceDestinations("g1", "chan1")
 
@@ -192,23 +166,22 @@ func TestAnnounceDestinationsIsJustInvokingChannelWhenNothingAllowlisted(t *test
 	}
 }
 
-func TestAnnounceJailBroadcastsToAllowlistedTextChannelToo(t *testing.T) {
+func TestAnnounceJailAlsoPostsToTheConfiguredAnnounceChannel(t *testing.T) {
 	ops := newFakeOps()
-	ops.channel["waiting-room"] = &discordgo.Channel{ID: "waiting-room", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
 	settings := newFakeSettings()
-	settings.allowed["g1"] = []string{"waiting-room"}
+	settings.announce["g1"] = "jail-talk"
 	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "")
 
 	if len(ops.dmSends) != 2 {
-		t.Fatalf("expected the announcement posted to both the invoking channel and the waiting room, got %d sends", len(ops.dmSends))
+		t.Fatalf("expected the announcement posted to both the invoking channel and the announce channel, got %d sends", len(ops.dmSends))
 	}
 	posted := map[string]bool{}
 	for _, s := range ops.dmSends {
 		posted[s.channelID] = true
 	}
-	if !posted["chan1"] || !posted["waiting-room"] {
-		t.Fatalf("expected posts to chan1 and waiting-room, got %+v", posted)
+	if !posted["chan1"] || !posted["jail-talk"] {
+		t.Fatalf("expected posts to chan1 and jail-talk, got %+v", posted)
 	}
 }

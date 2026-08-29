@@ -378,6 +378,31 @@ func TestJailAllowedChannelRoundTrip(t *testing.T) {
 	}
 }
 
+// The announce channel is a single value, set and cleared through one
+// setter, so the round trip has to cover the empty-string clear reaching
+// Postgres as NULL and reading back as "".
+func TestJailAnnounceChannelRoundTrip(t *testing.T) {
+	store, _, guildID := setupStore(t)
+	ctx := context.Background()
+
+	if got := store.JailAnnounceChannelID(guildID); got != "" {
+		t.Fatalf("JailAnnounceChannelID before any set = %q, want empty", got)
+	}
+	if err := store.SetJailAnnounceChannel(ctx, guildID, "chan-1"); err != nil {
+		t.Fatalf("SetJailAnnounceChannel: %v", err)
+	}
+	if got := store.JailAnnounceChannelID(guildID); got != "chan-1" {
+		t.Fatalf("JailAnnounceChannelID after set = %q, want chan-1", got)
+	}
+
+	if err := store.SetJailAnnounceChannel(ctx, guildID, ""); err != nil {
+		t.Fatalf("SetJailAnnounceChannel(clear): %v", err)
+	}
+	if got := store.JailAnnounceChannelID(guildID); got != "" {
+		t.Errorf("JailAnnounceChannelID after clear = %q, want empty", got)
+	}
+}
+
 // GrantOverride and DenyOverride take roleID and userID together, with an
 // empty string meaning "leave this column alone" (the CASE WHEN $3 = ''
 // SQL). Granting a role, then separately granting a user for the same

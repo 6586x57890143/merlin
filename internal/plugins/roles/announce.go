@@ -24,7 +24,7 @@ import (
 // detail (the reason, when a mod gave one) the same visually-set-apart
 // treatment an embed field used to, without the extra chrome.
 //
-// Both announceJail and announceRelease, and the fan-out in
+// Both announceJail and announceRelease, and the echo in
 // announceDestinations, are best effort, same policy as notify.go: the jail
 // or release already happened and is already recorded by the time either
 // of these runs, so a failed channel post must never be mistaken for a
@@ -56,7 +56,8 @@ func truncateReason(s string) string {
 
 // announceJail posts a public notice naming jailedIDs and when they're
 // back, in Merlin's playful voice, into the channel the command was run in
-// and every configured jail-visible text channel (announceDestinations).
+// and the guild's configured announcement channel, if it has one
+// (announceDestinations).
 // duration is rendered as the same Discord relative timestamp notifyJailed's
 // DM uses for {until}, not a raw span, so a reader sees "in 3 hours" whether
 // they got it by DM or read it in a channel, and bold-wrapped for emphasis:
@@ -95,8 +96,8 @@ func (p *Plugin) announceJail(ctx context.Context, guildID, invokingChannelID st
 // Merlin's ordinary gentle register: no dunking on the way out, matching
 // moderation.release's warmth rather than jail's spectacle. Same
 // destinations as announceJail: the channel the command was run in, plus
-// every jail-visible text channel, since the people still waiting there
-// benefit from knowing someone was let out too.
+// the guild's configured announcement channel, since someone waiting there
+// benefits from knowing people do get let out.
 func (p *Plugin) announceRelease(ctx context.Context, guildID, invokingChannelID string, releasedIDs []string) {
 	if len(releasedIDs) == 0 {
 		return
@@ -121,54 +122,25 @@ func (p *Plugin) broadcast(guildID string, invokingChannelID, content string) {
 	}
 }
 
-// announceDestinations is the invoking channel plus every currently
-// jail-allowed channel (JailChannelConfig.JailAllowedChannelIDs, the same
-// allowlist jailchannels.go uses for visibility) that is actually a plain
-// text channel: the room(s) a jailed member can still see and use, which is
-// exactly who else should hear about a jail or release without waiting on
-// somebody to relay it.
+// announceDestinations is the invoking channel plus the guild's one
+// configured jail-announcement channel (/roles configure announce-channel),
+// when set and not the invoking channel itself.
 //
-// Deliberately excludes anything that resolves to a voice or stage channel
-// (including its text "chat" side panel, which lives on the voice channel's
-// own ID rather than a separate one, so this exclusion covers it without
-// having to special-case that Discord feature by name), a forum or media
-// channel (neither takes a plain ChannelMessageSend the way a text channel
-// does), a category, or an allowlisted ID that no longer resolves to a real
-// channel at all. One GuildChannels call per invocation, matching the
-// existing single-fetch-then-filter pattern in atRiskJailChannels and
-// syncAllJailChannelOverwrites (jailchannels.go), rather than one Channel
-// call per allowlisted ID.
+// It used to fan out to every jail-allowed channel instead. That allowlist
+// exists to decide what a jailed member can *see*, which is a different
+// question from where a jail is announced: a guild with several visible
+// rooms got the same notice repeated in all of them. One configured channel
+// (usually the one the jailed member lands in) says it once, where the
+// person it happened to will read it.
+//
+// No channel-type filtering and no GuildChannels call: the option is a
+// native Channel picker restricted to text and announcement channels
+// (commands.go), so an unpostable destination can't be configured in the
+// first place, and a channel deleted afterwards just makes broadcast log a
+// failed send.
 func (p *Plugin) announceDestinations(guildID, invokingChannelID string) []string {
 	out := []string{invokingChannelID}
-	seen := map[string]bool{invokingChannelID: true}
-
-	allowed := p.jailChannelConfig.JailAllowedChannelIDs(guildID)
-	if len(allowed) == 0 {
-		return out
-	}
-
-	channels, err := p.ops(guildID).GuildChannels(guildID)
-	if err != nil {
-		// Can't resolve channel types to filter safely, so fall back to just
-		// the invoking channel rather than guessing which allowlisted IDs
-		// are text channels.
-		p.log.Warn("roles: could not list channels for announcement fan-out", "guild", guildID, "err", err)
-		return out
-	}
-	byID := make(map[string]*discordgo.Channel, len(channels))
-	for _, ch := range channels {
-		byID[ch.ID] = ch
-	}
-
-	for _, id := range allowed {
-		if seen[id] {
-			continue
-		}
-		ch, ok := byID[id]
-		if !ok || (ch.Type != discordgo.ChannelTypeGuildText && ch.Type != discordgo.ChannelTypeGuildNews) {
-			continue
-		}
-		seen[id] = true
+	if id := p.jailChannelConfig.JailAnnounceChannelID(guildID); id != "" && id != invokingChannelID {
 		out = append(out, id)
 	}
 	return out
