@@ -19,7 +19,7 @@ package core
 // two senders that bypass the guard (audit, scheduler alerts) zero it
 // explicitly for exactly this reason.
 
-// ActorSystem is the actor recorded for anything Merlin did on her own: a
+// ActorSystem is the actor recorded for anything merlin did on her own: a
 // scheduled rotation, a sweep, an automatic jail release.
 //
 // It is a sentinel rather than an empty string because "nobody told me to do
@@ -61,13 +61,13 @@ func MentionRole(id string) string {
 // audit entries are automated (rotations, sweeps, jail releases, evasion
 // re-applies) and every one of them recorded the bare word "system", which
 // tells a moderator reading the channel nothing about who or what that is.
-// Naming Merlin explicitly is the difference between "system deleted a
+// Naming merlin explicitly is the difference between "system deleted a
 // channel" and "the bot did this on schedule, not a person". The stored row
 // keeps the sentinel; only the display changes.
 func FormatActor(actorID string) string {
 	switch actorID {
 	case ActorSystem:
-		return "Merlin (automatic)"
+		return "merlin (automatic)"
 	case "":
 		// Reachable: adminconfig's audit helper substitutes an empty actor
 		// when an interaction arrives without a Member, which happens for a

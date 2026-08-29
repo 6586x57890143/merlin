@@ -61,6 +61,17 @@ const contextLines = 5
 // many large servers; at that point the budget usually binds first.
 const maxInFlight = 4
 
+// maxConcurrentEscalations bounds the deep calls one batch runs at once.
+//
+// Four, matching maxInFlight rather than being unbounded, for two reasons.
+// A batch of twenty could in principle flag twenty messages, and twenty
+// simultaneous requests on one guild's API key is how a rate limit gets hit
+// by the thing trying to avoid one. And the number that matters for the bug
+// this fixes is "more than one": serial escalation meant a batch with six
+// hits ran out of its own spawn context and lost the tail, and four at a time
+// puts twenty hits comfortably inside it.
+const maxConcurrentEscalations = 4
+
 // DiscordOps is this plugin's narrow view of Discord, satisfied structurally
 // by *discordguard.GuildOps, so every mutating call is gated by pause,
 // dry-run, the per-guild rate cap and the action journal without this
@@ -128,8 +139,13 @@ type Plugin struct {
 	// whether somebody is the bootstrap operator. Satisfied by
 	// *core.Permissions, taken from Deps in Init.
 	privilege PrivilegeChecker
-	log       *slog.Logger
-	now       func() time.Time
+	// sched carries the weekly calibration review. Optional: a nil scheduler
+	// means no review job is ever registered, which is what the unit tests
+	// and any build without one run as, and the plugin is otherwise
+	// unaffected. See calibrate.go.
+	sched core.Scheduler
+	log   *slog.Logger
+	now   func() time.Time
 
 	// scanning is false when the operator did not enable the MESSAGE_CONTENT
 	// intent. The plugin still registers its commands so /aimod status can
@@ -160,6 +176,13 @@ type Plugin struct {
 	budgetNoticeMu sync.Mutex
 	budgetNoticed  map[string]time.Time
 
+	// calibrateMu guards calibrateRegistered, which mirrors rotation's
+	// sweepRegistered: the Scheduler has no "is this job registered" query,
+	// so reconcile keeps its own answer. Held across reconcile, so anything
+	// it calls must not take it again.
+	calibrateMu         sync.Mutex
+	calibrateRegistered map[string]bool
+
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -186,22 +209,23 @@ func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker
 		return nil, err
 	}
 	return &Plugin{
-		store:         store,
-		client:        client,
-		ops:           ops,
-		sealer:        seal,
-		policies:      policies,
-		voice:         speaker,
-		scanning:      scanning,
-		now:           func() time.Time { return time.Now().UTC() },
-		dedupe:        newDedupeCache(),
-		meter:         newUserMeter(),
-		models:        newModelCache(),
-		webhooks:      make(map[string]*discordgo.Webhook),
-		batches:       make(map[string]*batch),
-		inFlight:      make(map[string]chan struct{}),
-		budgetNoticed: make(map[string]time.Time),
-		stopped:       make(chan struct{}),
+		store:               store,
+		client:              client,
+		ops:                 ops,
+		sealer:              seal,
+		policies:            policies,
+		voice:               speaker,
+		scanning:            scanning,
+		now:                 func() time.Time { return time.Now().UTC() },
+		dedupe:              newDedupeCache(),
+		meter:               newUserMeter(),
+		models:              newModelCache(),
+		webhooks:            make(map[string]*discordgo.Webhook),
+		batches:             make(map[string]*batch),
+		inFlight:            make(map[string]chan struct{}),
+		budgetNoticed:       make(map[string]time.Time),
+		calibrateRegistered: make(map[string]bool),
+		stopped:             make(chan struct{}),
 	}, nil
 }
 
@@ -230,6 +254,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.log = deps.Logger
 	p.commands = deps.Commands
 	p.privilege = deps.Perms
+	p.sched = deps.Scheduler
 
 	p.registerCommands()
 	return nil
@@ -320,6 +345,33 @@ func (p *Plugin) ForgetGuild(guildID string) {
 // handler in cmd/bot/main.go. It returns immediately: everything past the
 // free rungs happens on the batch timer, because discordgo dispatches events
 // serially per shard and blocking here would stall every other handler.
+// HandleMessageEdit is the MessageUpdate entry point.
+//
+// Scanning edits is what closes the plugin's most obvious bypass: post
+// something innocuous, let it be cleared, then edit it into a violation. The
+// classification path is identical, so this is a guard plus a call.
+//
+// The guard matters more than it looks. MessageUpdate also fires when Discord
+// resolves a link preview or pins a message, with the content untouched, and
+// those are common enough that scanning them would raise traffic
+// substantially for nothing. EditedTimestamp is nil on exactly those and set
+// on a real edit.
+//
+// The payload is partial in a way MessageCreate's never is: Author can be
+// nil. shouldSkip returns skipBot for that, so an edit whose author Discord
+// did not send is dropped rather than misattributed, which is the right
+// direction and is worth not rediscovering.
+//
+// Cost is bounded by dedupeCache: an edit that changes nothing this plugin
+// cares about (whitespace, a typo fixed) hashes to a key that may already
+// carry a verdict, and re-editing the same text repeatedly is free.
+func (p *Plugin) HandleMessageEdit(m *discordgo.Message) {
+	if m == nil || m.EditedTimestamp == nil {
+		return
+	}
+	p.HandleMessage(m)
+}
+
 func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	if !p.scanning || m == nil || m.GuildID == "" {
 		return
@@ -353,13 +405,20 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 		return
 	}
 
-	c := candidate{MessageID: m.ID, ChannelID: m.ChannelID, AuthorID: m.Author.ID, Content: m.Content}
+	// Resolved once here and carried on the candidate, so every rung below
+	// judges the same text. For a forward that text lives in a snapshot
+	// rather than in Content; see messageText.
+	text, forwarded := messageText(m)
+	c := candidate{
+		MessageID: m.ID, ChannelID: m.ChannelID, AuthorID: m.Author.ID,
+		Content: text, Forwarded: forwarded, ReplyTo: replyContext(m),
+	}
 
 	// Rung 1, before anything is queued or paid for. A hard hit is acted on
 	// with the bucket's own configured action and no model in the loop, so
 	// a token leak or a phishing link is gone in well under a second even on
 	// a guild whose budget is spent.
-	if bucket, reason, hit := hardHit(m.Content); hit {
+	if bucket, reason, hit := hardHit(c.Content); hit {
 		action := EffectiveAction(cfg.BucketActions, bucket)
 		if action == ActionOff {
 			return
@@ -513,15 +572,26 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 			return
 		}
 
-		if err := p.store.AddScanned(ctx, guildID, today(p.now()), len(batch)); err != nil {
-			p.log.Error("aimod: count scanned", "guild", guildID, "err", err)
-		}
-
 		hits, usage, err := p.classifyFast(ctx, state.APIKey, cfg, batch)
 		// Booked before the error is handled: a call that returned usage was
 		// billed whether or not its body parsed.
+		//
+		// The scanned count rides the same condition, and that is the point
+		// of moving it here from above the call. Scanned is the denominator
+		// every cost-per-message figure in /aimod models show divides the
+		// booked tokens by, so the two have to agree on which batches count.
+		// Counted unconditionally, a batch that failed before reaching a
+		// model (a 429, an outage) added twenty to the denominator and
+		// nothing to the numerator, reporting the guild's scanning as cheaper
+		// than it is, and worst exactly when the model was failing most.
+		// Counted only on success, a billed-but-unparseable call would add
+		// tokens with no messages under them, which is the same error the
+		// other way and is what the budget tests pin down.
 		if usage.Cost > 0 || usage.TotalTokens > 0 {
 			p.recordUsage(ctx, guildID, usage, false)
+			if err := p.store.AddScanned(ctx, guildID, today(p.now()), len(batch)); err != nil {
+				p.log.Error("aimod: count scanned", "guild", guildID, "err", err)
+			}
 		}
 		if err != nil {
 			p.log.Error("aimod: fast pass", "guild", guildID, "messages", len(batch), "err", err)
@@ -541,14 +611,44 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 			}
 		}
 
+		// Concurrently, bounded, and that is a correctness fix rather than a
+		// speed one. Serially, each escalation is a deep call bounded by the
+		// client's 20 second timeout inside this spawn's 2 minute context, so
+		// six flagged messages in one batch was exactly the budget: past that
+		// the tail was cancelled with no verdict, no incident row and no
+		// audit line saying it had happened. batchMax is 20, and six hits in
+		// twenty messages is a heated argument, not a raid.
+		//
+		// It also fixes the latency the batching design was justified on: the
+		// last flagged message in a batch of five used to stay live for the
+		// better part of two minutes, against a promise that removals land
+		// while the message is still on screen.
+		//
+		// Nothing escalate touches is unguarded (dedupe, meter and webhooks
+		// all hold their own mutexes), and maxInFlight still bounds a guild's
+		// total concurrent model calls, so this removes a cliff rather than
+		// widening the guild's cost or rate-limit exposure.
+		var wg sync.WaitGroup
+		slots := make(chan struct{}, maxConcurrentEscalations)
 		for _, hit := range hits {
 			select {
 			case <-p.stopped:
+				// Checked per hit, as before: a shutdown mid-batch stops
+				// starting new work, and the wait below still lets what is
+				// already running finish recording what it did.
+				wg.Wait()
 				return
 			default:
 			}
-			p.escalate(ctx, cfg, state.APIKey, batch[hit.Index-1], hit)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				slots <- struct{}{}
+				defer func() { <-slots }()
+				p.escalate(ctx, cfg, state.APIKey, batch[hit.Index-1], hit)
+			}()
 		}
+		wg.Wait()
 	})
 }
 
@@ -591,8 +691,9 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, apiKey string, c cand
 		return
 	}
 
+	priorLines, self := p.recentContext(cfg.GuildID, c)
 	v, usage, err := p.classifyDeep(ctx, apiKey, cfg, hit.Bucket, c,
-		p.recentContext(cfg.GuildID, c), action == ActionRewrite)
+		priorLines, self, action == ActionRewrite)
 	if usage.Cost > 0 || usage.TotalTokens > 0 {
 		p.recordUsage(ctx, cfg.GuildID, usage, true)
 	}
@@ -606,7 +707,7 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, apiKey string, c cand
 	if !v.Violation || v.Confidence < actThreshold {
 		// Cleared by the deep pass, so identical text is genuinely clean and
 		// later copies should not pay to be told so a second time.
-		p.dedupe.markClean(cfg.GuildID, c.Content, p.now())
+		p.dedupe.markCleanFor(cfg.GuildID, c.AuthorID, c.Content, p.now())
 		return
 	}
 	// Remembered before acting, so a flood arriving while this one is still
@@ -617,7 +718,8 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, apiKey string, c cand
 	p.enforce(ctx, cfg, c, hit.Bucket, action, v)
 }
 
-// recentContext reads the handful of messages before this one.
+// recentContext reads the handful of messages before this one, each labelled
+// with who said it, and returns the label the candidate's own author got.
 //
 // Read at escalation time, from Discord, for about one message in a hundred,
 // rather than kept in a rolling in-memory buffer of every channel. That
@@ -625,24 +727,63 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, apiKey string, c cand
 // the server's conversation in this process, which is the trade this
 // plugin's privacy property asks for everywhere else too.
 //
+// The labels are the context half of accuracy. Bare lines with the speakers
+// stripped read as one undifferentiated blob, and most of what context is
+// for cannot be answered from that: whether this is two people trading
+// insults or one person escalating at a third, whether the flagged author is
+// answering the person they are talking about, and whether a slur is being
+// quoted back at whoever just used it. hate_speech's reclaimed-language
+// exception in particular is a question about the speaker, and the model was
+// being asked to apply it with every speaker erased.
+//
+// Letters rather than usernames or IDs, on purpose. The model needs identity
+// relations, not identities: "A said this, B replied" carries the whole
+// signal. A username would put a member's chosen name in a third party's
+// prompt for no gain, and would hand anyone who wanted it a second injection
+// surface next to the message content we are already forced to send.
+//
 // Failure is not an error: the deep pass works without context, just less
 // well, and refusing to judge because the history was unreadable would turn
 // a permissions gap into a filter that never acts.
-func (p *Plugin) recentContext(guildID string, c candidate) []string {
+func (p *Plugin) recentContext(guildID string, c candidate) (lines []string, self string) {
+	labels := newSpeakerLabels()
+	// The candidate's author is labelled first so it is always "A", whether
+	// or not they also wrote any of the preceding lines.
+	self = labels.of(c.AuthorID)
+
 	msgs, err := p.ops(guildID).ChannelMessages(c.ChannelID, contextLines, c.MessageID, "", "")
 	if err != nil {
-		return nil
+		return nil, self
 	}
-	lines := make([]string, 0, len(msgs))
+	lines = make([]string, 0, len(msgs))
 	// Discord returns newest-first; reverse so the model reads them in the
 	// order they were said.
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i] == nil || msgs[i].Content == "" {
+		if msgs[i] == nil || msgs[i].Content == "" || msgs[i].Author == nil {
 			continue
 		}
-		lines = append(lines, msgs[i].Content)
+		lines = append(lines, labels.of(msgs[i].Author.ID)+": "+msgs[i].Content)
 	}
-	return lines
+	return lines, self
+}
+
+// speakerLabels hands out a short stable letter per author within one
+// prompt. Shared by recentContext and the calibration review, which both need
+// the same thing: who said what, without saying who anybody is.
+type speakerLabels struct{ seen map[string]string }
+
+func newSpeakerLabels() *speakerLabels { return &speakerLabels{seen: map[string]string{}} }
+
+func (l *speakerLabels) of(authorID string) string {
+	if s, ok := l.seen[authorID]; ok {
+		return s
+	}
+	// Wraps past 26 distinct speakers, which cannot happen inside the five
+	// lines recentContext asks for and only costs a merged label in a long
+	// calibration transcript. Not worth a second character everywhere else.
+	s := string(rune('A' + len(l.seen)%26))
+	l.seen[authorID] = s
+	return s
 }
 
 // noticeBudget records that a guild stopped scanning, once per day.

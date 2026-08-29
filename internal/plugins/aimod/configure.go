@@ -584,7 +584,7 @@ func evidenceWord(hours int) string {
 
 func modelList(configured, fallback []string) string {
 	if len(configured) == 0 {
-		return strings.Join(fallback, "\n") + "\n_(Merlin's defaults, tracked automatically)_"
+		return strings.Join(fallback, "\n") + "\n_(merlin's defaults, tracked automatically)_"
 	}
 	return strings.Join(configured, "\n")
 }

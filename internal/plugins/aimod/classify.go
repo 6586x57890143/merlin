@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 // Default model stacks.
@@ -101,6 +103,74 @@ type candidate struct {
 	ChannelID string
 	AuthorID  string
 	Content   string
+	// ReplyTo is the text of the message this one replies to, empty when it
+	// replies to nothing.
+	//
+	// The fast pass is the gate: what it clears, the deep pass never sees, so
+	// giving context only to the deep pass improves the one message in a
+	// hundred that was already flagged and does nothing for the ones that
+	// were not. A reply target is the piece of context that changes the
+	// answer most and costs nothing: "kys" and "you are one too" are
+	// innocuous standalone and are the whole violation when aimed at
+	// somebody, and Discord already ships the referenced message on the
+	// gateway payload, so this needs no extra call and no extra rung.
+	//
+	// Deliberately not a general context window at this tier. Five preceding
+	// lines per message, multiplied across every batch in every guild, is the
+	// two-stage cost design inverted.
+	ReplyTo string
+	// Forwarded reports that Content came from a message snapshot rather than
+	// from the member's own typing. It changes the action; see enforce.
+	Forwarded bool
+}
+
+// maxReplyContext bounds the quoted reply. Enough to see who is being
+// answered and about what; short enough that a batch of twenty replies to
+// long messages does not become a prompt of its own.
+const maxReplyContext = 120
+
+// messageText is the text this plugin judges: the message's own content, or
+// the forwarded original when Discord put it in a snapshot instead.
+//
+// Forwarding was a one-click bypass of the entire plugin. Discord's forward
+// button sends the original text in MessageSnapshots and leaves Content
+// empty, so every rung keyed off Content saw nothing: shouldSkip returned
+// skipEmpty and the message was never looked at by anything. No obfuscation,
+// no typing, nothing to evade, and it predates every other accuracy fix here
+// because rung 0 has always read Content alone.
+//
+// forwarded is returned rather than inferred later because it changes the
+// action; see enforce.
+func messageText(m *discordgo.Message) (text string, forwarded bool) {
+	if strings.TrimSpace(m.Content) != "" {
+		return m.Content, false
+	}
+	// A forward can carry several snapshots, and they are joined rather than
+	// taking the first: stopping at the first would leave a forward whose
+	// opening line is innocuous and whose second is not doing exactly the
+	// thing this function exists to stop.
+	var parts []string
+	for _, snap := range m.MessageSnapshots {
+		if snap.Message != nil && strings.TrimSpace(snap.Message.Content) != "" {
+			parts = append(parts, snap.Message.Content)
+		}
+	}
+	if len(parts) == 0 {
+		return m.Content, false
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+// replyContext extracts the referenced message's text, if there is one.
+func replyContext(m *discordgo.Message) string {
+	if m.ReferencedMessage == nil {
+		return ""
+	}
+	s := sanitizeForPrompt(m.ReferencedMessage.Content)
+	if len([]rune(s)) > maxReplyContext {
+		s = string([]rune(s)[:maxReplyContext]) + "..."
+	}
+	return s
 }
 
 // The shared framing for both passes.
@@ -129,7 +199,7 @@ Judge what a message means, not how it is spelled. Misspellings, swapped or repe
 // ten one-line bucket summaries is roughly 350 tokens, amortized across
 // every message in the batch, and the full policy files (several thousand
 // tokens) are never sent at this tier at all.
-func (p *Plugin) fastPrompt(buckets []Bucket) string {
+func (p *Plugin) fastPrompt(buckets []Bucket, cal []CalibrationExample) string {
 	var b strings.Builder
 	b.WriteString(systemPreamble)
 	b.WriteString("\n\nPolicies:\n")
@@ -140,6 +210,11 @@ func (p *Plugin) fastPrompt(buckets []Bucket) string {
 		}
 		fmt.Fprintf(&b, "- %s: %s\n", bucket, pol.Short)
 	}
+	// Bounded to maxFastCalibration by the caller, because this prompt is
+	// paid for on every batch in every guild. Empty for an uncalibrated
+	// guild, which keeps this prompt byte-identical to what it was before
+	// calibration existed.
+	b.WriteString(calibrationBlock(cal))
 	b.WriteString(`
 You are given numbered messages. Return JSON: {"v":[{"i":<number>,"b":"<policy>","c":<0.0-1.0>}]}
 Include an entry only for a message that breaches a policy. Most batches contain none; return {"v":[]} for those. c is your confidence that this is a genuine breach as written.`)
@@ -191,6 +266,10 @@ func (p *Plugin) classifyFast(ctx context.Context, apiKey string, cfg Config, ba
 		// Numbered from 1: a model that miscounts from zero produces an
 		// off-by-one that silently actions the wrong person's message, and
 		// one-based indexing is what the model has seen most of.
+		if c.ReplyTo != "" {
+			fmt.Fprintf(&user, "%d. [replying to: %q] %s\n", i+1, c.ReplyTo, sanitizeForPrompt(c.Content))
+			continue
+		}
 		fmt.Fprintf(&user, "%d. %s\n", i+1, sanitizeForPrompt(c.Content))
 	}
 
@@ -198,7 +277,7 @@ func (p *Plugin) classifyFast(ctx context.Context, apiKey string, cfg Config, ba
 		Models:   modelsOr(cfg.FastModels, defaultFastModels),
 		Provider: strictProvider(),
 		Messages: []chatMessage{
-			{Role: "system", Content: p.fastPrompt(buckets)},
+			{Role: "system", Content: p.fastPrompt(buckets, firstN(cfg.Calibration, maxFastCalibration))},
 			{Role: "user", Content: user.String()},
 		},
 		ResponseFormat: fastSchema(),
@@ -242,7 +321,7 @@ func (p *Plugin) classifyFast(ctx context.Context, apiKey string, cfg Config, ba
 // deepPrompt builds the second pass for one bucket. This is the only place
 // the full policy file is sent, and it is sent for exactly one bucket: the
 // one the fast pass named.
-func (p *Plugin) deepPrompt(bucket Bucket, wantRewrite bool) string {
+func (p *Plugin) deepPrompt(bucket Bucket, wantRewrite bool, cal []CalibrationExample) string {
 	pol, ok := p.policies[bucket]
 	if !ok {
 		return systemPreamble
@@ -265,12 +344,27 @@ func (p *Plugin) deepPrompt(bucket Bucket, wantRewrite bool) string {
 		fmt.Fprintf(&b, "- %s\n", v)
 	}
 
+	// Already narrowed to this bucket by the caller. Placed after the policy
+	// lists rather than before them on purpose: the policy is the rule and
+	// the calibration is how this server reads it, so the model meets them
+	// in that order.
+	b.WriteString(calibrationBlock(cal))
+
 	b.WriteString("\nReturn JSON with: violation (bool), bucket (the policy name), confidence (0.0-1.0), reason (one short sentence a moderator will read)")
 	if wantRewrite {
 		// The rewrite is asked for in the same call rather than a third one:
 		// the model has already read the message and the policy, so a
 		// separate call would pay for both again to produce the same answer.
-		b.WriteString(", rewrite (the message with only the violating part removed or replaced, keeping the author's own wording, tone and meaning everywhere else; empty string if nothing publishable remains)")
+		//
+		// The example is not decoration. "Replace the violating part" on its
+		// own gets a clinical redaction about half the time, which is a
+		// worse outcome than it sounds: the repost wears the author's name,
+		// so a sanitized rewrite reads as that person being made to
+		// apologise. An absurd substitution reads as the bot being silly,
+		// which is the difference between defusing a message and shaming
+		// somebody with it.
+		b.WriteString(", rewrite")
+		b.WriteString(` (the same message with only the violating words swapped out. Keep the author's sentence structure, length, punctuation and everything else they wrote. Choose silly, harmless replacements that keep the sentence recognisably the same sentence rather than neutral or clinical ones: "kill all <slur>" becomes "tickle all nice people", "I will find you and hurt you" becomes "I will find you and boop you". Prefer a playful substitution over giving up; return an empty string only when the message is nothing but the violation and no substitution leaves a sentence behind)`)
 	}
 	b.WriteString(".")
 	return b.String()
@@ -306,22 +400,26 @@ func deepSchema(wantRewrite bool) *responseFormat {
 // classifyDeep runs rung 3 on one message. context holds the few messages
 // that preceded it in the channel, which is what makes a threat
 // distinguishable from a running joke.
-func (p *Plugin) classifyDeep(ctx context.Context, apiKey string, cfg Config, bucket Bucket, c candidate, priorLines []string, wantRewrite bool) (deepVerdict, Usage, error) {
+func (p *Plugin) classifyDeep(ctx context.Context, apiKey string, cfg Config, bucket Bucket, c candidate, priorLines []string, self string, wantRewrite bool) (deepVerdict, Usage, error) {
 	var user strings.Builder
 	if len(priorLines) > 0 {
-		user.WriteString("Recent messages in this channel, for context only. Do not judge these:\n")
+		// Each line already carries its speaker's label from recentContext,
+		// and saying so is what makes them usable: a model given five
+		// unattributed lines cannot tell an exchange from a monologue, which
+		// is most of what it was being handed context for.
+		user.WriteString("Recent messages in this channel, for context only. Do not judge these. Each is labelled with who said it:\n")
 		for _, line := range priorLines {
 			fmt.Fprintf(&user, "- %s\n", sanitizeForPrompt(line))
 		}
 		user.WriteString("\n")
 	}
-	fmt.Fprintf(&user, "The message to judge:\n%s", sanitizeForPrompt(c.Content))
+	fmt.Fprintf(&user, "The message to judge, written by %s:\n%s", self, sanitizeForPrompt(c.Content))
 
 	out, usage, err := p.client.Chat(ctx, apiKey, chatRequest{
 		Models:   modelsOr(cfg.DeepModels, defaultDeepModels),
 		Provider: strictProvider(),
 		Messages: []chatMessage{
-			{Role: "system", Content: p.deepPrompt(bucket, wantRewrite)},
+			{Role: "system", Content: p.deepPrompt(bucket, wantRewrite, forBucket(cfg.Calibration, bucket))},
 			{Role: "user", Content: user.String()},
 		},
 		ResponseFormat: deepSchema(wantRewrite),

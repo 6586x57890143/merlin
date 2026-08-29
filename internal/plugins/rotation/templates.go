@@ -15,7 +15,7 @@ import (
 // there's no separate named-template table to resolve against.
 //
 // Deliberately untouched by the voice catalog: these are the operator's own
-// words, not Merlin's, and every one of them is posted in order exactly as
+// words, not merlin's, and every one of them is posted in order exactly as
 // written. The catalog supplies only the notice she writes herself.
 func resolveSticky(rc settings.RotationChannel) []string {
 	if !rc.StickyEnabled {

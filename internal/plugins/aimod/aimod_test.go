@@ -2,6 +2,8 @@ package aimod
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -274,5 +276,238 @@ func TestEnabledPluginStillScans(t *testing.T) {
 
 	if deleted, _ := ops.snapshot(); len(deleted) != 1 {
 		t.Errorf("deleted %v, want the grabber link removed", deleted)
+	}
+}
+
+// The deep pass gets five preceding lines, and until they carried a speaker
+// they were an undifferentiated blob: two people trading insults and one
+// person escalating at a third read identically. Labels are what make the
+// context usable, and the candidate's own author has to be findable among
+// them or the model cannot tell whether the flagged message is a reply.
+func TestRecentContextLabelsSpeakers(t *testing.T) {
+	ops := newFakeOps()
+	// ChannelMessages returns newest-first, so this is reversed on the way
+	// out: u2, u1, u2 in the order they were said.
+	ops.history = []*discordgo.Message{
+		{Content: "third", Author: &discordgo.User{ID: "u2"}},
+		{Content: "second", Author: &discordgo.User{ID: "u1"}},
+		{Content: "first", Author: &discordgo.User{ID: "u2"}},
+	}
+	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
+
+	lines, self := p.recentContext("g1", candidate{ChannelID: "c1", AuthorID: "u1"})
+
+	if self != "A" {
+		t.Errorf("self = %q, want A: the judged author is labelled first", self)
+	}
+	want := []string{"B: first", "A: second", "B: third"}
+	if len(lines) != len(want) {
+		t.Fatalf("lines = %v, want %v", lines, want)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			// One label per author, stable across lines: "B" twice for u2 is
+			// the whole signal, and a fresh letter per message would destroy
+			// it while looking like it worked.
+			t.Errorf("line %d = %q, want %q", i, lines[i], want[i])
+		}
+	}
+}
+
+// Without this the whole plugin has a one-step bypass: post something
+// innocuous, let it be cleared, then edit it into whatever you like.
+func TestEditedMessagesAreScanned(t *testing.T) {
+	ops := newFakeOps()
+	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, ops)
+
+	edited := time.Now()
+	p.HandleMessageEdit(&discordgo.Message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1",
+		Content:         "free nitro here https://grabify.link/abcdef",
+		Author:          &discordgo.User{ID: "u1"},
+		Member:          &discordgo.Member{},
+		EditedTimestamp: &edited,
+	})
+	p.wg.Wait()
+
+	if deleted, _ := ops.snapshot(); len(deleted) != 1 {
+		t.Errorf("deleted %v, want the edited-in grabber link removed", deleted)
+	}
+}
+
+// MessageUpdate also fires when Discord resolves a link preview or pins a
+// message, with the content untouched. Scanning those would raise traffic
+// substantially and decide nothing.
+func TestUneditedUpdatesAreIgnored(t *testing.T) {
+	ops := newFakeOps()
+	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, ops)
+
+	p.HandleMessageEdit(&discordgo.Message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1",
+		Content: "free nitro here https://grabify.link/abcdef",
+		Author:  &discordgo.User{ID: "u1"},
+		Member:  &discordgo.Member{},
+	})
+	p.wg.Wait()
+
+	if deleted, _ := ops.snapshot(); len(deleted) != 0 {
+		t.Errorf("acted on %v for an update that changed nothing", deleted)
+	}
+}
+
+// The fast pass is the gate, and it sees each message alone: what it clears,
+// the deep pass never sees. A reply target is the one piece of context that
+// is free (Discord ships it on the gateway payload) and decisive, since "kys"
+// is innocuous standalone and the whole violation aimed at somebody.
+func TestReplyTargetReachesTheFastPass(t *testing.T) {
+	client := &fakeClassifier{fast: []string{`{"v":[]}`}}
+	p := intakePlugin(t, newFakeStore(), client, newFakeOps())
+
+	p.HandleMessage(&discordgo.Message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1",
+		Content: "you should genuinely do it",
+		Author:  &discordgo.User{ID: "u1"},
+		Member:  &discordgo.Member{},
+		ReferencedMessage: &discordgo.Message{
+			Content: "i have been thinking about hurting myself",
+			Author:  &discordgo.User{ID: "u2"},
+		},
+	})
+	p.flush("c1")
+	p.wg.Wait()
+
+	if got := client.lastUserMessage(); !strings.Contains(got, "replying to:") ||
+		!strings.Contains(got, "thinking about hurting myself") {
+		t.Errorf("the reply target never reached the fast prompt:\n%s", got)
+	}
+}
+
+// Forwarding was a one-click bypass of the whole plugin: Discord puts the
+// original text in a snapshot and leaves Content empty, so every rung keyed
+// off Content saw nothing and shouldSkip returned skipEmpty.
+func TestForwardedMessagesAreScanned(t *testing.T) {
+	ops := newFakeOps()
+	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, ops)
+
+	p.HandleMessage(&discordgo.Message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1",
+		Content: "",
+		Author:  &discordgo.User{ID: "u1"},
+		Member:  &discordgo.Member{},
+		MessageSnapshots: []discordgo.MessageSnapshot{
+			{Message: &discordgo.Message{Content: "free nitro here https://grabify.link/abcdef"}},
+		},
+	})
+	p.wg.Wait()
+
+	if deleted, _ := ops.snapshot(); len(deleted) != 1 {
+		t.Errorf("deleted %v, want the forwarded grabber link removed", deleted)
+	}
+}
+
+// A forward can carry several snapshots, so stopping at the first would leave
+// one whose opening line is innocuous and whose second is not doing exactly
+// what this closes.
+func TestMessageTextJoinsEverySnapshot(t *testing.T) {
+	text, forwarded := messageText(&discordgo.Message{
+		MessageSnapshots: []discordgo.MessageSnapshot{
+			{Message: &discordgo.Message{Content: "look at this"}},
+			{Message: &discordgo.Message{Content: "the actual violation"}},
+		},
+	})
+	if !forwarded {
+		t.Error("a message whose only text was in a snapshot did not read as forwarded")
+	}
+	if !strings.Contains(text, "look at this") || !strings.Contains(text, "the actual violation") {
+		t.Errorf("messageText = %q, want both snapshots", text)
+	}
+}
+
+// The member's own typing wins over a snapshot, and an ordinary message must
+// not read as forwarded: that flag downgrades rewrite to remove.
+func TestMessageTextPrefersTheMembersOwnContent(t *testing.T) {
+	text, forwarded := messageText(&discordgo.Message{
+		Content: "what i actually typed",
+		MessageSnapshots: []discordgo.MessageSnapshot{
+			{Message: &discordgo.Message{Content: "something forwarded alongside it"}},
+		},
+	})
+	if forwarded || text != "what i actually typed" {
+		t.Errorf("messageText = (%q, %v), want the member's own text and false", text, forwarded)
+	}
+}
+
+// A batch with enough hits used to lose its tail: escalations ran serially at
+// up to 20s each inside a 2 minute spawn, so six flagged messages was exactly
+// the budget and the rest were cancelled with no incident row at all.
+func TestEveryHitInALargeBatchIsActedOn(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	client := &fakeClassifier{
+		fast: []string{`{"v":[
+			{"i":1,"b":"threats","c":0.9},{"i":2,"b":"threats","c":0.9},
+			{"i":3,"b":"threats","c":0.9},{"i":4,"b":"threats","c":0.9},
+			{"i":5,"b":"threats","c":0.9},{"i":6,"b":"threats","c":0.9},
+			{"i":7,"b":"threats","c":0.9},{"i":8,"b":"threats","c":0.9}
+		]}`},
+		deep:      []string{`{"violation":true,"bucket":"threats","confidence":0.95,"reason":"r"}`},
+		deepDelay: 50 * time.Millisecond,
+	}
+	p := intakePlugin(t, store, client, ops)
+
+	batch := make([]candidate, 8)
+	for i := range batch {
+		batch[i] = candidate{
+			MessageID: "m" + strconv.Itoa(i), ChannelID: "c1",
+			// Distinct authors: the per-member deep ceiling is not what this
+			// test is about, and eight from one member would trip it.
+			AuthorID: "u" + strconv.Itoa(i),
+			Content:  "message number " + strconv.Itoa(i),
+		}
+	}
+	p.classify("g1", batch)
+	p.wg.Wait()
+
+	if deleted, _ := ops.snapshot(); len(deleted) != 8 {
+		t.Errorf("deleted %d of 8 hits: the batch lost its tail", len(deleted))
+	}
+	if got := len(store.recorded()); got != 8 {
+		t.Errorf("recorded %d incidents of 8", got)
+	}
+	// The count alone would pass serially too, since eight 50ms calls fit
+	// inside a test's patience even though eight 20s ones do not fit inside
+	// spawn's two minutes. This is the assertion that fails the moment
+	// escalation goes back to being serial.
+	if peak := client.peakDeepParallel(); peak < 2 {
+		t.Errorf("peak concurrent deep calls = %d: escalations ran serially", peak)
+	}
+	// And still bounded, so a batch of twenty hits cannot fire twenty
+	// simultaneous requests on one guild's key.
+	if peak := client.peakDeepParallel(); peak > maxConcurrentEscalations {
+		t.Errorf("peak concurrent deep calls = %d, past the bound of %d", peak, maxConcurrentEscalations)
+	}
+}
+
+// A message that replies to nothing must not carry the marker, or every
+// batch pays for a clause that says nothing.
+func TestNonReplyCarriesNoReplyMarker(t *testing.T) {
+	if got := replyContext(&discordgo.Message{Content: "hello"}); got != "" {
+		t.Errorf("replyContext = %q for a message replying to nothing", got)
+	}
+}
+
+// An unreadable history is not a reason to refuse to judge, but the label
+// still has to come back or classifyDeep names an empty speaker.
+func TestRecentContextSelfLabelSurvivesAFailedFetch(t *testing.T) {
+	ops := newFakeOps()
+	ops.historyErr = errors.New("missing read history permission")
+	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
+
+	lines, self := p.recentContext("g1", candidate{ChannelID: "c1", AuthorID: "u1"})
+	if lines != nil {
+		t.Errorf("lines = %v, want none", lines)
+	}
+	if self != "A" {
+		t.Errorf("self = %q, want A", self)
 	}
 }

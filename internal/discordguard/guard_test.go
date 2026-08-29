@@ -215,7 +215,7 @@ func callEveryWrite(o *GuildOps) []error {
 
 // The webhook sender carries text a *member* wrote, reposted under that
 // member's own name, which makes it the one place where a missing mention
-// suppression would let somebody make Merlin ping on their behalf. Asserted
+// suppression would let somebody make merlin ping on their behalf. Asserted
 // rather than assumed for that reason.
 func TestWebhookExecuteSuppressesMentions(t *testing.T) {
 	sess := &fakeSession{}

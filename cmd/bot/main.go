@@ -279,6 +279,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			commandsRegistered = false
 		}
 		rolesPlugin.SyncGuild(gc.ID)
+		// Reads aimod's own store rather than internal/settings, so unlike
+		// rotation below it does not wait on settingsLoaded: a guild whose
+		// settings refresh failed still gets its weekly calibration review.
+		aimodPlugin.SyncGuild(guildCtx, gc.ID)
 		if settingsLoaded {
 			// Rotation, unlike the sweep, derives which jobs should exist from
 			// settings, and reconciling against fail-closed defaults would read as
@@ -365,6 +369,12 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			// timer. discordgo dispatches events serially per shard, so
 			// blocking here would stall every other handler behind it.
 			aimodPlugin.HandleMessage(mc.Message)
+		})
+		// Edits, too, and this is not polish. Without it the whole plugin has
+		// a one-step bypass: post something innocuous, wait for it to be
+		// cleared, then edit it into whatever you like. Nothing looked again.
+		session.AddHandler(func(s *discordgo.Session, mu *discordgo.MessageUpdate) {
+			aimodPlugin.HandleMessageEdit(mu.Message)
 		})
 	} else {
 		log.Info("MESSAGE_CONTENT intent not requested: AI moderation will scan nothing. " +

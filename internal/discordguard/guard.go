@@ -273,7 +273,7 @@ func (o *GuildOps) ChannelDelete(channelID string, options ...discordgo.RequestO
 // on every cycle, so a user mention in one pings that person on a schedule
 // forever, and a mentionable role pings its entire membership the same way.
 // @everyone and @here need Mention Everyone, which the documented invite
-// link does not request, but any admin can grant Merlin's role that bit at
+// link does not request, but any admin can grant merlin's role that bit at
 // any time and would silently arm every sticky already configured.
 //
 // Suppressing at the guard rather than at each call site is the same
@@ -294,7 +294,7 @@ func (o *GuildOps) ChannelMessageSend(channelID, content string, options ...disc
 }
 
 // ChannelMessageSendComplex posts a full MessageSend, for the cases a plain
-// content string cannot express: an embed that carries Merlin's brand
+// content string cannot express: an embed that carries merlin's brand
 // footer, which references an attachment:// URL and therefore has to be
 // sent alongside the file itself.
 //
@@ -449,7 +449,7 @@ func (o *GuildOps) WebhookCreate(channelID, name, avatar string, options ...disc
 // MessageAllowedMentions (which marshals as {"parse":[]}, see
 // ChannelMessageSend for why the field cannot simply be left nil), a
 // rewritten message would ping everyone it originally pinged a second time,
-// and a member who worked that out would have found a way to make Merlin
+// and a member who worked that out would have found a way to make merlin
 // mass-ping on their behalf.
 //
 // The signature drops discordgo's wait parameter and the returned message:

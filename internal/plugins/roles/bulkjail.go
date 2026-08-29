@@ -228,13 +228,13 @@ func (p *Plugin) validateJailRoleTarget(guildID, roleID string) error {
 		return errors.New("that's @everyone, and jailing it would jail the entire server, including you and everyone who could undo it")
 	}
 
-	// A role positioned at or above Merlin's own survives jailRoles by design
+	// A role positioned at or above merlin's own survives jailRoles by design
 	// (spec.MD §4 item 4), so its members would keep it and the jail would not
 	// accomplish the one thing it was asked to do. Refusing beats silently
 	// half-working: the mod would see "jailed 40 members" and still have 40
 	// members holding the role they were trying to neutralise.
 	if err := p.perms.CanManageRole(guildID, roleID); err != nil {
-		return fmt.Errorf("<@&%s> sits at or above Merlin's own top role, so she can't strip it. "+
+		return fmt.Errorf("<@&%s> sits at or above merlin's own top role, so she can't strip it. "+
 			"Its members would keep it even while jailed: %w", roleID, err)
 	}
 	return nil
@@ -353,7 +353,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 	}
 }
 
-// excludeSelfAndBot drops the actor and Merlin herself from a batch.
+// excludeSelfAndBot drops the actor and merlin herself from a batch.
 //
 // Both are accidents waiting to happen rather than real intentions: a mod
 // jailing a role they happen to hold would strip their own roles mid-command,
@@ -408,7 +408,7 @@ func summarizeBulkJail(res bulkJailResult, duration time.Duration) string {
 		fmt.Fprintf(&b, "\n%s\n", mentionList(res.jailed))
 	}
 	if res.unmanageable > 0 {
-		fmt.Fprintf(&b, "\n⚠️ %d of them kept at least one role Merlin can't strip (positioned at/above her own top role).\n", res.unmanageable)
+		fmt.Fprintf(&b, "\n⚠️ %d of them kept at least one role merlin can't strip (positioned at/above her own top role).\n", res.unmanageable)
 	}
 	if len(res.redated) > 0 {
 		fmt.Fprintf(&b, "\n**Already jailed, sentence moved to this one (%d):** %s\n", len(res.redated), mentionList(res.redated))

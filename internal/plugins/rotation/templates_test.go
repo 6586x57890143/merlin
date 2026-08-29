@@ -263,7 +263,7 @@ func TestFormatRetentionDistinguishesForever(t *testing.T) {
 	}
 }
 
-// The retention notice is the single most-read thing Merlin posts: it lands
+// The retention notice is the single most-read thing merlin posts: it lands
 // in the busiest channel in the server on every rotation. It has to look
 // like the same bot as everything else, which means going through
 // core.NewEmbed and carrying every file it references. An embed pointing at

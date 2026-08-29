@@ -106,7 +106,7 @@ func TestRewriteRepostsUnderTheAuthorWithAMarker(t *testing.T) {
 	}
 	// Not optional and not configurable: the repost wears somebody's name
 	// and is not what they wrote, and everyone reading is entitled to know.
-	if !strings.Contains(posted[0].Content, "edited by Merlin") {
+	if !strings.Contains(posted[0].Content, "edited by merlin") {
 		t.Errorf("the repost carries no edit marker: %q", posted[0].Content)
 	}
 	if strings.Contains(posted[0].Content, "555-0100") {
@@ -133,6 +133,35 @@ func TestRewriteWithNothingLeftBecomesARemoval(t *testing.T) {
 	}
 	if len(posted) != 0 {
 		t.Errorf("posted %d webhook messages for an empty rewrite", len(posted))
+	}
+}
+
+// A forward cannot be rewritten. The rewrite path deletes and reposts
+// through a webhook wearing the author's name, so a rewritten forward would
+// publish somebody else's words as this member's own plain text and erase
+// the fact it was a forward at all. Removing says what happened, and the
+// incident row has to agree or a moderator reads "rewritten" and goes
+// looking for a broken webhook.
+func TestAForwardIsRemovedRatherThanRewritten(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
+
+	v := confirmed("a slur aimed at a protected group")
+	v.Rewrite = "tickle all nice people"
+	p.enforce(context.Background(), enforcingConfig(),
+		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "x", Forwarded: true},
+		BucketHateSpeech, ActionRewrite, v)
+
+	deleted, posted := ops.snapshot()
+	if len(deleted) != 1 {
+		t.Errorf("deleted %v, want the forward removed", deleted)
+	}
+	if len(posted) != 0 {
+		t.Errorf("reposted %d webhook messages, republishing a forward as the member's own words", len(posted))
+	}
+	if inc := store.recorded(); len(inc) != 1 || inc[0].Action != ActionRemove {
+		t.Errorf("incident action = %+v, want remove so the audit and the DM agree", inc)
 	}
 }
 

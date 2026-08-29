@@ -16,7 +16,7 @@ import (
 // notify.go's DM is read by the person it happened to, and stays in the
 // plain register for exactly that reason. This is read by whoever else is
 // sitting in the channel the command was run in: an audience, not the
-// target, so it runs in Merlin's ordinary playful voice (see
+// target, so it runs in merlin's ordinary playful voice (see
 // voice.KeyJailAnnounce/KeyReleaseAnnounce and PERSONA.md).
 //
 // A plain message, not an embed: this is a chat aside, not a status report,
@@ -55,7 +55,7 @@ func truncateReason(s string) string {
 }
 
 // announceJail posts a public notice naming jailedIDs and when they're
-// back, in Merlin's playful voice, into the channel the command was run in
+// back, in merlin's playful voice, into the channel the command was run in
 // and the guild's configured announcement channel, if it has one
 // (announceDestinations).
 // duration is rendered as the same Discord relative timestamp notifyJailed's
@@ -93,7 +93,7 @@ func (p *Plugin) announceJail(ctx context.Context, guildID, invokingChannelID st
 }
 
 // announceRelease posts a public notice that releasedIDs are out, in
-// Merlin's ordinary gentle register: no dunking on the way out, matching
+// merlin's ordinary gentle register: no dunking on the way out, matching
 // moderation.release's warmth rather than jail's spectacle. Same
 // destinations as announceJail: the channel the command was run in, plus
 // the guild's configured announcement channel, since someone waiting there

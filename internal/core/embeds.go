@@ -8,7 +8,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// Merlin's brand palette (spec.MD §4a), shared across every plugin's command
+// merlin's brand palette (spec.MD §4a), shared across every plugin's command
 // responses so the bot's replies read consistently instead of each plugin
 // picking its own colors. ColorSuccess/ColorError/ColorInfo/ColorWarning are
 // the four RespondXxx-mapped semantic colors below; Primary/Accent/Light/
@@ -45,7 +45,7 @@ const (
 	bannerAttachmentURL  = "attachment://" + bannerAttachmentName
 )
 
-// Merlin's moods. One drawing of her per kind of thing a message can be,
+// merlin's moods. One drawing of her per kind of thing a message can be,
 // shown as the embed's thumbnail.
 //
 // The thumbnail slot rather than the author icon: Discord renders the
@@ -76,7 +76,7 @@ var moodNoticePNG []byte
 //go:embed assets/merlin_idle.png
 var moodIdlePNG []byte
 
-// Mood is which drawing of Merlin a message carries.
+// Mood is which drawing of merlin a message carries.
 type Mood int
 
 const (
@@ -87,7 +87,7 @@ const (
 	MoodError
 	MoodWarn
 	MoodInfo
-	// MoodNotice is for things Merlin is telling you rather than answering:
+	// MoodNotice is for things merlin is telling you rather than answering:
 	// the rotation notice, the DMs a jailed member gets.
 	MoodNotice
 	// MoodIdle is for deliberately-stopped states, pause and dry-run. A
@@ -149,7 +149,7 @@ func moodFile(m Mood) *discordgo.File {
 // WithMood overrides the mood an embed's colour implied, for the few states
 // the palette cannot express on its own. Pause and dry-run are the reason
 // it exists: both are reported as ordinary informational responses, and
-// both should show Merlin asleep rather than attentive.
+// both should show merlin asleep rather than attentive.
 func WithMood(embed *discordgo.MessageEmbed, m Mood) *discordgo.MessageEmbed {
 	if url := moodAttachmentURL(m); url != "" {
 		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: url}
@@ -228,7 +228,7 @@ func bannerFile() *discordgo.File {
 // hoc messages.
 //
 // Deliberately no footer and no timestamp. Both used to be set, and together
-// they rendered as a second "Merlin, today at 14:32" line directly underneath
+// they rendered as a second "merlin, today at 14:32" line directly underneath
 // the one Discord already draws above every message this bot sends. It said
 // nothing the client had not just said, in a smaller font, and the identity
 // it was there to establish now comes from the mood thumbnail and the palette
@@ -247,7 +247,7 @@ func NewEmbed(color int, title, description string, fields ...*discordgo.Message
 // NewLandmarkEmbed is NewEmbed's richer sibling, reserved for the handful of
 // moments that genuinely warrant visual weight (first-time setup, the
 // onboarding DM), not every routine response (a banner image on every
-// one-line confirmation would be noise, not polish). Adds Merlin's banner
+// one-line confirmation would be noise, not polish). Adds merlin's banner
 // as the embed's large image; everything else matches NewEmbed exactly.
 func NewLandmarkEmbed(color int, title, description string, fields ...*discordgo.MessageEmbedField) *discordgo.MessageEmbed {
 	e := NewEmbed(color, title, description, fields...)

@@ -1,4 +1,4 @@
-// Package voice is where Merlin's own words live.
+// Package voice is where merlin's own words live.
 //
 // Two things make this a package rather than string literals at their call
 // sites. The first is variety: a bot that says the identical sentence every

@@ -1,4 +1,4 @@
--- Append-only record of every destructive Discord call Merlin attempted,
+-- Append-only record of every destructive Discord call merlin attempted,
 -- written by internal/discordguard around the call itself.
 --
 -- This is deliberately NOT an outbox. Nothing reads it to decide what to do,

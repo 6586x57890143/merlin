@@ -158,7 +158,7 @@ func (p *Plugin) registerCommands() {
 						Options: []*discordgo.ApplicationCommandOption{
 							{
 								Type: discordgo.ApplicationCommandOptionString, Name: "models",
-								Description: "Model IDs, cheapest first. Leave as \"default\" to track Merlin's own defaults.",
+								Description: "Model IDs, cheapest first. Leave as \"default\" to track merlin's own defaults.",
 								Required:    true, Autocomplete: true,
 							},
 						},
@@ -170,7 +170,7 @@ func (p *Plugin) registerCommands() {
 						Options: []*discordgo.ApplicationCommandOption{
 							{
 								Type: discordgo.ApplicationCommandOptionString, Name: "models",
-								Description: "Model IDs, best first. Leave as \"default\" to track Merlin's own defaults.",
+								Description: "Model IDs, best first. Leave as \"default\" to track merlin's own defaults.",
 								Required:    true, Autocomplete: true,
 							},
 						},
@@ -295,6 +295,50 @@ func (p *Plugin) registerCommands() {
 					},
 				},
 			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+				Name:        "calibrate",
+				Description: "The weekly review that tunes the filter to how this server actually talks",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "show",
+						Description: "What the filter has learned, and anything waiting to be applied",
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "run-now",
+						Description: "Run the review immediately instead of waiting for the weekly one",
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "apply",
+						Description: "Put the proposed calibration into force",
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "clear",
+						Description: "Forget everything learned and go back to the built-in policies alone",
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "mode",
+						Description: "Whether the weekly review applies itself, only proposes, or never runs",
+						Options: []*discordgo.ApplicationCommandOption{
+							{
+								Type: discordgo.ApplicationCommandOptionString, Name: "mode",
+								Description: "off, suggest (propose and wait), or auto (apply on its own)",
+								Required:    true,
+								// A closed set known at compile time, so fixed
+								// choices rather than autocomplete: spec.MD
+								// section 4a's autocomplete rule is about
+								// values that come from bot state.
+								Choices: calibrationModeChoices(),
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -337,4 +381,14 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("aimod", "configure/exempt-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleExemptRole)
 	p.commands.Handle("aimod", "configure/sanctions", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleSetSanction)
 	p.commands.Handle("aimod", "configure/show", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleConfigureShow)
+
+	// Reading the calibration is a moderator's business: it explains why a
+	// message was or was not touched. Changing it is not, because it changes
+	// what the filter does, which is the same line actionPolicy already draws
+	// around /aimod policy set.
+	p.commands.Handle("aimod", "calibrate/show", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleCalibrateShow)
+	p.commands.Handle("aimod", "calibrate/run-now", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleCalibrateRunNow)
+	p.commands.Handle("aimod", "calibrate/apply", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleCalibrateApply)
+	p.commands.Handle("aimod", "calibrate/clear", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleCalibrateClear)
+	p.commands.Handle("aimod", "calibrate/mode", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleCalibrateMode)
 }

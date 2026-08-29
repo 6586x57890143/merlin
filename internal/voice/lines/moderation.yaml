@@ -1,6 +1,6 @@
 # Sent as a DM to the member concerned, never posted in a channel.
 #
-# These are the one place Merlin holds back. She is talking to somebody who
+# These are the one place merlin holds back. She is talking to somebody who
 # has just been punished, and the register is deliberately the plain one:
 # explain what happened, say when it ends, make it clear nothing is lost. A
 # joke here reads as gloating to the person on the receiving end, and it is
@@ -40,7 +40,7 @@ moderation.release:
   - "you've been released in {guild}. everything you had is back where it was."
   - "done. your roles in {guild} are restored, exactly as they were before."
 
-# Sent to the member whose message Merlin's AI moderation removed or edited.
+# Sent to the member whose message merlin's AI moderation removed or edited.
 #
 # Same plain register as the jail notices above, with one thing on top of
 # them: no person decided this. Something they wrote was taken down by
@@ -67,7 +67,7 @@ moderation.aimod_removed:
   # matter of fact
   - "removed automatically from {guild}. it matched a Discord rule, no moderator reviewed it, and the reason is below."
   - "an automatic check removed one of your messages in {guild}. the rule it matched and your original text are both below."
-  - "a message you posted in {guild} has been removed by Merlin's automatic rule check. details below."
+  - "a message you posted in {guild} has been removed by merlin's automatic rule check. details below."
   - "automatic removal in {guild}. the specific rule is below, and your text is kept there so you can repost a version that clears it."
 
 moderation.aimod_rewritten:

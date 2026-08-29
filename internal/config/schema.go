@@ -47,7 +47,7 @@ type GlobalConfig struct {
 	// cmd/bot/main.go. See waitForReady, which turns that rejection into a
 	// startup failure naming the toggle instead of a silent reconnect loop.
 	GuildMembersIntent bool `yaml:"-"`
-	// OnboardingDM lets Merlin send a guild's owner a one-time DM pointing at
+	// OnboardingDM lets merlin send a guild's owner a one-time DM pointing at
 	// /config setup when she joins a server nobody has configured yet.
 	//
 	// Off by default, and opt-in via MERLIN_ENABLE_ONBOARDING_DM. That is the
@@ -57,10 +57,10 @@ type GlobalConfig struct {
 	// this bot (ticking "Server Members Intent"), that action being the only
 	// step that looks like it should matter, and nothing anywhere reporting
 	// that it had no effect. None of them hold here. There is no external
-	// toggle, nothing claims Merlin will DM anyone, and no granted capability
+	// toggle, nothing claims merlin will DM anyone, and no granted capability
 	// is being silently declined.
 	//
-	// What is left is a message Merlin originates unprompted to a person who
+	// What is left is a message merlin originates unprompted to a person who
 	// has not interacted with her, which is the category where "off unless
 	// asked for" is the conservative default rather than the surprising one.
 	// The failure mode is also mild and self-correcting: an operator who

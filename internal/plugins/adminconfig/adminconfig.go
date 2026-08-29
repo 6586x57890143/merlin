@@ -635,12 +635,12 @@ func (p *Plugin) handlePause(ctx context.Context, s *discordgo.Session, i *disco
 		// exactly what an operator just asked it to; showing an alert would
 		// say the opposite of what they need to read back.
 		_ = core.RespondEmbed(s, i, core.WithMood(core.NewEmbed(core.ColorWarning, "Destructive actions paused",
-			"Merlin will refuse every channel rotation, archive deletion, jail, and role change in this server until you run `/config pause paused:false`. Scheduled jobs stay due and resume where they left off."), core.MoodIdle))
+			"merlin will refuse every channel rotation, archive deletion, jail, and role change in this server until you run `/config pause paused:false`. Scheduled jobs stay due and resume where they left off."), core.MoodIdle))
 		return
 	}
 	p.audit(ctx, i, "config.writes_paused", "", "false")
 	core.RespondOK(s, i, "Destructive actions resumed",
-		"Merlin will act normally again. Anything that came due while paused runs on its next scheduled tick.")
+		"merlin will act normally again. Anything that came due while paused runs on its next scheduled tick.")
 }
 
 // handleDryRun turns on rehearsal mode: rotation, sweep, and jail make their
@@ -661,7 +661,7 @@ func (p *Plugin) handleDryRun(ctx context.Context, s *discordgo.Session, i *disc
 		return
 	}
 	p.audit(ctx, i, "config.writes_dry_run", "", "false")
-	core.RespondOK(s, i, "Dry-run disabled", "Merlin is acting for real again.")
+	core.RespondOK(s, i, "Dry-run disabled", "merlin is acting for real again.")
 }
 
 func (p *Plugin) handleImport(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -750,7 +750,7 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 		return
 	}
 
-	embed := core.NewLandmarkEmbed(core.ColorInfo, "Thanks for adding Merlin!",
+	embed := core.NewLandmarkEmbed(core.ColorInfo, "Thanks for adding merlin!",
 		fmt.Sprintf("Run **/config setup** in **%s** and I'll walk you through it: an audit-log channel, "+
 			"a status channel, a mod role, and admins, one step at a time. I only ever change what you pick on each "+
 			"step, and it's safe to re-run any time.", gc.Name))

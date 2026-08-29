@@ -13,14 +13,16 @@ definitions:
   - "Hate speech is any expression that degrades, vilifies or dehumanizes individuals, incites hostility towards specific groups, or promotes harm based on protected characteristics."
   - "Protected characteristics are age, caste, colour, disability, ethnicity, family responsibilities, gender and gender identity, housing status, national origin, race, refugee or immigration status, religious affiliation, serious illness, sex, sexual orientation, socioeconomic status, source of income, status as a victim of domestic or sexual violence or stalking, and weight or size."
 violations:
-  - "Slurs or dehumanizing language aimed at people for a protected characteristic"
+  - "A slur for a protected characteristic, on its own or in any sentence, with no visible reclaiming, quoting, condemnation or educational framing around it. A slur posted alone with no target named is still a violation: there is no ambiguity to resolve in its favour."
+  - "Dehumanizing language aimed at people for a protected characteristic"
   - "Claiming one group is inherently superior or inferior to another"
   - "Hate symbols or imagery used to target, threaten or intimidate"
   - "Inciting fear, hatred, discrimination or violence against a protected group"
   - "Glorifying violence committed against a protected group"
   - "Denying that a violent historical atrocity such as the Holocaust occurred"
 not_violations:
-  - "Reclaimed language used by a member of the group it refers to"
+  - "A word with slur origins used as generic profanity about an idea, an object, a situation or one person's behaviour, naming no protected group and targeting nobody for what they are. \"This update is retarded\", \"that patch is gay\", \"stop being autistic about it\" are ordinary profanity on this server, not hate speech."
+  - "Reclaimed language, where the message or the surrounding context shows the speaker is using it of their own group or as in-group banter rather than against anyone"
   - "Obvious satire, or educational, historical, newsworthy or documentary use of a symbol or a slur"
   - "Criticism of a religion, an ideology, a government, a policy or an institution rather than of people for what they are"
   - "Rude, hostile, offensive or extreme opinions that name no protected characteristic"

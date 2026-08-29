@@ -74,10 +74,25 @@ func TestShouldSkip(t *testing.T) {
 			skipEmpty,
 		},
 		{
-			"short message is skipped",
+			"one-word acknowledgement is skipped",
 			enforcing,
-			func(m *discordgo.Message) { m.Content = "lol ok" },
+			func(m *discordgo.Message) { m.Content = "ok" },
 			skipShort,
+		},
+		{
+			// The case the floor was lowered for. This used to be
+			// skipShort, which meant a slur typed on its own was never seen
+			// by anything, and it is the single most reported miss.
+			"a six-character slur reaches the model",
+			enforcing,
+			func(m *discordgo.Message) { m.Content = "nigger" },
+			skipNone,
+		},
+		{
+			"kys reaches the model",
+			enforcing,
+			func(m *discordgo.Message) { m.Content = "kys" },
+			skipNone,
 		},
 	}
 
@@ -188,8 +203,53 @@ func TestClearedTextIsRememberedAsClean(t *testing.T) {
 	p.classify("g1", []candidate{{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: line}})
 	p.wg.Wait()
 
-	if !p.dedupe.seenClean("g1", line, testNow) {
+	if !p.dedupe.seenClean("g1", "u1", line, testNow) {
 		t.Error("text the deep pass cleared was not remembered, so every copy pays again")
+	}
+}
+
+// The asymmetry the deep-pass clear needs, and the false negative the verdict
+// cache introduced without it.
+//
+// The deep pass clears on speaker-dependent grounds: hate_speech's
+// reclaimed-language line, in-group banter, "these two are obviously
+// friends". Shared guild-wide, one member being cleared for a slur meant the
+// identical slur from anybody else was skipped for the rest of the window,
+// which is the reported failure with a cache in front of it. The fast pass
+// clears generically, so that one stays shared and keeps the raid saving.
+func TestDeepClearIsPerAuthorAndFastClearIsNot(t *testing.T) {
+	const line = "a line one member is allowed to say"
+	c := newDedupeCache()
+
+	c.markCleanFor("g1", "u1", line, testNow)
+	if !c.seenClean("g1", "u1", line, testNow) {
+		t.Error("the author it was cleared for is paying for it again")
+	}
+	if c.seenClean("g1", "u2", line, testNow) {
+		t.Error("one member's clearance silenced the same words from somebody else")
+	}
+
+	// The generic clear still covers everyone, which is where the flood
+	// saving comes from: fifty accounts posting one clean line cost one call.
+	c.markClean("g1", line, testNow)
+	if !c.seenClean("g1", "u2", line, testNow) {
+		t.Error("a fast-pass clear stopped applying guild-wide")
+	}
+}
+
+// A verdict that something IS a violation holds against whoever posts it.
+// Repetition is aggravating, not exculpatory, so the act path stays shared.
+func TestActVerdictStillAppliesToEveryone(t *testing.T) {
+	c := newDedupeCache()
+	const line = "a line that trips the filter"
+	c.remember("g1", line, testNow, &cachedVerdict{bucket: BucketThreats, action: ActionRemove})
+
+	e, ok := c.lookup("g1", line, testNow)
+	if !ok || e.verdict == nil {
+		t.Fatal("an act verdict was not remembered guild-wide")
+	}
+	if c.seenClean("g1", "someone-else-entirely", line, testNow) {
+		t.Error("an act verdict read as clean for a different author")
 	}
 }
 
@@ -230,10 +290,10 @@ func TestCachedVerdictHonoursACurrentPolicyChange(t *testing.T) {
 func TestDedupeIsPerGuild(t *testing.T) {
 	c := newDedupeCache()
 	c.markClean("g1", "hello there everyone", testNow)
-	if !c.seenClean("g1", "hello there everyone", testNow) {
+	if !c.seenClean("g1", "u1", "hello there everyone", testNow) {
 		t.Fatal("a cleared text was not remembered for its own guild")
 	}
-	if c.seenClean("g2", "hello there everyone", testNow) {
+	if c.seenClean("g2", "u1", "hello there everyone", testNow) {
 		t.Error("a different guild's identical text was treated as already cleared")
 	}
 }

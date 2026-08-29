@@ -182,7 +182,7 @@ func TestDeepVerdictBucketIsPinned(t *testing.T) {
 	p := testPlugin(t, newFakeStore(), client, newFakeOps(), &fakeAudit{})
 
 	v, _, err := p.classifyDeep(context.Background(), "key", enforcingConfig(), BucketThreats,
-		candidate{MessageID: "m1", Content: "x"}, nil, false)
+		candidate{MessageID: "m1", Content: "x"}, nil, "A", false)
 	if err != nil {
 		t.Fatalf("classifyDeep: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestDeepVerdictBucketIsPinned(t *testing.T) {
 // must not carry the full policy files.
 func TestFastPromptCarriesOnlyShortLines(t *testing.T) {
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	prompt := p.fastPrompt([]Bucket{BucketThreats, BucketDoxxing})
+	prompt := p.fastPrompt([]Bucket{BucketThreats, BucketDoxxing}, nil)
 
 	if !strings.Contains(prompt, p.policies[BucketThreats].Short) {
 		t.Error("the threats short line is missing from the fast prompt")
@@ -218,7 +218,7 @@ func TestFastPromptCarriesOnlyShortLines(t *testing.T) {
 // sent for exactly the one bucket that was flagged.
 func TestDeepPromptCarriesOneWholePolicy(t *testing.T) {
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	prompt := p.deepPrompt(BucketDoxxing, false)
+	prompt := p.deepPrompt(BucketDoxxing, false, nil)
 
 	pol := p.policies[BucketDoxxing]
 	if !strings.Contains(prompt, pol.Violations[0]) {
@@ -233,7 +233,7 @@ func TestDeepPromptCarriesOneWholePolicy(t *testing.T) {
 	if strings.Contains(prompt, "rewrite (") {
 		t.Error("a rewrite was requested for a removal, which pays for output tokens nothing reads")
 	}
-	if !strings.Contains(p.deepPrompt(BucketDoxxing, true), "rewrite (") {
+	if !strings.Contains(p.deepPrompt(BucketDoxxing, true, nil), "rewrite (") {
 		t.Error("no rewrite was requested for a rewrite action")
 	}
 }
@@ -298,8 +298,8 @@ func TestPromptsTellTheModelToSeeThroughMisspellings(t *testing.T) {
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
 	for name, prompt := range map[string]string{
-		"fast": p.fastPrompt([]Bucket{BucketHateSpeech}),
-		"deep": p.deepPrompt(BucketHateSpeech, false),
+		"fast": p.fastPrompt([]Bucket{BucketHateSpeech}, nil),
+		"deep": p.deepPrompt(BucketHateSpeech, false, nil),
 	} {
 		if !strings.Contains(prompt, "not how it is spelled") {
 			t.Errorf("%s prompt does not tell the model to see through obfuscated spellings", name)
@@ -307,5 +307,44 @@ func TestPromptsTellTheModelToSeeThroughMisspellings(t *testing.T) {
 		if !strings.Contains(prompt, "plain typo") {
 			t.Errorf("%s prompt lost the guard that keeps ordinary typos from being violations", name)
 		}
+	}
+}
+
+// The rewrite instruction is a string in a prompt, which is the kind of
+// thing that gets softened by an unrelated edit with nothing failing. It is
+// load bearing twice over: it is only sent when the bucket's action is
+// rewrite, and the repost wears the author's name, so a clinical redaction
+// reads as that member being made to apologise rather than as the bot being
+// silly.
+func TestDeepPromptAsksForAPlayfulRewriteOnlyWhenRewriting(t *testing.T) {
+	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+
+	with := p.deepPrompt(BucketHateSpeech, true, nil)
+	for _, want := range []string{"rewrite", "silly", "tickle all nice people"} {
+		if !strings.Contains(with, want) {
+			t.Errorf("deep prompt with rewrite does not mention %q", want)
+		}
+	}
+
+	without := p.deepPrompt(BucketHateSpeech, false, nil)
+	if strings.Contains(without, "rewrite") {
+		t.Error("deep prompt asks for a rewrite on a bucket that only removes: the model would be paid to produce one nothing reads")
+	}
+}
+
+// The policy catalogue is where accuracy is tuned, so the two lines that
+// exist for the reported misses are asserted here rather than left to be
+// silently reworded. A slur alone was passing because the violation line
+// read "aimed at people", and generic profanity was being flagged because
+// nothing told the model where the rule stopped.
+func TestHateSpeechPolicyCoversABareSlurAndSparesGenericProfanity(t *testing.T) {
+	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+	prompt := p.deepPrompt(BucketHateSpeech, false, nil)
+
+	if !strings.Contains(prompt, "posted alone with no target named is still a violation") {
+		t.Error("nothing tells the model a bare slur counts, which is the reported miss")
+	}
+	if !strings.Contains(prompt, "retarded") {
+		t.Error("nothing tells the model where the rule stops, which is the reported false positive")
 	}
 }
