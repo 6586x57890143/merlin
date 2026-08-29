@@ -284,6 +284,22 @@ deliberately **not** `Seed`ed, the opposite of the calibration job beside it: a
 freshly set address should show a balance on the next tick, and its first fire
 costs one public RPC call rather than a model bill.
 
+**`funding/show` is the one command that answers the channel rather than the
+invoker**, via `core.DeferResponsePublic`. Everything else in this bot is
+ephemeral, which is right for a surface read to make a decision and wrong for
+one whose purpose is to be seen by other people. It has to be a separate defer
+rather than a flag on the follow-up, because Discord fixes ephemerality when
+the interaction is acknowledged: deferring privately and editing in a public
+answer silently stays private. Use it only where the answer contains nothing
+the invoker would mind posting in the channel they ran it in, which is why the
+mod-facing figures stay on `/aimod status`. `followUp` zeroes
+`AllowedMentions` for the same reason `discordguard.GuildOps` does: embeds
+cannot ping today, and that is what keeps it true if a `Content` line is ever
+added to a public path. The field renders in three weights (fenced address,
+bold chain warning, `subtext()` for guidance and provenance) because sending
+on the wrong chain is the mistake people actually make, and the money does not
+come back.
+
 `funding.ask`/`thanks`/`low`/`dry` are in the voice catalog because
 `funding/show` is `TierPublic`; the address, both balances, the runway and the
 "funds go to whoever controls it" warning are **code-authored embed fields**,

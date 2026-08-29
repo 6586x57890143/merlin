@@ -333,6 +333,29 @@ func DeferResponse(s *discordgo.Session, i *discordgo.InteractionCreate) error {
 	})
 }
 
+// DeferResponsePublic is DeferResponse for the handful of commands whose
+// answer is meant for the channel rather than for whoever typed it.
+//
+// Everything else in this bot answers privately, which is right for a surface
+// somebody is reading to make a decision: an admin running /config status does
+// not want to publish it. It is wrong for a surface whose entire purpose is to
+// be seen by other people. /aimod funding is the case that motivated this: a
+// tip jar answered privately shows the wallet address to the one person who
+// already knew about it, and to nobody the ask is aimed at.
+//
+// It has to be a separate defer rather than a flag on the follow-up, because
+// Discord fixes ephemerality when the interaction is acknowledged. Deferring
+// privately and then editing in a public answer is not possible; the edit
+// silently stays private.
+//
+// Use this only where the answer contains nothing the invoker would not want
+// posted in the channel they ran it in.
+func DeferResponsePublic(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+}
+
 // FollowUpOK and FollowUpErr replace a DeferResponse placeholder with the
 // real answer, matching RespondOK/RespondErr's styling exactly so a deferred
 // command is indistinguishable from an immediate one once it lands.
@@ -357,6 +380,12 @@ func followUp(s *discordgo.Session, i *discordgo.InteractionCreate, embed *disco
 	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
 		Files:  embedFiles(embed),
+		// Suppressed here rather than at each call site, the same reasoning
+		// as discordguard.GuildOps: a mention inside an embed does not notify
+		// anybody today, so this changes nothing now, and it is what stops
+		// the first follow-up that adds a Content line from quietly becoming
+		// able to ping. That matters since DeferResponsePublic exists.
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	})
 	return err
 }

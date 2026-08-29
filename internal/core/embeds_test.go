@@ -1,12 +1,82 @@
 package core
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+// captureTransport records the body of every Discord request, so a test can
+// assert what was actually put on the wire rather than what a helper meant.
+type captureTransport struct{ bodies []string }
+
+func (c *captureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Body != nil {
+		raw, _ := io.ReadAll(r.Body)
+		c.bodies = append(c.bodies, string(raw))
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Request:    r,
+	}, nil
+}
+
+// Discord fixes ephemerality when an interaction is acknowledged, so the
+// difference between these two helpers is decided at defer time and cannot be
+// corrected by the follow-up that lands afterwards. A tip jar deferred
+// privately stays private no matter what is edited into it, which is why the
+// public variant exists as a separate call rather than a flag further down.
+func TestDeferResponsePublicIsNotEphemeral(t *testing.T) {
+	const ephemeralFlag = 64 // 1 << 6, Discord's MessageFlagsEphemeral
+
+	for _, tc := range []struct {
+		name         string
+		defer_       func(*discordgo.Session, *discordgo.InteractionCreate) error
+		wantFlagSeen bool
+	}{
+		{"private", DeferResponse, true},
+		{"public", DeferResponsePublic, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cap := &captureTransport{}
+			s, err := discordgo.New("Bot test-token")
+			if err != nil {
+				t.Fatalf("discordgo.New: %v", err)
+			}
+			s.Client = &http.Client{Transport: cap}
+
+			i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+				ID: "i1", Token: "tok", Type: discordgo.InteractionApplicationCommand,
+			}}
+			if err := tc.defer_(s, i); err != nil {
+				t.Fatalf("defer: %v", err)
+			}
+			if len(cap.bodies) != 1 {
+				t.Fatalf("sent %d requests, want 1", len(cap.bodies))
+			}
+
+			var sent struct {
+				Data *struct {
+					Flags int `json:"flags"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(cap.bodies[0]), &sent); err != nil {
+				t.Fatalf("body was not JSON: %v (%s)", err, cap.bodies[0])
+			}
+			gotFlag := sent.Data != nil && sent.Data.Flags&ephemeralFlag != 0
+			if gotFlag != tc.wantFlagSeen {
+				t.Fatalf("ephemeral flag set = %v, want %v (body %s)", gotFlag, tc.wantFlagSeen, cap.bodies[0])
+			}
+		})
+	}
+}
 
 func TestNewEmbedSetsFields(t *testing.T) {
 	f := &discordgo.MessageEmbedField{Name: "k", Value: "v"}

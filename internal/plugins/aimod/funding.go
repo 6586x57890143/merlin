@@ -286,6 +286,21 @@ func agoWords(d time.Duration) string {
 	return humanRunway(d) + " ago"
 }
 
+// subtext renders a line in Discord's small grey style.
+//
+// The tip jar is read by two people with different questions. Somebody who
+// came to donate wants the address and nothing else; somebody deciding
+// whether to trust it wants who set it, which chain it is on, and what merlin
+// can and cannot do with the wallet. Putting the second group's answers in
+// subtext keeps them on the screen without making the first group read past
+// four sentences to reach a hex string.
+//
+// Discord's marker applies to the line it starts, not to a block, so every
+// line gets one. Rewriting the newlines here rather than documenting that as
+// a rule for callers is shorter than the comment explaining the rule would
+// have been, and it cannot be forgotten at a call site.
+func subtext(s string) string { return "-# " + strings.ReplaceAll(s, "\n", "\n-# ") }
+
 func plural(n int, one, many string) string {
 	if n == 1 {
 		return one
@@ -334,8 +349,15 @@ func (p *Plugin) canSetFunding(guildID, userID string) (bool, error) {
 // members being asked to chip in have to be able to see the address and
 // whether it is needed. It shows two balances and a runway, and nothing about
 // what is being moderated or whom.
+//
+// Answered publicly, unlike every other command in this plugin, and for the
+// same reason it is TierPublic: a tip jar shown only to whoever typed the
+// command is shown to the one person who already knew about it. Somebody
+// running this in a channel is usually pointing other people at it. That also
+// makes it the one aimod surface that must carry nothing private, which is
+// why the mod-facing figures stay on /aimod status.
 func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := core.DeferResponsePublic(s, i); err != nil {
 		p.log.Error("aimod: defer funding show", "guild", i.GuildID, "err", err)
 		return
 	}
@@ -370,9 +392,10 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	var haveRunway bool
 	if remaining == nil {
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name: "OpenRouter credits",
-			Value: core.TruncateEmbedField("Not shown: this server's key has no credit limit set, so there is no balance to read. " +
-				"Setting one on the key at openrouter.ai turns this into a gauge, and stops a leaked key draining the account."),
+			Name: "Scanning credit",
+			Value: core.TruncateEmbedField("Not shown: this server's key has no credit limit set.\n" +
+				subtext("Setting a limit on the key at openrouter.ai turns this into a gauge, "+
+					"and stops a leaked key draining the account.")),
 		})
 	} else {
 		left, haveRunway = p.runway(ctx, i.GuildID, *remaining)
@@ -381,9 +404,9 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 			value = bar(*remaining/(*limit), barWidth) + "\n" + formatUSD(*remaining) + " of " + formatUSD(*limit)
 		}
 		if haveRunway {
-			value += "\nabout " + humanRunway(left) + " left at the last week's rate"
+			value += "\n" + subtext("about "+humanRunway(left)+" at the last week's rate")
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "OpenRouter credits", Value: core.TruncateEmbedField(value)})
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Scanning credit", Value: core.TruncateEmbedField(value)})
 		switch {
 		case *remaining <= 0:
 			color = core.ColorError
@@ -394,17 +417,18 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 
 	if !f.Configured() {
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Tip jar",
-			Value: "Not set up. The server owner can point it at a wallet with `/aimod funding set-address`.",
+			Name: "Tip jar",
+			Value: "Not set up yet.\n" +
+				subtext("The server owner can point it at a wallet with /aimod funding set-address."),
 		})
 	} else {
-		jar := formatUSD(f.BalanceUSD) + " waiting to be loaded"
+		jar := "**" + formatUSD(f.BalanceUSD) + "** waiting to be loaded"
 		if f.Donations > 0 {
-			jar += fmt.Sprintf("\nraised %s across %d %s", formatUSD(f.ReceivedUSD), f.Donations,
-				plural(f.Donations, "donation", "donations"))
+			jar += "\n" + subtext(fmt.Sprintf("%s raised from %d %s so far", formatUSD(f.ReceivedUSD), f.Donations,
+				plural(f.Donations, "donation", "donations")))
 		}
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Tip jar (USDC on Base)",
+			Name:  "In the tip jar",
 			Value: core.TruncateEmbedField(jar),
 		})
 
@@ -413,21 +437,29 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		// back silently, which is right for a greeting and wrong for the one
 		// sentence telling somebody where their money is about to go.
 		//
-		// The chain is spelled out because getting it wrong is the mistake
-		// people actually make. Chains are separate ledgers: USDC sent on
-		// Ethereum mainnet to this address sits on that ledger instead, where
+		// Three weights, because these lines are not equally urgent. The
+		// address is a fenced block so it survives a phone keyboard and can be
+		// copied in one gesture. The chain is bold because getting it wrong is
+		// the mistake people actually make: chains are separate ledgers, so
+		// USDC sent on Ethereum mainnet lands on that ledger instead, where
 		// the same key still controls it but this gauge cannot see it and
-		// OpenRouter's Base checkout cannot spend it.
-		where := "`" + f.Address + "`" +
-			"\nUSDC on Base only. Anything sent on another chain will not arrive here." +
-			"\nHolding SOL, ETH or anything else? Swap it to USDC on an exchange and withdraw " +
-			"on the Base network. That is usually the cheapest way across."
+		// OpenRouter's Base checkout cannot spend it. Everything below that is
+		// subtext, which is Discord's own small grey style: still on the
+		// screen for whoever is deciding, out of the way of whoever just
+		// wanted the address.
+		where := "```\n" + f.Address + "\n```" +
+			"**Base network only.** Sent on any other chain, it will not arrive here.\n" +
+			subtext("Holding SOL, ETH or anything else? Swap it to USDC on an exchange, "+
+				"then withdraw on the Base network. That is usually the cheapest way across.")
+
+		provenance := "merlin only reads this wallet. Funds go to whoever controls it."
 		if f.SetBy != "" {
-			where += "\nset by " + core.MentionUser(f.SetBy) + " " + agoWords(p.now().Sub(f.SetAt))
+			provenance = "Set by " + core.MentionUser(f.SetBy) + " " + agoWords(p.now().Sub(f.SetAt)) + ". " + provenance
 		}
-		where += "\nmerlin only reads this wallet. Funds go to whoever controls it."
+		where += "\n" + subtext(provenance)
+
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Where to send",
+			Name:  "Send USDC on Base to",
 			Value: core.TruncateEmbedField(where),
 		})
 	}

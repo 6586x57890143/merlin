@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 // usdc renders a dollar amount the way the contract reports it, so a test can
@@ -301,6 +305,96 @@ func TestReconcileFundingJobRegistersOnlyWhereThereIsAJar(t *testing.T) {
 	p.reconcileFundingJob("g1", false)
 	if len(sched.jobs) != 0 {
 		t.Fatalf("clearing the jar should unregister, still have %v", sched.jobs)
+	}
+}
+
+// capturingStub records every Discord request body, so a test can assert what
+// the handler actually put on the wire. The shared discordStub throws bodies
+// away, which is right for the handlers whose assertions are about stored
+// state rather than about what was said.
+type capturingStub struct{ bodies []string }
+
+func (c *capturingStub) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Body != nil {
+		raw, _ := io.ReadAll(r.Body)
+		c.bodies = append(c.bodies, string(raw))
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Request:    r,
+	}, nil
+}
+
+func capturingSession(t *testing.T) (*discordgo.Session, *capturingStub) {
+	t.Helper()
+	s, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	stub := &capturingStub{}
+	s.Client = &http.Client{Transport: stub}
+	return s, stub
+}
+
+// showTheJar renders /aimod funding against a fully populated jar and returns
+// everything that went to Discord.
+func showTheJar(t *testing.T) []string {
+	t.Helper()
+	store := newFakeStore()
+	setFunding(store, Funding{
+		GuildID: "g1", Address: testWallet, SetBy: "owner",
+		SetAt:      testNow.Add(-30 * 24 * time.Hour),
+		CheckedAt:  testNow,
+		BalanceUSD: 41.20, ReceivedUSD: 128.60, Donations: 7,
+	})
+	p := fundedPlugin(t, store, 41.20)
+
+	s, stub := capturingSession(t)
+	p.handleFundingShow(context.Background(), s, interaction("g1", "funding", "show"))
+	if len(stub.bodies) == 0 {
+		t.Fatal("the handler sent nothing to Discord")
+	}
+	return stub.bodies
+}
+
+// The tip jar is a fundraising surface, so it answers the channel rather than
+// the person who typed it. Everything else in this plugin is ephemeral, which
+// is right for a surface somebody reads to make a decision and wrong for one
+// whose whole purpose is to be seen by other people.
+//
+// Asserted on the acknowledgement specifically: Discord fixes ephemerality
+// when the interaction is acked, so this is the request that decides it and
+// no later edit can correct it.
+func TestFundingShowAnswersPublicly(t *testing.T) {
+	if ack := showTheJar(t)[0]; strings.Contains(ack, `"flags"`) {
+		t.Fatalf("the tip jar was acknowledged with flags, so only the invoker sees it: %s", ack)
+	}
+}
+
+// The address is what somebody came for; the caveats are what somebody
+// deciding whether to trust it came for. They are not equally urgent, so they
+// do not render at the same weight.
+func TestFundingShowFormatsTheJar(t *testing.T) {
+	all := strings.Join(showTheJar(t), "\n")
+
+	for _, want := range []string{
+		testWallet,                      // the address itself
+		"**Base network only.**",        // the money-losing mistake, at full weight
+		"-# ",                           // Discord's small grey style is in use
+		"-# Set by ",                    // provenance, demoted
+		"merlin only reads this wallet", // the disclaimer is still present
+	} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("rendered jar is missing %q\n%s", want, all)
+		}
+	}
+
+	// The disclaimer must never start a line of its own at normal weight,
+	// which is the state this test exists to prevent regressing to.
+	if strings.Contains(all, `\nmerlin only reads`) {
+		t.Fatalf("the disclaimer is rendered at full weight rather than as subtext\n%s", all)
 	}
 }
 
