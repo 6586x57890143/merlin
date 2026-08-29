@@ -21,7 +21,7 @@ import (
 const (
 	openRouterBase = "https://openrouter.ai/api/v1"
 	refererHeader  = "https://github.com/6586x57890143/merlin"
-	titleHeader    = "Merlin"
+	titleHeader    = "merlin"
 )
 
 // httpTimeout bounds one model call.
@@ -31,6 +31,21 @@ const (
 // that has not answered in this long has effectively failed, and failing
 // fast lets the fallback model in the array get a turn.
 const httpTimeout = 20 * time.Second
+
+// retryPause is how long one transient failure waits before its single
+// retry, when the response did not name a wait of its own.
+//
+// Short, and bounded to one attempt, because of where this sits: inside a two
+// minute batch context with nineteen other messages waiting behind it. The
+// Scheduler's backoff machinery is for jobs that own their retry window; this
+// is a call somebody is standing in front of.
+const retryPause = 750 * time.Millisecond
+
+// maxRetryPause caps what a Retry-After header can ask for. A provider that
+// says "come back in ten minutes" is telling this batch it is over, and
+// sleeping on it would burn the whole spawn context holding a slot that
+// nineteen other messages need.
+const maxRetryPause = 5 * time.Second
 
 // Client talks to OpenRouter. One per process, sharing an http.Client so
 // connections are reused across guilds; the API key is per call, not per
@@ -219,6 +234,10 @@ type chatResponse struct {
 type APIError struct {
 	Status  int
 	Message string
+	// RetryAfter is the Retry-After header, when the response carried one.
+	// Zero otherwise. Read by retryAfter, which clamps it: a provider asking
+	// for ten minutes is telling this batch it is over.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -239,9 +258,77 @@ func (c *Client) Chat(ctx context.Context, apiKey string, req chatRequest) (stri
 		// per message, and answer the caller from the retry.
 		c.markReasoningMandatory(req.Models)
 		req.Reasoning = nil
+		out, usage, err = c.chatOnce(ctx, apiKey, req)
+	}
+	if err != nil && transient(err) {
+		// The distinction APIError was built to carry, finally acted on. A
+		// 429 or a 5xx used to lose the whole batch: one log line, and twenty
+		// messages that nothing ever judged. The Models fallback array does
+		// not cover this, because it moves between models on a model error,
+		// not on an account-level rate limit or an OpenRouter outage.
+		//
+		// Free to retry: a response that failed this way carries no usage
+		// block, so nothing is booked twice.
+		if !pause(ctx, retryAfter(err)) {
+			return out, usage, err
+		}
 		return c.chatOnce(ctx, apiKey, req)
 	}
 	return out, usage, err
+}
+
+// transient reports whether err is worth exactly one more attempt.
+//
+// Rate limits and server errors are; 400, 401 and 403 are not. A bad key or a
+// malformed request fails identically the second time, so retrying those
+// doubles a pointless bill and delays the log line that says what is actually
+// wrong. A cancelled context is not transient either: that is the batch's own
+// deadline, and retrying past it is work nobody is waiting for.
+func transient(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Status == http.StatusTooManyRequests || apiErr.Status >= 500
+	}
+	// A transport error: connection reset, DNS blip, the timeout above. The
+	// call never reached a model, so there is nothing to be consistent with.
+	return true
+}
+
+// retryAfter is how long the failure asked to be left alone, clamped.
+func retryAfter(err error) time.Duration {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.RetryAfter > 0 {
+		return min(apiErr.RetryAfter, maxRetryPause)
+	}
+	return retryPause
+}
+
+// parseRetryAfter reads the delay-seconds form of the header. The HTTP-date
+// form is not handled: OpenRouter sends seconds, and a wrong date parse would
+// produce a wait this code then has to defend against anyway. Anything
+// unreadable is zero, which retryAfter turns into the ordinary pause.
+func parseRetryAfter(h string) time.Duration {
+	secs, err := strconv.Atoi(strings.TrimSpace(h))
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// pause waits, and reports whether it got to finish. False means the context
+// ended first, in which case the caller must not spend another call.
+func pause(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (string, Usage, error) {
@@ -267,7 +354,11 @@ func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (
 		return "", Usage{}, fmt.Errorf("openrouter: read chat response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", Usage{}, &APIError{Status: resp.StatusCode, Message: errorMessage(raw)}
+		return "", Usage{}, &APIError{
+			Status:     resp.StatusCode,
+			Message:    errorMessage(raw),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 
 	var parsed chatResponse

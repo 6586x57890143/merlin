@@ -107,6 +107,37 @@ func (f *fakeStore) SetSanctionOptIn(_ context.Context, g string, ids []string) 
 	return f.mutate(g, func(c *Config) { c.SanctionOptInUserIDs = ids })
 }
 
+func (f *fakeStore) SetCalibration(_ context.Context, g string, active, pending []CalibrationExample, ranAt time.Time) error {
+	return f.mutate(g, func(c *Config) {
+		c.Calibration, c.CalibrationPending = active, pending
+		if !ranAt.IsZero() {
+			c.CalibrationRanAt = ranAt
+		}
+	})
+}
+
+func (f *fakeStore) SetCalibrationMode(_ context.Context, g string, mode CalibrationMode) error {
+	return f.mutate(g, func(c *Config) { c.CalibrationMode = mode })
+}
+
+func (f *fakeStore) IncidentsSince(_ context.Context, g string, since time.Time, limit int) ([]Incident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.incidentErr != nil {
+		return nil, f.incidentErr
+	}
+	var out []Incident
+	for _, inc := range f.incidents {
+		if inc.GuildID == g && !inc.CreatedAt.Before(since) {
+			out = append(out, inc)
+		}
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func spendKey(guildID string, day time.Time) string { return guildID + "|" + day.Format("2006-01-02") }
 
 func (f *fakeStore) AddSpend(_ context.Context, g string, day time.Time, u Usage, deep bool) error {
@@ -248,14 +279,63 @@ type fakeClassifier struct {
 	// fast and deep are the raw JSON bodies returned, in order. A shorter
 	// list than the number of calls repeats the last entry, so a test only
 	// has to script the answers it cares about.
-	fast, deep  []string
-	fastErr     error
-	deepErr     error
-	usage       Usage
-	fastCalls   int
-	deepCalls   int
-	lastFastReq chatRequest
-	lastDeepReq chatRequest
+	fast, deep []string
+	// deepDelay makes a deep call take measurable time, so a test can tell
+	// serial escalation from concurrent. inDeep and maxDeepParallel record
+	// how many were actually in flight at once: a wall-clock assertion would
+	// say the same thing but flake on a loaded machine, and this fails
+	// deterministically the moment escalation goes back to being serial.
+	deepDelay       time.Duration
+	inDeep          int
+	maxDeepParallel int
+	fastErr         error
+	deepErr         error
+	usage           Usage
+	fastCalls       int
+	deepCalls       int
+	lastFastReq     chatRequest
+	lastDeepReq     chatRequest
+}
+
+// lastUserMessage returns the user half of the last fast-pass request, which
+// is where the numbered batch and its reply context are built.
+func (f *fakeClassifier) lastUserMessage() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, m := range f.lastFastReq.Messages {
+		if m.Role == "user" {
+			return m.Content
+		}
+	}
+	return ""
+}
+
+// enterDeep marks one deep call as started, records the high-water mark of
+// how many were in flight together, and returns how long to sleep.
+func (f *fakeClassifier) enterDeep(req chatRequest) time.Duration {
+	if !isDeep(req) {
+		return 0
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inDeep++
+	f.maxDeepParallel = max(f.maxDeepParallel, f.inDeep)
+	return f.deepDelay
+}
+
+func (f *fakeClassifier) leaveDeep(req chatRequest) {
+	if !isDeep(req) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inDeep--
+}
+
+func (f *fakeClassifier) peakDeepParallel() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.maxDeepParallel
 }
 
 // isDeep distinguishes the two passes by the schema each one asks for, which
@@ -265,6 +345,14 @@ func isDeep(req chatRequest) bool {
 }
 
 func (f *fakeClassifier) Chat(_ context.Context, _ string, req chatRequest) (string, Usage, error) {
+	// Outside the lock, deliberately. The delay exists so concurrent
+	// escalations actually overlap, and sleeping while holding f.mu would
+	// serialize them again and let a serial implementation pass.
+	if d := f.enterDeep(req); d > 0 {
+		time.Sleep(d)
+	}
+	defer f.leaveDeep(req)
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if isDeep(req) {
@@ -311,9 +399,10 @@ type fakeOps struct {
 	webhooks  int
 	deleteErr error
 
-	guild   *discordgo.Guild
-	members map[string]*discordgo.Member
-	history []*discordgo.Message
+	guild      *discordgo.Guild
+	members    map[string]*discordgo.Member
+	history    []*discordgo.Message
+	historyErr error
 }
 
 func newFakeOps() *fakeOps {
@@ -337,7 +426,7 @@ func (f *fakeOps) ChannelMessageDelete(_, messageID string, _ ...discordgo.Reque
 func (f *fakeOps) ChannelMessages(string, int, string, string, string, ...discordgo.RequestOption) ([]*discordgo.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.history, nil
+	return f.history, f.historyErr
 }
 
 func (f *fakeOps) ChannelWebhooks(string, ...discordgo.RequestOption) ([]*discordgo.Webhook, error) {

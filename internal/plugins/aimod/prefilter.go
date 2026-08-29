@@ -17,15 +17,27 @@ import (
 
 // minScanLen is the length below which a message is not worth a model call.
 //
-// A judgement call with a real cost either way, so: short messages are where
-// context does all the work ("kys" is three characters and is a genuine
-// self_harm or threats hit), which argues for zero. But a filter that sends
-// every "lol" and "yeah" to a model spends most of its budget on the
-// cheapest possible nothing. The compromise is that regexHits below runs on
-// every message regardless of length, so the short strings that genuinely
-// matter are caught by pattern rather than skipped, and the length gate only
-// suppresses the model call.
-const minScanLen = 12
+// It was 12, and that was the single largest hole in this filter: a slur
+// typed on its own is six characters, "kys" is three, and every one of them
+// returned skipShort before anything looked at it. The version of this
+// comment that set 12 already named "kys" as the case that argued for zero,
+// and settled on 12 for cost. It was answering the wrong question: rung 1 is
+// a fixed table of credential and link shapes, so "the short strings that
+// genuinely matter are caught by pattern" was only ever true of the strings
+// somebody had already thought to write a pattern for. Slurs are not a
+// closed set, and a per-word regex table is an evasion treadmill.
+//
+// What changed since is that dedupeCache remembers verdicts rather than
+// sightings, which is what makes 3 affordable. Short chatter ("lol", "ok",
+// "same", "lmao") is the most-repeated text on any server, so the first copy
+// inside dedupeWindow costs one slot in a batch that was going out anyway
+// and every later copy is skipDuplicate for free. The floor now only
+// suppresses single emoji and one-word acknowledgements.
+//
+// Fast-tier volume does rise, and honestly: this trades money for coverage.
+// checkBudget is what bounds the money, and over the cap the plugin degrades
+// to rungs 0-1 rather than overspending.
+const minScanLen = 3
 
 // dedupeWindow is how long a verdict on an exact piece of text stands.
 //
@@ -105,17 +117,22 @@ func newDedupeCache() *dedupeCache {
 	return &dedupeCache{seen: make(map[uint64]dedupeEntry)}
 }
 
-// dedupeKey hashes guild plus normalized text.
+// dedupeKey hashes guild, an optional author scope, and normalized text.
 //
 // A hash, not the text: this cache lives for the process lifetime and would
 // otherwise be a copy of the server's chat sitting in memory, which is
 // exactly what this plugin's privacy property rules out.
-func dedupeKey(guildID, content string) uint64 {
+//
+// authorID is empty for everything except a deep-pass clear. See markCleanFor
+// for why that one entry is narrower than the rest.
+func dedupeKey(guildID, authorID, content string) uint64 {
 	h := fnv.New64a()
 	// Guild-scoped so two servers running the same copypasta do not mask
 	// each other, and because a verdict is only meaningful against one
 	// guild's policy anyway.
 	_, _ = h.Write([]byte(guildID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(authorID))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(strings.ToLower(strings.TrimSpace(content))))
 	return h.Sum64()
@@ -133,14 +150,22 @@ func dedupeKey(guildID, content string) uint64 {
 // and the rest produced no record at all, which reads from the outside as
 // the filter having stopped working. Repetition is aggravating, not
 // exculpatory, and it must never be the thing that buys silence.
-func (c *dedupeCache) seenClean(guildID, content string, now time.Time) bool {
-	e, ok := c.lookup(guildID, content, now)
+// A guild-wide clear is checked first, then one recorded for this author
+// alone: see markCleanFor.
+func (c *dedupeCache) seenClean(guildID, authorID, content string, now time.Time) bool {
+	if e, ok := c.lookup(guildID, content, now); ok && e.verdict == nil {
+		return true
+	}
+	e, ok := c.lookupKey(dedupeKey(guildID, authorID, content), now)
 	return ok && e.verdict == nil
 }
 
-// lookup returns a live entry for this text, if there is one.
+// lookup returns a live guild-wide entry for this text, if there is one.
 func (c *dedupeCache) lookup(guildID, content string, now time.Time) (dedupeEntry, bool) {
-	key := dedupeKey(guildID, content)
+	return c.lookupKey(dedupeKey(guildID, "", content), now)
+}
+
+func (c *dedupeCache) lookupKey(key uint64, now time.Time) (dedupeEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.seen[key]
@@ -150,10 +175,13 @@ func (c *dedupeCache) lookup(guildID, content string, now time.Time) (dedupeEntr
 	return e, true
 }
 
-// remember records a verdict against this text. A nil verdict means clean.
+// remember records a guild-wide verdict against this text. A nil verdict
+// means clean.
 func (c *dedupeCache) remember(guildID, content string, now time.Time, v *cachedVerdict) {
-	key := dedupeKey(guildID, content)
+	c.rememberKey(dedupeKey(guildID, "", content), now, v)
+}
 
+func (c *dedupeCache) rememberKey(key uint64, now time.Time, v *cachedVerdict) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sweepLocked(now)
@@ -169,6 +197,27 @@ func (c *dedupeCache) remember(guildID, content string, now time.Time, v *cached
 // sweep only runs when the map is actually growing.
 func (c *dedupeCache) markClean(guildID, content string, now time.Time) {
 	c.remember(guildID, content, now, nil)
+}
+
+// markCleanFor records a clear that applies to one member only.
+//
+// The asymmetry is the point, and it fixes a false negative the verdict cache
+// introduced. A guild-wide clear is right for the fast pass, which clears
+// text on generic grounds ("nothing here"), and that is where the raid saving
+// comes from: fifty accounts posting one clean line cost one call.
+//
+// A deep-pass clear is not generic. That pass clears on speaker-dependent
+// grounds, which is exactly what hate_speech's reclaimed-language line and
+// every "these two are obviously friends" reading are. Shared guild-wide,
+// one member being cleared for a slur meant the identical slur from anybody
+// else was skipped for the rest of dedupeWindow, which is the reported
+// failure with a cache in front of it.
+//
+// Acting is not narrowed the same way, and should not be: repetition is
+// aggravating, and a verdict that something IS a violation holds against
+// whoever posts it.
+func (c *dedupeCache) markCleanFor(guildID, authorID, content string, now time.Time) {
+	c.rememberKey(dedupeKey(guildID, authorID, content), now, nil)
 }
 
 // sweepLocked bounds the map. Swept on write rather than on a ticker: no
@@ -216,14 +265,18 @@ func (p *Plugin) shouldSkip(cfg Config, m *discordgo.Message, now time.Time) ski
 			}
 		}
 	}
-	content := strings.TrimSpace(m.Content)
+	// Not m.Content: a forwarded message carries its text in a snapshot and
+	// leaves Content empty, so reading Content here returned skipEmpty and
+	// let the forward button bypass every rung below. See messageText.
+	text, _ := messageText(m)
+	content := strings.TrimSpace(text)
 	if content == "" {
 		return skipEmpty
 	}
 	if len([]rune(content)) < minScanLen {
 		return skipShort
 	}
-	if p.dedupe.seenClean(m.GuildID, content, now) {
+	if p.dedupe.seenClean(m.GuildID, m.Author.ID, content, now) {
 		return skipDuplicate
 	}
 	return skipNone

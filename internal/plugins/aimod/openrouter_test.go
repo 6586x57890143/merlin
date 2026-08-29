@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The HTTP client, against a stub OpenRouter. These are the cases that
@@ -206,5 +207,136 @@ func TestOtherBadRequestsAreNotRetried(t *testing.T) {
 	}
 	if !c.ReasoningDisabled([]string{"a/b"}) {
 		t.Error("an unrelated 400 was recorded as a reasoning rejection")
+	}
+}
+
+// A 429 or a 5xx used to lose the whole batch: one log line, and twenty
+// messages nothing ever judged. APIError has carried the status all along
+// precisely so this could be told apart from a permanent failure, and
+// nothing acted on it. The Models fallback array does not cover this, since
+// it moves between models on a model error, not on an account-level rate
+// limit or an OpenRouter outage.
+func TestTransientFailuresGetOneRetry(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var calls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if calls == 1 {
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(`{"error":{"message":"try again"}}`))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"model":"a/b","choices":[{"message":{"content":"{}"}}]}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			c := NewClient()
+			c.base = srv.URL
+			out, _, err := c.Chat(context.Background(), "k", chatRequest{Models: []string{"a/b"}})
+			if err != nil {
+				t.Fatalf("a transient %d was not retried: %v", status, err)
+			}
+			if out != "{}" {
+				t.Errorf("content = %q, want the retry's answer", out)
+			}
+			if calls != 2 {
+				t.Errorf("made %d requests, want exactly one retry", calls)
+			}
+		})
+	}
+}
+
+// Exactly one retry, never a loop. This call sits inside a two minute batch
+// context with nineteen other messages waiting behind it, so a provider that
+// is genuinely down has to fail fast rather than hold the slot.
+func TestTransientFailuresAreRetriedOnlyOnce(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"down"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient()
+	c.base = srv.URL
+	if _, _, err := c.Chat(context.Background(), "k", chatRequest{Models: []string{"a/b"}}); err == nil {
+		t.Fatal("a persistent outage was reported as success")
+	}
+	if calls != 2 {
+		t.Errorf("made %d requests, want 2: one attempt and one retry", calls)
+	}
+}
+
+// A bad key fails identically the second time, so retrying it doubles a
+// pointless bill and delays the log line saying what is actually wrong.
+func TestPermanentFailuresAreNotRetried(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var calls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":{"message":"nope"}}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			c := NewClient()
+			c.base = srv.URL
+			if _, _, err := c.Chat(context.Background(), "k", chatRequest{Models: []string{"a/b"}}); err == nil {
+				t.Fatalf("a %d was reported as success", status)
+			}
+			if calls != 1 {
+				t.Errorf("made %d requests for a permanent %d, want 1", calls, status)
+			}
+		})
+	}
+}
+
+// A cancelled context is the batch's own deadline, not a transient failure.
+// Retrying past it is work nobody is waiting for, and it would run on into
+// the next batch's budget.
+func TestACancelledContextIsNotRetried(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"down"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient()
+	c.base = srv.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := c.Chat(ctx, "k", chatRequest{Models: []string{"a/b"}}); err == nil {
+		t.Fatal("a cancelled call was reported as success")
+	}
+	if calls > 1 {
+		t.Errorf("made %d requests on a cancelled context", calls)
+	}
+}
+
+// Retry-After is honoured but clamped: a provider asking for ten minutes is
+// telling this batch it is over, and sleeping on it would burn the whole
+// spawn context holding a slot nineteen other messages need.
+func TestRetryAfterIsClamped(t *testing.T) {
+	if got := parseRetryAfter("2"); got != 2*time.Second {
+		t.Errorf("parseRetryAfter(\"2\") = %v, want 2s", got)
+	}
+	for _, in := range []string{"", "later", "0", "-1"} {
+		if got := parseRetryAfter(in); got != 0 {
+			t.Errorf("parseRetryAfter(%q) = %v, want 0", in, got)
+		}
+	}
+	long := &APIError{Status: http.StatusTooManyRequests, RetryAfter: 10 * time.Minute}
+	if got := retryAfter(long); got != maxRetryPause {
+		t.Errorf("retryAfter for a 10 minute request = %v, want the %v cap", got, maxRetryPause)
+	}
+	if got := retryAfter(&APIError{Status: 500}); got != retryPause {
+		t.Errorf("retryAfter with no header = %v, want the default %v", got, retryPause)
 	}
 }

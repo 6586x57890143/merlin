@@ -19,7 +19,7 @@ import (
 // One per channel, reused. Discord caps a channel at 15 webhooks, and a
 // plugin that created one per rewrite would exhaust that in an afternoon and
 // then start failing with an error nobody would connect to moderation.
-const webhookName = "Merlin message cleanup"
+const webhookName = "merlin message cleanup"
 
 // rewriteMarker is appended to a reposted message.
 //
@@ -29,7 +29,7 @@ const webhookName = "Merlin message cleanup"
 // Everyone reading the channel is entitled to know that happened, and the
 // author is entitled to have it be obvious rather than deniable. If this
 // ever needs to be shorter, it does not need to be absent.
-const rewriteMarker = "\n-# edited by Merlin - `/aimod why` for details"
+const rewriteMarker = "\n-# edited by merlin - `/aimod why` for details"
 
 // enforce carries out one confirmed verdict.
 //
@@ -54,6 +54,14 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	// deleted, and went looking for a broken webhook. Deciding here keeps
 	// all four in agreement.
 	if action == ActionRewrite && strings.TrimSpace(v.Rewrite) == "" {
+		action = ActionRemove
+	}
+	// A forward cannot be rewritten, for the same reason it is decided here
+	// rather than further down: rewriteMessage deletes and reposts through a
+	// webhook wearing the author's name, so a rewritten forward would publish
+	// somebody else's words as this member's own plain text and erase the
+	// fact that it was a forward at all. Removing says what happened.
+	if action == ActionRewrite && c.Forwarded {
 		action = ActionRemove
 	}
 
@@ -135,7 +143,7 @@ func (p *Plugin) removeMessage(ctx context.Context, guildID string, c candidate)
 //
 // A bot cannot edit another user's message, so "rewrite" is necessarily
 // delete-and-repost, and the webhook is what keeps the result readable: the
-// alternative, Merlin quoting the member back at the channel, turns every
+// alternative, merlin quoting the member back at the channel, turns every
 // rewrite into an interruption and a small public shaming.
 //
 // An empty replacement is treated as a removal. That is not a failure case:

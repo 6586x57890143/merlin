@@ -148,3 +148,13 @@ func (c *cachingStore) SetSanctionOptIn(ctx context.Context, guildID string, use
 	defer c.invalidate(guildID)
 	return c.Store.SetSanctionOptIn(ctx, guildID, userIDs)
 }
+
+func (c *cachingStore) SetCalibration(ctx context.Context, guildID string, active, pending []CalibrationExample, ranAt time.Time) error {
+	defer c.invalidate(guildID)
+	return c.Store.SetCalibration(ctx, guildID, active, pending, ranAt)
+}
+
+func (c *cachingStore) SetCalibrationMode(ctx context.Context, guildID string, mode CalibrationMode) error {
+	defer c.invalidate(guildID)
+	return c.Store.SetCalibrationMode(ctx, guildID, mode)
+}

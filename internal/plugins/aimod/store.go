@@ -1,7 +1,7 @@
 // Package aimod implements AI-assisted moderation against Discord's own
 // Community Guidelines (https://discord.com/guidelines).
 //
-// It exists for one failure mode the rest of this bot cannot cover. Merlin's
+// It exists for one failure mode the rest of this bot cannot cover. merlin's
 // other defences are reactive to moderators: jail, rotation, audit. Nothing
 // watches what is actually posted, so a server whose exposure is weaponized
 // mass-reporting (spec.MD section 4) is protected only when a human happens
@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -58,6 +59,19 @@ type Config struct {
 	// optin.go for why that invariant is what makes it safe.
 	SanctionOptInUserIDs []string
 	BucketActions        map[Bucket]Action
+
+	// Calibration is the active learned example set, rendered into both
+	// classifier prompts. CalibrationPending is a proposal awaiting
+	// /aimod calibrate apply and is never read by the classifier: keeping
+	// them in separate columns is what stops a run in suggest mode changing
+	// behaviour simply by having happened.
+	Calibration        []CalibrationExample
+	CalibrationPending []CalibrationExample
+	CalibrationMode    CalibrationMode
+	// CalibrationRanAt is zero until the first review. Displayed by
+	// /aimod calibrate show; nothing schedules from it, because the
+	// Scheduler owns its own last-run bookkeeping.
+	CalibrationRanAt time.Time
 }
 
 // Mode is the guild-wide switch, above the per-bucket actions.
@@ -77,6 +91,49 @@ const (
 
 // Modes lists every mode, for command choices.
 var Modes = []Mode{ModeOff, ModeFlag, ModeEnforce}
+
+// CalibrationMode is the guild's setting for the weekly self-review. It
+// mirrors Mode's ladder deliberately: off, then a step where the mechanism
+// runs and reports without changing anything, then the one where it acts.
+type CalibrationMode string
+
+const (
+	CalibrationOff CalibrationMode = "off"
+	// CalibrationSuggest reviews on schedule and posts a proposal to the
+	// audit channel, leaving the active set alone until an admin runs
+	// /aimod calibrate apply. The default, for the same reason ModeFlag sits
+	// between off and enforce: this changes what a filter that deletes
+	// messages does, and a guild should get to read the first one.
+	CalibrationSuggest CalibrationMode = "suggest"
+	CalibrationAuto    CalibrationMode = "auto"
+)
+
+// CalibrationModes lists every mode, for command choices.
+var CalibrationModes = []CalibrationMode{CalibrationOff, CalibrationSuggest, CalibrationAuto}
+
+func (m CalibrationMode) valid() bool { return slices.Contains(CalibrationModes, m) }
+
+// CalibrationExample is one labelled example learned from a guild's own
+// moderation history and rendered into the classifier prompts.
+//
+// Typed fields, not prose, and that is the entire safety argument for this
+// feature. A model proposing free text would be writing instructions into a
+// prompt that deletes messages, with nothing able to check them. Here the
+// model fills four slots and this package writes the sentence, so the worst a
+// bad entry can do is be a wrong example: it cannot enable a bucket the guild
+// switched off, change an action, move a threshold, or say anything the
+// renderer in classify.go does not have a format string for.
+//
+// Text is a paraphrase or a synthetic stand-in, never a verbatim quote. That
+// is asked for in the prompt and enforced in validateCalibration, because
+// this column is not covered by the evidence-retention window and a verbatim
+// copy of somebody's message would quietly outlive it.
+type CalibrationExample struct {
+	Text      string `json:"text"`
+	Bucket    Bucket `json:"bucket"`
+	ShouldAct bool   `json:"should_act"`
+	Note      string `json:"note"`
+}
 
 // Incident is one message this plugin acted on.
 type Incident struct {
@@ -132,6 +189,13 @@ type Store interface {
 	SetExemptRoles(ctx context.Context, guildID string, ids []string) error
 	SetSanctionAction(ctx context.Context, guildID string, action SanctionAction) error
 	SetSanctionOptIn(ctx context.Context, guildID string, userIDs []string) error
+	// SetCalibration writes both sets at once, because every path that
+	// changes one changes the other: a review in suggest mode fills pending
+	// and leaves active, apply moves pending into active and empties
+	// pending, and clear empties both. Two setters would make "apply" two
+	// writes that can half-fail.
+	SetCalibration(ctx context.Context, guildID string, active, pending []CalibrationExample, ranAt time.Time) error
+	SetCalibrationMode(ctx context.Context, guildID string, mode CalibrationMode) error
 
 	// AddSpend accumulates one model call. Separate from the classify path's
 	// error handling on purpose: the money was spent whether or not the
@@ -156,6 +220,11 @@ type Store interface {
 	// a cutoff: the messages the scan ceiling stopped this plugin confirming.
 	// See sanctionForAbuse, which is what clears them.
 	PendingFlags(ctx context.Context, guildID, userID string, since time.Time) ([]Incident, error)
+	// IncidentsSince returns a guild's incidents newest-first since a cutoff,
+	// bounded by limit. What the weekly calibration review reads: which
+	// channels this filter has actually been busy in, what it decided, and
+	// (via Undone) which of those decisions a moderator reversed.
+	IncidentsSince(ctx context.Context, guildID string, since time.Time, limit int) ([]Incident, error)
 	// MarkActioned records that an incident stopped being a flag and became
 	// something that was done.
 	MarkActioned(ctx context.Context, id int64, action Action) error
@@ -187,19 +256,25 @@ func defaultConfig(guildID string) Config {
 		DailyBudgetUSD: 0.50,
 		EvidenceHours:  24,
 		SanctionAction: SanctionFlag,
-		BucketActions:  map[Bucket]Action{},
+		// Matches the column default. It costs nothing while Mode is off,
+		// since reconcileCalibrationJob registers no job unless both are on.
+		CalibrationMode: CalibrationSuggest,
+		BucketActions:   map[Bucket]Action{},
 	}
 }
 
 func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 	cfg := defaultConfig(guildID)
-	var actionsJSON []byte
+	var actionsJSON, calJSON, calPendingJSON []byte
+	var ranAt *time.Time
 	err := s.pool.QueryRow(ctx, `
 		SELECT api_key_sealed, mode, daily_budget_usd, evidence_hours,
-		       fast_models, deep_models, exempt_channel_ids, exempt_role_ids, sanction_action, sanction_optin_user_ids, bucket_actions
+		       fast_models, deep_models, exempt_channel_ids, exempt_role_ids, sanction_action, sanction_optin_user_ids, bucket_actions,
+		       calibration, calibration_pending, calibration_mode, calibration_ran_at
 		FROM aimod_config WHERE guild_id = $1
 	`, guildID).Scan(&cfg.APIKeySealed, &cfg.Mode, &cfg.DailyBudgetUSD, &cfg.EvidenceHours,
-		&cfg.FastModels, &cfg.DeepModels, &cfg.ExemptChannelIDs, &cfg.ExemptRoleIDs, &cfg.SanctionAction, &cfg.SanctionOptInUserIDs, &actionsJSON)
+		&cfg.FastModels, &cfg.DeepModels, &cfg.ExemptChannelIDs, &cfg.ExemptRoleIDs, &cfg.SanctionAction, &cfg.SanctionOptInUserIDs, &actionsJSON,
+		&calJSON, &calPendingJSON, &cfg.CalibrationMode, &ranAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return cfg, nil
@@ -215,7 +290,28 @@ func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 			cfg.BucketActions[Bucket(b)] = Action(a)
 		}
 	}
+	// Unreadable calibration is dropped, not fatal, and the difference
+	// matters: this is read on the hot path for every message, so a column
+	// somebody hand-edited into nonsense must not stop the guild being
+	// moderated at all. An empty set is exactly the pre-calibration
+	// behaviour, which is a safe place to land.
+	cfg.Calibration = decodeCalibration(calJSON)
+	cfg.CalibrationPending = decodeCalibration(calPendingJSON)
+	if ranAt != nil {
+		cfg.CalibrationRanAt = ranAt.UTC()
+	}
 	return cfg, nil
+}
+
+func decodeCalibration(raw []byte) []CalibrationExample {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []CalibrationExample
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // upsert is the one write shape every scalar setter uses. Every setter has
@@ -294,6 +390,91 @@ func (s *pgStore) SetBucketAction(ctx context.Context, guildID string, bucket Bu
 		return fmt.Errorf("aimod store: set bucket action: %w", err)
 	}
 	return nil
+}
+
+func (s *pgStore) SetCalibrationMode(ctx context.Context, guildID string, mode CalibrationMode) error {
+	return s.upsert(ctx, guildID, "calibration_mode", string(mode))
+}
+
+// SetCalibration writes the active set, the pending proposal and the run
+// timestamp in one statement.
+//
+// One write rather than three setters, because no caller ever changes one
+// without the others: a review in suggest mode fills pending and leaves
+// active alone, apply moves pending into active and empties pending, and
+// clear empties both. Split across separate statements, an apply that
+// half-failed would leave a guild enforcing a set it had also kept queued.
+func (s *pgStore) SetCalibration(ctx context.Context, guildID string, active, pending []CalibrationExample, ranAt time.Time) error {
+	// Marshalled from a non-nil slice so a cleared set stores '[]' rather
+	// than 'null', which the CHECK-less JSONB column would happily accept
+	// and decodeCalibration would then have to special-case.
+	activeJSON, err := json.Marshal(nonNil(active))
+	if err != nil {
+		return fmt.Errorf("aimod store: encode calibration: %w", err)
+	}
+	pendingJSON, err := json.Marshal(nonNil(pending))
+	if err != nil {
+		return fmt.Errorf("aimod store: encode pending calibration: %w", err)
+	}
+	var ran *time.Time
+	if !ranAt.IsZero() {
+		ran = &ranAt
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO aimod_config (guild_id, calibration, calibration_pending, calibration_ran_at)
+		VALUES ($1, $2::jsonb, $3::jsonb, $4)
+		ON CONFLICT (guild_id) DO UPDATE SET calibration = EXCLUDED.calibration,
+		                                     calibration_pending = EXCLUDED.calibration_pending,
+		                                     calibration_ran_at = COALESCE(EXCLUDED.calibration_ran_at, aimod_config.calibration_ran_at),
+		                                     updated_at = now()
+	`, guildID, activeJSON, pendingJSON, ran); err != nil {
+		return fmt.Errorf("aimod store: set calibration: %w", err)
+	}
+	return nil
+}
+
+func nonNil(in []CalibrationExample) []CalibrationExample {
+	if in == nil {
+		return []CalibrationExample{}
+	}
+	return in
+}
+
+// IncidentsSince is the calibration review's input: what this filter did
+// lately, and (via undone) which of it a moderator disagreed with.
+//
+// Deliberately not filtered the way CountSanctions and PendingFlags are.
+// Those two are asking about one member's history and must exclude reversals;
+// this one is asking how the filter is performing, and a reversal is the most
+// informative row in the table.
+func (s *pgStore) IncidentsSince(ctx context.Context, guildID string, since time.Time, limit int) ([]Incident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, channel_id, message_id, author_id, bucket, action, confidence, reason, content, replacement, undone, created_at
+		FROM aimod_incidents
+		WHERE guild_id = $1 AND created_at >= $2
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, guildID, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("aimod store: incidents since: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Incident
+	for rows.Next() {
+		inc := Incident{GuildID: guildID}
+		var bucket, action string
+		if err := rows.Scan(&inc.ID, &inc.ChannelID, &inc.MessageID, &inc.AuthorID, &bucket, &action,
+			&inc.Confidence, &inc.Reason, &inc.Content, &inc.Replacement, &inc.Undone, &inc.CreatedAt); err != nil {
+			return nil, fmt.Errorf("aimod store: scan incident: %w", err)
+		}
+		inc.Bucket, inc.Action = Bucket(bucket), Action(action)
+		out = append(out, inc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("aimod store: iterate incidents: %w", err)
+	}
+	return out, nil
 }
 
 func (s *pgStore) AddSpend(ctx context.Context, guildID string, day time.Time, u Usage, deep bool) error {
