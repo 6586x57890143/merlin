@@ -347,4 +347,22 @@ func TestHateSpeechPolicyCoversABareSlurAndSparesGenericProfanity(t *testing.T) 
 	if !strings.Contains(prompt, "retarded") {
 		t.Error("nothing tells the model where the rule stops, which is the reported false positive")
 	}
+	// The reported miss: a slur used as a name for a person, in a hostile
+	// message, was landing on the generic-profanity line next door and being
+	// cleared. Both halves of the distinction are asserted, because widening
+	// one without the other is how this bucket becomes either useless or a
+	// civility filter.
+	if !strings.Contains(prompt, "used as a name for a person") {
+		t.Error("nothing tells the model a slur aimed at a person is the clear-cut case")
+	}
+	if !strings.Contains(prompt, "friendly terms") {
+		t.Error("nothing tells the model a greeting or a joke between friends is not this")
+	}
+	// The fast pass never sees any of the above: one short line per bucket is
+	// its whole description of the policy, so it is the line that decides
+	// whether a message reaches the deep pass at all.
+	fast := p.fastPrompt([]Bucket{BucketHateSpeech}, nil)
+	if !strings.Contains(fast, "aimed at a person") {
+		t.Error("the screening pass is not told about the case it has to catch")
+	}
 }

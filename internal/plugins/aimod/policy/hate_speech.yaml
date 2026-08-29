@@ -6,13 +6,20 @@
 # explainer grants real exceptions here, which most of the others do not:
 # "reclaimed language, satire, or for educational or documentary purposes",
 # with the caveat that "satire must be obvious".
+#
+# The axis this file is written along is hostility plus what the word is
+# doing in the sentence, not how offensive the word is. A slur standing in
+# for "stupid" about somebody's take, and the same slur used as a name for
+# the person in a hostile message, are opposite ends of it. Every line below
+# is trying to put the reader on the right end.
 bucket: hate_speech
 severity: high
-short: "Degrading, dehumanizing or inciting hostility against people for a protected characteristic."
+short: "A slur aimed at a person, or degrading or inciting hostility against people for a protected characteristic. Not insults or slur-origin profanity about a thing."
 definitions:
   - "Hate speech is any expression that degrades, vilifies or dehumanizes individuals, incites hostility towards specific groups, or promotes harm based on protected characteristics."
   - "Protected characteristics are age, caste, colour, disability, ethnicity, family responsibilities, gender and gender identity, housing status, national origin, race, refugee or immigration status, religious affiliation, serious illness, sex, sexual orientation, socioeconomic status, source of income, status as a victim of domestic or sexual violence or stalking, and weight or size."
 violations:
+  - "A slur for a protected characteristic used as a name for a person, in a message that is hostile to them. Calling somebody the word is the clearest form of this policy, not a borderline one: it names them for what they are rather than calling something they said or did stupid. Do not clear it because the rest of the sentence is an ordinary insult, and do not clear it because no group is named; the person is the target."
   - "A slur for a protected characteristic, on its own or in any sentence, with no visible reclaiming, quoting, condemnation or educational framing around it. A slur posted alone with no target named is still a violation: there is no ambiguity to resolve in its favour."
   - "Dehumanizing language aimed at people for a protected characteristic"
   - "Claiming one group is inherently superior or inferior to another"
@@ -21,7 +28,8 @@ violations:
   - "Glorifying violence committed against a protected group"
   - "Denying that a violent historical atrocity such as the Holocaust occurred"
 not_violations:
-  - "A word with slur origins used as generic profanity about an idea, an object, a situation or one person's behaviour, naming no protected group and targeting nobody for what they are. \"This update is retarded\", \"that patch is gay\", \"stop being autistic about it\" are ordinary profanity on this server, not hate speech."
+  - "A word with slur origins used as generic profanity about an idea, an object, a situation or one person's behaviour, naming no protected group and targeting nobody for what they are. \"This update is retarded\", \"that patch is gay\", \"stop being autistic about it\" are ordinary profanity on this server, not hate speech. This line is about the word standing in for stupid or bad, aimed at what somebody said, made or did. It does not cover the word used as a name for the person in a hostile message, which is the first violation above."
+  - "A greeting, a joke, or trash talk between people who are plainly on friendly terms, where the word is how these two speak to each other and nothing in the message is hostile. A short greeting reads as friendly by default, and a joke that lands on nobody in particular is a joke. Read the reply context and the surrounding lines before reading a greeting as an attack."
   - "Reclaimed language, where the message or the surrounding context shows the speaker is using it of their own group or as in-group banter rather than against anyone"
   - "Obvious satire, or educational, historical, newsworthy or documentary use of a symbol or a slur"
   - "Criticism of a religion, an ideology, a government, a policy or an institution rather than of people for what they are"
