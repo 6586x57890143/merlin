@@ -16,7 +16,11 @@ go test ./...  -cover                       # full suite
 go test ./... -race -cover -covermode=atomic  # matches CI exactly (needs CGO_ENABLED=1 / a C toolchain)
 go test ./internal/plugins/rotation/... -run TestRotateFullCycle -v   # single package / single test
 govulncheck ./...
+
+go test ./... -coverprofile=coverage.out && scripts/coverage-floor.sh coverage.out   # the CI coverage gate
 ```
+
+Every package under `internal/plugins/` must hold at least 70% statement coverage (`scripts/coverage-floor.sh`, run by CI). Plugins that predate the floor are pinned in that script at the coverage they had and may only go up; anything new gets the full 70% with no way to opt out but an edit somebody reviews.
 
 `internal/settings` and `internal/storage` also have Postgres-backed tests (`internal/dbtest` is the shared harness). They skip themselves, rather than failing, when `TEST_DATABASE_URL` isn't set, so `go test ./...` still runs everywhere with zero setup; CI sets it via a `postgres:16-alpine` service on the `lint-test` job. To run them locally: `docker compose up -d postgres` (or any Postgres reachable at the DSN below), then `TEST_DATABASE_URL=postgres://merlin:changeme@localhost:5432/merlin?sslmode=disable go test ./internal/settings/... ./internal/storage/...` (substitute your own `.env` credentials if you changed them from `.env.example`'s defaults).
 

@@ -2,9 +2,12 @@ package aimod
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -16,6 +19,19 @@ import (
 func calibratingConfig() Config {
 	cfg := enforcingConfig()
 	cfg.BucketActions[BucketHateSpeech] = ActionRewrite
+	return cfg
+}
+
+// calibratingConfigWithKey is the same config with a sealed API key, which is
+// what checkBudget needs before it will report anything but "no key".
+func calibratingConfigWithKey(t *testing.T, store *fakeStore) Config {
+	t.Helper()
+	stored, err := store.Config(context.Background(), "g1")
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+	cfg := calibratingConfig()
+	cfg.APIKeySealed = stored.APIKeySealed
 	return cfg
 }
 
@@ -305,4 +321,172 @@ func (f *fakeScheduler) Seed(_ context.Context, key string, _ time.Time) error {
 
 func (f *fakeScheduler) NextDue(context.Context, string) (time.Time, bool, error) {
 	return time.Time{}, false, nil
+}
+
+// The review end to end, against a stub answer. This is the path the weekly
+// job runs and the one /aimod calibrate run-now drives, so it covers the
+// prompt build, the schema, the model call, the usage booking and the
+// validation pass in one.
+func TestReviewGuildEndToEnd(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	ops.history = []*discordgo.Message{
+		{Content: "this update is retarded", Author: &discordgo.User{ID: "u1"}},
+		{Content: "lol yeah", Author: &discordgo.User{ID: "u2"}},
+	}
+	client := &fakeClassifier{
+		calibration: []string{`{"examples":[
+			{"text":"this is retarded","bucket":"hate_speech","should_act":false,"note":"generic profanity"},
+			{"text":"ping <@123>","bucket":"hate_speech","should_act":false,"note":"carries a mention"},
+			{"text":"about a bucket nobody enforces","bucket":"spam","should_act":true,"note":""}
+		],"findings":[{"summary":"acted on ordinary profanity twice","direction":"too_strict"}]}`},
+		usage: Usage{Cost: 0.01, TotalTokens: 5000},
+	}
+
+	p := testPlugin(t, store, client, ops, &fakeAudit{})
+	sealer, err := newSealer(testSecretKey)
+	if err != nil {
+		t.Fatalf("newSealer: %v", err)
+	}
+	p.sealer = sealer
+	sealed, err := sealer.seal("sk-or-v1-test")
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	cfg := calibratingConfig()
+	cfg.APIKeySealed = sealed
+	store.setConfig(cfg)
+
+	if _, err := store.RecordIncident(context.Background(), Incident{
+		GuildID: "g1", ChannelID: "c1", MessageID: "m1", AuthorID: "u1",
+		Bucket: BucketHateSpeech, Action: ActionRemove, Content: "this update is retarded",
+		Reason: "slur", CreatedAt: testNow,
+	}); err != nil {
+		t.Fatalf("RecordIncident: %v", err)
+	}
+
+	res, err := p.reviewGuild(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("reviewGuild: %v", err)
+	}
+	if len(res.Examples) != 1 || res.Examples[0].Text != "this is retarded" {
+		t.Errorf("kept %+v, want only the clean example: the mention and the disabled bucket must be dropped", res.Examples)
+	}
+	if len(res.Findings) != 1 || res.Findings[0].Direction != "too_strict" {
+		t.Errorf("findings = %+v, want the one the reviewer reported", res.Findings)
+	}
+
+	// Booked, because the call was billed whether or not the answer was
+	// usable. A review that spent money without recording it is a hole in
+	// the daily cap.
+	spend, err := store.SpendToday(context.Background(), "g1", today(p.now()))
+	if err != nil {
+		t.Fatalf("SpendToday: %v", err)
+	}
+	if spend.SpentUSD == 0 {
+		t.Error("the review's cost was not booked against the budget")
+	}
+}
+
+// An unreadable answer is not a verdict. It must not become an empty
+// calibration set that then replaces a good one.
+func TestReviewGuildRejectsAnUnparseableAnswer(t *testing.T) {
+	store := newFakeStore()
+	client := &fakeClassifier{calibration: []string{"I cannot help with that."}}
+	p := testPlugin(t, store, client, newFakeOps(), &fakeAudit{})
+	sealer, _ := newSealer(testSecretKey)
+	p.sealer = sealer
+	sealed, _ := sealer.seal("sk-or-v1-test")
+
+	cfg := calibratingConfig()
+	cfg.APIKeySealed = sealed
+	store.setConfig(cfg)
+	if _, err := store.RecordIncident(context.Background(), Incident{
+		GuildID: "g1", ChannelID: "c1", MessageID: "m1", AuthorID: "u1",
+		Bucket: BucketHateSpeech, Action: ActionRemove, CreatedAt: testNow,
+	}); err != nil {
+		t.Fatalf("RecordIncident: %v", err)
+	}
+
+	if _, err := p.reviewGuild(context.Background(), cfg); err == nil {
+		t.Error("an unparseable review answer was reported as success")
+	}
+}
+
+// Over the daily cap the review stops rather than overspending, and says so
+// with its own sentinel so the weekly job can tell it from a real failure and
+// not back itself off.
+func TestReviewGuildStopsWhenTheBudgetIsSpent(t *testing.T) {
+	store := newFakeStore()
+	p := intakePlugin(t, store, &fakeClassifier{}, newFakeOps())
+	cfg := calibratingConfigWithKey(t, store)
+	cfg.DailyBudgetUSD = 0
+	store.setConfig(cfg)
+	_, err := p.reviewGuild(context.Background(), cfg)
+	if !errors.Is(err, errCalibrationBudget) {
+		t.Errorf("err = %v, want errCalibrationBudget", err)
+	}
+}
+
+// The weekly job treats a quiet week and a spent budget as ordinary
+// outcomes. Returning an error for either would count toward
+// maxConsecutiveFailures and eventually fire the wedged-job alert against a
+// guild that is behaving perfectly.
+func TestCalibrationJobTreatsOrdinaryOutcomesAsSuccess(t *testing.T) {
+	store := newFakeStore()
+	p := intakePlugin(t, store, &fakeClassifier{}, newFakeOps())
+	store.setConfig(calibratingConfigWithKey(t, store))
+
+	if err := p.makeCalibrationJob("g1")(context.Background()); err != nil {
+		t.Errorf("a week with no incidents was reported as a job failure: %v", err)
+	}
+
+	// And a guild switched off between the tick and the run is not a failure
+	// either: reconcile unregisters on the next config change.
+	off := calibratingConfigWithKey(t, store)
+	off.CalibrationMode = CalibrationOff
+	store.setConfig(off)
+	if err := p.makeCalibrationJob("g1")(context.Background()); err != nil {
+		t.Errorf("a guild that switched reviews off was reported as a job failure: %v", err)
+	}
+}
+
+// SyncGuild is what cmd/bot calls on every GuildCreate. A nil scheduler (any
+// build without one, and every other test in this package) must be a no-op
+// rather than a panic on the gateway path.
+func TestSyncGuildRegistersAndToleratesANilScheduler(t *testing.T) {
+	store := newFakeStore()
+	store.setConfig(calibratingConfig())
+
+	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+	p.SyncGuild(context.Background(), "g1") // nil scheduler, must not panic
+
+	sched := &fakeScheduler{jobs: map[string]bool{}}
+	p.sched = sched
+	p.SyncGuild(context.Background(), "g1")
+	if !sched.jobs[calibrationJobKey("g1")] {
+		t.Error("SyncGuild did not register the review job for an enabled guild")
+	}
+}
+
+// The reviewer is told which policies this guild actually enforces and what
+// happens when one matches, so it cannot recommend examples for a bucket that
+// is switched off. It is also shown the calibration already in force, so it
+// revises rather than starting over every week.
+func TestCalibrationPromptCarriesTheEnforcedPoliciesAndCurrentSet(t *testing.T) {
+	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+	cfg := calibratingConfig()
+	cfg.BucketActions[BucketSpam] = ActionOff
+	cfg.Calibration = []CalibrationExample{{Text: "already carried", Bucket: BucketHateSpeech}}
+
+	prompt := p.calibrationPrompt(cfg)
+	if !strings.Contains(prompt, string(BucketHateSpeech)) {
+		t.Error("an enforced policy is missing from the reviewer's prompt")
+	}
+	if strings.Contains(prompt, string(BucketSpam)) {
+		t.Error("a policy this guild switched off was offered to the reviewer")
+	}
+	if !strings.Contains(prompt, "already carried") {
+		t.Error("the calibration in force was not shown, so the reviewer starts over every week")
+	}
 }

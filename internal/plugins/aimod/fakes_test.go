@@ -280,6 +280,12 @@ type fakeClassifier struct {
 	// list than the number of calls repeats the last entry, so a test only
 	// has to script the answers it cares about.
 	fast, deep []string
+	// calibration is the weekly review's answer, kept separate because it is
+	// a third shape rather than a variant of the deep pass.
+	calibration        []string
+	calibrationErr     error
+	calibrationCalls   int
+	lastCalibrationReq chatRequest
 	// deepDelay makes a deep call take measurable time, so a test can tell
 	// serial escalation from concurrent. inDeep and maxDeepParallel record
 	// how many were actually in flight at once: a wall-clock assertion would
@@ -341,7 +347,21 @@ func (f *fakeClassifier) peakDeepParallel() int {
 // isDeep distinguishes the two passes by the schema each one asks for, which
 // is the same thing the real client sends and so cannot drift from it.
 func isDeep(req chatRequest) bool {
-	return req.ResponseFormat != nil && req.ResponseFormat.JSONSchema.Name == "verdict"
+	return schemaName(req) == "verdict"
+}
+
+// isCalibration picks out the weekly review, which is neither pass: it uses
+// the deep model stack but asks for a different answer entirely, so a fake
+// that lumped it in with the deep pass would hand it a verdict to parse.
+func isCalibration(req chatRequest) bool {
+	return schemaName(req) == "calibration"
+}
+
+func schemaName(req chatRequest) string {
+	if req.ResponseFormat == nil {
+		return ""
+	}
+	return req.ResponseFormat.JSONSchema.Name
 }
 
 func (f *fakeClassifier) Chat(_ context.Context, _ string, req chatRequest) (string, Usage, error) {
@@ -355,6 +375,14 @@ func (f *fakeClassifier) Chat(_ context.Context, _ string, req chatRequest) (str
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if isCalibration(req) {
+		f.calibrationCalls++
+		f.lastCalibrationReq = req
+		if f.calibrationErr != nil {
+			return "", f.usage, f.calibrationErr
+		}
+		return pick(f.calibration, f.calibrationCalls), f.usage, nil
+	}
 	if isDeep(req) {
 		f.deepCalls++
 		f.lastDeepReq = req
