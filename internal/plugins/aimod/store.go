@@ -489,8 +489,8 @@ func (s *pgStore) AddSpend(ctx context.Context, guildID string, day time.Time, u
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO aimod_spend (guild_id, day, spent_usd, fast_calls, deep_calls,
 		                         fast_prompt_tokens, fast_completion_tokens,
-		                         deep_prompt_tokens, deep_completion_tokens)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		                         deep_prompt_tokens, deep_completion_tokens, reasoning_tokens)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (guild_id, day) DO UPDATE SET
 			spent_usd              = aimod_spend.spent_usd + EXCLUDED.spent_usd,
 			fast_calls             = aimod_spend.fast_calls + EXCLUDED.fast_calls,
@@ -498,8 +498,13 @@ func (s *pgStore) AddSpend(ctx context.Context, guildID string, day time.Time, u
 			fast_prompt_tokens     = aimod_spend.fast_prompt_tokens + EXCLUDED.fast_prompt_tokens,
 			fast_completion_tokens = aimod_spend.fast_completion_tokens + EXCLUDED.fast_completion_tokens,
 			deep_prompt_tokens     = aimod_spend.deep_prompt_tokens + EXCLUDED.deep_prompt_tokens,
-			deep_completion_tokens = aimod_spend.deep_completion_tokens + EXCLUDED.deep_completion_tokens
-	`, guildID, day, u.Cost, fastCalls, deepCalls, fastPrompt, fastCompletion, deepPrompt, deepCompletion); err != nil {
+			deep_completion_tokens = aimod_spend.deep_completion_tokens + EXCLUDED.deep_completion_tokens,
+			reasoning_tokens       = aimod_spend.reasoning_tokens + EXCLUDED.reasoning_tokens
+	`, guildID, day, u.Cost, fastCalls, deepCalls, fastPrompt, fastCompletion, deepPrompt, deepCompletion,
+		// Not split by tier, and accumulated across both: reasoning is a
+		// property of the endpoint rather than of the pass, and the question
+		// it answers is whether this guild is paying for thinking at all.
+		u.CompletionTokensDetails.ReasoningTokens); err != nil {
 		return fmt.Errorf("aimod store: add spend: %w", err)
 	}
 	return nil
@@ -519,10 +524,12 @@ func (s *pgStore) SpendToday(ctx context.Context, guildID string, day time.Time)
 	sp := Spend{Day: day}
 	err := s.pool.QueryRow(ctx, `
 		SELECT spent_usd, scanned, fast_calls, deep_calls,
-		       fast_prompt_tokens, fast_completion_tokens, deep_prompt_tokens, deep_completion_tokens
+		       fast_prompt_tokens, fast_completion_tokens, deep_prompt_tokens, deep_completion_tokens,
+		       reasoning_tokens
 		FROM aimod_spend WHERE guild_id = $1 AND day = $2
 	`, guildID, day).Scan(&sp.SpentUSD, &sp.Scanned, &sp.FastCalls, &sp.DeepCalls,
-		&sp.FastPromptTokens, &sp.FastCompletionTokens, &sp.DeepPromptTokens, &sp.DeepCompletionTokens)
+		&sp.FastPromptTokens, &sp.FastCompletionTokens, &sp.DeepPromptTokens, &sp.DeepCompletionTokens,
+		&sp.ReasoningTokens)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return sp, nil
@@ -535,7 +542,8 @@ func (s *pgStore) SpendToday(ctx context.Context, guildID string, day time.Time)
 func (s *pgStore) SpendSince(ctx context.Context, guildID string, since time.Time) ([]Spend, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT day, spent_usd, scanned, fast_calls, deep_calls,
-		       fast_prompt_tokens, fast_completion_tokens, deep_prompt_tokens, deep_completion_tokens
+		       fast_prompt_tokens, fast_completion_tokens, deep_prompt_tokens, deep_completion_tokens,
+		       reasoning_tokens
 		FROM aimod_spend WHERE guild_id = $1 AND day >= $2 ORDER BY day DESC
 	`, guildID, since)
 	if err != nil {
@@ -547,7 +555,8 @@ func (s *pgStore) SpendSince(ctx context.Context, guildID string, since time.Tim
 	for rows.Next() {
 		var sp Spend
 		if err := rows.Scan(&sp.Day, &sp.SpentUSD, &sp.Scanned, &sp.FastCalls, &sp.DeepCalls,
-			&sp.FastPromptTokens, &sp.FastCompletionTokens, &sp.DeepPromptTokens, &sp.DeepCompletionTokens); err != nil {
+			&sp.FastPromptTokens, &sp.FastCompletionTokens, &sp.DeepPromptTokens, &sp.DeepCompletionTokens,
+			&sp.ReasoningTokens); err != nil {
 			return nil, fmt.Errorf("aimod store: scan spend: %w", err)
 		}
 		out = append(out, sp)

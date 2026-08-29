@@ -212,6 +212,55 @@ func TestScaleHistoryScalesTokensNotTheOldBill(t *testing.T) {
 	}
 }
 
+// The reasoning share is what /aimod models show puts in front of an admin
+// choosing a stack. Zero has to mean "nothing worth saying", not "0%", and
+// the figure cannot exceed the completion tokens it is a breakdown of.
+func TestReasoningShare(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		history []Spend
+		want    float64
+	}{
+		{"no history at all", nil, 0},
+		{"a stack with reasoning switched off",
+			[]Spend{{FastCompletionTokens: 100, DeepCompletionTokens: 100}}, 0},
+		{"half the completion was thinking",
+			[]Spend{{FastCompletionTokens: 100, DeepCompletionTokens: 100, ReasoningTokens: 100}}, 0.5},
+		{"summed across days",
+			[]Spend{
+				{FastCompletionTokens: 100, ReasoningTokens: 50},
+				{DeepCompletionTokens: 100, ReasoningTokens: 50},
+			}, 0.5},
+		// A provider reporting reasoning against a completion total it did
+		// not also report would otherwise render as "140% of the completion
+		// tokens", which reads as a bug in this bot rather than in the
+		// response.
+		{"clamped when a provider reports more than it billed",
+			[]Spend{{FastCompletionTokens: 100, ReasoningTokens: 140}}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reasoningShare(tc.history); got != tc.want {
+				t.Errorf("reasoningShare = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Scaling to a hypothetical volume has to move the reasoning count with the
+// completion tokens it is a breakdown of, or the share shrinks the busier the
+// server is assumed to be.
+func TestScaleHistoryKeepsTheReasoningShare(t *testing.T) {
+	history := []Spend{{
+		Day: today(time.Now().UTC()), Scanned: 100,
+		FastCompletionTokens: 200, ReasoningTokens: 100,
+	}}
+	before := reasoningShare(history)
+	after := reasoningShare(scaleHistory(history, 400))
+	if before != after {
+		t.Errorf("reasoning share moved from %v to %v when only the volume changed", before, after)
+	}
+}
+
 func TestPriceLineHandlesAMissingModel(t *testing.T) {
 	if line := priceLine("gone/model", Model{}, false); !strings.Contains(line, "gone/model") {
 		t.Errorf("priceLine dropped the id of a model it could not price: %q", line)

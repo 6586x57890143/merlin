@@ -234,6 +234,17 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 		costLine += "\nNo price listed for " + strings.Join(est.Unpriced, ", ") +
 			", so any projection is a floor rather than a figure."
 	}
+	// The share of the bill that was the model thinking rather than
+	// answering. Shown only when there is some, because on a stack with
+	// reasoning switched off the honest answer is nothing at all rather than
+	// a line of zeroes. Billed at the completion rate and already counted
+	// inside the completion tokens above, so this is a breakdown of the cost
+	// rather than an addition to it, and it is the one part of that cost a
+	// JSON schema has already pinned down.
+	if share := reasoningShare(history); share > 0 {
+		costLine += fmt.Sprintf("\n%.0f%% of the completion tokens were reasoning, billed at the same rate as the answer. "+
+			"`/aimod models set-fast|set-deep` to a stack that allows it to be switched off if that is not worth paying for.", share*100)
+	}
 	fields = append(fields, &discordgo.MessageEmbedField{
 		Name:  "Cost",
 		Value: core.TruncateEmbedField(costLine),
@@ -254,6 +265,28 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 	if err := core.FollowUpEmbed(s, i, embed); err != nil {
 		p.log.Error("aimod: respond models show", "guild", i.GuildID, "err", err)
 	}
+}
+
+// reasoningShare is what fraction of a guild's completion tokens went on the
+// model thinking rather than answering, over the whole window.
+//
+// Returns 0 rather than dividing by zero on a guild that has spent nothing,
+// which is also the value that hides the line: a guild with no history and a
+// guild whose stack does not reason both have nothing worth saying here.
+func reasoningShare(history []Spend) float64 {
+	var completion, reasoning float64
+	for _, sp := range history {
+		completion += float64(sp.FastCompletionTokens + sp.DeepCompletionTokens)
+		reasoning += float64(sp.ReasoningTokens)
+	}
+	if completion == 0 {
+		return 0
+	}
+	// Clamped, because the two numbers come from different places in the
+	// same response and a provider that reports reasoning against a
+	// completion total it did not also report would otherwise render as
+	// "140% of the completion tokens", which reads as a bug in this bot.
+	return min(reasoning/completion, 1)
 }
 
 // stackLines renders one configured stack, saying plainly when it is the
@@ -297,6 +330,11 @@ func scaleHistory(history []Spend, messagesPerDay float64) []Spend {
 		sp.FastCompletionTokens = int64(float64(sp.FastCompletionTokens) * factor)
 		sp.DeepPromptTokens = int64(float64(sp.DeepPromptTokens) * factor)
 		sp.DeepCompletionTokens = int64(float64(sp.DeepCompletionTokens) * factor)
+		// Scaled with the completion tokens it is a breakdown of. Left raw,
+		// a hypothetical volume would divide an unscaled reasoning count by a
+		// scaled completion total and report a share that shrinks the busier
+		// the server gets.
+		sp.ReasoningTokens = int64(float64(sp.ReasoningTokens) * factor)
 		sp.DeepCalls = int(float64(sp.DeepCalls) * factor)
 		out = append(out, sp)
 	}

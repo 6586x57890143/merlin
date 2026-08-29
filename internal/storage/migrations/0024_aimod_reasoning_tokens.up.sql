@@ -1,0 +1,20 @@
+-- The share of completion tokens that was the model thinking rather than
+-- answering.
+--
+-- aimod.Spend has carried a ReasoningTokens field with a doc comment since
+-- the spend table was written, saying it is "the one part of the bill that
+-- buys nothing a JSON schema does not already pin down, and an admin
+-- deciding on a model should be able to see it". There was no column behind
+-- it, nothing wrote it and nothing read it, so the figure OpenRouter returns
+-- on every call was dropped and the promise in that comment was never kept.
+--
+-- Not split fast/deep like the other token columns. Reasoning is a property
+-- of the endpoint rather than of the tier (see Client.ReasoningDisabled), and
+-- what an admin is deciding with it is whether a stack bills for thinking at
+-- all, which one number answers.
+--
+-- Already counted inside the completion columns rather than in addition to
+-- them: reasoning tokens are billed at the completion rate and OpenRouter
+-- reports them as a breakdown of that total, so summing this with
+-- fast_completion_tokens would double count.
+ALTER TABLE aimod_spend ADD COLUMN reasoning_tokens BIGINT NOT NULL DEFAULT 0;

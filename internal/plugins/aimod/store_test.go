@@ -403,15 +403,17 @@ func TestSpendAccumulatesAndSplitsByTier(t *testing.T) {
 	if sp.FastPromptTokens != 1800 || sp.DeepPromptTokens != 4000 {
 		t.Errorf("tokens landed in the wrong tier: %+v", sp)
 	}
-	// Spend.ReasoningTokens is documented as the share of the completion that
-	// was the model thinking, "broken out because it is the one part of the
-	// bill that buys nothing a JSON schema does not already pin down". It is
-	// currently dead: no column, no write in AddSpend, no read in SpendToday,
-	// and no consumer, so the value OpenRouter returns is dropped. Asserted as
-	// zero rather than left unmentioned so the gap is written down where
-	// somebody wiring it up will look.
-	if sp.ReasoningTokens != 0 {
-		t.Errorf("reasoning tokens = %d: the column now exists, so this assertion is stale", sp.ReasoningTokens)
+	// Broken out from the completion tokens rather than added to them: it is
+	// the one part of the bill that buys nothing a JSON schema has not
+	// already pinned down, so an admin choosing a stack should see it.
+	// Accumulated across both tiers, because reasoning is a property of the
+	// endpoint rather than of the pass.
+	if sp.ReasoningTokens != 150 {
+		t.Errorf("reasoning tokens = %d, want 150 recorded", sp.ReasoningTokens)
+	}
+	if sp.DeepCompletionTokens < sp.ReasoningTokens {
+		t.Errorf("reasoning (%d) exceeds the completion tokens it is a breakdown of (%d)",
+			sp.ReasoningTokens, sp.DeepCompletionTokens)
 	}
 	if sp.SpentUSD < 0.021 {
 		t.Errorf("spent = %v, want every call's cost added", sp.SpentUSD)
