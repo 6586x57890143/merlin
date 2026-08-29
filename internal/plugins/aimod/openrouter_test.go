@@ -181,7 +181,7 @@ func TestReasoningIsDisabledUntilAnEndpointRefuses(t *testing.T) {
 	if strings.Contains(bodies[2], `"reasoning"`) {
 		t.Error("still sending a preference the endpoint has already rejected")
 	}
-	if c.ReasoningDisabled(req.Models) {
+	if c.ReasoningDisabled(req.spec, req.Models) {
 		t.Error("ReasoningDisabled still reports true, so /aimod models show would claim thinking is not billed")
 	}
 }
@@ -205,7 +205,7 @@ func TestOtherBadRequestsAreNotRetried(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("made %d requests for an unrelated 400, want 1", calls)
 	}
-	if !c.ReasoningDisabled([]string{"a/b"}) {
+	if !c.ReasoningDisabled(nil, []string{"a/b"}) {
 		t.Error("an unrelated 400 was recorded as a reasoning rejection")
 	}
 }

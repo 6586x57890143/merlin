@@ -19,11 +19,26 @@ func today(now time.Time) time.Time {
 
 // budgetState is what the ladder needs to know before spending anything.
 type budgetState struct {
-	APIKey    string
-	Spent     float64
-	Budget    float64
-	Exhausted bool
+	APIKey string
+	// Spec is the gateway APIKey belongs to. Resolved once here rather than
+	// at each call site, so the fast rung, the deep rung and the weekly
+	// calibration cannot disagree about where a guild's traffic goes.
+	Spec *providerSpec
+	// FallbackKey is the OpenRouter credential, when the guild has one and
+	// is not already routed there. Only the deep rung uses it, and only
+	// after its own gateway has failed to produce a verdict: see escalate.
+	// Empty means there is nothing to fall back to, which is the ordinary
+	// case and not an error.
+	FallbackKey string
+	Spent       float64
+	Budget      float64
+	Exhausted   bool
 }
+
+// fallback is the gateway FallbackKey belongs to, and is always OpenRouter.
+// A helper rather than a field because there is exactly one answer and a
+// second field would be one more thing that can disagree with the first.
+func (s budgetState) fallback() *providerSpec { return openRouter }
 
 // checkBudget resolves the guild's key and remaining allowance.
 //
@@ -32,10 +47,11 @@ type budgetState struct {
 // caller degrades to the free rungs and posts one audit entry per day, the
 // same reasoning discordguard.Skipped exists for.
 func (p *Plugin) checkBudget(ctx context.Context, cfg Config) (budgetState, error) {
-	if len(cfg.APIKeySealed) == 0 {
+	spec, sealed := route(cfg)
+	if len(sealed) == 0 {
 		return budgetState{Exhausted: true}, nil
 	}
-	key, err := p.sealer.open(cfg.APIKeySealed)
+	key, err := p.sealer.open(sealed)
 	if err != nil {
 		return budgetState{Exhausted: true}, err
 	}
@@ -46,12 +62,26 @@ func (p *Plugin) checkBudget(ctx context.Context, cfg Config) (budgetState, erro
 		// single worst direction to be wrong about somebody else's money.
 		return budgetState{Exhausted: true}, err
 	}
-	return budgetState{
+	st := budgetState{
 		APIKey:    key,
+		Spec:      spec,
 		Spent:     spend.SpentUSD,
 		Budget:    cfg.DailyBudgetUSD,
 		Exhausted: spend.SpentUSD >= cfg.DailyBudgetUSD,
-	}, nil
+	}
+	// A fallback that cannot be opened is not a failure of this call. The
+	// primary key is good, scanning works, and the only thing lost is the
+	// deep rung's second chance, so it is logged where the deep rung notices
+	// rather than failing the whole check closed the way a missing primary
+	// does.
+	if spec != openRouter && len(cfg.APIKeySealed) > 0 {
+		if fb, err := p.sealer.open(cfg.APIKeySealed); err == nil {
+			st.FallbackKey = fb
+		} else {
+			p.log.Warn("aimod: fallback key unreadable", "guild", cfg.GuildID, "err", err)
+		}
+	}
+	return st, nil
 }
 
 // recordUsage books one call against the guild's day.

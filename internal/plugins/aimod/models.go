@@ -108,10 +108,13 @@ func (p *Plugin) catalogue(ctx context.Context, guildID string) ([]Model, error)
 // anything. A bare p.client.(*Client) panics inside a command handler the
 // moment that happens, and the router's recover() would turn a status
 // command into "the application did not respond" with no clue why.
-func (p *Plugin) keyInfo(ctx context.Context, apiKey string) (KeyInfo, error) {
+func (p *Plugin) keyInfo(ctx context.Context, spec *providerSpec, apiKey string) (KeyInfo, error) {
 	client, ok := p.client.(*Client)
 	if !ok {
-		return KeyInfo{}, fmt.Errorf("aimod: OpenRouter account details are unavailable in this build")
+		return KeyInfo{}, fmt.Errorf("aimod: provider account details are unavailable in this build")
+	}
+	if spec == orcaRouter {
+		return client.OrcaBalance(ctx, spec, apiKey)
 	}
 	return client.KeyInfo(ctx, apiKey)
 }
@@ -126,12 +129,12 @@ func (p *Plugin) keyInfo(ctx context.Context, apiKey string) (KeyInfo, error) {
 // The answer is only known after a stack has been used once, since it is
 // learned from the endpoint rejecting the attempt rather than read from
 // metadata. Before that it reports the intent, which is what will be tried.
-func (p *Plugin) reasoningLine(models []string) string {
+func (p *Plugin) reasoningLine(spec *providerSpec, models []string) string {
 	client, ok := p.client.(*Client)
 	if !ok {
 		return ""
 	}
-	if client.ReasoningDisabled(models) {
+	if client.ReasoningDisabled(spec, models) {
 		return "_Reasoning switched off: you pay for the answer, not for the thinking._"
 	}
 	return "_This endpoint requires reasoning, so thinking tokens are billed on every message it reads._"
@@ -173,8 +176,9 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 		_ = core.FollowUpErr(s, i, "Failed to read the configuration", err)
 		return
 	}
-	fastIDs := modelsOr(cfg.FastModels, defaultFastModels)
-	deepIDs := modelsOr(cfg.DeepModels, defaultDeepModels)
+	spec, _ := route(cfg)
+	fastIDs := modelsOr(cfg.FastModels, spec.fastModels)
+	deepIDs := modelsOr(cfg.DeepModels, spec.deepModels)
 
 	var body strings.Builder
 	body.WriteString("Every message that gets past the free pattern checks is read by the **cheap pass**. " +
@@ -190,9 +194,9 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "Cheap pass, reads everything", Value: core.TruncateEmbedField(
-			stackLines(fastIDs, catalogue, cfg.FastModels) + "\n" + p.reasoningLine(fastIDs))},
+			stackLines(fastIDs, catalogue, cfg.FastModels) + "\n" + p.reasoningLine(spec, fastIDs))},
 		{Name: "Deep pass, confirms before acting", Value: core.TruncateEmbedField(
-			stackLines(deepIDs, catalogue, cfg.DeepModels) + "\n" + p.reasoningLine(deepIDs))},
+			stackLines(deepIDs, catalogue, cfg.DeepModels) + "\n" + p.reasoningLine(spec, deepIDs))},
 	}
 
 	// The projection. Measured traffic where there is any, clearly labelled

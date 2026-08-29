@@ -1,0 +1,17 @@
+-- A second gateway credential per guild.
+--
+-- aimod routes model calls through OrcaRouter by default now, because its
+-- free tier runs the whole scan ladder at no cost, and keeps OpenRouter as
+-- the fallback the deep rung reaches for when OrcaRouter cannot answer. That
+-- needs both keys stored at once: one column that changed meaning depending
+-- on a provider setting would be a guild whose scanning silently stopped the
+-- moment the setting and the key disagreed.
+--
+-- Which gateway a guild is on is therefore derived from which of these two
+-- columns is filled (see aimod.route), not stored. There is no provider
+-- column on purpose: two facts that must agree are one fact too many.
+--
+-- Sealed with MERLIN_SECRET_KEY exactly as api_key_sealed is, by the same
+-- sealer, and nullable for the same reason: a guild with no key runs the
+-- free local rungs and says so in /aimod status.
+ALTER TABLE aimod_config ADD COLUMN orca_key_sealed BYTEA;

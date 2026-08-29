@@ -24,6 +24,17 @@ const (
 	titleHeader    = "merlin"
 )
 
+// OrcaRouter's base, and the header that makes it report what a call cost.
+//
+// The header is not optional bookkeeping. Without it the usage block carries
+// token counts and no money, which this package would read as a call that
+// cost nothing, and a daily budget that reads every call as free is not a
+// budget. See Usage.CostUSD.
+const (
+	orcaRouterBase = "https://api.orcarouter.ai/v1"
+	orcaCostHeader = "X-OrcaRouter-Include-Cost"
+)
+
 // httpTimeout bounds one model call.
 //
 // Short on purpose. This runs on a message someone just posted, and the
@@ -78,6 +89,12 @@ type Usage struct {
 	CompletionTokens int64   `json:"completion_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`
 	Cost             float64 `json:"cost"`
+	// CostUSD is the same figure under the name OrcaRouter gives it, and
+	// only when asked for with orcaCostHeader. Folded into Cost immediately
+	// after the response is parsed, so that every reader downstream of here
+	// (the budget, the projections, /aimod status) keeps seeing one field
+	// and cannot be taught about a gateway.
+	CostUSD float64 `json:"cost_usd"`
 	// CompletionTokensDetails breaks out how much of the completion was the
 	// model thinking rather than answering. Reasoning tokens are billed at
 	// the completion rate and are already inside CompletionTokens, so this is
@@ -108,8 +125,12 @@ type providerPrefs struct {
 	RequireParameters bool   `json:"require_parameters"`
 }
 
-func strictProvider() providerPrefs {
-	return providerPrefs{ZDR: true, DataCollection: "deny", RequireParameters: true}
+// Sent only where it means something. providerSpec.strictPrefs gates it, and
+// chatOnce strips it for a gateway that does not accept it: a block that is
+// silently ignored is worse than no block, because the code around it goes on
+// reading as though the guarantee held.
+func strictProvider() *providerPrefs {
+	return &providerPrefs{ZDR: true, DataCollection: "deny", RequireParameters: true}
 }
 
 type jsonSchema struct {
@@ -133,9 +154,14 @@ type chatRequest struct {
 	// It is not an escalation mechanism. The array only moves on failure,
 	// never on a low-confidence answer, which is why the fast-to-deep step
 	// in classify.go is a second call rather than a longer array.
-	Models         []string        `json:"models"`
+	Models []string `json:"models,omitempty"`
+	// Model is the OpenAI-shaped singular form, for a gateway with no array
+	// form. Set by chatOnce from Models[0], never by a caller: which of the
+	// two fields goes over the wire is a property of the gateway, and a
+	// caller choosing it would be a caller that has to know about gateways.
+	Model          string          `json:"model,omitempty"`
 	Messages       []chatMessage   `json:"messages"`
-	Provider       providerPrefs   `json:"provider"`
+	Provider       *providerPrefs  `json:"provider,omitempty"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 	MaxTokens      int             `json:"max_tokens,omitempty"`
 	// Zero, always. This is a classifier: the same message twice must get
@@ -145,6 +171,12 @@ type chatRequest struct {
 	// Reasoning is set by Chat rather than by callers, because whether it can
 	// be sent at all is a property of the endpoint that answers. Nil omits it.
 	Reasoning *reasoningPrefs `json:"reasoning,omitempty"`
+
+	// spec is which gateway this goes to. Unexported, so it never reaches
+	// the wire. Nil means OpenRouter on c.base, which is what every request
+	// meant before there was a second gateway and is what keeps the tests
+	// that predate one honest.
+	spec *providerSpec `json:"-"`
 }
 
 type reasoningPrefs struct {
@@ -193,18 +225,33 @@ func reasoningRejected(err error) bool {
 // reasoning off for a stack. Surfaced by /aimod models show, because it is
 // the difference between paying for thinking on every scanned message and
 // not, and an admin reading a cost figure should be able to see which.
-func (c *Client) ReasoningDisabled(models []string) bool {
-	key := strings.Join(models, ",")
+func (c *Client) ReasoningDisabled(spec *providerSpec, models []string) bool {
 	c.reasoningMu.Lock()
 	defer c.reasoningMu.Unlock()
-	return !c.noDisable[key]
+	return !c.noDisable[stackKey(spec, models)]
 }
 
-func (c *Client) markReasoningMandatory(models []string) {
-	key := strings.Join(models, ",")
+func (c *Client) markReasoningMandatory(spec *providerSpec, models []string) {
 	c.reasoningMu.Lock()
 	defer c.reasoningMu.Unlock()
-	c.noDisable[key] = true
+	c.noDisable[stackKey(spec, models)] = true
+}
+
+// stackKey names one model stack on one gateway. The gateway is part of the
+// key because the same model ID reached through two routers is two
+// endpoints, and one of them refusing to have reasoning switched off says
+// nothing about the other.
+func stackKey(spec *providerSpec, models []string) string {
+	return providerName(spec) + ":" + strings.Join(models, ",")
+}
+
+// providerName is the gateway's name, treating nil as OpenRouter for the
+// same reason chatRequest.spec does.
+func providerName(spec *providerSpec) string {
+	if spec == nil {
+		return openRouter.name
+	}
+	return spec.name
 }
 
 type chatResponse struct {
@@ -248,7 +295,7 @@ func (e *APIError) Error() string {
 // usage. The usage is returned even on a parse failure upstream, because the
 // call was still billed and the budget has to know.
 func (c *Client) Chat(ctx context.Context, apiKey string, req chatRequest) (string, Usage, error) {
-	if c.ReasoningDisabled(req.Models) {
+	if c.ReasoningDisabled(req.spec, req.Models) {
 		req.Reasoning = &reasoningPrefs{Enabled: false}
 	}
 	out, usage, err := c.chatOnce(ctx, apiKey, req)
@@ -256,11 +303,11 @@ func (c *Client) Chat(ctx context.Context, apiKey string, req chatRequest) (stri
 		// This endpoint will not have reasoning switched off. Remember it, so
 		// this costs one wasted call per stack per process rather than one
 		// per message, and answer the caller from the retry.
-		c.markReasoningMandatory(req.Models)
+		c.markReasoningMandatory(req.spec, req.Models)
 		req.Reasoning = nil
 		out, usage, err = c.chatOnce(ctx, apiKey, req)
 	}
-	if err != nil && transient(err) {
+	if err != nil && transient(err) && !freeRateLimited(err) {
 		// The distinction APIError was built to carry, finally acted on. A
 		// 429 or a 5xx used to lose the whole batch: one log line, and twenty
 		// messages that nothing ever judged. The Models fallback array does
@@ -295,6 +342,41 @@ func transient(err error) bool {
 	// A transport error: connection reset, DNS blip, the timeout above. The
 	// call never reached a model, so there is nothing to be consistent with.
 	return true
+}
+
+// freeRateLimited reports whether err is OrcaRouter's free tier saying no.
+//
+// Worth its own check because a free window does not ease back, it refills
+// completely at its boundary: the minute bucket at the next minute, the day
+// bucket at 00:00 UTC. So the Retry-After can be hours, and the one thing
+// that is certainly wrong is this package's ordinary answer to a 429, which
+// is to wait a moment and try the same gateway again.
+//
+// It also covers the case that would otherwise never terminate. The lowest
+// free tier caps the size of a single request and refuses an oversized one
+// with this same error, and that refusal never passes on a retry however
+// long the wait: the prompt has to get smaller. Since the two are reported
+// identically, neither is retried here, and the deep rung falls over to the
+// other gateway instead.
+func freeRateLimited(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests {
+		return false
+	}
+	return strings.Contains(strings.ToLower(apiErr.Message), "free_rate_limited")
+}
+
+// worthFallback reports whether a failed call is worth re-running on the
+// other gateway.
+//
+// Everything except the batch's own deadline. A rate limit, an outage, a
+// refused key, a model that ignored its schema: all of those are this
+// gateway failing to answer, and the other one has not been asked. A
+// cancelled context is the opposite, the caller has stopped waiting, and
+// spending a second call on an answer nobody will read is the one retry that
+// is certainly pointless.
+func worthFallback(err error) bool {
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
 // retryAfter is how long the failure asked to be left alone, clamped.
@@ -332,16 +414,34 @@ func pause(ctx context.Context, d time.Duration) bool {
 }
 
 func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (string, Usage, error) {
+	// req is a value, so shaping it for the gateway cannot leak back to the
+	// caller, which matters because Chat may call this twice.
+	base := c.base
+	if spec := req.spec; spec != nil {
+		if spec.base != "" {
+			base = spec.base
+		}
+		if spec.singleModel && len(req.Models) > 0 {
+			req.Model, req.Models = req.Models[0], nil
+		}
+		if !spec.strictPrefs {
+			req.Provider = nil
+		}
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("openrouter: encode request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("openrouter: build request: %w", err)
 	}
 	c.setHeaders(httpReq, apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	if req.spec != nil && req.spec.costHeader != "" {
+		httpReq.Header.Set(req.spec.costHeader, "true")
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -364,6 +464,12 @@ func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (
 	var parsed chatResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", Usage{}, fmt.Errorf("openrouter: decode chat response: %w", err)
+	}
+	// One name for money from here on. Done before any return, including the
+	// error returns below, because those still carry usage the budget has to
+	// book: a call that was billed and then failed to parse spent real money.
+	if parsed.Usage.Cost == 0 {
+		parsed.Usage.Cost = parsed.Usage.CostUSD
 	}
 	if parsed.Error != nil {
 		return "", parsed.Usage, &APIError{Status: parsed.Error.Code, Message: parsed.Error.Message}
@@ -451,6 +557,50 @@ func (c *Client) KeyInfo(ctx context.Context, apiKey string) (KeyInfo, error) {
 	return envelope.Data, nil
 }
 
+// OrcaBalance is the same answer from the other gateway, mapped onto the
+// same struct so that everything reading it (the fuel gauge, the runway, the
+// low-credit audit entry, /aimod status) stays gateway-agnostic. Two
+// requests rather than one, because OrcaRouter reports the ceiling and the
+// spend from separate OpenAI-shaped endpoints and the remaining balance is
+// the subtraction.
+//
+// total_usage is in cents, which is what OpenAI's shape means by that field.
+// Getting the factor wrong here renders a gauge that is confidently off by a
+// hundred, so it is worth checking against a live account rather than
+// trusting this comment.
+func (c *Client) OrcaBalance(ctx context.Context, spec *providerSpec, apiKey string) (KeyInfo, error) {
+	base := orcaRouterBase
+	if spec != nil && spec.base != "" {
+		base = spec.base
+	}
+
+	var sub struct {
+		HardLimitUSD float64 `json:"hard_limit_usd"`
+	}
+	if err := c.getFrom(ctx, base, apiKey, "/dashboard/billing/subscription", &sub); err != nil {
+		return KeyInfo{}, err
+	}
+	var usage struct {
+		TotalUsage float64 `json:"total_usage"`
+	}
+	if err := c.getFrom(ctx, base, apiKey, "/dashboard/billing/usage", &usage); err != nil {
+		return KeyInfo{}, err
+	}
+
+	spent := usage.TotalUsage / 100
+	info := KeyInfo{Label: orcaRouter.label, Usage: spent}
+	// No ceiling means no balance to gauge, which is the ordinary state of a
+	// free-tier account and is reported as nil rather than as zero: the
+	// difference is "nothing is known" against "nothing is left", and the
+	// renderers already branch on it.
+	if sub.HardLimitUSD > 0 {
+		limit := sub.HardLimitUSD
+		left := max(limit-spent, 0)
+		info.Limit, info.LimitRemaining = &limit, &left
+	}
+	return info, nil
+}
+
 // Model is one entry from GET /models, trimmed to what this plugin shows.
 //
 // Prices come back as strings holding USD per single token, which is a
@@ -516,7 +666,11 @@ func perMillion(s string) float64 {
 }
 
 func (c *Client) get(ctx context.Context, apiKey, path string, into any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	return c.getFrom(ctx, c.base, apiKey, path, into)
+}
+
+func (c *Client) getFrom(ctx context.Context, base, apiKey, path string, into any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return fmt.Errorf("openrouter: build request: %w", err)
 	}

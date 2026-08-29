@@ -123,21 +123,21 @@ func TestPriceSurfacesDegradeWithoutARealClient(t *testing.T) {
 	sealer, _ := newSealer(testSecretKey)
 	p.sealer = sealer
 
-	if _, err := p.keyInfo(context.Background(), "k"); err == nil {
+	if _, err := p.keyInfo(context.Background(), openRouter, "k"); err == nil {
 		t.Error("keyInfo did not report that prices are unavailable in this build")
 	}
 	// reasoningLine degrades to saying nothing rather than to a wrong claim:
 	// whether an endpoint bills for thinking is learned from that endpoint
 	// refusing to switch it off, and a build with no real client has never
 	// asked, so it has no answer to give.
-	if line := p.reasoningLine([]string{"a/b"}); line != "" {
+	if line := p.reasoningLine(openRouter, []string{"a/b"}); line != "" {
 		t.Errorf("reasoningLine = %q, want nothing when it cannot know", line)
 	}
 }
 
 func TestKeyInfoReadsTheAccount(t *testing.T) {
 	p := stubCatalogue(t, newFakeStore())
-	info, err := p.keyInfo(context.Background(), "k")
+	info, err := p.keyInfo(context.Background(), openRouter, "k")
 	if err != nil {
 		t.Fatalf("keyInfo: %v", err)
 	}

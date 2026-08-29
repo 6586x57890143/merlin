@@ -106,7 +106,7 @@ func TestMutationsInvalidateImmediately(t *testing.T) {
 func TestEverySetterInvalidates(t *testing.T) {
 	ctx := context.Background()
 	setters := map[string]func(*cachingStore) error{
-		"SetAPIKey":         func(c *cachingStore) error { return c.SetAPIKey(ctx, "g1", []byte("x")) },
+		"SetAPIKey":         func(c *cachingStore) error { return c.SetAPIKey(ctx, "g1", "openrouter", []byte("x")) },
 		"SetMode":           func(c *cachingStore) error { return c.SetMode(ctx, "g1", ModeFlag) },
 		"SetBudget":         func(c *cachingStore) error { return c.SetBudget(ctx, "g1", 1) },
 		"SetEvidenceHours":  func(c *cachingStore) error { return c.SetEvidenceHours(ctx, "g1", 1) },
