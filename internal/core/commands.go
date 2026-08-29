@@ -59,7 +59,7 @@ type CommandRouter struct {
 	log   *slog.Logger
 	// voice supplies the wording for the refusals below. Optional: a nil
 	// speaker falls back to the plain sentences, so a router built in a
-	// test does not have to care that Merlin has a personality.
+	// test does not have to care that merlin has a personality.
 	voice voice.Source
 
 	topLevel       []*discordgo.ApplicationCommand
@@ -79,7 +79,7 @@ func NewCommandRouter(perms *Permissions, gate PluginGate, log *slog.Logger) *Co
 	}
 }
 
-// WithVoice gives the router Merlin's own wording for the refusals it
+// WithVoice gives the router merlin's own wording for the refusals it
 // sends. These are the messages ordinary members hit most often, by
 // clicking a stale button or trying a command that is not theirs, so they
 // are worth sounding like her rather than like a 403.
@@ -92,7 +92,7 @@ func (r *CommandRouter) WithVoice(v voice.Source) *CommandRouter {
 	return r
 }
 
-// say returns Merlin's wording for key, or plain if no voice is wired.
+// say returns merlin's wording for key, or plain if no voice is wired.
 func (r *CommandRouter) say(key voice.Key, plain string) string {
 	if r.voice == nil {
 		return plain

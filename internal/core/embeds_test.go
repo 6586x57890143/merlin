@@ -21,7 +21,7 @@ func TestNewEmbedSetsFields(t *testing.T) {
 }
 
 // The footer and timestamp are gone on purpose. Together they drew a second
-// "Merlin, today at 14:32" line immediately under the one Discord already
+// "merlin, today at 14:32" line immediately under the one Discord already
 // puts above every message the bot sends, saying nothing new in a smaller
 // font. This asserts on their absence because the natural instinct when
 // adding a field to NewEmbed is to put the brand mark back.

@@ -208,7 +208,7 @@ func TestOnReloadHookCanReadTheLoader(t *testing.T) {
 
 // The onboarding DM is off unless an operator asks for it, which is the
 // opposite default from the GUILD_MEMBERS intent above and deliberately so:
-// this is a message Merlin originates unprompted to a person who has not
+// this is a message merlin originates unprompted to a person who has not
 // interacted with her, not a capability whose absence breaks a feature.
 func TestOnboardingDMIsOffUnlessAskedFor(t *testing.T) {
 	if cfg := loadWith(t, nil); cfg.OnboardingDM {

@@ -19,7 +19,7 @@ import (
 const (
 	birdAuditLogChannelName = "bird-audit-log"
 	birdStatusChannelName   = "bird-status"
-	merlinModRoleName       = "Merlin Mod"
+	merlinModRoleName       = "merlin Mod"
 )
 
 // The wizard's steps, in order. setupStepCount is the count, not a step.

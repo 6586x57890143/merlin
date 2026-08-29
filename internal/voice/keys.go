@@ -1,6 +1,6 @@
 package voice
 
-// Key names one thing Merlin can say. Adding a public-facing message means
+// Key names one thing merlin can say. Adding a public-facing message means
 // adding a Key here, a spec below, and a block of lines in lines/*.yaml.
 // Anything missing from any of the three fails startup rather than shipping
 // half-wired.
@@ -76,7 +76,7 @@ const (
 type Register int
 
 const (
-	// RegisterPlayful is Merlin's ordinary voice: casual, lowercase, the
+	// RegisterPlayful is merlin's ordinary voice: casual, lowercase, the
 	// occasional emoji. Everything ambient that a member bumps into.
 	RegisterPlayful Register = iota
 	// RegisterPlain is for moderation outcomes. Still her, still warm, but
@@ -134,7 +134,7 @@ type spec struct {
 }
 
 // specs is the whole contract, in one table, on purpose. Reading this
-// should tell you everything Merlin can say and what each line owes.
+// should tell you everything merlin can say and what each line owes.
 var specs = map[Key]spec{
 	KeyRotationIntroFull: {
 		register: RegisterPlayful,

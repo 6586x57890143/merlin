@@ -41,7 +41,7 @@ func TestFormatActorNamesMerlinForAutomatedEntries(t *testing.T) {
 		t.Fatal("the automated actor is still the bare sentinel")
 	}
 	if !strings.Contains(strings.ToLower(got), "merlin") {
-		t.Errorf("FormatActor(%q) = %q, does not name Merlin", ActorSystem, got)
+		t.Errorf("FormatActor(%q) = %q, does not name merlin", ActorSystem, got)
 	}
 	if FormatActor("") == "" {
 		t.Error("an unknown actor rendered as an empty field")

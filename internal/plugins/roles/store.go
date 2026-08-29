@@ -46,7 +46,7 @@ type JailRecord struct {
 	Reason          string
 }
 
-// GrantRecord tracks one role Merlin herself granted to a member, optionally
+// GrantRecord tracks one role merlin herself granted to a member, optionally
 // with an expiry. A member can hold several independent tracked grants at
 // once (unlike a jail, which is one all-or-nothing state per member).
 type GrantRecord struct {

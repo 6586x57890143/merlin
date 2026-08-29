@@ -115,7 +115,7 @@ func (p *Plugin) registerCommands() {
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "revoke",
-				Description: "Revoke a role Merlin previously granted",
+				Description: "Revoke a role merlin previously granted",
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to revoke a granted role from"),
 					roleOpt("role", "The granted role to revoke"),
@@ -163,7 +163,7 @@ func (p *Plugin) registerCommands() {
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "marker-role",
-						Description: "Choose an existing role to use for jailing, or omit to use Merlin's own fallback role.",
+						Description: "Choose an existing role to use for jailing, or omit to use merlin's own fallback role.",
 						Options:     []*discordgo.ApplicationCommandOption{optionalRoleOpt("marker_role", "The role to assign when jailing members")},
 					},
 					{
@@ -309,7 +309,7 @@ func (p *Plugin) handleMarkerRole(ctx context.Context, s *discordgo.Session, i *
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "marker_role=none"); err != nil {
 		p.log.Error("roles: audit clear marker role failed", "guild", i.GuildID, "err", err)
 	}
-	core.RespondOK(s, i, "Cleared jail role", "Merlin will now use its own birdjailed role again.")
+	core.RespondOK(s, i, "Cleared jail role", "merlin will now use its own birdjailed role again.")
 }
 
 func (p *Plugin) handleDisallowChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {

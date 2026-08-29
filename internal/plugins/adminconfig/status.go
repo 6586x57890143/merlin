@@ -23,7 +23,7 @@ type DBHealth interface {
 	Healthy(ctx context.Context) error
 }
 
-// handleStatus answers "is Merlin okay?" in one embed, from inside Discord.
+// handleStatus answers "is merlin okay?" in one embed, from inside Discord.
 //
 // Everything it reports was previously only visible by reading container
 // logs over SSH: whether the database is reachable, whether any scheduled job
@@ -124,12 +124,12 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 
 	switch worst {
 	case sevError, sevWarn:
-		core.RespondWarn(s, i, "Merlin status", body)
+		core.RespondWarn(s, i, "merlin status", body)
 	case sevStopped:
-		embed := core.WithMood(core.NewEmbed(core.ColorWarning, "Merlin status", body), core.MoodIdle)
+		embed := core.WithMood(core.NewEmbed(core.ColorWarning, "merlin status", body), core.MoodIdle)
 		_ = core.RespondEmbed(s, i, embed)
 	default:
-		core.RespondInfo(s, i, "Merlin status", body)
+		core.RespondInfo(s, i, "merlin status", body)
 	}
 }
 

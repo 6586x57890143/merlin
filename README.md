@@ -1,6 +1,6 @@
 # merlin
 
-Merlin is a Discord bot I wrote for **The Melting Pot**, a free-speech server that
+merlin is a Discord bot I wrote for **The Melting Pot**, a free-speech server that
 attracts a fair amount of mass-reporting and brigading. Everything here started
 as something that server actually needed, which is why the defaults lean
 cautious: least privilege on the Discord side, nothing it posts can ping anyone
@@ -64,7 +64,7 @@ violations and it is told so explicitly.
 
 Each of the ten policy areas is a file in `internal/plugins/aimod/policy/`
 saying both what the rule covers and where it stops, and you choose per area
-whether Merlin ignores it, flags it, cleans it up or removes it. Only child
+whether merlin ignores it, flags it, cleans it up or removes it. Only child
 safety is fixed on. Hate speech, gore, self-harm and spam are **off** by
 default: those are questions about what kind of room you're running, and you
 should switch them on deliberately rather than find out later.
@@ -73,7 +73,7 @@ It is built to be cheap for whoever is paying. Most messages never reach a
 model at all (a skip filter and a small pattern list handle them for free);
 what does is batched and read by a cheap model that can only ever *flag*;
 nothing is deleted until a better model has re-read it against the full policy
-text. You set a daily USD cap per server, and past it Merlin falls back to the
+text. You set a daily USD cap per server, and past it merlin falls back to the
 free checks rather than spending more. `/aimod models show` prices your current
 setup against your server's own measured traffic, and `/aimod models compare`
 prices any other model before you switch.
@@ -149,7 +149,7 @@ of reconnect-looping.
 
 1. Invite the bot.
 2. Run `/config setup` as the server owner, any Administrator or the bootstrap
-   admin. It creates `#bird-audit-log`, `#bird-status` and a `Merlin Mod` role
+   admin. It creates `#bird-audit-log`, `#bird-status` and a `merlin Mod` role
    for whatever's missing, and offers a picker for anything you already have. Safe
    to re-run whenever, it doubles as a status screen.
 3. `/config admins add` and `/config mod-roles add` for everyone else.
@@ -309,7 +309,7 @@ event bus.
 | `internal/discordguard` | every destructive Discord call goes through here, enforces pause and dry-run |
 | `internal/scheduler` | cron core with persisted last-run state, backoff and failure alerts |
 | `internal/audit` | audit rows and the `#bird-audit-log` embeds |
-| `internal/voice` | what Merlin says to members, lines as reviewable YAML, contract in code |
+| `internal/voice` | what merlin says to members, lines as reviewable YAML, contract in code |
 | `internal/plugins/rotation` | channel rotation and the archive sweep |
 | `internal/plugins/roles` | jail and timed role grants |
 | `internal/plugins/adminconfig` | the `/config` command tree |

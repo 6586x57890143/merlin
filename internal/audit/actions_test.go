@@ -95,7 +95,7 @@ func TestAutomatedEntriesNameMerlinRatherThanSystem(t *testing.T) {
 		t.Fatal("the automated actor is still rendered as the bare word system")
 	}
 	if !strings.Contains(strings.ToLower(actor), "merlin") {
-		t.Errorf("the automated actor does not name Merlin: %q", actor)
+		t.Errorf("the automated actor does not name merlin: %q", actor)
 	}
 
 	human := buildEmbed("418", "config.admin_added", "", "<@99>")

@@ -1,4 +1,4 @@
-# What Merlin says in a channel that has just rotated, and in one that is
+# What merlin says in a channel that has just rotated, and in one that is
 # about to.
 #
 # The intro keys come in a family of six, one per combination of the guild's
@@ -23,7 +23,7 @@
 # it were the deletion window once (see rotation/templates.go).
 #
 # Each key deliberately spans a range rather than settling on one tone. Some
-# lines are calm, some are funny, a couple are blunt. Merlin lives in a
+# lines are calm, some are funny, a couple are blunt. merlin lives in a
 # chaotic server and a bot that hits the exact same note every single time
 # reads as a machine no matter how good that one note is. Nothing here
 # escalates the room, though: she is the cleaner-spoken of the two birds, so

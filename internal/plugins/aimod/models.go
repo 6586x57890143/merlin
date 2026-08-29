@@ -271,7 +271,7 @@ func stackLines(ids []string, catalogue []Model, configured []string) string {
 		fmt.Fprintf(&b, "%s: %s\n", prefix, priceLine(id, m, found))
 	}
 	if len(configured) == 0 {
-		b.WriteString("_Merlin's defaults, which track whatever this bot ships. Set your own with the commands below._")
+		b.WriteString("_merlin's defaults, which track whatever this bot ships. Set your own with the commands below._")
 	}
 	return b.String()
 }
@@ -443,7 +443,7 @@ func (p *Plugin) setStack(ctx context.Context, s *discordgo.Session, i *discordg
 
 	if len(ids) == 0 {
 		core.RespondOK(s, i, "Tracking the defaults",
-			fmt.Sprintf("The %s pass will use Merlin's own defaults, and will follow them if they change.\n\n"+
+			fmt.Sprintf("The %s pass will use merlin's own defaults, and will follow them if they change.\n\n"+
 				"`/aimod models show` for the current prices.", which))
 		return
 	}

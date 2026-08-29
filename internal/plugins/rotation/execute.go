@@ -370,7 +370,7 @@ func (p *Plugin) populateIfNeeded(ctx context.Context, channelID string, rc sett
 
 	// Sent through core.NewEmbed like every other embed this bot produces,
 	// rather than as a bare literal. This one is the most-read message
-	// Merlin sends: it lands in the busiest channel in the server on every
+	// merlin sends: it lands in the busiest channel in the server on every
 	// single rotation, and until now it was the only embed with no colour,
 	// no footer and no timestamp, which made the server's own retention
 	// notice look less like the bot than the bot's error messages did.

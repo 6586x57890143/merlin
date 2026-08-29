@@ -25,7 +25,7 @@ CREATE INDEX role_jails_due_idx
     ON role_jails (guild_id, release_at)
     WHERE release_at IS NOT NULL;
 
--- One row per single-role temporary (or permanent-but-tracked) grant Merlin
+-- One row per single-role temporary (or permanent-but-tracked) grant merlin
 -- herself made. A member can hold multiple independent tracked grants at
 -- once (unlike jail, which is one all-or-nothing state), so this is keyed
 -- by (guild, user, role) rather than (guild, user) alone.
