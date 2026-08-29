@@ -172,12 +172,16 @@ status` rather than appearing to work.
   `short` line per *enforced* bucket and nothing else (~350 tokens, amortized
   across the batch); the full policy file is sent only to the deep pass, only
   for the one flagged bucket. Turning a bucket off is therefore a cost saving
-  as well as a policy choice. Every request pins `provider: {zdr: true,
-  data_collection: "deny", require_parameters: true}` and `temperature: 0`:
-  privacy enforced at the request rather than trusted to model choice, and a
-  classifier that answers the same twice.
+  as well as a policy choice. Every request pins `temperature: 0`, so a
+  classifier answers the same twice; the `provider: {zdr: true,
+  data_collection: "deny", require_parameters: true}` block is per gateway,
+  and see "Two gateways" below for why that is now a statement with an
+  exception rather than an invariant.
 - **Budget and its failure directions.** `usage.cost` comes back on every
-  OpenRouter response, so the per-guild daily cap is an exact figure rather
+  OpenRouter response (and on an OrcaRouter one as `usage.cost_usd`, but only
+  when `X-OrcaRouter-Include-Cost` asked for it; `chatOnce` folds the two into
+  one field the moment the body is parsed, so nothing downstream knows there
+  are two gateways), so the per-guild daily cap is an exact figure rather
   than an estimate. Usage is booked for any response carrying it, *including*
   one whose body failed to parse: the money left the account either way, and a
   budget that only counts successes is one a misbehaving model walks through.
@@ -232,28 +236,116 @@ status` rather than appearing to work.
   listed there serves a stale config for up to the TTL, which is most of why
   the TTL exists at all.
 
+### Two gateways (`internal/plugins/aimod/provider.go`)
+
+`providerSpec` is a table of two: OrcaRouter, the default, and OpenRouter, the
+fallback. Not an interface with two implementations, because the differences
+are five fields and a base URL, and a type with methods would mean reading two
+files to learn what the second one does differently. The gateway is carried on
+the unexported `chatRequest.spec`, so it never reaches the wire, and **nil
+means OpenRouter on `c.base`**, which is what every request meant before there
+was a second gateway and is what keeps the tests that predate one honest.
+
+**Which gateway a guild is on is derived, never stored** (`route`): OrcaRouter
+if it holds an `orca_key_sealed`, OpenRouter otherwise. A provider column
+beside a key column is two facts that must agree, and what a disagreement
+produces is a guild whose scanning silently stopped pointing at a gateway it
+has no credential for. The same reasoning runs through the whole change:
+`/aimod configure key` reads the gateway off the key's own prefix (with an
+explicit option only as the escape hatch for a gateway that changes what its
+keys look like), and the tip jar reads its chain off its address.
+
+**OrcaRouter is free, and that is the point**: `orcarouter/free` routes by
+difficulty across the free lineup at $0 per token, limited by request rate
+rather than balance. Three things follow that are correctness issues rather
+than cosmetics. It is OpenAI-shaped, so it takes singular `model` and not the
+`models` fallback array, and a request carrying neither is refused outright.
+Its cost arrives as `usage.cost_usd` only when a header asks, and a gateway
+whose every call reads as free turns the daily cap into no cap at all.
+And its 429 is not the ordinary kind: a free window refills at its boundary
+(the minute bucket, or the day bucket at 00:00 UTC) rather than easing back,
+so `Retry-After` can be hours and the usual answer of waiting a moment and
+retrying the same gateway is the one thing certainly wrong. The lowest tier's
+oversized-prompt refusal reports *identically* and never passes on a retry at
+all, so `freeRateLimited` refuses to retry either and the deep rung falls over
+instead.
+
+**Only the deep rung falls over** (`escalate`). It is the rung whose verdict
+can delete or rewrite, its gateway is a free tier, and there is no OrcaRouter
+equivalent of `require_parameters`, so a model that quietly ignores the JSON
+schema is a real failure mode there. That arrives as an error exactly as a
+rate limit does, and no attempt is made to tell them apart: both mean this
+gateway produced no verdict, and a failed deep pass acts on nothing, which is
+safe and also useless. The fast rung deliberately gets none of this, since it
+can only flag, everything it flags is re-read anyway, and re-running a twenty
+message batch at OpenRouter prices is the bill the default gateway exists to
+avoid.
+
+**The privacy loss is disclosed rather than papered over.** OrcaRouter
+documents no per-request equivalent of the `provider` block, so `strictPrefs`
+is false for it and `chatOnce` *strips* the block rather than sending one that
+may be silently ignored: a guarantee the surrounding code still reads as
+holding is worse than one never claimed. `/aimod status` names the active
+gateway and states plainly, via `privacyLine`, that ZDR is not enforceable on
+it and how to move back.
+
 ### The tip jar (`internal/plugins/aimod/funding.go`, `erc20.go`)
 
 `/aimod funding` is a per-guild donation wallet shown next to a fuel gauge for
-the OpenRouter credit that pays for scanning. **The bot holds no key and moves
+the gateway credit that pays for scanning. **The bot holds no key and moves
 no money, and that is forced rather than chosen**: OpenRouter removed the
 programmatic crypto purchase endpoint (`POST /api/v1/credits/coinbase` now
-returns `410 Gone`) and their Auto Top-Up charges a saved card, never a wallet.
-No API with any credential turns crypto into credits, so custodying donations
-would buy nothing while putting them behind a Discord bot's threat model. What
-is automated is the *visibility*: balances, burn rate, runway, and a
-once-per-day `aimod.funding_low` audit entry telling the operator to go click
-the checkout.
+returns `410 Gone`) and their Auto Top-Up charges a saved card, never a wallet;
+OrcaRouter's crypto top-up is a NOWPayments checkout, and NOWPayments having an
+API is not a reason to custody anybody's donations. No credential turns crypto
+into credits unattended, so custodying would buy nothing while putting the
+money behind a Discord bot's threat model. What is automated is the
+*visibility*: balances, burn rate, runway, and a once-per-day
+`aimod.funding_low` audit entry telling the operator to go click the checkout.
+
+The gauge reads whichever gateway the guild is routed to. `Client.KeyInfo`
+(`GET /key`) for OpenRouter, `Client.OrcaBalance` for OrcaRouter, which is two
+OpenAI-shaped billing calls (`/dashboard/billing/subscription` for the ceiling,
+`/usage` for the spend, **in cents**) subtracted into the *same* `KeyInfo`
+struct. Mapping onto the existing struct rather than adding a second one is
+what lets `bar`, `runway`, `checkCredit`, `noticeFunding` and both renderers
+stay gateway-agnostic, nil-pointer "no limit set" branch included. A free-tier
+guild has no balance to draw at all, and both surfaces say so rather than
+rendering an empty bar: what runs out there is a request rate.
+
+**Two chains, one per gateway's checkout, and the guild's is read off its own
+address** (`chainFor`): `0x...` is USDC on Base, `T...` is USDT on TRON. Never
+stored beside the address, for the reason the whole feature exists: the network
+named on screen is what somebody is about to send money on, and a stored chain
+that disagreed with the address above it would be this bot causing the loss.
+Everything chain-specific is therefore derived, the field heading, the
+full-weight warning (`fundingChain.note`) and the how-to-get-here line
+(`swapAdvice`, separate strings because the cheapest route onto Base and onto
+TRON are different routes). `/aimod funding show` additionally warns when the
+jar's chain is not the active gateway's top-up rail, since donations landing on
+the other ledger need a swap and a bridge before they buy anything.
+
+TRON needed no new dependency and barely any new code: TronGrid answers
+Ethereum's JSON-RPC for reads, so the same `eth_call`, the same `balanceOf`
+selector, the same left-padded argument and the same `math/big` parse all
+stand, and USDT TRC-20 is 6 decimals exactly as USDC is. What it needed was a
+base58check decoder (`tronAddressToHex`, ~35 lines on `math/big` and
+`crypto/sha256`) for the `T...` form, applied to the **token contract as well
+as the wallet** since both fields want Ethereum-shaped addresses. Unlike an
+EVM address a TRON one carries a checksum, so `set-address` genuinely catches
+a mistyped one there rather than merely an ill-formed one.
 
 **USDC on Base, matching what OpenRouter's own Coinbase checkout settles**
 (their payment session carries `asset: usdc`, `networkId: 8453`). Same token,
 same chain, so no bridge, no swap, no price oracle, and gas in cents. The
 contract is Circle's native USDC (`0x8335...2913`, verified live as symbol
 `USDC` / 6 decimals), **not** USDbC (`0xd9aA...b6CA`), which is a different
-token on the same chain and unspendable at that checkout. `MERLIN_ETH_RPC_URL`
-and `MERLIN_USDC_CONTRACT` move the jar to another EVM chain and must be set
-together: an endpoint on one chain with a token address from another reports a
-zero balance rather than an error. Reading the balance is one `eth_call` with
+token on the same chain and unspendable at that checkout. USDT TRC-20
+(`TR7NHq...Lj6t`) is the same argument for the other gateway.
+`MERLIN_ETH_RPC_URL`/`MERLIN_USDC_CONTRACT` and
+`MERLIN_TRON_RPC_URL`/`MERLIN_USDT_CONTRACT` move either jar elsewhere, and
+each pair must be set together: an endpoint on one chain with a token address
+from another reports a zero balance rather than an error. Reading the balance is one `eth_call` with
 the `balanceOf` selector and a left-padded address, parsed through `math/big`
 (a `uint256` does not fit a `uint64`), so there is no web3 dependency. A
 JSON-RPC error arrives with **HTTP 200**, so status-only checking would read a

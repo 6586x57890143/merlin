@@ -255,7 +255,7 @@ func fastSchema() *responseFormat {
 
 // classifyFast runs rung 2 over a batch. Returns the hits, the usage (even
 // on a parse failure, because the call was billed either way), and an error.
-func (p *Plugin) classifyFast(ctx context.Context, apiKey string, cfg Config, batch []candidate) ([]Verdict, Usage, error) {
+func (p *Plugin) classifyFast(ctx context.Context, state budgetState, cfg Config, batch []candidate) ([]Verdict, Usage, error) {
 	buckets := enforcedBuckets(cfg)
 	if len(buckets) == 0 || len(batch) == 0 {
 		return nil, Usage{}, nil
@@ -273,8 +273,9 @@ func (p *Plugin) classifyFast(ctx context.Context, apiKey string, cfg Config, ba
 		fmt.Fprintf(&user, "%d. %s\n", i+1, sanitizeForPrompt(c.Content))
 	}
 
-	out, usage, err := p.client.Chat(ctx, apiKey, chatRequest{
-		Models:   modelsOr(cfg.FastModels, defaultFastModels),
+	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
+		spec:     state.Spec,
+		Models:   modelsOr(cfg.FastModels, state.Spec.fastModels),
 		Provider: strictProvider(),
 		Messages: []chatMessage{
 			{Role: "system", Content: p.fastPrompt(buckets, firstN(cfg.Calibration, maxFastCalibration))},
@@ -400,7 +401,7 @@ func deepSchema(wantRewrite bool) *responseFormat {
 // classifyDeep runs rung 3 on one message. context holds the few messages
 // that preceded it in the channel, which is what makes a threat
 // distinguishable from a running joke.
-func (p *Plugin) classifyDeep(ctx context.Context, apiKey string, cfg Config, bucket Bucket, c candidate, priorLines []string, self string, wantRewrite bool) (deepVerdict, Usage, error) {
+func (p *Plugin) classifyDeep(ctx context.Context, state budgetState, cfg Config, bucket Bucket, c candidate, priorLines []string, self string, wantRewrite bool) (deepVerdict, Usage, error) {
 	var user strings.Builder
 	if len(priorLines) > 0 {
 		// Each line already carries its speaker's label from recentContext,
@@ -415,8 +416,9 @@ func (p *Plugin) classifyDeep(ctx context.Context, apiKey string, cfg Config, bu
 	}
 	fmt.Fprintf(&user, "The message to judge, written by %s:\n%s", self, sanitizeForPrompt(c.Content))
 
-	out, usage, err := p.client.Chat(ctx, apiKey, chatRequest{
-		Models:   modelsOr(cfg.DeepModels, defaultDeepModels),
+	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
+		spec:     state.Spec,
+		Models:   modelsOr(cfg.DeepModels, state.Spec.deepModels),
 		Provider: strictProvider(),
 		Messages: []chatMessage{
 			{Role: "system", Content: p.deepPrompt(bucket, wantRewrite, forBucket(cfg.Calibration, bucket))},

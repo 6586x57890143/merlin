@@ -74,7 +74,14 @@ func (f *fakeStore) mutate(guildID string, fn func(*Config)) error {
 	return nil
 }
 
-func (f *fakeStore) SetAPIKey(_ context.Context, g string, sealed []byte) error {
+// testState is the budgetState the ladder tests hand to the classifier
+// passes: one key on the gateway that pins privacy prefs, which is what
+// every test written before there was a second gateway assumed.
+func testState() budgetState {
+	return budgetState{APIKey: "key", Spec: openRouter}
+}
+
+func (f *fakeStore) SetAPIKey(_ context.Context, g, _ string, sealed []byte) error {
 	return f.mutate(g, func(c *Config) { c.APIKeySealed = sealed })
 }
 func (f *fakeStore) SetMode(_ context.Context, g string, m Mode) error {
@@ -360,11 +367,17 @@ type fakeClassifier struct {
 	maxDeepParallel int
 	fastErr         error
 	deepErr         error
-	usage           Usage
-	fastCalls       int
-	deepCalls       int
-	lastFastReq     chatRequest
-	lastDeepReq     chatRequest
+	// deepErrFor fails a deep call only on one gateway, which is what the
+	// deep rung's cross-gateway fallback needs in order to be provable: the
+	// first attempt has to fail and the second has to succeed.
+	deepErrFor *providerSpec
+	// deepSpecs is which gateway each deep call went to, in order.
+	deepSpecs   []*providerSpec
+	usage       Usage
+	fastCalls   int
+	deepCalls   int
+	lastFastReq chatRequest
+	lastDeepReq chatRequest
 }
 
 // lastUserMessage returns the user half of the last fast-pass request, which
@@ -450,8 +463,12 @@ func (f *fakeClassifier) Chat(_ context.Context, _ string, req chatRequest) (str
 	if isDeep(req) {
 		f.deepCalls++
 		f.lastDeepReq = req
+		f.deepSpecs = append(f.deepSpecs, req.spec)
 		if f.deepErr != nil {
 			return "", f.usage, f.deepErr
+		}
+		if f.deepErrFor != nil && req.spec == f.deepErrFor {
+			return "", f.usage, errors.New("that gateway could not answer")
 		}
 		return pick(f.deep, f.deepCalls), f.usage, nil
 	}
@@ -710,4 +727,18 @@ var testNow = time.Date(2026, 3, 14, 12, 0, 0, 0, time.UTC)
 type testingT interface {
 	Helper()
 	Fatalf(format string, args ...any)
+}
+
+func (f *fakeClassifier) specsSeen() []*providerSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*providerSpec(nil), f.deepSpecs...)
+}
+
+func specNames(specs []*providerSpec) []string {
+	names := make([]string, 0, len(specs))
+	for _, s := range specs {
+		names = append(names, providerName(s))
+	}
+	return names
 }

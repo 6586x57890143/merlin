@@ -45,8 +45,13 @@ import (
 // in this struct: it is opened only where a request is about to be made, so
 // a plaintext key never sits in a long-lived cache.
 type Config struct {
-	GuildID          string
+	GuildID string
+	// APIKeySealed is the OpenRouter credential and OrcaKeySealed the
+	// OrcaRouter one. Which gateway a guild's traffic goes through is
+	// derived from which of these is set rather than stored beside them:
+	// see aimod.route.
 	APIKeySealed     []byte
+	OrcaKeySealed    []byte
 	Mode             Mode
 	DailyBudgetUSD   float64
 	EvidenceHours    int
@@ -179,7 +184,10 @@ var ErrNoIncident = errors.New("aimod: no incident recorded for that message")
 // plugin's own runtime state, kept out of internal/settings.
 type Store interface {
 	Config(ctx context.Context, guildID string) (Config, error)
-	SetAPIKey(ctx context.Context, guildID string, sealed []byte) error
+	// SetAPIKey stores one gateway's sealed credential. provider is a
+	// providerSpec name; an unknown one is an error rather than a silent
+	// write to the wrong column.
+	SetAPIKey(ctx context.Context, guildID, provider string, sealed []byte) error
 	SetMode(ctx context.Context, guildID string, mode Mode) error
 	SetBudget(ctx context.Context, guildID string, usd float64) error
 	SetEvidenceHours(ctx context.Context, guildID string, hours int) error
@@ -276,11 +284,11 @@ func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 	var actionsJSON, calJSON, calPendingJSON []byte
 	var ranAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT api_key_sealed, mode, daily_budget_usd, evidence_hours,
+		SELECT api_key_sealed, orca_key_sealed, mode, daily_budget_usd, evidence_hours,
 		       fast_models, deep_models, exempt_channel_ids, exempt_role_ids, sanction_action, sanction_optin_user_ids, bucket_actions,
 		       calibration, calibration_pending, calibration_mode, calibration_ran_at
 		FROM aimod_config WHERE guild_id = $1
-	`, guildID).Scan(&cfg.APIKeySealed, &cfg.Mode, &cfg.DailyBudgetUSD, &cfg.EvidenceHours,
+	`, guildID).Scan(&cfg.APIKeySealed, &cfg.OrcaKeySealed, &cfg.Mode, &cfg.DailyBudgetUSD, &cfg.EvidenceHours,
 		&cfg.FastModels, &cfg.DeepModels, &cfg.ExemptChannelIDs, &cfg.ExemptRoleIDs, &cfg.SanctionAction, &cfg.SanctionOptInUserIDs, &actionsJSON,
 		&calJSON, &calPendingJSON, &cfg.CalibrationMode, &ranAt)
 	if err != nil {
@@ -337,8 +345,27 @@ func (s *pgStore) upsert(ctx context.Context, guildID, column string, value any)
 	return nil
 }
 
-func (s *pgStore) SetAPIKey(ctx context.Context, guildID string, sealed []byte) error {
-	return s.upsert(ctx, guildID, "api_key_sealed", sealed)
+func (s *pgStore) SetAPIKey(ctx context.Context, guildID, provider string, sealed []byte) error {
+	column, err := keyColumn(provider)
+	if err != nil {
+		return err
+	}
+	return s.upsert(ctx, guildID, column, sealed)
+}
+
+// keyColumn maps a gateway name to its credential column. Explicitly, and
+// with an error for anything unknown, because upsert interpolates the column
+// name into the statement: the one place in this file where a caller's
+// string reaching the query unchecked would matter.
+func keyColumn(provider string) (string, error) {
+	switch provider {
+	case "openrouter":
+		return "api_key_sealed", nil
+	case "orcarouter":
+		return "orca_key_sealed", nil
+	default:
+		return "", fmt.Errorf("aimod store: unknown provider %q", provider)
+	}
 }
 
 func (s *pgStore) SetMode(ctx context.Context, guildID string, mode Mode) error {

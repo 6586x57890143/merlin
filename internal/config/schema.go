@@ -98,18 +98,24 @@ type GlobalConfig struct {
 	// back to plaintext.
 	SecretKey string `yaml:"-"`
 
-	// ETHRPCURL and USDCContract point aimod's tip jar at an EVM chain. Both
-	// empty means Base and Circle's USDC on it, which is what OpenRouter's own
-	// Coinbase checkout settles in, so donations are the same token on the
-	// same chain the credits are bought with.
+	// Two pairs, one per chain the tip jar can collect on, each pointing at
+	// an endpoint and the token contract read there. Empty means the
+	// defaults, which are what each model gateway's own crypto checkout
+	// settles in: Circle's USDC on Base for OpenRouter's Coinbase flow, and
+	// Tether's USDT on TRON for OrcaRouter's NOWPayments one. So a donation
+	// is the same token on the same chain the credits are bought with, with
+	// no bridge and no swap in between.
 	//
-	// They travel together because that pair is what a chain is: an endpoint
-	// on one chain with a token address from another reports a zero balance
-	// rather than an error, which is the worst way for a misconfiguration to
-	// present. Environment only, never guild-settable: pointing a server's
-	// donations at an arbitrary contract is not an admin's decision to make.
+	// Each pair travels together because that pair is what a chain is: an
+	// endpoint on one chain with a token address from another reports a zero
+	// balance rather than an error, which is the worst way for a
+	// misconfiguration to present. Environment only, never guild-settable:
+	// pointing a server's donations at an arbitrary contract is not an
+	// admin's decision to make.
 	ETHRPCURL    string `yaml:"-"`
 	USDCContract string `yaml:"-"`
+	TronRPCURL   string `yaml:"-"`
+	USDTContract string `yaml:"-"`
 }
 
 // Level maps LogLevel onto slog. The value is validated at load time, so an

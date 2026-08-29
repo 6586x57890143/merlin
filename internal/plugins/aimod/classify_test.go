@@ -29,12 +29,12 @@ func enforcingConfig() Config {
 // what the batch path does once its timer has fired.
 func (p *Plugin) classifyOne(t testingT, cfg Config, c candidate) {
 	t.Helper()
-	hits, _, err := p.classifyFast(context.Background(), "key", cfg, []candidate{c})
+	hits, _, err := p.classifyFast(context.Background(), testState(), cfg, []candidate{c})
 	if err != nil {
 		return
 	}
 	for _, hit := range hits {
-		p.escalate(context.Background(), cfg, "key", c, hit)
+		p.escalate(context.Background(), cfg, testState(), c, hit)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestFastPassOutputIsNotTrusted(t *testing.T) {
 	]}`}}
 	p := testPlugin(t, newFakeStore(), client, newFakeOps(), &fakeAudit{})
 
-	hits, _, err := p.classifyFast(context.Background(), "key", cfg, []candidate{{MessageID: "m1", Content: "one message"}})
+	hits, _, err := p.classifyFast(context.Background(), testState(), cfg, []candidate{{MessageID: "m1", Content: "one message"}})
 	if err != nil {
 		t.Fatalf("classifyFast: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestDeepVerdictBucketIsPinned(t *testing.T) {
 	}
 	p := testPlugin(t, newFakeStore(), client, newFakeOps(), &fakeAudit{})
 
-	v, _, err := p.classifyDeep(context.Background(), "key", enforcingConfig(), BucketThreats,
+	v, _, err := p.classifyDeep(context.Background(), testState(), enforcingConfig(), BucketThreats,
 		candidate{MessageID: "m1", Content: "x"}, nil, "A", false)
 	if err != nil {
 		t.Fatalf("classifyDeep: %v", err)
@@ -364,5 +364,70 @@ func TestHateSpeechPolicyCoversABareSlurAndSparesGenericProfanity(t *testing.T) 
 	fast := p.fastPrompt([]Bucket{BucketHateSpeech}, nil)
 	if !strings.Contains(fast, "aimed at a person") {
 		t.Error("the screening pass is not told about the case it has to catch")
+	}
+}
+
+// The deep rung is the only one whose verdict can delete or rewrite, and its
+// default gateway is a free tier: rate limited on a shared bucket, and with
+// no way to require that the endpoint honours the JSON schema it was handed.
+// Both arrive here as a failed call, and a failed deep pass acts on nothing,
+// so without a second attempt a message that tripped the first pass simply
+// goes unjudged.
+func TestDeepPassFallsOverToTheOtherGateway(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	client := &fakeClassifier{
+		fast:       []string{`{"v":[{"i":1,"b":"threats","c":0.8}]}`},
+		deep:       []string{`{"violation":true,"bucket":"threats","confidence":0.95,"reason":"a specific person, a specific act"}`},
+		deepErrFor: orcaRouter,
+	}
+	p := testPlugin(t, store, client, ops, &fakeAudit{})
+
+	cfg := enforcingConfig()
+	state := budgetState{APIKey: "orca", Spec: orcaRouter, FallbackKey: "openrouter"}
+	hits, _, err := p.classifyFast(context.Background(), state, cfg, []candidate{{MessageID: "m1"}})
+	if err != nil {
+		t.Fatalf("classifyFast: %v", err)
+	}
+	p.escalate(context.Background(), cfg, state, candidate{
+		MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "some genuinely threatening sentence",
+	}, hits[0])
+
+	if got := client.specsSeen(); len(got) != 2 || got[0] != orcaRouter || got[1] != openRouter {
+		t.Fatalf("deep calls went to %v, want one on each gateway in that order", specNames(got))
+	}
+	if deleted, _ := ops.snapshot(); len(deleted) != 1 {
+		t.Fatalf("deleted %v, want the message the fallback confirmed", deleted)
+	}
+}
+
+// The fallback is a second chance, not a second gateway to always try. With
+// nothing to fall back to the rung must fail exactly as it did before, since
+// acting on an unconfirmed fast-pass hit is the one thing the ladder forbids.
+func TestDeepPassDoesNotRetryWithNoFallbackKey(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	client := &fakeClassifier{
+		fast:       []string{`{"v":[{"i":1,"b":"threats","c":0.8}]}`},
+		deep:       []string{`{"violation":true,"bucket":"threats","confidence":0.95,"reason":"confirmed"}`},
+		deepErrFor: orcaRouter,
+	}
+	p := testPlugin(t, store, client, ops, &fakeAudit{})
+
+	cfg := enforcingConfig()
+	state := budgetState{APIKey: "orca", Spec: orcaRouter}
+	hits, _, err := p.classifyFast(context.Background(), state, cfg, []candidate{{MessageID: "m1"}})
+	if err != nil {
+		t.Fatalf("classifyFast: %v", err)
+	}
+	p.escalate(context.Background(), cfg, state, candidate{
+		MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "some genuinely threatening sentence",
+	}, hits[0])
+
+	if got := client.specsSeen(); len(got) != 1 {
+		t.Fatalf("made %d deep calls, want 1: there was no other gateway to ask", len(got))
+	}
+	if deleted, _ := ops.snapshot(); len(deleted) != 0 {
+		t.Fatalf("deleted %v on a hit nothing ever confirmed", deleted)
 	}
 }

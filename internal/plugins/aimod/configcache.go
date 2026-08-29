@@ -99,9 +99,9 @@ func (c *cachingStore) invalidate(guildID string) {
 // Forget drops a guild's cached config outright, for when the bot leaves it.
 func (c *cachingStore) Forget(guildID string) { c.invalidate(guildID) }
 
-func (c *cachingStore) SetAPIKey(ctx context.Context, guildID string, sealed []byte) error {
+func (c *cachingStore) SetAPIKey(ctx context.Context, guildID, provider string, sealed []byte) error {
 	defer c.invalidate(guildID)
-	return c.Store.SetAPIKey(ctx, guildID, sealed)
+	return c.Store.SetAPIKey(ctx, guildID, provider, sealed)
 }
 
 func (c *cachingStore) SetMode(ctx context.Context, guildID string, mode Mode) error {

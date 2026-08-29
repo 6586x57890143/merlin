@@ -217,7 +217,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// The tip jar's chain. Both empty leaves the Base defaults, which match
 	// the network OpenRouter's own checkout settles USDC on, so a donation is
 	// the same token on the same chain the credits are bought with.
-	aimodPlugin.WithFundingChain(cfg.ETHRPCURL, cfg.USDCContract)
+	aimodPlugin.WithFundingChains(cfg.ETHRPCURL, cfg.USDCContract, cfg.TronRPCURL, cfg.USDTContract)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)

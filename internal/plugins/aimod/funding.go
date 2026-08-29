@@ -162,7 +162,10 @@ func (p *Plugin) pollFunding(ctx context.Context, guildID string) error {
 		return nil
 	}
 
-	balance, err := p.eth.USDCBalance(ctx, f.Address)
+	// The chain comes from the address, so a guild that repointed its jar
+	// from one chain to the other is read on the right one from the very
+	// next poll with nothing to migrate.
+	balance, err := p.eth.Balance(ctx, chainFor(f.Address), f.Address)
 	if err != nil {
 		return fmt.Errorf("aimod: read tip jar balance: %w", err)
 	}
@@ -190,17 +193,21 @@ func (p *Plugin) pollFunding(ctx context.Context, guildID string) error {
 	return nil
 }
 
-// checkCredit warns once a day when the OpenRouter balance is nearly gone.
+// checkCredit warns once a day when the gateway balance is nearly gone.
 func (p *Plugin) checkCredit(ctx context.Context, guildID string) {
 	cfg, err := p.store.Config(ctx, guildID)
-	if err != nil || len(cfg.APIKeySealed) == 0 || cfg.Mode == ModeOff {
+	if err != nil || cfg.Mode == ModeOff {
 		return
 	}
-	plain, err := p.sealer.open(cfg.APIKeySealed)
+	spec, sealed := route(cfg)
+	if len(sealed) == 0 {
+		return
+	}
+	plain, err := p.sealer.open(sealed)
 	if err != nil {
 		return
 	}
-	info, err := p.keyInfo(ctx, plain)
+	info, err := p.keyInfo(ctx, spec, plain)
 	// A key with no limit set reports LimitRemaining nil, and there is then
 	// no balance to warn about. /aimod funding says so and nudges the admin
 	// to set one; a warning cannot be invented from an unknown.
@@ -211,7 +218,7 @@ func (p *Plugin) checkCredit(ctx context.Context, guildID string) {
 	if !ok || left > lowCreditRunway {
 		return
 	}
-	p.noticeFunding(ctx, guildID, *info.LimitRemaining, left)
+	p.noticeFunding(ctx, guildID, spec, *info.LimitRemaining, left)
 }
 
 // runway estimates how long the remaining credit lasts at the recent burn
@@ -236,7 +243,7 @@ func (p *Plugin) runway(ctx context.Context, guildID string, remaining float64) 
 // noticeFunding records that a guild is nearly out of credit, once per day.
 // The same dedupe as noticeBudget, and for the same reason: this runs on a
 // timer, and a warning repeated every fifteen minutes is one nobody reads.
-func (p *Plugin) noticeFunding(ctx context.Context, guildID string, remaining float64, left time.Duration) {
+func (p *Plugin) noticeFunding(ctx context.Context, guildID string, spec *providerSpec, remaining float64, left time.Duration) {
 	day := today(p.now())
 	p.fundingNoticeMu.Lock()
 	last, seen := p.fundingNoticed[guildID]
@@ -247,12 +254,44 @@ func (p *Plugin) noticeFunding(ctx context.Context, guildID string, remaining fl
 	p.fundingNoticed[guildID] = day
 	p.fundingNoticeMu.Unlock()
 
-	detail := fmt.Sprintf("%s of OpenRouter credit left, about %s at the last week's rate. "+
+	detail := fmt.Sprintf("%s of "+spec.label+" credit left, about %s at the last week's rate. "+
 		"Below this the plugin falls back to pattern checks only. /aimod funding shows the tip jar.",
 		formatUSD(remaining), core.FormatDuration(left))
 	if err := p.auditWriter.Record(ctx, guildID, core.ActorSystem, "aimod.funding_low", "", detail); err != nil {
 		p.log.Error("aimod: audit funding notice", "guild", guildID, "err", err)
 	}
+}
+
+// creditUnknown explains an ungaugeable balance, per gateway.
+//
+// The two have different reasons for it and different fixes, and saying
+// "set a limit on the key" to somebody on a free tier would be advice for a
+// problem they do not have.
+func creditUnknown(spec *providerSpec) string {
+	if spec == orcaRouter {
+		return "Scanning runs on free models, so there is no balance to run down.\n" +
+			subtext("What limits it there is a request rate rather than money. The tip jar below still "+
+				"pays for the paid fallback, which confirms anything the free pass flags.")
+	}
+	return "Not shown: this server's key has no credit limit set.\n" +
+		subtext("Setting a limit on the key at openrouter.ai turns this into a gauge, "+
+			"and stops a leaked key draining the account.")
+}
+
+// swapAdvice is the how-to-get-here line, per chain. Separate strings rather
+// than one with the network interpolated: the cheapest route onto Base and
+// the cheapest route onto TRON are different routes, and a sentence that
+// merely swapped the noun would be wrong about one of them.
+func swapAdvice(chain *fundingChain) string {
+	switch chain {
+	case baseUSDC:
+		return "Holding SOL, ETH or anything else? Swap it to USDC on an exchange, then withdraw on the " +
+			"Base network. That is usually the cheapest way across."
+	case tronUSDT:
+		return "Most exchanges let you withdraw USDT directly on TRON, which is usually the cheapest " +
+			"transfer of the lot. You need a little TRX in the sending wallet for gas."
+	}
+	return ""
 }
 
 // humanRunway renders a countdown as prose, not as core.FormatDuration's
@@ -380,9 +419,10 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	// and common case (a key with no limit set on it). The difference between
 	// "cannot know" and "zero" is the whole reason this is a pointer.
 	var remaining, limit *float64
-	if len(cfg.APIKeySealed) > 0 {
-		if plain, err := p.sealer.open(cfg.APIKeySealed); err == nil {
-			if info, err := p.keyInfo(ctx, plain); err == nil {
+	spec, sealed := route(cfg)
+	if len(sealed) > 0 {
+		if plain, err := p.sealer.open(sealed); err == nil {
+			if info, err := p.keyInfo(ctx, spec, plain); err == nil {
 				remaining, limit = info.LimitRemaining, info.Limit
 			}
 		}
@@ -392,10 +432,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	var haveRunway bool
 	if remaining == nil {
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name: "Scanning credit",
-			Value: core.TruncateEmbedField("Not shown: this server's key has no credit limit set.\n" +
-				subtext("Setting a limit on the key at openrouter.ai turns this into a gauge, "+
-					"and stops a leaked key draining the account.")),
+			Value: core.TruncateEmbedField(creditUnknown(spec)),
 		})
 	} else {
 		left, haveRunway = p.runway(ctx, i.GuildID, *remaining)
@@ -447,10 +484,29 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		// subtext, which is Discord's own small grey style: still on the
 		// screen for whoever is deciding, out of the way of whoever just
 		// wanted the address.
+		chain := chainFor(f.Address)
+		if chain == nil {
+			// Only reachable from a hand-edited row: set-address refuses
+			// anything chainFor cannot place. Naming no chain at all is the
+			// one safe answer, since guessing would print a network somebody
+			// might send on.
+			chain = &fundingChain{label: "an unrecognised network", note: "merlin cannot tell which chain this address is on. Do not send anything until the server owner sets it again."}
+		}
 		where := "```\n" + f.Address + "\n```" +
-			"**Base network only.** Sent on any other chain, it will not arrive here.\n" +
-			subtext("Holding SOL, ETH or anything else? Swap it to USDC on an exchange, "+
-				"then withdraw on the Base network. That is usually the cheapest way across.")
+			"**" + chain.note + "**\n" +
+			subtext(swapAdvice(chain))
+
+		// The gateway and the jar have to agree, or the money arrives on a
+		// ledger the credits cannot be bought from. Derived from the address
+		// rather than assumed, for the same reason the warning above is: this
+		// is the sentence that decides where somebody sends money.
+		if spec.topUp != nil && chain != spec.topUp {
+			where += "\n" + subtext("Note for the operator: this server scans through "+spec.label+
+				", which buys credit with "+spec.topUp.label+". Donations here will need swapping and bridging first.")
+			if color == core.ColorSuccess {
+				color = core.ColorWarning
+			}
+		}
 
 		provenance := "merlin only reads this wallet. Funds go to whoever controls it."
 		if f.SetBy != "" {
@@ -459,7 +515,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		where += "\n" + subtext(provenance)
 
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Send USDC on Base to",
+			Name:  "Send " + chain.label + " to",
 			Value: core.TruncateEmbedField(where),
 		})
 	}
@@ -530,9 +586,11 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 	}
 
 	address := strings.TrimSpace(core.LeafArgs(i)["address"].StringValue())
-	if !validAddress(address) {
+	chain := chainFor(address)
+	if chain == nil {
 		_ = core.FollowUpErr(s, i, "That is not a wallet address",
-			fmt.Errorf("it should look like 0x followed by 40 hex characters"))
+			fmt.Errorf("give either an EVM address (`0x` and 40 hex characters, read as %s) "+
+				"or a TRON one (`T` and 33 more characters, read as %s)", baseUSDC.label, tronUSDT.label))
 		return
 	}
 	if p.eth == nil {
@@ -544,7 +602,7 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 	// The chain is the authority on whether this address can be read at all,
 	// and the balance it reports becomes the baseline in the same write, so
 	// the first poll cannot report an existing balance as a donation.
-	balance, err := p.eth.USDCBalance(ctx, address)
+	balance, err := p.eth.Balance(ctx, chain, address)
 	if err != nil {
 		_ = core.FollowUpErr(s, i, "Could not read that wallet", err)
 		return
