@@ -214,6 +214,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// the commands: HandleMessage below is the one plugin entry point the
 	// CommandRouter's own gate check never sees. See aimod.PluginGate.
 	aimodPlugin.WithGate(settingsStore)
+	// The tip jar's chain. Both empty leaves the Base defaults, which match
+	// the network OpenRouter's own checkout settles USDC on, so a donation is
+	// the same token on the same chain the credits are bought with.
+	aimodPlugin.WithFundingChain(cfg.ETHRPCURL, cfg.USDCContract)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)

@@ -32,10 +32,13 @@ type fakeStore struct {
 	configErr   error
 	spendErr    error
 	incidentErr error
+
+	funding    map[string]Funding
+	fundingErr error
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{cfg: make(map[string]Config), spend: make(map[string]Spend)}
+	return &fakeStore{cfg: make(map[string]Config), spend: make(map[string]Spend), funding: make(map[string]Funding)}
 }
 
 func (f *fakeStore) setConfig(cfg Config) {
@@ -191,6 +194,64 @@ func (f *fakeStore) SpendSince(_ context.Context, g string, since time.Time) ([]
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeStore) Funding(_ context.Context, guildID string) (Funding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fundingErr != nil {
+		return Funding{}, f.fundingErr
+	}
+	fu, ok := f.funding[guildID]
+	if !ok {
+		return Funding{GuildID: guildID}, nil
+	}
+	return fu, nil
+}
+
+func (f *fakeStore) SetFundingAddress(_ context.Context, guildID, address, setBy string, at time.Time, baseline float64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fundingErr != nil {
+		return f.fundingErr
+	}
+	// Mirrors the real statement: re-pointing resets the totals, and the
+	// baseline is stored with checked_at so the first poll counts nothing.
+	f.funding[guildID] = Funding{
+		GuildID: guildID, Address: address, SetBy: setBy, SetAt: at,
+		BalanceUSD: baseline, CheckedAt: at,
+	}
+	return nil
+}
+
+func (f *fakeStore) ClearFunding(_ context.Context, guildID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fundingErr != nil {
+		return f.fundingErr
+	}
+	delete(f.funding, guildID)
+	return nil
+}
+
+func (f *fakeStore) UpdateFundingBalance(_ context.Context, guildID string, balance, donation float64, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fundingErr != nil {
+		return f.fundingErr
+	}
+	fu, ok := f.funding[guildID]
+	if !ok {
+		return nil
+	}
+	fu.BalanceUSD = balance
+	fu.CheckedAt = at
+	fu.ReceivedUSD += donation
+	if donation > 0 {
+		fu.Donations++
+	}
+	f.funding[guildID] = fu
+	return nil
 }
 
 func (f *fakeStore) RecordIncident(_ context.Context, inc Incident) (int64, error) {
@@ -431,6 +492,7 @@ type fakeOps struct {
 	deleteErr error
 
 	guild      *discordgo.Guild
+	guildErr   error
 	members    map[string]*discordgo.Member
 	history    []*discordgo.Message
 	historyErr error
@@ -501,6 +563,9 @@ func (f *fakeOps) GuildMemberTimeout(_, userID string, until *time.Time, _ ...di
 func (f *fakeOps) Guild(string, ...discordgo.RequestOption) (*discordgo.Guild, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.guildErr != nil {
+		return nil, f.guildErr
+	}
 	return f.guild, nil
 }
 
@@ -630,7 +695,12 @@ func testPlugin(t testingT, store *fakeStore, client classifier, ops *fakeOps, a
 		batches:       make(map[string]*batch),
 		inFlight:      make(map[string]chan struct{}),
 		budgetNoticed: make(map[string]time.Time),
-		stopped:       make(chan struct{}),
+		// The funding maps are made here for the same reason budgetNoticed
+		// is: noticeFunding writes to fundingNoticed, and a write to a nil
+		// map panics rather than failing the assertion under test.
+		fundingNoticed:    make(map[string]time.Time),
+		fundingRegistered: make(map[string]bool),
+		stopped:           make(chan struct{}),
 	}
 }
 

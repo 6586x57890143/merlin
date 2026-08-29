@@ -548,6 +548,17 @@ func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
 	if p.sched == nil {
 		return
 	}
+	// The tip jar reads its own table, so it reconciles before the config
+	// read below and independently of whether that read succeeds. The two
+	// jobs have nothing to do with each other, and skipping both because one
+	// query failed is exactly how a guild ends up with a job that never gets
+	// registered for the life of the process.
+	if f, err := p.store.Funding(ctx, guildID); err != nil {
+		p.log.Error("aimod: load funding for sync", "guild", guildID, "err", err)
+	} else {
+		p.reconcileFundingJob(guildID, f.Configured())
+	}
+
 	cfg, err := p.store.Config(ctx, guildID)
 	if err != nil {
 		p.log.Error("aimod: load config for calibration sync", "guild", guildID, "err", err)

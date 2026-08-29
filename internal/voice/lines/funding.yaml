@@ -1,0 +1,63 @@
+# What merlin says on /aimod funding, the one public surface this plugin has.
+#
+# The scanning here costs real money per message, and a server whose credit
+# runs out silently drops to pattern-only checks. That is the thing worth
+# saying out loud: members can see the tank and top it up.
+#
+# What is NOT in this file is the point of it. The wallet address, both
+# balances, the runway figure and the sentence about who controls the wallet
+# are built in code as embed fields. Line selection here is random and falls
+# back silently on a line it cannot render, which is right for a greeting and
+# very wrong for the one sentence telling somebody where their money is about
+# to go. Personality varies the wording around the numbers, never the numbers.
+#
+# The two warning keys are the plain register, like moderation.*: a server
+# about to lose its filter is not a playful moment. The two healthy keys get
+# her ordinary voice, because asking for money in a monotone reads worse than
+# asking for it lightly.
+
+funding.ask:
+  # calm
+  - "the filter here runs on donated credit. if you want to chip in, the jar is below 🪶"
+  - "keeping this place scanned costs a little money. the jar is below if you feel like helping"
+  - "this nest runs on whatever the server puts in the jar. no pressure either way"
+  # dry
+  - "moderation by robot bird is cheap, but it is not free. jar's below"
+  - "i work for credit, not seed. the jar is right there"
+  - "every message i read costs a fraction of a cent. it adds up 🍵"
+  # blunt
+  - "the filter costs money to run. here is where that money comes from"
+  - "someone pays for this. the jar is below if you want it to be you"
+
+funding.thanks:
+  # warm
+  - "{raised} donated so far. that is genuinely what keeps me reading 🪶"
+  - "the jar has taken {raised} to date. thank you, sincerely"
+  - "people have put {raised} in this jar. that is not nothing, thank you"
+  # calm
+  - "{raised} in so far. every bit of it goes to keeping this filter awake"
+  - "{raised} so far, all of it going straight into credit"
+  - "thanks to whoever has been feeding this thing: {raised} and counting"
+  # dry
+  - "{raised} raised. i am well fed and still watching 🍵"
+  - "running total: {raised}. the server pays for its own filter, which is quietly impressive"
+
+funding.low:
+  - "the credit here is running low: about {runway} left at the current rate."
+  - "heads up, there is roughly {runway} of scanning left before the credit runs out."
+  - "about {runway} of credit remains. after that only the built-in pattern checks run."
+  - "credit is nearly out. roughly {runway} left at how fast this server is going."
+  - "this is a warning rather than a problem: there is {runway} of credit left."
+  - "there is about {runway} left in the tank. topping it up now avoids a gap."
+  - "running low. {runway} of scanning left on the current balance."
+  - "the filter has about {runway} of credit left before it falls back to patterns only."
+
+funding.dry:
+  - "the credit has run out. only the built-in pattern checks are running now."
+  - "out of credit. nothing is being sent to a model until this is topped up."
+  - "the tank is empty. pattern checks still run, but the model checks have stopped."
+  - "no credit left. the filter is down to its free checks."
+  - "this server has run out of scanning credit. the basic checks continue."
+  - "credit is gone. i am still here, just not reading as carefully."
+  - "the balance is empty, so model scanning has stopped. patterns are still on."
+  - "out of funds. the deeper checks are paused until there is credit again."

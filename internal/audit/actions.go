@@ -51,24 +51,30 @@ var actions = map[string]meta{
 	// message, not how serious the policy area was: a moderator scanning
 	// this channel needs to find the irreversible ones, and a removal is
 	// irreversible whether it was a slur or a phishing link.
-	"aimod.remove":              {title: "AI moderation: message removed", color: core.ColorError},
-	"aimod.rewrite":             {title: "AI moderation: message rewritten", color: core.ColorWarning},
-	"aimod.flagged":             {title: "AI moderation: message flagged", color: core.ColorWarning},
-	"aimod.sanctioned":          {title: "AI moderation: member jailed", color: core.ColorError},
-	"aimod.abuse_detected":      {title: "AI moderation: scan budget abuse", color: core.ColorWarning},
-	"aimod.undone":              {title: "AI moderation: reversed by a moderator", color: core.ColorSuccess},
-	"aimod.budget_exhausted":    {title: "AI moderation: daily budget spent", color: core.ColorWarning},
-	"aimod.dryrun":              {title: "AI moderation: would have acted", color: core.ColorInfo, mood: core.MoodIdle},
-	"aimod.key_set":             {title: "AI moderation: API key set", color: core.ColorSuccess},
-	"aimod.mode_set":            {title: "AI moderation: mode changed", color: core.ColorWarning},
-	"aimod.policy_set":          {title: "AI moderation: policy changed", color: core.ColorWarning},
-	"aimod.sanction_action_set": {title: "AI moderation: sanction response changed", color: core.ColorWarning},
-	"aimod.budget_set":          {title: "AI moderation: budget changed", color: core.ColorSuccess},
-	"aimod.evidence_set":        {title: "AI moderation: evidence retention changed", color: core.ColorWarning},
-	"aimod.models_set":          {title: "AI moderation: models changed", color: core.ColorSuccess},
-	"aimod.exempt_channel":      {title: "AI moderation: channel exemption changed", color: core.ColorSuccess},
-	"aimod.exempt_role":         {title: "AI moderation: role exemption changed", color: core.ColorSuccess},
-	"aimod.optin_changed":       {title: "AI moderation: sanction opt-in changed", color: core.ColorWarning},
+	"aimod.remove":           {title: "AI moderation: message removed", color: core.ColorError},
+	"aimod.rewrite":          {title: "AI moderation: message rewritten", color: core.ColorWarning},
+	"aimod.flagged":          {title: "AI moderation: message flagged", color: core.ColorWarning},
+	"aimod.sanctioned":       {title: "AI moderation: member jailed", color: core.ColorError},
+	"aimod.abuse_detected":   {title: "AI moderation: scan budget abuse", color: core.ColorWarning},
+	"aimod.undone":           {title: "AI moderation: reversed by a moderator", color: core.ColorSuccess},
+	"aimod.budget_exhausted": {title: "AI moderation: daily budget spent", color: core.ColorWarning},
+	"aimod.funding_low":      {title: "AI moderation: credit running low", color: core.ColorWarning},
+	// Warning rather than info, and deliberately so: this is where donated
+	// money goes, nothing sent on chain can be recovered, and the entry is
+	// what a server reads to notice a payout address it did not expect.
+	"aimod.funding_address_changed": {title: "AI moderation: tip jar address changed", color: core.ColorWarning},
+	"aimod.funding_cleared":         {title: "AI moderation: tip jar removed", color: core.ColorInfo},
+	"aimod.dryrun":                  {title: "AI moderation: would have acted", color: core.ColorInfo, mood: core.MoodIdle},
+	"aimod.key_set":                 {title: "AI moderation: API key set", color: core.ColorSuccess},
+	"aimod.mode_set":                {title: "AI moderation: mode changed", color: core.ColorWarning},
+	"aimod.policy_set":              {title: "AI moderation: policy changed", color: core.ColorWarning},
+	"aimod.sanction_action_set":     {title: "AI moderation: sanction response changed", color: core.ColorWarning},
+	"aimod.budget_set":              {title: "AI moderation: budget changed", color: core.ColorSuccess},
+	"aimod.evidence_set":            {title: "AI moderation: evidence retention changed", color: core.ColorWarning},
+	"aimod.models_set":              {title: "AI moderation: models changed", color: core.ColorSuccess},
+	"aimod.exempt_channel":          {title: "AI moderation: channel exemption changed", color: core.ColorSuccess},
+	"aimod.exempt_role":             {title: "AI moderation: role exemption changed", color: core.ColorSuccess},
+	"aimod.optin_changed":           {title: "AI moderation: sanction opt-in changed", color: core.ColorWarning},
 	// The weekly self-review. Proposing is information; applying changes what
 	// the filter does to real messages and is coloured like every other
 	// policy change on this list.

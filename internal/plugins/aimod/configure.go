@@ -337,15 +337,47 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 			color = core.ColorWarning
 			fields = append(fields, &discordgo.MessageEmbedField{Name: "OpenRouter", Value: core.TruncateEmbedField("could not reach OpenRouter: " + err.Error())})
 		} else {
+			// A key with no limit set reports LimitRemaining nil, so there is
+			// no denominator and no balance to gauge. Saying so beats inventing
+			// a bar out of an unknown.
 			balance := "no limit set on this key"
 			if info.LimitRemaining != nil {
 				balance = formatUSD(*info.LimitRemaining) + " left on this key"
+				if info.Limit != nil && *info.Limit > 0 {
+					balance = bar(*info.LimitRemaining/(*info.Limit), barWidth) + "\n" +
+						formatUSD(*info.LimitRemaining) + " of " + formatUSD(*info.Limit)
+				}
+				// core.FormatDuration rather than humanRunway: this is a mod
+				// surface, and every admin or audit duration in this codebase is
+				// the compact form. /aimod funding, which members read,
+				// deliberately spells the same number out as prose.
+				if left, ok := p.runway(ctx, i.GuildID, *info.LimitRemaining); ok {
+					balance += "\n" + core.FormatDuration(left) + " left at the last week's rate"
+					if left <= lowCreditRunway && color == core.ColorSuccess {
+						color = core.ColorWarning
+					}
+				}
 			}
 			fields = append(fields, &discordgo.MessageEmbedField{
 				Name:  "OpenRouter account",
-				Value: fmt.Sprintf("%s\n%s used across all uses of this key today", balance, formatUSD(info.UsageDaily)),
+				Value: core.TruncateEmbedField(fmt.Sprintf("%s\n%s used across all uses of this key today", balance, formatUSD(info.UsageDaily))),
 			})
 		}
+	}
+
+	// The tip jar, if there is one. Shown here as well as on /aimod funding
+	// so a mod checking why scanning stopped can see whether the money to
+	// restart it is already sitting there.
+	if f, err := p.store.Funding(ctx, i.GuildID); err == nil && f.Configured() {
+		jar := formatUSD(f.BalanceUSD) + " waiting to be loaded"
+		if f.Donations > 0 {
+			jar += fmt.Sprintf(", %s raised across %d %s", formatUSD(f.ReceivedUSD), f.Donations,
+				plural(f.Donations, "donation", "donations"))
+		}
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:  "Tip jar (USDC on Base)",
+			Value: core.TruncateEmbedField(jar),
+		})
 	}
 
 	embed := core.NewEmbed(color, "AI moderation", core.TruncateEmbedDescription(body.String()), fields...)

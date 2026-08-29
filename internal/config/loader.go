@@ -69,6 +69,8 @@ func (l *Loader) reload() error {
 	// GlobalConfig.MessageContentIntent for why the defaults differ.
 	next.MessageContentIntent = isTruthy(os.Getenv("MERLIN_ENABLE_MESSAGE_CONTENT_INTENT"))
 	next.SecretKey = os.Getenv("MERLIN_SECRET_KEY")
+	next.ETHRPCURL = os.Getenv("MERLIN_ETH_RPC_URL")
+	next.USDCContract = os.Getenv("MERLIN_USDC_CONTRACT")
 	// LOG_LEVEL overrides the YAML value when set. On a deployed host .env is
 	// already the file an operator edits; config.yaml is a read-only mount,
 	// so requiring a file change to raise verbosity mid-incident would be the

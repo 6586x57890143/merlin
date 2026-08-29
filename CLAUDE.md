@@ -232,6 +232,66 @@ status` rather than appearing to work.
   listed there serves a stale config for up to the TTL, which is most of why
   the TTL exists at all.
 
+### The tip jar (`internal/plugins/aimod/funding.go`, `erc20.go`)
+
+`/aimod funding` is a per-guild donation wallet shown next to a fuel gauge for
+the OpenRouter credit that pays for scanning. **The bot holds no key and moves
+no money, and that is forced rather than chosen**: OpenRouter removed the
+programmatic crypto purchase endpoint (`POST /api/v1/credits/coinbase` now
+returns `410 Gone`) and their Auto Top-Up charges a saved card, never a wallet.
+No API with any credential turns crypto into credits, so custodying donations
+would buy nothing while putting them behind a Discord bot's threat model. What
+is automated is the *visibility*: balances, burn rate, runway, and a
+once-per-day `aimod.funding_low` audit entry telling the operator to go click
+the checkout.
+
+**USDC on Base, matching what OpenRouter's own Coinbase checkout settles**
+(their payment session carries `asset: usdc`, `networkId: 8453`). Same token,
+same chain, so no bridge, no swap, no price oracle, and gas in cents. The
+contract is Circle's native USDC (`0x8335...2913`, verified live as symbol
+`USDC` / 6 decimals), **not** USDbC (`0xd9aA...b6CA`), which is a different
+token on the same chain and unspendable at that checkout. `MERLIN_ETH_RPC_URL`
+and `MERLIN_USDC_CONTRACT` move the jar to another EVM chain and must be set
+together: an endpoint on one chain with a token address from another reports a
+zero balance rather than an error. Reading the balance is one `eth_call` with
+the `balanceOf` selector and a left-padded address, parsed through `math/big`
+(a `uint256` does not fit a `uint64`), so there is no web3 dependency. A
+JSON-RPC error arrives with **HTTP 200**, so status-only checking would read a
+rejected call as a zero balance.
+
+**Only the guild owner or the bootstrap operator may set the address**
+(`canSetFunding`), enforced in the handler because `PermSpec` cannot express
+either identity, exactly as `/aimod moderate-user` does. `TierAdmin` is only
+the coarse floor: a guild with five admins would otherwise have five accounts
+able to silently repoint where donated money goes, and nothing sent on chain
+can be recovered. It fails closed on an unresolvable guild. `clear` is
+deliberately open to any admin, because it can only ever stop donations and
+never redirect them. Every change writes an audit entry naming both addresses,
+and the public view names who set it and leads with a warning for 24 hours.
+
+**Donations are balance deltas, not parsed transactions.** The first poll after
+an address is set is a *baseline* and counts nothing, or pointing the bot at a
+wallet that already holds money reports a phantom gift on day one; the baseline
+is written with the address in one statement, from the balance the `set-address`
+command already read. A fall in balance is the operator buying credits, never a
+negative donation. Two gifts inside one 15 minute poll read as one, which is
+why the display says "donations" and never "donors". `aimod_funding` is a
+separate table from `aimod_config` on purpose: the poller writes every 15
+minutes and `aimod_config` is the hot-path row behind `cachingStore`, so these
+setters are the only ones in the package that correctly need **no** cache
+invalidation. The job is registered only where there is a wallet and is
+deliberately **not** `Seed`ed, the opposite of the calibration job beside it: a
+freshly set address should show a balance on the next tick, and its first fire
+costs one public RPC call rather than a model bill.
+
+`funding.ask`/`thanks`/`low`/`dry` are in the voice catalog because
+`funding/show` is `TierPublic`; the address, both balances, the runway and the
+"funds go to whoever controls it" warning are **code-authored embed fields**,
+since `voice.Line` selects at random and falls back silently, which is right
+for a greeting and wrong for the sentence saying where somebody's money goes.
+Member-facing durations render through `humanRunway` ("6 days"), the audit and
+`/aimod status` ones through `core.FormatDuration` ("6d").
+
 ### Rotation disclosure modes
 
 `settings_rotation_channels.disclosure` (migration 0018, default `full`) is how much a freshly rotated channel is told about its own rotation: `full` (cadence + archival window), `cadence`, `retention`, or `generic` (neither). Per channel rather than per guild, matching `retention_hours` itself. Set via `/rotation configure add|edit`, a fixed four-value `Choices` option rather than autocomplete, since §4a's autocomplete rule is about values that come from bot state and cannot be enumerated at compile time.

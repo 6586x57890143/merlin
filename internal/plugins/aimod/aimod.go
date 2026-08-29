@@ -183,6 +183,26 @@ type Plugin struct {
 	calibrateMu         sync.Mutex
 	calibrateRegistered map[string]bool
 
+	// eth reads the tip jar's wallet balance. Always non-nil: New defaults it
+	// to Base, and WithFundingChain overrides the endpoint and token address
+	// together for a different EVM chain. See funding.go.
+	eth *ethClient
+
+	// fundingMu guards fundingRegistered, mirroring calibrateMu above: the
+	// Scheduler has no "is this job registered" query, so reconcile keeps its
+	// own answer. Held across reconcile, so anything it calls must not take
+	// it again.
+	fundingMu         sync.Mutex
+	fundingRegistered map[string]bool
+
+	// fundingNoticed keeps the low-credit warning to one per guild per day,
+	// exactly as budgetNoticed does for the exhausted-budget one. The poll
+	// runs every fifteen minutes and the low state persists until somebody
+	// tops up, so without this it would be the same warning four times an
+	// hour until it stopped meaning anything.
+	fundingNoticeMu sync.Mutex
+	fundingNoticed  map[string]time.Time
+
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -225,6 +245,9 @@ func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker
 		inFlight:            make(map[string]chan struct{}),
 		budgetNoticed:       make(map[string]time.Time),
 		calibrateRegistered: make(map[string]bool),
+		fundingRegistered:   make(map[string]bool),
+		fundingNoticed:      make(map[string]time.Time),
+		eth:                 newETHClient("", ""),
 		stopped:             make(chan struct{}),
 	}, nil
 }
@@ -234,6 +257,19 @@ func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker
 // structurally, exactly as it satisfies core.PluginGate for the router.
 func (p *Plugin) WithGate(g PluginGate) *Plugin {
 	p.gate = g
+	return p
+}
+
+// WithFundingChain points the tip jar at a different EVM chain.
+//
+// The endpoint and the token address travel together on purpose: they are
+// what a chain is, and an endpoint on one chain with a token address from
+// another reports a zero balance rather than an error, which is the worst way
+// for a misconfiguration to present. Wired in cmd/bot/main.go from
+// MERLIN_ETH_RPC_URL and MERLIN_USDC_CONTRACT; unset leaves the Base defaults
+// that match what OpenRouter's own checkout settles USDC on.
+func (p *Plugin) WithFundingChain(rpcURL, contract string) *Plugin {
+	p.eth = newETHClient(rpcURL, contract)
 	return p
 }
 
@@ -321,6 +357,17 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	p.budgetNoticeMu.Lock()
 	delete(p.budgetNoticed, guildID)
 	p.budgetNoticeMu.Unlock()
+
+	p.fundingNoticeMu.Lock()
+	delete(p.fundingNoticed, guildID)
+	p.fundingNoticeMu.Unlock()
+
+	// The balance poll is stopped, unlike the row behind it, which stays in
+	// Postgres so a kick and re-invite keeps the guild's jar. Leaving the job
+	// registered would keep making an outbound RPC call every fifteen minutes
+	// for a server this bot can no longer see; SyncGuild registers it again
+	// on the next GuildCreate.
+	p.reconcileFundingJob(guildID, false)
 
 	p.meter.forgetGuild(guildID)
 	p.models.forgetGuild(guildID)
