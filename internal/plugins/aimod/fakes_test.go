@@ -155,6 +155,9 @@ func (f *fakeStore) AddSpend(_ context.Context, g string, day time.Time, u Usage
 		sp.FastPromptTokens += u.PromptTokens
 		sp.FastCompletionTokens += u.CompletionTokens
 	}
+	// Not split by tier, matching pgStore: reasoning is a property of the
+	// endpoint, not of the pass.
+	sp.ReasoningTokens += u.CompletionTokensDetails.ReasoningTokens
 	f.spend[spendKey(g, day)] = sp
 	return nil
 }
