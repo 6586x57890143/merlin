@@ -208,6 +208,14 @@ type Store interface {
 	SpendToday(ctx context.Context, guildID string, day time.Time) (Spend, error)
 	SpendSince(ctx context.Context, guildID string, since time.Time) ([]Spend, error)
 
+	// The tip jar. These live in their own table rather than on aimod_config,
+	// so none of them needs a cachingStore override: the poller writes every
+	// 15 minutes and the message hot path never reads them.
+	Funding(ctx context.Context, guildID string) (Funding, error)
+	SetFundingAddress(ctx context.Context, guildID, address, setBy string, at time.Time, baseline float64) error
+	ClearFunding(ctx context.Context, guildID string) error
+	UpdateFundingBalance(ctx context.Context, guildID string, balance, donation float64, at time.Time) error
+
 	// RecordIncident writes before anything is done to the message. See
 	// enforce.go: the other order loses the only copy of what was removed.
 	RecordIncident(ctx context.Context, inc Incident) (int64, error)
@@ -714,4 +722,102 @@ func (s *pgStore) PruneEvidence(ctx context.Context) (int64, error) {
 // while the policy stays where it belongs.
 func (s *pgStore) PruneBefore(ctx context.Context, _ time.Time) (int64, error) {
 	return s.PruneEvidence(ctx)
+}
+
+// Funding is one guild's tip jar: the wallet donations go to, who pointed
+// this bot at it, and the running totals the poller has observed on it.
+//
+// A zero Address means no jar is configured, which is what a guild that has
+// never run /aimod funding set-address gets. A zero CheckedAt means the
+// address has never been polled, so the next poll records a baseline rather
+// than reporting the whole existing balance as a donation.
+type Funding struct {
+	GuildID     string
+	Address     string
+	SetBy       string
+	SetAt       time.Time
+	BalanceUSD  float64
+	ReceivedUSD float64
+	Donations   int
+	CheckedAt   time.Time
+}
+
+// Configured reports whether this guild has a tip jar at all.
+func (f Funding) Configured() bool { return f.Address != "" }
+
+func (s *pgStore) Funding(ctx context.Context, guildID string) (Funding, error) {
+	f := Funding{GuildID: guildID}
+	var checkedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT address, set_by, set_at, balance_usd, received_usd, donations, checked_at
+		FROM aimod_funding WHERE guild_id = $1
+	`, guildID).Scan(&f.Address, &f.SetBy, &f.SetAt, &f.BalanceUSD, &f.ReceivedUSD, &f.Donations, &checkedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return f, nil
+		}
+		return Funding{}, fmt.Errorf("aimod store: funding: %w", err)
+	}
+	if checkedAt != nil {
+		f.CheckedAt = *checkedAt
+	}
+	return f, nil
+}
+
+// SetFundingAddress points a guild's jar at a wallet, recording who did it
+// and when.
+//
+// baseline is the balance already sitting on that wallet, read in the same
+// command that stored it. Writing it here with checked_at set is what stops
+// the first poll counting an existing balance as a donation.
+//
+// Re-pointing resets received_usd and donations, because those totals belong
+// to the wallet that earned them and carrying them onto a different address
+// would credit a new jar with another one's history.
+func (s *pgStore) SetFundingAddress(ctx context.Context, guildID, address, setBy string, at time.Time, baseline float64) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO aimod_funding (guild_id, address, set_by, set_at, balance_usd, checked_at)
+		VALUES ($1, $2, $3, $4, $5, $4)
+		ON CONFLICT (guild_id) DO UPDATE SET
+			address      = EXCLUDED.address,
+			set_by       = EXCLUDED.set_by,
+			set_at       = EXCLUDED.set_at,
+			balance_usd  = EXCLUDED.balance_usd,
+			checked_at   = EXCLUDED.checked_at,
+			received_usd = 0,
+			donations    = 0
+	`, guildID, address, setBy, at, baseline)
+	if err != nil {
+		return fmt.Errorf("aimod store: set funding address: %w", err)
+	}
+	return nil
+}
+
+func (s *pgStore) ClearFunding(ctx context.Context, guildID string) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM aimod_funding WHERE guild_id = $1`, guildID); err != nil {
+		return fmt.Errorf("aimod store: clear funding: %w", err)
+	}
+	return nil
+}
+
+// UpdateFundingBalance records one poll. donation is the increase since the
+// last poll, or 0 when the balance held steady or fell.
+//
+// One statement rather than a read-modify-write, so two overlapping polls
+// cannot lose a donation between them. A fall in balance is the operator
+// moving funds out to buy credits: the new balance records it and no donation
+// is counted.
+func (s *pgStore) UpdateFundingBalance(ctx context.Context, guildID string, balance, donation float64, at time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE aimod_funding
+		SET balance_usd  = $2,
+		    checked_at   = $3,
+		    received_usd = received_usd + $4,
+		    donations    = donations + CASE WHEN $4 > 0 THEN 1 ELSE 0 END
+		WHERE guild_id = $1
+	`, guildID, balance, at, donation)
+	if err != nil {
+		return fmt.Errorf("aimod store: update funding balance: %w", err)
+	}
+	return nil
 }

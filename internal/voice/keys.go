@@ -70,6 +70,17 @@ const (
 	KeyBroken         Key = "system.broken"
 
 	KeyPing Key = "system.ping"
+
+	// The tip jar, shown by /aimod funding: a public surface, so the prose
+	// around the numbers is hers. The wallet address, the balances and the
+	// warning about who controls the wallet are deliberately NOT here. Line
+	// selection is random and falls back silently, which is right for a
+	// greeting and wrong for the one sentence telling somebody where their
+	// money is about to go.
+	KeyFundingAsk    Key = "funding.ask"
+	KeyFundingThanks Key = "funding.thanks"
+	KeyFundingLow    Key = "funding.low"
+	KeyFundingDry    Key = "funding.dry"
 )
 
 // Register is how much personality a surface gets.
@@ -280,5 +291,32 @@ var specs = map[Key]spec{
 		register: RegisterPlayful,
 		maxLen:   maxMessageContent,
 		fallback: "kik-ong!",
+	},
+
+	KeyFundingAsk: {
+		register: RegisterPlayful,
+		maxLen:   maxEmbedDescription,
+		fallback: "this filter runs on donated credit. the jar is below.",
+	},
+	KeyFundingThanks: {
+		register: RegisterPlayful,
+		required: []string{"raised"},
+		maxLen:   maxEmbedDescription,
+		fallback: "{raised} donated so far. thank you.",
+	},
+	// Plain, for the same reason moderation.* is: a server about to lose its
+	// filter is not a playful moment. {runway} is required because how long
+	// is left is the entire content of the warning, and a line that dropped
+	// it would read as a vague grumble rather than a deadline.
+	KeyFundingLow: {
+		register: RegisterPlain,
+		required: []string{"runway"},
+		maxLen:   maxEmbedDescription,
+		fallback: "about {runway} of scanning credit left.",
+	},
+	KeyFundingDry: {
+		register: RegisterPlain,
+		maxLen:   maxEmbedDescription,
+		fallback: "the scanning credit has run out. only the built-in pattern checks are running.",
 	},
 }

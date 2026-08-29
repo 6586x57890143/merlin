@@ -297,6 +297,35 @@ func (p *Plugin) registerCommands() {
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+				Name:        "funding",
+				Description: "The tip jar that pays for the scanning, and how much credit is left",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "show",
+						Description: "How much scanning credit is left, and where to chip in",
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "set-address",
+						Description: "Point the tip jar at a wallet (server owner only)",
+						Options: []*discordgo.ApplicationCommandOption{
+							{
+								Type: discordgo.ApplicationCommandOptionString, Name: "address",
+								Description: "A wallet address that receives USDC on Base, like 0x1234...",
+								Required:    true,
+							},
+						},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "clear",
+						Description: "Remove the tip jar and stop reading its balance",
+					},
+				},
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
 				Name:        "calibrate",
 				Description: "The weekly review that tunes the filter to how this server actually talks",
 				Options: []*discordgo.ApplicationCommandOption{
@@ -391,4 +420,18 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("aimod", "calibrate/apply", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleCalibrateApply)
 	p.commands.Handle("aimod", "calibrate/clear", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleCalibrateClear)
 	p.commands.Handle("aimod", "calibrate/mode", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleCalibrateMode)
+
+	// TierPublic, like moderate-me and for a related reason: the members
+	// being asked to chip in have to be able to see the address and whether
+	// it is needed. It shows two balances and a runway, and nothing about
+	// what is being moderated or whom.
+	p.commands.Handle("aimod", "funding/show", core.PermSpec{Tier: core.TierPublic}, p.handleFundingShow)
+	// TierAdmin is the coarse floor; the real gate is canSetFunding inside
+	// the handler, because no tier expresses "the guild owner". This is where
+	// donated money goes, and a guild with five admins would otherwise have
+	// five accounts that can silently repoint it.
+	p.commands.Handle("aimod", "funding/set-address", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleFundingSetAddress)
+	// No owner check on clear, deliberately: it can only ever stop donations,
+	// never redirect them, so it is a kill switch that fails safe.
+	p.commands.Handle("aimod", "funding/clear", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleFundingClear)
 }
