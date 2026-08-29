@@ -424,9 +424,11 @@ func (p *Plugin) handleSetupAdminsSelect(ctx context.Context, s *discordgo.Sessi
 // changes, not just when a mod role is added: a mod role configured before
 // the channels existed would otherwise never get access once they show up.
 func (p *Plugin) grantModRolesChannelAccess(s *discordgo.Session, guildID string) {
-	for _, roleID := range p.settings.GuildSettings(guildID).ModRoleIDs {
-		p.grantModRoleChannelAccess(s, guildID, roleID)
-	}
+	// One call, not one per role: grantRolesChannelAccess reads each channel
+	// once and writes only the roles actually missing the grant, so re-running
+	// this on an already-correct guild costs no permission writes and no
+	// Discord audit-log entries.
+	p.grantRolesChannelAccess(s, guildID, p.settings.GuildSettings(guildID).ModRoleIDs)
 }
 
 // botChannelAllow is what the bot needs on the audit-log/status channels:

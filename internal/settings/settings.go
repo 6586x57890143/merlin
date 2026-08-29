@@ -43,6 +43,13 @@ type GuildSettings struct {
 	// overwrite for the shared "Jailed" role. Empty means jail denies every
 	// channel until a mod configures exceptions.
 	JailAllowedChannelIDs []string
+	// JailAnnounceChannelID is the one extra channel jail/release
+	// announcements are posted to, on top of the channel the command was
+	// run in (internal/plugins/roles/announce.go). Deliberately a single
+	// channel, not a list: the allowlist can hold several rooms, and
+	// announcing a jail in all of them is noise. Empty means announcements
+	// stay in the invoking channel only.
+	JailAnnounceChannelID string
 	// ArchiveViewerRoleIDs is which extra roles can see rotation's archive
 	// channels, on top of ModRoleIDs and anyone holding Discord's own
 	// Administrator bit. Guild-scoped rather than per rotating channel
@@ -209,10 +216,10 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, writes_paused, writes_dry_run, archive_viewer_role_ids
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-	var marker sql.NullString
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs); err {
+	var marker, announce sql.NullString
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs); err {
 	case nil, pgx.ErrNoRows:
 		if marker.Valid {
 			v := marker.String
@@ -220,6 +227,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		} else {
 			gc.settings.JailMarkerRoleID = nil
 		}
+		gc.settings.JailAnnounceChannelID = announce.String
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
 	}
@@ -684,6 +692,31 @@ func (s *Store) SetJailMarkerRole(ctx context.Context, guildID, roleID string) e
 		ON CONFLICT (guild_id) DO UPDATE SET jail_marker_role_id = $2, updated_at = now()`,
 		guildID, roleID); err != nil {
 		return fmt.Errorf("settings: set jail marker role: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// JailAnnounceChannelID returns the guild's extra jail-announcement
+// channel, or "" when announcements stay in the invoking channel only.
+func (s *Store) JailAnnounceChannelID(guildID string) string {
+	return s.guild(guildID).settings.JailAnnounceChannelID
+}
+
+// SetJailAnnounceChannel sets (or, with an empty channelID, clears) the one
+// extra channel jail and release announcements are posted to. One setter
+// rather than a set/clear pair: unlike the marker role there is nothing to
+// re-sync on clear, so the empty value is just another value.
+func (s *Store) SetJailAnnounceChannel(ctx context.Context, guildID, channelID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, jail_announce_channel_id, updated_at) VALUES ($1, NULLIF($2, ''), now())
+		ON CONFLICT (guild_id) DO UPDATE SET jail_announce_channel_id = NULLIF($2, ''), updated_at = now()`,
+		guildID, channelID); err != nil {
+		return fmt.Errorf("settings: set jail announce channel: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		s.invalidate(guildID)

@@ -75,6 +75,12 @@ type fakeOps struct {
 	// guildChannelsErr, when set, fails every GuildChannels call, standing in
 	// for a Discord outage or missing permission mid-fan-out.
 	guildChannelsErr error
+
+	// permSetCalls/permDeleteCalls count permission writes, which is what a
+	// guild's Discord audit log gets one entry per: the no-op-skip tests
+	// assert on these, not just on the resulting overwrites.
+	permSetCalls    int
+	permDeleteCalls int
 }
 
 func newFakeOps() *fakeOps {
@@ -346,17 +352,45 @@ func (f *fakeOps) GuildChannels(guildID string, options ...discordgo.RequestOpti
 	return out, nil
 }
 
+// ChannelPermissionSet records the write and mirrors it onto the channel's
+// own PermissionOverwrites, the way Discord does. The callers now read those
+// back to skip writes that would change nothing, so a fake that only kept a
+// side map would report every repeat sync as still needed.
 func (f *fakeOps) ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.permSetCalls++
 	f.overwrites[overwriteKey{channelID, targetID}] = struct{ allow, deny int64 }{allow, deny}
+	ch, ok := f.channel[channelID]
+	if !ok {
+		return nil
+	}
+	for _, ow := range ch.PermissionOverwrites {
+		if ow.Type == targetType && ow.ID == targetID {
+			ow.Allow, ow.Deny = allow, deny
+			return nil
+		}
+	}
+	ch.PermissionOverwrites = append(ch.PermissionOverwrites, &discordgo.PermissionOverwrite{
+		ID: targetID, Type: targetType, Allow: allow, Deny: deny,
+	})
 	return nil
 }
 
 func (f *fakeOps) ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.permDeleteCalls++
 	delete(f.overwrites, overwriteKey{channelID, targetID})
+	if ch, ok := f.channel[channelID]; ok {
+		out := ch.PermissionOverwrites[:0]
+		for _, ow := range ch.PermissionOverwrites {
+			if ow.ID != targetID {
+				out = append(out, ow)
+			}
+		}
+		ch.PermissionOverwrites = out
+	}
 	return nil
 }
 
@@ -512,10 +546,28 @@ type fakeSettings struct {
 	mu         sync.Mutex
 	allowed    map[string][]string // guildID -> channel IDs
 	markerRole map[string]string   // guildID -> configured jail marker role ID
+	announce   map[string]string   // guildID -> configured jail announcement channel ID
 }
 
 func newFakeSettings() *fakeSettings {
-	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string)}
+	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string)}
+}
+
+func (f *fakeSettings) JailAnnounceChannelID(guildID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.announce[guildID]
+}
+
+func (f *fakeSettings) SetJailAnnounceChannel(ctx context.Context, guildID, channelID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if channelID == "" {
+		delete(f.announce, guildID)
+		return nil
+	}
+	f.announce[guildID] = channelID
+	return nil
 }
 
 func (f *fakeSettings) JailAllowedChannelIDs(guildID string) []string {

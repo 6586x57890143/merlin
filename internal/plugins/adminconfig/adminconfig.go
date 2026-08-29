@@ -312,15 +312,67 @@ func (p *Plugin) handleModRolesAdd(ctx context.Context, s *discordgo.Session, i 
 // default (see core.DenyEveryoneExceptBot), they don't proactively grant mod
 // roles, since a mod role may not exist yet at channel-creation time.
 func (p *Plugin) grantModRoleChannelAccess(s *discordgo.Session, guildID, roleID string) {
+	p.grantRolesChannelAccess(s, guildID, []string{roleID})
+}
+
+// grantRolesChannelAccess is the shared body: for each configured channel it
+// fetches the channel once and writes only the roles that are actually
+// missing the view grant.
+//
+// Every permission write shows up in the guild's own Discord audit log, and
+// grantModRolesChannelAccess re-runs the whole mod-role list every time
+// either channel is reconfigured, so a guild with six mod roles used to post
+// twelve identical "permission overwrite update" entries for a change that
+// altered nothing. One channel read replaces up to one write per role.
+//
+// A channel that cannot be read is granted anyway: the point of this is that
+// mods can see their own moderation trail, which matters more than a tidy
+// audit log, so an unreadable channel falls back to the old unconditional
+// write rather than skipping it.
+func (p *Plugin) grantRolesChannelAccess(s *discordgo.Session, guildID string, roleIDs []string) {
 	gs := p.settings.GuildSettings(guildID)
 	for _, channelID := range []string{gs.AuditLogChannelID, gs.StatusChannelID} {
 		if channelID == "" {
 			continue
 		}
-		if err := s.ChannelPermissionSet(channelID, roleID, discordgo.PermissionOverwriteTypeRole, discordgo.PermissionViewChannel, 0); err != nil {
-			p.log.Error("adminconfig: grant mod role channel access failed", "guild", guildID, "channel", channelID, "role", roleID, "err", err)
+		ch, err := s.Channel(channelID)
+		if err != nil {
+			p.log.Warn("adminconfig: could not read channel before granting mod access", "guild", guildID, "channel", channelID, "err", err)
+			ch = nil
+		}
+		for _, roleID := range rolesMissingViewAccess(ch, roleIDs) {
+			if err := s.ChannelPermissionSet(channelID, roleID, discordgo.PermissionOverwriteTypeRole, discordgo.PermissionViewChannel, 0); err != nil {
+				p.log.Error("adminconfig: grant mod role channel access failed", "guild", guildID, "channel", channelID, "role", roleID, "err", err)
+			}
 		}
 	}
+}
+
+// rolesMissingViewAccess returns which of roleIDs still need a View Channel
+// grant on ch. A nil ch (the channel could not be read) returns all of them:
+// this must fail towards granting access, never towards silently not.
+//
+// Only the View Channel bit is compared, not the whole overwrite: a guild
+// that has added its own extra allows or denies to a mod role on the audit
+// channel is expressing a preference, and rewriting the overwrite to exactly
+// view-and-nothing-else would quietly undo it.
+func rolesMissingViewAccess(ch *discordgo.Channel, roleIDs []string) []string {
+	if ch == nil {
+		return roleIDs
+	}
+	granted := make(map[string]bool, len(ch.PermissionOverwrites))
+	for _, ow := range ch.PermissionOverwrites {
+		if ow.Type == discordgo.PermissionOverwriteTypeRole && ow.Allow&discordgo.PermissionViewChannel != 0 {
+			granted[ow.ID] = true
+		}
+	}
+	var out []string
+	for _, id := range roleIDs {
+		if !granted[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (p *Plugin) handleModRolesRemove(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
