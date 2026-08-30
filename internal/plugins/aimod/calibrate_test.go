@@ -583,3 +583,36 @@ func TestCalibrationPromptCarriesTheSameChildSafetyRule(t *testing.T) {
 		t.Error("the reviewer is not told where a genuine child_safety overreach should be reported instead")
 	}
 }
+
+// The reviewer's brief and the policy file have to describe the same line.
+//
+// It listed "you are retarded" beside "this is retarded" as a clear false
+// positive, while hate_speech.yaml's first violations line calls a slur used
+// as a name for a person its clearest case, and the same preamble two
+// bullets down tells the reviewer that slurs aimed at people should be acted
+// on. A reviewer holding both reads every correct removal of a slur aimed at
+// somebody as a mistake, and on CalibrationAuto writes that reading into the
+// fast and deep prompts for good. validateCalibration cannot catch it: the
+// stand-down guard is child_safety only, and widening it to hate_speech
+// would block the calibration this bucket most needs ("this is retarded").
+// So the brief itself has to be the thing that agrees.
+func TestCalibrationPromptDoesNotClearSlursAimedAtPeople(t *testing.T) {
+	store := newFakeStore()
+	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+	prompt := p.calibrationPrompt(calibratingConfig())
+	lower := strings.ToLower(prompt)
+
+	// The generic-profanity carve-out is aimed at a thing or a behaviour.
+	// An example naming the person is the case the policy file acts on.
+	if strings.Contains(lower, `"you are retarded"`) {
+		t.Error("the reviewer is told a slur used as a name for a person is a clear false positive")
+	}
+	if !strings.Contains(lower, "as a name for a person") {
+		t.Error("the reviewer is not told where the generic-profanity carve-out stops")
+	}
+	// The hypothetical frame is the shape that got through in the first
+	// place, and the reviewer must not hand it back as a false positive.
+	if !strings.Contains(lower, "hypothetical") {
+		t.Error("the reviewer is not told that a hypothetical frame does not clear a slur")
+	}
+}
