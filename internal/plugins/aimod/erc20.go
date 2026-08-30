@@ -297,6 +297,9 @@ func (c *ethClient) Balance(ctx context.Context, chain *fundingChain, owner stri
 		return 0, fmt.Errorf("eth: build request: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return 0, fmt.Errorf("eth: build request: %w", err)

@@ -271,14 +271,19 @@ func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, 
 		}
 	}
 
+	// The defaults shown are the routed gateway's, not OpenRouter's: a
+	// guild reading "leave it unset and you get these" is entitled to the
+	// list its own key would actually reach.
+	spec, _ := route(cfg)
+
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "Mode", Value: string(cfg.Mode), Inline: true},
 		{Name: "API key", Value: key, Inline: true},
 		{Name: "Daily budget", Value: formatUSD(cfg.DailyBudgetUSD), Inline: true},
 		{Name: "Evidence kept", Value: evidenceWord(cfg.EvidenceHours), Inline: true},
 		{Name: "Sanctions", Value: string(cfg.SanctionAction), Inline: true},
-		{Name: "Fast models", Value: core.TruncateEmbedField(modelList(cfg.FastModels, defaultFastModels))},
-		{Name: "Deep models", Value: core.TruncateEmbedField(modelList(cfg.DeepModels, defaultDeepModels))},
+		{Name: "Fast models", Value: core.TruncateEmbedField(modelList(cfg.FastModels, spec.fastModels))},
+		{Name: "Deep models", Value: core.TruncateEmbedField(modelList(cfg.DeepModels, spec.deepModels))},
 		{Name: "Exempt channels", Value: core.TruncateEmbedField(mentionList(cfg.ExemptChannelIDs, core.MentionChannel))},
 		{Name: "Exempt roles", Value: core.TruncateEmbedField(mentionList(cfg.ExemptRoleIDs, core.MentionRole))},
 	}

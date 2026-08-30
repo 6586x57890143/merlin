@@ -65,6 +65,17 @@ const (
 	// reasoning-token headroom argument applies (see deepMaxTokens): a model
 	// that thinks its way through the ceiling returns nothing at all.
 	calibrateMaxTokens = 6000
+
+	// calibrateTimeout is how long one review may take.
+	//
+	// Minutes rather than the scan path's seconds, because nothing about
+	// this call resembles the scan path: it sends the largest prompt this
+	// package builds, asks for the longest answer, and nobody is standing in
+	// front of it. Under httpTimeout it could not finish on any guild with a
+	// real week of history behind it, and the failure it produced was
+	// indistinguishable from an outage. Comfortably inside the Scheduler's
+	// own jobTimeout even if Chat spends its one retry.
+	calibrateTimeout = 3 * time.Minute
 )
 
 // Bounds on what one run may produce. Validation limits rather than
@@ -208,7 +219,9 @@ func (p *Plugin) reviewGuild(ctx context.Context, cfg Config) (calibrationResult
 	}
 
 	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
-		Models:   modelsOr(cfg.DeepModels, defaultDeepModels),
+		spec:     state.Spec,
+		timeout:  calibrateTimeout,
+		Models:   modelsOr(cfg.DeepModels, state.Spec.deepModels),
 		Provider: strictProvider(),
 		Messages: []chatMessage{
 			{Role: "system", Content: p.calibrationPrompt(cfg)},
