@@ -21,7 +21,7 @@ func TestValidateRotationChannelAcceptsNilRetention(t *testing.T) {
 		ArchiveCategoryID: "cat1", ArchiveVisibility: "mod_only",
 		RetentionHours: nil,
 	}
-	if err := validateRotationChannel(rc); err != nil {
+	if err := ValidateChannel(rc); err != nil {
 		t.Fatalf("expected a nil (forever) retention to be valid, got %v", err)
 	}
 }
@@ -32,7 +32,7 @@ func TestValidateRotationChannelRejectsZeroRetention(t *testing.T) {
 		ArchiveCategoryID: "cat1", ArchiveVisibility: "mod_only",
 		RetentionHours: intPtr(0),
 	}
-	if err := validateRotationChannel(rc); err == nil {
+	if err := ValidateChannel(rc); err == nil {
 		t.Fatal("expected an explicit 0-hour retention to be rejected (use nil/omit for forever instead)")
 	}
 }
@@ -112,14 +112,14 @@ func TestValidateRejectsAnUnknownDisclosure(t *testing.T) {
 	} {
 		rc := base
 		rc.Disclosure = d
-		if err := validateRotationChannel(rc); err != nil {
+		if err := ValidateChannel(rc); err != nil {
 			t.Errorf("disclosure %q was rejected: %v", d, err)
 		}
 	}
 
 	rc := base
 	rc.Disclosure = "everything"
-	if err := validateRotationChannel(rc); err == nil {
+	if err := ValidateChannel(rc); err == nil {
 		t.Error("an unknown disclosure mode was accepted")
 	}
 }
@@ -135,7 +135,7 @@ func TestLegacyWhitelistVisibilityStillValidates(t *testing.T) {
 		ChannelID: "c1", ArchiveCategoryID: "cat1", ArchiveVisibility: "whitelist",
 		IntervalMinutes: 24 * 60, NoticeLeadMinutes: 10,
 	}
-	if err := validateRotationChannel(rc); err != nil {
+	if err := ValidateChannel(rc); err != nil {
 		t.Errorf("a legacy imported whitelist slot can no longer be edited: %v", err)
 	}
 }

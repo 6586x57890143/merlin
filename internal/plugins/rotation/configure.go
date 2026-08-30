@@ -90,7 +90,7 @@ func (p *Plugin) registerCommands() {
 	// it, but nothing except /config import's legacy YAML path has ever
 	// populated archive_whitelist_role_ids/user_ids, so choosing it from
 	// here produced a mode that behaved exactly like mod_only. Guilds that
-	// carry it from an import keep it, and validateRotationChannel still
+	// carry it from an import keep it, and ValidateChannel still
 	// accepts it; see the comment there. spec.MD §6 lists it as a mode, so
 	// this is a deliberate narrowing of the command surface rather than a
 	// removal of the feature. Granting a non-mod role archive access is what
@@ -288,7 +288,7 @@ func (p *Plugin) handleAdd(ctx context.Context, s *discordgo.Session, i *discord
 		rc.Disclosure = settings.DisclosureFull
 	}
 
-	if err := validateRotationChannel(rc); err != nil {
+	if err := ValidateChannel(rc); err != nil {
 		core.RespondErr(s, i, "Invalid configuration", err)
 		return
 	}
@@ -452,7 +452,7 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 		p.hideArchiveCategory(i.GuildID, rc.ArchiveCategoryID)
 	}
 
-	if err := validateRotationChannel(rc); err != nil {
+	if err := ValidateChannel(rc); err != nil {
 		core.RespondErr(s, i, "Invalid configuration", err)
 		return
 	}
@@ -621,11 +621,11 @@ func (p *Plugin) auditConfigChange(ctx context.Context, i *discordgo.Interaction
 	}
 }
 
-// validateRotationChannel mirrors the checks the old YAML-loader-time
+// ValidateChannel mirrors the checks the old YAML-loader-time
 // validation used to perform (internal/config/rotation_validate.go, removed
 // with the move to DB-backed settings), now enforced at the point of
 // mutation instead of at config-file load time.
-func validateRotationChannel(rc settings.RotationChannel) error {
+func ValidateChannel(rc settings.RotationChannel) error {
 	if rc.ChannelID == rc.ArchiveCategoryID {
 		return fmt.Errorf("a channel can't be its own archive category")
 	}

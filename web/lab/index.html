@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>merlin lab</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --ink: #1b1a18;
+    --muted: #6b6862;
+    --line: #e4e0d9;
+    --accent: #7a5c2e;
+    --ok: #2f6b3a;
+    --err: #a33a2a;
+    --warn: #8a6a1f;
+    --code-bg: #f3f0ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16151a;
+      --panel: #1e1d23;
+      --ink: #e8e6e1;
+      --muted: #9a958c;
+      --line: #322f38;
+      --accent: #d3b075;
+      --ok: #7fbf8c;
+      --err: #e0806f;
+      --warn: #d9b45c;
+      --code-bg: #26242c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem 1rem 4rem;
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 60rem; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing: -.01em; }
+  h2 { font-size: 1rem; margin: 0 0 .9rem; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
+  .lede { color: var(--muted); margin: 0 0 1.5rem; max-width: 46rem; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 1.1rem 1.2rem; margin-bottom: 1.25rem;
+  }
+  .grid { display: grid; gap: .75rem 1rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
+  label { display: block; font-size: .78rem; color: var(--muted); margin-bottom: .25rem; letter-spacing: .02em; }
+  input, select, textarea, button {
+    font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: .4rem .55rem; width: 100%;
+  }
+  textarea { min-height: 5rem; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; }
+  button {
+    background: var(--accent); color: var(--bg); border-color: transparent;
+    cursor: pointer; font-weight: 600; width: auto; padding: .45rem 1.1rem; margin-top: 1rem;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: .5rem; align-items: center; }
+  .row input[type=checkbox] { width: auto; }
+  .out { margin-top: 1rem; }
+  .out:empty { display: none; }
+  .msg {
+    background: var(--code-bg); border-left: 3px solid var(--accent);
+    padding: .6rem .8rem; border-radius: 0 6px 6px 0; margin: .4rem 0;
+  }
+  .msg.err { border-left-color: var(--err); color: var(--err); }
+  .msg.ok { border-left-color: var(--ok); }
+  .msg.warn { border-left-color: var(--warn); }
+  .field-title { font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 1rem 0 .25rem; }
+  ul { margin: .3rem 0; padding-left: 1.2rem; }
+  li { margin: .15rem 0; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; }
+  .fires { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .fires span { background: var(--code-bg); border-radius: 5px; padding: .15rem .5rem; }
+  .status { color: var(--muted); font-size: .85rem; }
+  .foot { color: var(--muted); font-size: .8rem; margin-top: 2rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>merlin lab</h1>
+  <p class="lede">
+    merlin's own code, compiled to WebAssembly. Nothing here is a reimplementation: the schedule
+    arithmetic, the disclosure rules and the voice catalog are the same functions the bot runs, so
+    what you see is what a channel would actually be told.
+  </p>
+
+  <div id="boot" class="panel status">Loading merlin...</div>
+
+  <section class="panel" id="rotation-panel" hidden>
+    <h2>Rotation preview</h2>
+    <div class="grid">
+      <div>
+        <label for="interval">Interval</label>
+        <input id="interval" value="24h" spellcheck="false">
+      </div>
+      <div>
+        <label for="lead">Heads-up (minutes, 0 = off)</label>
+        <input id="lead" type="number" value="10" min="0">
+      </div>
+      <div>
+        <label for="disclosure">Disclosure</label>
+        <select id="disclosure">
+          <option value="full">full</option>
+          <option value="cadence">cadence</option>
+          <option value="retention">retention</option>
+          <option value="generic">generic</option>
+        </select>
+      </div>
+      <div>
+        <label for="retention">Retention (hours)</label>
+        <input id="retention" type="number" value="72" min="1">
+        <div class="row" style="margin-top:.35rem">
+          <input id="forever" type="checkbox">
+          <label for="forever" style="margin:0">keep forever</label>
+        </div>
+      </div>
+      <div>
+        <label for="fires">Rotations to list</label>
+        <input id="fires" type="number" value="5" min="1" max="50">
+      </div>
+    </div>
+    <button id="run-rotation">Preview</button>
+    <div class="out" id="rotation-out"></div>
+  </section>
+
+  <section class="panel" id="voice-panel" hidden>
+    <h2>Voice catalog</h2>
+    <div class="grid">
+      <div style="grid-column: 1 / -1">
+        <label for="key">Key</label>
+        <select id="key"></select>
+      </div>
+    </div>
+    <div id="vars" class="grid" style="margin-top:.75rem"></div>
+    <button id="run-roll">Roll 8 lines</button>
+    <div class="out" id="roll-out"></div>
+
+    <div class="field-title">Check a candidate line</div>
+    <textarea id="candidate" spellcheck="false" placeholder="paste a line here, with its {placeholders}"></textarea>
+    <button id="run-lint">Check</button>
+    <div class="out" id="lint-out"></div>
+  </section>
+
+  <p class="foot">
+    Built from <span class="mono">cmd/lab</span>. The catalog is validated on load exactly as the bot
+    validates it at startup, so if this page loads, those lines boot.
+  </p>
+</main>
+
+<script src="wasm_exec.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const boot = $("boot");
+
+  // Every binding is JSON in, JSON out. An error comes back as {error: ...}
+  // rather than thrown, so there is one shape to render either way.
+  const call = (fn, payload) => JSON.parse(window.merlinLab[fn](JSON.stringify(payload ?? {})));
+
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  const msg = (text, kind) => `<div class="msg ${kind || ""}">${esc(text)}</div>`;
+
+  window.addEventListener("merlin-lab-failed", () => {
+    boot.className = "panel msg err";
+    boot.textContent = "merlin refused to start: " + (window.merlinLabError || "unknown error") +
+      ". That is the same failure the bot would hit at startup.";
+  });
+
+  window.addEventListener("merlin-lab-ready", () => {
+    boot.hidden = true;
+    $("rotation-panel").hidden = false;
+    $("voice-panel").hidden = false;
+    initVoice();
+    runRotation();
+  });
+
+  // ---- rotation ----------------------------------------------------------
+
+  function runRotation() {
+    const forever = $("forever").checked;
+    const res = call("rotation", {
+      interval: $("interval").value.trim(),
+      leadMinutes: Number($("lead").value) || 0,
+      disclosure: $("disclosure").value,
+      retentionHours: forever ? null : (Number($("retention").value) || 0),
+      fires: Number($("fires").value) || 5,
+    });
+
+    const out = $("rotation-out");
+    if (res.error) {
+      // The bot's own validator refused this, in its own words.
+      out.innerHTML = msg("Refused: " + res.error, "err");
+      return;
+    }
+
+    let html = "";
+    html += `<div class="field-title">Cadence</div><div class="mono">${esc(res.cadence)}</div>`;
+    if (res.fires && res.fires.length) {
+      html += `<div class="field-title">Next rotations (UTC)</div><div class="fires mono">` +
+        res.fires.map((f) => `<span>${esc(f)}</span>`).join("") + `</div>`;
+    }
+    if (res.headsUp) {
+      html += `<div class="field-title">Heads-up, posted before the rotation</div>` + msg(res.headsUp, "warn");
+    }
+    html += `<div class="field-title">Posted into the fresh channel</div>` + msg(res.intro, "ok");
+    if (res.notes && res.notes.length) {
+      html += `<div class="field-title">Notes</div><ul>` +
+        res.notes.map((n) => `<li>${esc(n)}</li>`).join("") + `</ul>`;
+    }
+    out.innerHTML = html;
+  }
+
+  $("run-rotation").addEventListener("click", runRotation);
+  $("forever").addEventListener("change", () => { $("retention").disabled = $("forever").checked; });
+
+  // ---- voice -------------------------------------------------------------
+
+  let keys = [];
+
+  function initVoice() {
+    keys = call("keys");
+    if (keys.error) {
+      $("voice-panel").innerHTML = msg(keys.error, "err");
+      return;
+    }
+    const sel = $("key");
+    sel.innerHTML = keys.map((k) => `<option value="${esc(k.key)}">${esc(k.key)}</option>`).join("");
+    const preferred = keys.findIndex((k) => k.key === "rotation.intro.full");
+    if (preferred >= 0) sel.selectedIndex = preferred;
+    renderVars();
+  }
+
+  const currentKey = () => keys.find((k) => k.key === $("key").value);
+
+  // The required placeholders come from the catalog's own contract, so the
+  // form asks for exactly what a line for this key must contain: no more,
+  // since a line carrying an unlisted one is refused too.
+  function renderVars() {
+    const k = currentKey();
+    const vars = $("vars");
+    if (!k || !k.required.length) {
+      vars.innerHTML = `<div class="status" style="grid-column:1/-1">This key takes no placeholders.</div>`;
+      return;
+    }
+    vars.innerHTML = k.required.map((v) => `
+      <div>
+        <label for="var-${esc(v)}">{${esc(v)}}</label>
+        <input id="var-${esc(v)}" value="${v === "cadence" ? "24 hours" : v === "retention" ? "3 days" : "something"}">
+      </div>`).join("");
+  }
+
+  function collectVars() {
+    const k = currentKey();
+    const vars = {};
+    (k ? k.required : []).forEach((v) => {
+      const el = $("var-" + v);
+      if (el) vars[v] = el.value;
+    });
+    return vars;
+  }
+
+  $("key").addEventListener("change", () => { renderVars(); $("roll-out").innerHTML = ""; $("lint-out").innerHTML = ""; });
+
+  $("run-roll").addEventListener("click", () => {
+    const res = call("roll", { key: $("key").value, vars: collectVars(), n: 8 });
+    if (res.error) { $("roll-out").innerHTML = msg(res.error, "err"); return; }
+    $("roll-out").innerHTML = res.map((line) => msg(line)).join("");
+  });
+
+  $("run-lint").addEventListener("click", () => {
+    const line = $("candidate").value;
+    if (!line.trim()) { $("lint-out").innerHTML = ""; return; }
+    const res = call("lint", { key: $("key").value, line });
+    if (res.error) { $("lint-out").innerHTML = msg(res.error, "err"); return; }
+    if (!res.length) {
+      $("lint-out").innerHTML = msg("This line would boot.", "ok");
+      return;
+    }
+    $("lint-out").innerHTML = res.map((p) => msg(p, "err")).join("");
+  });
+
+  // ---- start -------------------------------------------------------------
+
+  if (!WebAssembly.instantiateStreaming) {
+    // Older Safari, and any host serving the blob without the wasm MIME type.
+    WebAssembly.instantiateStreaming = async (resp, importObject) =>
+      WebAssembly.instantiate(await (await resp).arrayBuffer(), importObject);
+  }
+
+  const go = new Go();
+  WebAssembly.instantiateStreaming(fetch("lab.wasm"), go.importObject)
+    .then((result) => go.run(result.instance))
+    .catch((err) => {
+      boot.className = "panel msg err";
+      boot.textContent = "Could not load lab.wasm: " + err +
+        ". Build it with scripts/build-lab.sh and serve this directory over HTTP.";
+    });
+})();
+</script>
+</body>
+</html>

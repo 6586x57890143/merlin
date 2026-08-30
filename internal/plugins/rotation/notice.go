@@ -11,7 +11,6 @@ import (
 	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/settings"
-	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // noticeInterval is how often the heads-up job checks whether any of a
@@ -155,18 +154,7 @@ func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settin
 	// message that immediately precedes the deliberately vague intro notice
 	// would make the setting pointless. Turning the heads-up off entirely is
 	// still a separate decision: notice_lead_minutes = 0, handled above.
-	key, vars := voice.KeyRotationHeadsUp, map[string]string{
-		// humanDuration, not core.FormatDuration: this is a member-facing
-		// message and its sibling intro notice in the same channel says
-		// "18 hours", so saying "18h" here would have the same bot describe
-		// the same window two different ways minutes apart.
-		"when": humanDuration(remaining.Round(time.Minute)),
-	}
-	if rc.Disclosure.Resolve() == settings.DisclosureGeneric {
-		key, vars = voice.KeyRotationHeadsUpGeneric, nil
-	}
-
-	line := p.voice.Line(ctx, guildID, key, vars)
+	line := HeadsUpNotice(ctx, p.voice, rc, remaining)
 	if line == "" {
 		quiet("voice returned nothing to say")
 		return nil

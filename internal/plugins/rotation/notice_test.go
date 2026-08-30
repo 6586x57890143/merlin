@@ -363,7 +363,7 @@ func TestNoticeLeadMustBeShorterThanTheInterval(t *testing.T) {
 	} {
 		rc := base
 		rc.NoticeLeadMinutes = c.lead
-		err := validateRotationChannel(rc)
+		err := ValidateChannel(rc)
 		if c.wantErr && err == nil {
 			t.Errorf("lead of %d minutes against a 60 minute interval was accepted", c.lead)
 		}

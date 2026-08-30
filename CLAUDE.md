@@ -549,6 +549,65 @@ for a greeting and wrong for the sentence saying where somebody's money goes.
 Member-facing durations render through `humanRunway` ("6 days"), the audit and
 `/aimod status` ones through `core.FormatDuration` ("6d").
 
+### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)
+
+merlin's own packages compiled to WebAssembly, so two of this codebase's
+promises stop requiring a Go toolchain to collect on. `internal/voice` is built
+so its lines are data that can be reviewed as writing, and reviewing one meant
+running the bot; the rotation notice is a guild's **published retention
+policy**, and the only way to see what a channel would be told was to configure
+it in a live server and wait.
+
+**Nothing in the lab reimplements anything, and that is the entire design.** A
+JavaScript simulator would be a second copy of the schedule arithmetic and the
+disclosure rules, and a second copy drifts. What it would drift on is a
+deletion window somebody had already published. So the page calls
+`rotation.RetentionNotice`, `rotation.HeadsUpNotice`, `rotation.ValidateChannel`,
+`core.IntervalSchedule.Next` and `voice.Validate`: the same functions the bot
+calls, which is what justifies shipping a several-megabyte binary to a browser.
+
+Those four `rotation` identifiers were exported *for* this, and the bot's own
+call sites now route through them (`retentionNotice` is a one-line delegation),
+so there is exactly one path and the preview cannot diverge from what gets
+posted. Exporting was cheap because none of them needed anything from `Plugin`
+beyond the speaker.
+
+The split is `internal/lab` (no build tag, plain Go, tested natively) under
+`cmd/lab` (`//go:build js && wasm`, pure JSON-in/JSON-out marshalling). Logic
+that cannot be reached by `go test` is therefore about forty lines of glue, and
+`scripts/check-lab.mjs` drives the real compiled blob in Node to cover even
+that. CI builds `cmd/lab` for js/wasm on every push, because a signature moving
+under the binding breaks no test and would otherwise rot silently.
+
+Size is ~13.7MB raw and ~3.6MB gzipped, and it measured **identical** with and
+without the `aimod` package: the Go runtime dominates and dead-code elimination
+handles the rest, so scope here is not size-constrained. TinyGo would cut it
+substantially and is deliberately not used, since it would add a second
+toolchain and does not support everything the real packages rely on.
+
+The build (`scripts/build-lab.sh`) copies `wasm_exec.js` out of the local
+`GOROOT` rather than vendoring it: it is part of the runtime and must match the
+compiler that produced the blob beside it, and a committed copy drifts silently
+on a Go upgrade into a page that loads and then does nothing. Both it and
+`lab.wasm` are gitignored.
+
+**There is deliberately no authentication.** The repository is public, so every
+line, policy file, pattern and rule the lab renders is already readable on
+GitHub and gating the page would protect nothing. Discord OAuth specifically
+would be worse than nothing here: the authorization-code flow needs a client
+secret, which means a server, and merlin is outbound-only by design. Adding an
+inbound HTTP surface to a bot whose threat model is weaponized reporting, in
+order to guard public information, is the wrong trade. If the page ever does
+need gating (keeping it out of search results, say), the answer is an identity
+proxy in front of the static files, not auth code in this repository.
+
+Also fixed on the way in: `internal/config`'s reload files were tagged
+`windows` / `!windows`, so js/wasm matched the SIGHUP one and the whole tree
+failed to compile for a browser. They are now `unix` / `!unix`, and the no-op
+was renamed off the `_windows.go` suffix, because a GOOS filename suffix
+carries an implicit constraint that ANDs with the explicit tag and would have
+left js/wasm with no definition at all.
+
 ### Rotation disclosure modes
 
 `settings_rotation_channels.disclosure` (migration 0018, default `full`) is how much a freshly rotated channel is told about its own rotation: `full` (cadence + archival window), `cadence`, `retention`, or `generic` (neither). Per channel rather than per guild, matching `retention_hours` itself. Set via `/rotation configure add|edit`, a fixed four-value `Choices` option rather than autocomplete, since §4a's autocomplete rule is about values that come from bot state and cannot be enumerated at compile time.
