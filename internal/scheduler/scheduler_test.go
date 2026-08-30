@@ -495,3 +495,29 @@ func TestUnregisterStopsFutureRunsMidFlight(t *testing.T) {
 		t.Fatal("expected RunNow on an unregistered job to fail")
 	}
 }
+
+// A job that keeps failing must keep backing off. Past the alert threshold
+// the backoff used to stop and the schedule take over, but last_run only
+// moves on success, so a wedged job's next-due instant sits permanently in
+// the past: "back to its normal cadence" meant every tick forever, whatever
+// the schedule said. A weekly review that timed out once ran 534 more times
+// in ten hours that way, each one a billed model call.
+func TestWedgedJobKeepsBackingOff(t *testing.T) {
+	start := time.Date(2026, 8, 30, 4, 0, 0, 0, time.UTC)
+	sched := IntervalSchedule{Interval: 7 * 24 * time.Hour}
+	st := JobState{
+		// Seeded a week ago and never successful since: exactly the shape
+		// the calibration job was in.
+		LastRun:             start.Add(-7 * 24 * time.Hour),
+		HasLastRun:          true,
+		LastAttempt:         start,
+		ConsecutiveFailures: maxConsecutiveFailures + 1,
+	}
+
+	if jobIsDue(st, sched, 0, start.Add(tickInterval)) {
+		t.Error("a wedged job was due again one tick after failing")
+	}
+	if !jobIsDue(st, sched, 0, start.Add(backoffMax+time.Minute)) {
+		t.Error("a wedged job never became due again; backoff must cap, not stop retrying")
+	}
+}

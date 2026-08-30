@@ -378,8 +378,9 @@ func (p *Plugin) handleModelsCompare(ctx context.Context, s *discordgo.Session, 
 		p.log.Error("aimod: read spend history", "guild", i.GuildID, "err", err)
 	}
 
-	currentFast, _ := findModel(catalogue, modelsOr(cfg.FastModels, defaultFastModels)[0])
-	currentDeep, _ := findModel(catalogue, modelsOr(cfg.DeepModels, defaultDeepModels)[0])
+	spec, _ := route(cfg)
+	currentFast, _ := findModel(catalogue, modelsOr(cfg.FastModels, spec.fastModels)[0])
+	currentDeep, _ := findModel(catalogue, modelsOr(cfg.DeepModels, spec.deepModels)[0])
 	now := estimateFor(history, currentFast, currentDeep)
 
 	after := now

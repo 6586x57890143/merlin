@@ -337,11 +337,9 @@ func (s *Scheduler) tick(ctx context.Context) {
 
 // isDue decides whether j should run now, given its persisted state:
 //   - never attempted: due immediately.
-//   - failing, below the alert threshold: backoff since the last attempt.
-//   - otherwise (healthy, or failing at/above threshold): the schedule's own
-//     next-due instant (plus jitter) since the last success, or since the
-//     last attempt if there has never been a success (avoids a hot loop at
-//     the threshold).
+//   - failing: backoff since the last attempt, capped at backoffMax.
+//   - healthy: the schedule's own next-due instant (plus jitter) since the
+//     last success, or since the last attempt if there has never been one.
 func (s *Scheduler) isDue(ctx context.Context, j *registeredJob) (bool, error) {
 	st, err := s.store.Get(ctx, j.key)
 	if err != nil {
@@ -354,7 +352,20 @@ func jobIsDue(st JobState, sched core.Schedule, jitter time.Duration, now time.T
 	switch {
 	case st.ConsecutiveFailures == 0 && !st.HasLastRun:
 		return true
-	case st.ConsecutiveFailures > 0 && st.ConsecutiveFailures < maxConsecutiveFailures:
+	case st.ConsecutiveFailures > 0:
+		// Backoff applies for as long as the job keeps failing, not only
+		// below the alert threshold. It used to stop there and fall through
+		// to the schedule, on the reasoning that a job past the threshold
+		// has been alerted about and should go back to its normal cadence.
+		// What that actually produced was the opposite: LastRun only moves
+		// on success, so a wedged job's next-due instant is permanently in
+		// the past and "back to its normal cadence" means every single tick,
+		// forever, whatever the job's schedule says. A weekly review that
+		// timed out once ran 534 more times in the ten hours that followed,
+		// each one a billed model call that returned nothing and, because a
+		// timed-out call carries no usage block, went unbooked and so could
+		// not even hit its own daily budget. backoffFor caps at backoffMax,
+		// so a wedged job now retries every half hour instead.
 		return !now.Before(st.LastAttempt.Add(backoffFor(st.ConsecutiveFailures)))
 	default:
 		anchor := st.LastAttempt
@@ -372,7 +383,7 @@ func nextDue(st JobState, sched core.Schedule, jitter time.Duration) (time.Time,
 	if st.ConsecutiveFailures == 0 && !st.HasLastRun {
 		return time.Time{}, false // due now
 	}
-	if st.ConsecutiveFailures > 0 && st.ConsecutiveFailures < maxConsecutiveFailures {
+	if st.ConsecutiveFailures > 0 {
 		return st.LastAttempt.Add(backoffFor(st.ConsecutiveFailures)), true
 	}
 	anchor := st.LastAttempt

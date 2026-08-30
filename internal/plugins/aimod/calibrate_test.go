@@ -490,3 +490,51 @@ func TestCalibrationPromptCarriesTheEnforcedPoliciesAndCurrentSet(t *testing.T) 
 		t.Error("the calibration in force was not shown, so the reviewer starts over every week")
 	}
 }
+
+// The review is the largest call this package makes and the only one nobody
+// is waiting on, so it has to route like every other call and it has to be
+// allowed to take longer than one. Both were wrong at once in production: it
+// sent OpenRouter's default stack to whichever gateway the guild was on, and
+// the shared 20 second client timeout killed it before any model could
+// answer, which read as an outage every half minute for ten hours.
+func TestReviewGuildRoutesAndAllowsTimeToAnswer(t *testing.T) {
+	store := newFakeStore()
+	client := &fakeClassifier{calibration: []string{`{"examples":[],"findings":[]}`}}
+	p := testPlugin(t, store, client, newFakeOps(), &fakeAudit{})
+	sealer, err := newSealer(testSecretKey)
+	if err != nil {
+		t.Fatalf("newSealer: %v", err)
+	}
+	p.sealer = sealer
+	sealed, err := sealer.seal("sk-orca-test")
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	cfg := calibratingConfig()
+	cfg.OrcaKeySealed = sealed
+	store.setConfig(cfg)
+
+	if _, err := store.RecordIncident(context.Background(), Incident{
+		GuildID: "g1", ChannelID: "c1", MessageID: "m1", AuthorID: "u1",
+		Bucket: BucketHateSpeech, Action: ActionRemove, Content: "something",
+		Reason: "slur", CreatedAt: testNow,
+	}); err != nil {
+		t.Fatalf("RecordIncident: %v", err)
+	}
+
+	if _, err := p.reviewGuild(context.Background(), cfg); err != nil {
+		t.Fatalf("reviewGuild: %v", err)
+	}
+
+	req := client.lastCalibrationReq
+	if req.spec != orcaRouter {
+		t.Errorf("review went to %v, want the gateway the guild's key belongs to", req.spec)
+	}
+	if len(req.Models) == 0 || req.Models[0] != orcaRouter.deepModels[0] {
+		t.Errorf("models = %v, want the routed gateway's deep stack", req.Models)
+	}
+	if req.timeout <= httpTimeout {
+		t.Errorf("timeout = %v, want more than the scan path's %v: this prompt cannot be answered in that",
+			req.timeout, httpTimeout)
+	}
+}

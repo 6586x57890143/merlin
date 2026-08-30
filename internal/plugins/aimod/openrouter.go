@@ -35,12 +35,19 @@ const (
 	orcaCostHeader = "X-OrcaRouter-Include-Cost"
 )
 
-// httpTimeout bounds one model call.
+// httpTimeout bounds one model call by default.
 //
 // Short on purpose. This runs on a message someone just posted, and the
 // whole feature is worthless if the removal lands a minute later. A model
 // that has not answered in this long has effectively failed, and failing
 // fast lets the fallback model in the array get a turn.
+//
+// It is applied per request rather than on the shared http.Client, because
+// not every caller is standing in front of a member: the weekly calibration
+// review sends the largest prompt this package builds and asks for the
+// longest answer, and under a client-wide cap it could never finish. A
+// deadline on the Client would win over any context the caller set, so a
+// call that needs longer has no way to ask. chatRequest.timeout is that way.
 const httpTimeout = 20 * time.Second
 
 // retryPause is how long one transient failure waits before its single
@@ -74,7 +81,9 @@ type Client struct {
 // NewClient builds the production client.
 func NewClient() *Client {
 	return &Client{
-		http:      &http.Client{Timeout: httpTimeout},
+		// No Timeout here: chatOnce bounds every request itself. See
+		// httpTimeout.
+		http:      &http.Client{},
 		base:      openRouterBase,
 		noDisable: make(map[string]bool),
 	}
@@ -177,6 +186,11 @@ type chatRequest struct {
 	// meant before there was a second gateway and is what keeps the tests
 	// that predate one honest.
 	spec *providerSpec `json:"-"`
+
+	// timeout overrides httpTimeout for this one call. Unexported for the
+	// same reason spec is. Zero means httpTimeout, which is what every
+	// request on the scan path wants and must keep wanting.
+	timeout time.Duration `json:"-"`
 }
 
 type reasoningPrefs struct {
@@ -414,6 +428,15 @@ func pause(ctx context.Context, d time.Duration) bool {
 }
 
 func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (string, Usage, error) {
+	// Per attempt, not per Chat call: a retry gets its own full budget,
+	// exactly as it did when the bound lived on the shared http.Client.
+	bound := httpTimeout
+	if req.timeout > 0 {
+		bound = req.timeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+
 	// req is a value, so shaping it for the gateway cannot leak back to the
 	// caller, which matters because Chat may call this twice.
 	base := c.base
@@ -670,6 +693,9 @@ func (c *Client) get(ctx context.Context, apiKey, path string, into any) error {
 }
 
 func (c *Client) getFrom(ctx context.Context, base, apiKey, path string, into any) error {
+	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return fmt.Errorf("openrouter: build request: %w", err)
