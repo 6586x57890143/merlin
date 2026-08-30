@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -804,5 +805,82 @@ func TestSolanaBalanceRPCErrorAtHTTP200(t *testing.T) {
 
 	if _, err := c.railBalance(context.Background(), railByKey("solana:USDC"), testSolanaAddress); err == nil {
 		t.Fatal("want an error for a JSON-RPC error body, got nil")
+	}
+}
+
+// A booked donation is announced, because until it was, nothing anywhere
+// said a tip had arrived: pollFunding wrote the balance to Postgres and the
+// only surface that read it back was somebody running /aimod funding show.
+// A donor watching for their gift saw a jar that had not noticed it.
+func TestPollFundingAnnouncesADonation(t *testing.T) {
+	store := newFakeStore()
+	setFunding(store, Funding{
+		GuildID: "g1", Address: testTronAddress, SetBy: "owner", SetAt: testNow,
+		BalanceUSD: 100, Donations: 2, CheckedAt: testNow.Add(-time.Hour),
+	})
+	audit := &fakeAudit{}
+	p := testPlugin(t, store, nil, newFakeOps(), audit)
+	p.eth, _ = ethServer(t, usdc(141.20))
+
+	if err := p.pollFunding(context.Background(), "g1"); err != nil {
+		t.Fatalf("pollFunding: %v", err)
+	}
+
+	if !slices.Contains(audit.actions(), "aimod.funding_received") {
+		t.Fatalf("no donation entry in the audit log, got %v", audit.actions())
+	}
+	var detail string
+	for _, e := range audit.entries {
+		if e.action == "aimod.funding_received" {
+			detail = e.newValue
+		}
+	}
+	// The arrival and the new total are both in it: one is what happened,
+	// the other is what the operator decides on.
+	for _, want := range []string{"41.20", "141.20", "3 donations"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("donation entry %q is missing %q", detail, want)
+		}
+	}
+}
+
+// The quiet cases stay quiet. A baseline is not a gift, a withdrawal is not a
+// negative one, and dust is rounding: announcing any of the three would train
+// the operator to ignore the entry that matters.
+func TestPollFundingAnnouncesNothingWithoutADonation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stored  Funding
+		balance float64
+	}{
+		{"baseline", Funding{BalanceUSD: 0}, 50},
+		{"withdrawal", Funding{BalanceUSD: 100, CheckedAt: testNow.Add(-time.Hour)}, 5},
+		{"dust", Funding{BalanceUSD: 100, CheckedAt: testNow.Add(-time.Hour)}, 100.005},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			f := tc.stored
+			f.GuildID, f.Address, f.SetBy, f.SetAt = "g1", testTronAddress, "owner", testNow
+			setFunding(store, f)
+			audit := &fakeAudit{}
+			p := testPlugin(t, store, nil, newFakeOps(), audit)
+			p.eth, _ = ethServer(t, usdc(tc.balance))
+
+			if err := p.pollFunding(context.Background(), "g1"); err != nil {
+				t.Fatalf("pollFunding: %v", err)
+			}
+			if slices.Contains(audit.actions(), "aimod.funding_received") {
+				t.Error("announced a donation that was not one")
+			}
+		})
+	}
+}
+
+// The poll is the whole latency budget between a transfer landing on chain
+// and merlin saying so, and Scheduler jitter is bounded at interval/10, so
+// this number is very nearly the answer a donor waits.
+func TestFundingPollIsPrompt(t *testing.T) {
+	if fundingPollInterval > time.Minute {
+		t.Errorf("fundingPollInterval = %v: a donor watching for their tip waits this long", fundingPollInterval)
 	}
 }

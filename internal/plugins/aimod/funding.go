@@ -24,11 +24,30 @@ import (
 // through their checkout either way. Given that, custodying donations would
 // buy nothing and would put them behind a Discord bot's threat model.
 const (
-	// fundingPollInterval is how often a configured wallet is read. Donations
-	// are not urgent and a public RPC is a shared resource; a quarter hour is
-	// well inside how long somebody waits before asking whether their tip
-	// showed up.
-	fundingPollInterval = 15 * time.Minute
+	// fundingPollInterval is how often a configured wallet is read.
+	//
+	// A minute, matching roles-sweep rather than the hourly sweeps, because
+	// the quarter hour this started at was answering the wrong question. It
+	// was set on the grounds that donations are not urgent, which is true of
+	// the money and false of the acknowledgement: somebody who has just sent
+	// a tip watches for it, and a jar that takes a quarter of an hour to
+	// notice reads as one that did not receive it. Balances is also all or
+	// nothing across a family's rails, so one flaky public endpoint costs a
+	// whole cycle, and at fifteen minutes that compounds into the gap this
+	// was reported as.
+	//
+	// The cost is one eth_call per rail per minute per guild with a wallet
+	// set, spread over five providers for an EVM family, and the job is only
+	// registered where there is an address to read. Scheduler jitter is
+	// bounded at interval/10, so a minute here stays a minute rather than
+	// becoming three.
+	//
+	// ponytail: polling, and a minute is roughly its floor. Real-time needs
+	// either an eth_subscribe websocket per chain or an indexer webhook, and
+	// a webhook means an inbound HTTP surface this bot deliberately does not
+	// have. An operator who wants more headroom points MERLIN_RPC_<CHAIN> at
+	// a paid endpoint, which already works and needs no code.
+	fundingPollInterval = 1 * time.Minute
 
 	// donationDust is the smallest balance increase counted as a donation.
 	// Below this it is rounding in decimal handling rather than somebody
@@ -192,11 +211,45 @@ func (p *Plugin) pollFunding(ctx context.Context, guildID string) error {
 		return fmt.Errorf("aimod: record tip jar balance: %w", err)
 	}
 
+	// Announced after the write, for the same reason enforce records before
+	// it touches a message: the booked donation is the durable half, and an
+	// audit post that failed must not cost it. Hence log-and-continue rather
+	// than a returned error, which would also have the Scheduler retry a
+	// balance read that already succeeded and book the difference twice.
+	if donation > 0 {
+		p.noticeDonation(ctx, guildID, f, donation, balance)
+	}
+
 	// The credit check is the other half of the gauge and rides along on top
 	// of the poll: a failure there must not fail the job and retry a balance
 	// read that already succeeded.
 	p.checkCredit(ctx, guildID)
 	return nil
+}
+
+// noticeDonation records that the tip jar grew.
+//
+// The audit log rather than a channel of its own, because it is the one
+// surface every configured guild already has and this needs no new setting to
+// reach it. It is also the right reader: the money only becomes scanning when
+// somebody clicks a checkout, so the entry says what arrived and what the jar
+// now holds, which is what the operator needs to decide whether to go and do
+// that.
+//
+// Not rate limited the way noticeFunding is. That one repeats a state that
+// persists until somebody tops up, so without a daily cap it would say the
+// same thing four times an hour; this one fires on an edge that somebody
+// deliberately caused, and swallowing a second gift because a first arrived
+// today would be the one direction this must not fail in.
+func (p *Plugin) noticeDonation(ctx context.Context, guildID string, f Funding, donation, balance float64) {
+	detail := fmt.Sprintf("%s arrived in the tip jar at `%s`. It now holds %s across %d %s. "+
+		"Nothing is automatic from here: the credit is bought by hand at the gateway checkout. "+
+		"/aimod funding shows the jar.",
+		formatUSD(donation), f.Address, formatUSD(balance), f.Donations+1,
+		plural(f.Donations+1, "donation", "donations"))
+	if err := p.auditWriter.Record(ctx, guildID, core.ActorSystem, "aimod.funding_received", "", detail); err != nil {
+		p.log.Error("aimod: audit donation", "guild", guildID, "err", err)
+	}
 }
 
 // checkCredit warns once a day when the gateway balance is nearly gone.
