@@ -168,6 +168,36 @@ status` rather than appearing to work.
   missing a boundary fails `LoadPolicies` at startup, exactly as a voice line
   missing a required placeholder does. `child_safety` is not disableable, the
   same guard shape as `adminconfig` refusing to disable itself.
+- **`child_safety` is the one bucket where humour is not a defence**, and it
+  has to say so in its own file because every other force in this package
+  pushes the other way: `systemPreamble` tells the model dark humour is
+  ordinary here and to report nothing when a message is ambiguous, and a joke
+  framing is exactly what makes one ambiguous. Discord's policy has no such
+  exception. The gap that exposed this was narrower than the posture, though:
+  every `violations` line described content *involving* a minor (sharing,
+  soliciting, roleplay, grooming), so a first-person boast about sexual
+  interest matched nothing and a model following the file correctly cleared
+  it. Stated interest is now in `short` too, since that single line is all
+  rung 2 ever sees and nothing reaches the deep pass unflagged. The added
+  `not_violations` lines are load bearing in the other direction: on a blunt
+  server "you're a pedo" is an ordinary insult, and a bucket that started
+  removing those would be the over-broad censor this catalogue exists to
+  prevent. Relatedly, `validateCalibration` refuses any example that tells the
+  filter to stand down on this bucket: the weekly reviewer is asked to hunt
+  for over-strictness, is told irony is the default reading, and on
+  `CalibrationAuto` applies its own answer, so one such example would reach
+  every prompt from then on. That is turning the bucket off by a route
+  `EffectiveAction` does not guard. Examples that *tighten* it stay allowed.
+  The guard is a backstop, not the mechanism: `calibrationPreamble` carries
+  the same carve-out the policy file does (the irony-is-the-default-reading
+  rule is scoped to exclude this one bucket) and routes a genuine overreach
+  to a `too_strict` **finding** instead, which a moderator reads in
+  `/aimod calibrate show` and answers by editing the policy file. So the
+  observation survives and only the unattended 4am self-application is
+  blocked. `TestCalibrationPromptCarriesTheSameChildSafetyRule` is what stops
+  the const and the YAML drifting apart, since a reviewer reporting the
+  filter as too strict for enforcing a policy it must enforce is the worst
+  version of this mechanism.
 - **Two-stage token use is the whole cost design.** The fast prompt carries one
   `short` line per *enforced* bucket and nothing else (~350 tokens, amortized
   across the batch); the full policy file is sent only to the deep pass, only

@@ -181,3 +181,43 @@ func TestSanctionIsNotAConfigurableAction(t *testing.T) {
 		}
 	}
 }
+
+// Discord's child safety policy has no humour exception, and this bot's
+// whole posture runs the other way: the preamble tells the model dark humour
+// is ordinary here and to report nothing when a message is ambiguous, and a
+// joke framing is exactly what makes one ambiguous. So the carve-out has to
+// be written into the bucket that needs it, in the two places a model
+// actually reads.
+//
+// A first-person boast ("I used to jerk off to minors") went unmoderated
+// because every violations line described content *involving* a minor:
+// sharing it, soliciting it, roleplaying it, grooming. Nothing covered
+// somebody stating the interest itself, so a model following the file
+// correctly cleared it.
+func TestChildSafetyCoversStatedInterestAndSaysJokesAreNoExcuse(t *testing.T) {
+	policies, err := LoadPolicies()
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	pol := policies[BucketChildSafety]
+
+	// short is the only line the fast pass ever sees. If stated interest is
+	// not in it, nothing is ever flagged and the deep pass never runs.
+	if !strings.Contains(strings.ToLower(pol.Short), "interest") {
+		t.Errorf("child_safety short does not mention stated interest, so rung 2 will never flag it: %q", pol.Short)
+	}
+
+	full := strings.ToLower(strings.Join(append(append([]string{}, pol.Definitions...), pol.Violations...), "\n"))
+	for _, want := range []string{"joke", "attracted to minors"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("child_safety policy never says %q; the deep pass is what clears a joke framing", want)
+		}
+	}
+
+	// The other direction, which the added lines put at risk: on a blunt
+	// server "you're a pedo" is an ordinary insult and must stay one.
+	boundary := strings.ToLower(strings.Join(pol.NotViolations, "\n"))
+	if !strings.Contains(boundary, "insult") {
+		t.Error("child_safety states no boundary for the insult case; calling somebody a paedophile is an attack on them, not sexual interest in a minor")
+	}
+}
