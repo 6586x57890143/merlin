@@ -59,6 +59,7 @@ var actions = map[string]meta{
 	"aimod.undone":           {title: "AI moderation: reversed by a moderator", color: core.ColorSuccess},
 	"aimod.budget_exhausted": {title: "AI moderation: daily budget spent", color: core.ColorWarning},
 	"aimod.funding_low":      {title: "AI moderation: credit running low", color: core.ColorWarning},
+	"aimod.funding_received": {title: "AI moderation: tip jar received a donation", color: core.ColorSuccess},
 	// Warning rather than info, and deliberately so: this is where donated
 	// money goes, nothing sent on chain can be recovered, and the entry is
 	// what a server reads to notice a payout address it did not expect.
