@@ -220,9 +220,9 @@ type Store interface {
 	// so none of them needs a cachingStore override: the poller writes every
 	// 15 minutes and the message hot path never reads them.
 	Funding(ctx context.Context, guildID string) (Funding, error)
-	SetFundingAddress(ctx context.Context, guildID, address, setBy string, at time.Time, baseline float64) error
+	SetFundingAddress(ctx context.Context, guildID, address, setBy string, at time.Time, baseline float64, balances map[string]float64) error
 	ClearFunding(ctx context.Context, guildID string) error
-	UpdateFundingBalance(ctx context.Context, guildID string, balance, donation float64, at time.Time) error
+	UpdateFundingBalance(ctx context.Context, guildID string, balance, donation float64, balances map[string]float64, at time.Time) error
 
 	// RecordIncident writes before anything is done to the message. See
 	// enforce.go: the other order loses the only copy of what was removed.
@@ -767,6 +767,10 @@ type Funding struct {
 	ReceivedUSD float64
 	Donations   int
 	CheckedAt   time.Time
+	// Balances is the per-rail breakdown behind BalanceUSD, keyed "chain:asset".
+	// Written only by a complete poll, so it either agrees with BalanceUSD or
+	// is empty; it is never a partial view of it.
+	Balances map[string]float64
 }
 
 // Configured reports whether this guild has a tip jar at all.
@@ -775,10 +779,11 @@ func (f Funding) Configured() bool { return f.Address != "" }
 func (s *pgStore) Funding(ctx context.Context, guildID string) (Funding, error) {
 	f := Funding{GuildID: guildID}
 	var checkedAt *time.Time
+	var balancesJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT address, set_by, set_at, balance_usd, received_usd, donations, checked_at
+		SELECT address, set_by, set_at, balance_usd, received_usd, donations, checked_at, balances
 		FROM aimod_funding WHERE guild_id = $1
-	`, guildID).Scan(&f.Address, &f.SetBy, &f.SetAt, &f.BalanceUSD, &f.ReceivedUSD, &f.Donations, &checkedAt)
+	`, guildID).Scan(&f.Address, &f.SetBy, &f.SetAt, &f.BalanceUSD, &f.ReceivedUSD, &f.Donations, &checkedAt, &balancesJSON)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return f, nil
@@ -787,6 +792,18 @@ func (s *pgStore) Funding(ctx context.Context, guildID string) (Funding, error) 
 	}
 	if checkedAt != nil {
 		f.CheckedAt = *checkedAt
+	}
+	// An unreadable breakdown is dropped rather than fatal, the same call as
+	// decodeCalibration next door and for the same reason: the breakdown is a
+	// display detail, while the totals beside it are the answer somebody ran
+	// the command for. A hand-edited column must not take the whole tip jar
+	// down, and an empty map renders exactly as a jar that has not been
+	// polled since the column was added.
+	if len(balancesJSON) > 0 {
+		decoded := map[string]float64{}
+		if err := json.Unmarshal(balancesJSON, &decoded); err == nil {
+			f.Balances = decoded
+		}
 	}
 	return f, nil
 }
@@ -801,23 +818,45 @@ func (s *pgStore) Funding(ctx context.Context, guildID string) (Funding, error) 
 // Re-pointing resets received_usd and donations, because those totals belong
 // to the wallet that earned them and carrying them onto a different address
 // would credit a new jar with another one's history.
-func (s *pgStore) SetFundingAddress(ctx context.Context, guildID, address, setBy string, at time.Time, baseline float64) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aimod_funding (guild_id, address, set_by, set_at, balance_usd, checked_at)
-		VALUES ($1, $2, $3, $4, $5, $4)
+func (s *pgStore) SetFundingAddress(ctx context.Context, guildID, address, setBy string, at time.Time, baseline float64, balances map[string]float64) error {
+	encoded, err := encodeBalances(balances)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO aimod_funding (guild_id, address, set_by, set_at, balance_usd, checked_at, balances)
+		VALUES ($1, $2, $3, $4, $5, $4, $6::jsonb)
 		ON CONFLICT (guild_id) DO UPDATE SET
 			address      = EXCLUDED.address,
 			set_by       = EXCLUDED.set_by,
 			set_at       = EXCLUDED.set_at,
 			balance_usd  = EXCLUDED.balance_usd,
 			checked_at   = EXCLUDED.checked_at,
+			balances     = EXCLUDED.balances,
 			received_usd = 0,
 			donations    = 0
-	`, guildID, address, setBy, at, baseline)
+	`, guildID, address, setBy, at, baseline, encoded)
 	if err != nil {
 		return fmt.Errorf("aimod store: set funding address: %w", err)
 	}
 	return nil
+}
+
+// encodeBalances renders a per-rail breakdown for the JSONB column.
+//
+// Marshalled here and cast at the call site rather than handed to pgx as a
+// map, matching how bucket_actions and calibration are already written. Never
+// NULL: the column is NOT NULL, and "{}" is also the honest rendering of a
+// family whose rails all read zero.
+func encodeBalances(balances map[string]float64) ([]byte, error) {
+	if balances == nil {
+		balances = map[string]float64{}
+	}
+	encoded, err := json.Marshal(balances)
+	if err != nil {
+		return nil, fmt.Errorf("aimod store: encode balances: %w", err)
+	}
+	return encoded, nil
 }
 
 func (s *pgStore) ClearFunding(ctx context.Context, guildID string) error {
@@ -834,15 +873,20 @@ func (s *pgStore) ClearFunding(ctx context.Context, guildID string) error {
 // cannot lose a donation between them. A fall in balance is the operator
 // moving funds out to buy credits: the new balance records it and no donation
 // is counted.
-func (s *pgStore) UpdateFundingBalance(ctx context.Context, guildID string, balance, donation float64, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `
+func (s *pgStore) UpdateFundingBalance(ctx context.Context, guildID string, balance, donation float64, balances map[string]float64, at time.Time) error {
+	encoded, err := encodeBalances(balances)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
 		UPDATE aimod_funding
 		SET balance_usd  = $2,
 		    checked_at   = $3,
 		    received_usd = received_usd + $4,
-		    donations    = donations + CASE WHEN $4 > 0 THEN 1 ELSE 0 END
+		    donations    = donations + CASE WHEN $4 > 0 THEN 1 ELSE 0 END,
+		    balances     = $5::jsonb
 		WHERE guild_id = $1
-	`, guildID, balance, at, donation)
+	`, guildID, balance, at, donation, encoded)
 	if err != nil {
 		return fmt.Errorf("aimod store: update funding balance: %w", err)
 	}

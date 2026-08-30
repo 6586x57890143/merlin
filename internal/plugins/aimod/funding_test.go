@@ -116,11 +116,16 @@ func TestPollFundingSkipsAGuildWithNoJar(t *testing.T) {
 	}
 }
 
+// The bookkeeping tests below run on a TRON address deliberately. That family
+// has exactly one rail, so the numbers here stay about baselines, donations
+// and dust rather than about how many chains an EVM address fans out to.
+// Multi-rail summing and its all-or-nothing failure have their own tests.
+//
 // Pointing the bot at a wallet that already holds money must not report that
 // money as a gift on day one.
 func TestPollFundingFirstReadIsABaselineNotADonation(t *testing.T) {
 	store := newFakeStore()
-	setFunding(store, Funding{GuildID: "g1", Address: testWallet, SetBy: "owner", SetAt: testNow})
+	setFunding(store, Funding{GuildID: "g1", Address: testTronAddress, SetBy: "owner", SetAt: testNow})
 	p := fundedPlugin(t, store, 500)
 
 	if err := p.pollFunding(context.Background(), "g1"); err != nil {
@@ -142,7 +147,7 @@ func TestPollFundingFirstReadIsABaselineNotADonation(t *testing.T) {
 func TestPollFundingCountsAnIncreaseAsOneDonation(t *testing.T) {
 	store := newFakeStore()
 	setFunding(store, Funding{
-		GuildID: "g1", Address: testWallet, SetBy: "owner", SetAt: testNow,
+		GuildID: "g1", Address: testTronAddress, SetBy: "owner", SetAt: testNow,
 		BalanceUSD: 100, CheckedAt: testNow.Add(-time.Hour),
 	})
 	p := fundedPlugin(t, store, 141.20)
@@ -169,7 +174,7 @@ func TestPollFundingCountsAnIncreaseAsOneDonation(t *testing.T) {
 func TestPollFundingTreatsAWithdrawalAsNotADonation(t *testing.T) {
 	store := newFakeStore()
 	setFunding(store, Funding{
-		GuildID: "g1", Address: testWallet, SetBy: "owner", SetAt: testNow,
+		GuildID: "g1", Address: testTronAddress, SetBy: "owner", SetAt: testNow,
 		BalanceUSD: 100, ReceivedUSD: 250, Donations: 7, CheckedAt: testNow.Add(-time.Hour),
 	})
 	p := fundedPlugin(t, store, 5)
@@ -193,7 +198,7 @@ func TestPollFundingTreatsAWithdrawalAsNotADonation(t *testing.T) {
 func TestPollFundingIgnoresDust(t *testing.T) {
 	store := newFakeStore()
 	setFunding(store, Funding{
-		GuildID: "g1", Address: testWallet, SetBy: "owner", SetAt: testNow,
+		GuildID: "g1", Address: testTronAddress, SetBy: "owner", SetAt: testNow,
 		BalanceUSD: 100, CheckedAt: testNow.Add(-time.Hour),
 	})
 	p := fundedPlugin(t, store, 100.005)
@@ -344,12 +349,25 @@ func showTheJar(t *testing.T) []string { return showTheJarAt(t, testWallet) }
 
 func showTheJarAt(t *testing.T, address string) []string {
 	t.Helper()
+	return showTheJarWith(t, address, nil)
+}
+
+// A real Solana mainnet address: Circle's own USDC mint, which is also the
+// default this package ships. Chosen because it is verifiable from any
+// explorer rather than invented here.
+const testSolanaAddress = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+// showTheJarWith renders a jar holding a given per-rail breakdown, which is
+// what the public view reads to say where the money actually sits.
+func showTheJarWith(t *testing.T, address string, balances map[string]float64) []string {
+	t.Helper()
 	store := newFakeStore()
 	setFunding(store, Funding{
 		GuildID: "g1", Address: address, SetBy: "owner",
 		SetAt:      testNow.Add(-30 * 24 * time.Hour),
 		CheckedAt:  testNow,
 		BalanceUSD: 41.20, ReceivedUSD: 128.60, Donations: 7,
+		Balances: balances,
 	})
 	p := fundedPlugin(t, store, 41.20)
 
@@ -382,8 +400,8 @@ func TestFundingShowFormatsTheJar(t *testing.T) {
 	all := strings.Join(showTheJar(t), "\n")
 
 	for _, want := range []string{
-		testWallet,                      // the address itself
-		"**" + baseUSDC.note + "**",     // the money-losing mistake, at full weight
+		testWallet, // the address itself
+		"**Networks: " + familyEVM.networks + "**", // the money-losing mistake, at full weight
 		"-# ",                           // Discord's small grey style is in use
 		"-# Set by ",                    // provenance, demoted
 		"merlin only reads this wallet", // the disclaimer is still present
@@ -545,43 +563,246 @@ func TestFundingClearIsOpenToAnyAdmin(t *testing.T) {
 	}
 }
 
-// Chains are separate ledgers. Money sent on the wrong one lands somewhere
-// this gauge cannot see and no checkout can spend, and it does not come back,
-// so every word naming a network has to come from the address on screen
-// rather than from a constant written when there was only one chain.
-func TestJarNamesTheChainOfItsOwnAddress(t *testing.T) {
-	base := strings.Join(showTheJarAt(t, testWallet), "\n")
-	tron := strings.Join(showTheJarAt(t, defaultUSDTContract), "\n")
+// Chains are separate ledgers. Money sent on one this bot does not read lands
+// somewhere the gauge cannot see, and it does not come back, so every word
+// naming a network has to come from the address on screen rather than from a
+// constant written when there was only one chain.
+func TestJarNamesTheNetworksOfItsOwnAddress(t *testing.T) {
+	evm := strings.Join(showTheJarAt(t, testWallet), "\n")
+	tron := strings.Join(showTheJarAt(t, testTronAddress), "\n")
+	solana := strings.Join(showTheJarAt(t, testSolanaAddress), "\n")
 
 	// The field heading is the instruction, so that is what is pinned. The
-	// other chain's name may still appear further down, in the operator note
-	// below, and that is the point rather than a leak.
-	if !strings.Contains(base, "Send "+baseUSDC.label+" to") {
-		t.Errorf("an EVM address is not headed %q:\n%s", baseUSDC.label, base)
-	}
-	if !strings.Contains(tron, "Send "+tronUSDT.label+" to") {
-		t.Errorf("a TRON address is not headed %q:\n%s", tronUSDT.label, tron)
-	}
-	if strings.Contains(base, "**"+tronUSDT.note+"**") || strings.Contains(tron, "**"+baseUSDC.note+"**") {
-		t.Error("a jar is carrying the other chain's warning at full weight")
+	// other families' names may still appear further down, in the operator
+	// note, and that is the point rather than a leak.
+	for _, tc := range []struct {
+		name   string
+		body   string
+		family *walletFamily
+	}{
+		{"evm", evm, familyEVM},
+		{"tron", tron, familyTron},
+		{"solana", solana, familySolana},
+	} {
+		if !strings.Contains(tc.body, "Send "+tc.family.label+" to") {
+			t.Errorf("%s jar is not headed %q:\n%s", tc.name, tc.family.label, tc.body)
+		}
+		// The network list is the one line a donor must not misread, so it
+		// carries full weight while the caveat below it does not.
+		if !strings.Contains(tc.body, "**Networks: "+tc.family.networks+"**") {
+			t.Errorf("%s jar does not name its networks at full weight:\n%s", tc.name, tc.body)
+		}
+		// Routing advice is per family rather than one sentence with the
+		// network swapped in: the cheapest route onto each is a different one.
+		if !strings.Contains(tc.body, tc.family.swap) {
+			t.Errorf("%s jar is missing its own routing advice:\n%s", tc.name, tc.body)
+		}
+		// Anybody can check the balance against the chain instead of taking
+		// this bot's word for it.
+		if !strings.Contains(tc.body, "Check this wallet yourself") {
+			t.Errorf("%s jar offers no way to audit it:\n%s", tc.name, tc.body)
+		}
 	}
 
-	// The gateway and the jar have to agree, or donations land on a ledger the
-	// credits cannot be bought from. These fixtures run on OpenRouter, so the
-	// TRON jar is the mismatched one and has to say so.
-	if !strings.Contains(tron, "will need swapping and bridging") {
-		t.Errorf("a jar on the wrong chain for its gateway does not say so:\n%s", tron)
+	for _, other := range []*walletFamily{familyTron, familySolana} {
+		if strings.Contains(evm, "**Networks: "+other.networks+"**") {
+			t.Errorf("the EVM jar is carrying %s's network line at full weight", other.name)
+		}
 	}
-	if strings.Contains(base, "will need swapping and bridging") {
-		t.Errorf("a jar on the right chain is warning about a mismatch:\n%s", base)
+	if strings.Contains(tron, familyEVM.swap) {
+		t.Errorf("a TRON jar is giving the EVM routing advice:\n%s", tron)
 	}
-	// The full-weight warning is the one line a donor must not misread.
-	if !strings.Contains(tron, "**"+tronUSDT.note+"**") {
-		t.Errorf("the TRON jar carries no chain warning at full weight:\n%s", tron)
+}
+
+// Ethereum mainnet is the regression this whole change exists for. The old
+// single-chain jar told donors that anything not on Base was lost, and an
+// admin then topped OpenRouter up with mainnet USDC and it worked fine. An
+// EVM jar must name mainnet as somewhere to send.
+func TestEVMJarDoesNotWarnAwayFromEthereumMainnet(t *testing.T) {
+	evm := strings.Join(showTheJarAt(t, testWallet), "\n")
+
+	if !strings.Contains(evm, "Ethereum") {
+		t.Errorf("an EVM jar does not mention Ethereum at all:\n%s", evm)
 	}
-	// The swap advice is per chain rather than one sentence with the network
-	// swapped in: the cheapest route onto each is a different route.
-	if strings.Contains(tron, swapAdvice(baseUSDC)) {
-		t.Errorf("a TRON jar is giving Base's routing advice:\n%s", tron)
+	for _, wrong := range []string{
+		"not Ethereum mainnet",
+		"Anything else sent here is lost",
+	} {
+		if strings.Contains(evm, wrong) {
+			t.Errorf("the jar still carries the false warning %q:\n%s", wrong, evm)
+		}
+	}
+}
+
+// What a checkout accepts is somebody else's merchant configuration, not a
+// property of a chain, so it is always dated and hedged. These fixtures run
+// on OpenRouter, whose checkout has not been seen taking TRON.
+func TestGatewayFitIsDatedAndHedged(t *testing.T) {
+	evm := strings.Join(showTheJarAt(t, testWallet), "\n")
+	tron := strings.Join(showTheJarAt(t, testTronAddress), "\n")
+
+	if !strings.Contains(tron, "probably need swapping or bridging") {
+		t.Errorf("a jar on a chain the gateway has not been seen taking does not say so:\n%s", tron)
+	}
+	if strings.Contains(evm, "probably need swapping or bridging") {
+		t.Errorf("a jar the gateway does take is warning about a mismatch:\n%s", evm)
+	}
+	// Both directions carry the date, because both are observations rather
+	// than facts and a reader has to be able to tell how stale one is.
+	for _, body := range []string{evm, tron} {
+		if !strings.Contains(body, "as of "+topUpCheckedOn) && !strings.Contains(body, "As of "+topUpCheckedOn) {
+			t.Errorf("a claim about the checkout is undated:\n%s", body)
+		}
+	}
+}
+
+// The breakdown says where the money actually sits and links each chain, so a
+// donor can confirm their own transfer landed. Only rails holding something
+// are listed: a family has up to nine and eight zeroes would bury the line.
+func TestJarBreaksDownWhereTheMoneySits(t *testing.T) {
+	body := strings.Join(showTheJarWith(t, testWallet, map[string]float64{
+		"base:USDC":     10,
+		"polygon:USDT":  2.5,
+		"ethereum:USDC": 0,
+	}), "\n")
+
+	if !strings.Contains(body, "on [Base](https://basescan.org/address/"+testWallet+")") {
+		t.Errorf("the breakdown does not link Base:\n%s", body)
+	}
+	if !strings.Contains(body, "on [Polygon](https://polygonscan.com/address/"+testWallet+")") {
+		t.Errorf("the breakdown does not link Polygon:\n%s", body)
+	}
+	if strings.Contains(body, "Ethereum](") {
+		t.Errorf("an empty rail is listed:\n%s", body)
+	}
+}
+
+// An EVM address is the same account on every EVM chain, so the jar reads all
+// of them and reports the sum. Before this, a donor who sent USDC on Polygon
+// because it was cheapest was invisible to a bot watching only Base.
+func TestPollFundingSumsEveryRailInTheFamily(t *testing.T) {
+	store := newFakeStore()
+	setFunding(store, Funding{GuildID: "g1", Address: testWallet, SetBy: "owner", SetAt: testNow})
+
+	p := testPlugin(t, store, nil, newFakeOps(), &fakeAudit{})
+	// Ten units on every rail this family has. The two BNB Chain rails are 18
+	// decimals rather than 6, so they contribute effectively nothing from the
+	// same raw word, which is exactly the distinction that would be invisible
+	// if decimals were assumed rather than read off each contract.
+	p.eth = railServer(t, func(string) (string, bool) { return usdc(10), true })
+
+	if err := p.pollFunding(context.Background(), "g1"); err != nil {
+		t.Fatalf("pollFunding: %v", err)
+	}
+
+	f := getFunding(t, store, "g1")
+	sixDecimalRails := 0
+	for _, rail := range railsFor(familyEVM) {
+		if rail.decimals == 6 {
+			sixDecimalRails++
+		}
+	}
+	want := float64(sixDecimalRails) * 10
+	if math.Abs(f.BalanceUSD-want) > 1e-6 {
+		t.Fatalf("balance = %v, want %v summed across the family", f.BalanceUSD, want)
+	}
+	// The breakdown is what the public view renders, so every rail read has
+	// to appear in it and not just in the total.
+	if len(f.Balances) != len(railsFor(familyEVM)) {
+		t.Fatalf("breakdown has %d rails, want %d", len(f.Balances), len(railsFor(familyEVM)))
+	}
+}
+
+// The single most important property of a multi-rail read. A sum missing one
+// unreachable chain is indistinguishable from a smaller balance, and a fall in
+// balance is booked as the operator withdrawing to buy credits. So a partial
+// read would record a withdrawal that never happened, and the RPC recovering
+// would then book the difference as a donation nobody made. Failing costs one
+// fifteen minute retry; the alternative silently corrupts the running total
+// this feature exists to publish.
+func TestPollFundingBooksNothingWhenOneRailFails(t *testing.T) {
+	store := newFakeStore()
+	setFunding(store, Funding{
+		GuildID: "g1", Address: testWallet, SetBy: "owner", SetAt: testNow,
+		BalanceUSD: 100, ReceivedUSD: 250, Donations: 7, CheckedAt: testNow.Add(-time.Hour),
+	})
+
+	broken := strings.ToLower(strings.TrimPrefix(railByKey("polygon:USDT").defaultContract, "0x"))
+	p := testPlugin(t, store, nil, newFakeOps(), &fakeAudit{})
+	p.eth = railServer(t, func(body string) (string, bool) {
+		if strings.Contains(strings.ToLower(body), broken) {
+			return "", false
+		}
+		return usdc(1000), true
+	})
+
+	if err := p.pollFunding(context.Background(), "g1"); err == nil {
+		t.Fatal("a partial read must fail the poll, got nil")
+	}
+
+	f := getFunding(t, store, "g1")
+	if f.Donations != 7 || math.Abs(f.ReceivedUSD-250) > 1e-9 {
+		t.Fatalf("a failed poll changed the running totals: %+v", f)
+	}
+	if math.Abs(f.BalanceUSD-100) > 1e-9 {
+		t.Fatalf("balance = %v, want the previous 100 left untouched", f.BalanceUSD)
+	}
+}
+
+// Setting an address runs the same all-or-nothing read, for the same reason:
+// a baseline banked while one chain was unreachable would report that chain's
+// existing holdings as a gift on the very next poll.
+func TestSetAddressRefusesAnIncompleteRead(t *testing.T) {
+	broken := strings.ToLower(strings.TrimPrefix(railByKey("bsc:USDT").defaultContract, "0x"))
+
+	c := railServer(t, func(body string) (string, bool) {
+		if strings.Contains(strings.ToLower(body), broken) {
+			return "", false
+		}
+		return usdc(5), true
+	})
+	if _, _, err := c.Balances(context.Background(), testWallet); err == nil {
+		t.Fatal("Balances must fail when any rail fails, got nil")
+	}
+
+	// And the failing rail is named, so an operator can tell which endpoint
+	// to look at rather than being told only that something went wrong.
+	_, _, err := c.Balances(context.Background(), testWallet)
+	if !strings.Contains(err.Error(), "bsc:USDT") {
+		t.Fatalf("the error does not name the failing rail: %v", err)
+	}
+}
+
+// Solana is read with a different method than every other rail, so its own
+// response shape needs pinning. Several token accounts for one mint are
+// summed rather than the first one being taken: an owner can legitimately
+// hold more than one, and reading only the first under reports money somebody
+// genuinely sent.
+func TestSolanaBalanceSumsTokenAccounts(t *testing.T) {
+	c := railServer(t, func(string) (string, bool) {
+		return `{"jsonrpc":"2.0","id":1,"result":{"value":[` +
+			`{"account":{"data":{"parsed":{"info":{"tokenAmount":{"amount":"1500000","decimals":6}}}}}},` +
+			`{"account":{"data":{"parsed":{"info":{"tokenAmount":{"amount":"2500000","decimals":6}}}}}}` +
+			`]}}`, true
+	})
+
+	got, err := c.railBalance(context.Background(), railByKey("solana:USDC"), testSolanaAddress)
+	if err != nil {
+		t.Fatalf("solana balance: %v", err)
+	}
+	if math.Abs(got-4) > 1e-9 {
+		t.Fatalf("balance = %v, want 4 summed across both accounts", got)
+	}
+}
+
+// Solana's JSON-RPC reports errors with HTTP 200 exactly as eth_call does, so
+// checking the status alone would read a rejected request as an empty wallet.
+func TestSolanaBalanceRPCErrorAtHTTP200(t *testing.T) {
+	c := railServer(t, func(string) (string, bool) {
+		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid param"}}`, true
+	})
+
+	if _, err := c.railBalance(context.Background(), railByKey("solana:USDC"), testSolanaAddress); err == nil {
+		t.Fatal("want an error for a JSON-RPC error body, got nil")
 	}
 }

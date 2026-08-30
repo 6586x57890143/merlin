@@ -343,38 +343,85 @@ stay gateway-agnostic, nil-pointer "no limit set" branch included. A free-tier
 guild has no balance to draw at all, and both surfaces say so rather than
 rendering an empty bar: what runs out there is a request rate.
 
-**Two chains, one per gateway's checkout, and the guild's is read off its own
-address** (`chainFor`): `0x...` is USDC on Base, `T...` is USDT on TRON. Never
-stored beside the address, for the reason the whole feature exists: the network
-named on screen is what somebody is about to send money on, and a stored chain
-that disagreed with the address above it would be this bot causing the loss.
-Everything chain-specific is therefore derived, the field heading, the
-full-weight warning (`fundingChain.note`) and the how-to-get-here line
-(`swapAdvice`, separate strings because the cheapest route onto Base and onto
-TRON are different routes). `/aimod funding show` additionally warns when the
-jar's chain is not the active gateway's top-up rail, since donations landing on
-the other ledger need a swap and a bridge before they buy anything.
+**An address selects a family, not a chain** (`familyFor`). A `0x` address is
+the same account on Base, Ethereum, Polygon, Arbitrum and BNB Chain, because
+one private key controls all five, so "which chain is this address on" has no
+answer to derive. merlin reads every rail in the family and sums them, which
+deletes the derive-versus-store dilemma rather than solving it: nothing about
+the chain is stored, nothing is guessed, and a donor sends on whichever listed
+network is cheapest for them. `T...` is TRON, and a 32 byte base58 address is
+Solana. The three forms cannot collide, since a TRON address decodes to 25
+bytes and a Solana one to 32, which needs at least 43 base58 characters.
 
-TRON needed no new dependency and barely any new code: TronGrid answers
-Ethereum's JSON-RPC for reads, so the same `eth_call`, the same `balanceOf`
-selector, the same left-padded argument and the same `math/big` parse all
-stand, and USDT TRC-20 is 6 decimals exactly as USDC is. What it needed was a
-base58check decoder (`tronAddressToHex`, ~35 lines on `math/big` and
+**`fundingRail` and `providerSpec.topUpChains` are deliberately separate,
+because they are facts of different kinds.** A rail is a property of a
+blockchain: stable, verifiable from here, and every contract in the table was
+checked live against its own `symbol()` and `decimals()` before being added.
+That check is not ceremony; it caught BNB Chain's **18** decimals, where the
+usual assumption of 6 would have reported a one dollar donation as a trillion,
+and the table already had to dodge Base's USDbC and Polygon's USDC.e, the
+latter reporting the symbol `USDC` identically to the native token. What a
+gateway's checkout *accepts*, by contrast, is somebody else's merchant
+configuration: it can change without notice and this bot cannot observe it. So
+everything rendered from `topUpChains` is dated (`topUpCheckedOn`) and hedged,
+and everything rendered from a rail is not. The previous version conflated the
+two and told donors that Ethereum mainnet USDC would be lost, which
+OpenRouter's checkout takes perfectly well: their flow runs on Coinbase
+Commerce's onchain payment protocol, which settles supported tokens across the
+Ethereum, Polygon and Base ecosystems. OrcaRouter's NOWPayments checkout has
+only been seen offering TRON, and NOWPayments supporting ~350 assets is a fact
+about the platform rather than about that merchant's configuration.
+
+**A partial read must never be booked.** `Balances` reads a family's rails
+concurrently and is all or nothing, because a sum missing one unreachable rail
+is indistinguishable from a smaller balance, and `pollFunding` reads a fall as
+the operator withdrawing to buy credits. One dead RPC would therefore record a
+withdrawal that never happened and then book the recovery as a donation nobody
+made. An error costs one fifteen minute retry. `set-address` runs the same
+read for the same reason: a baseline banked while one chain was unreachable
+would report that chain's existing holdings as a gift on the next poll.
+
+`aimod_funding.balances` (migration 0027) stores the per-rail breakdown behind
+the total, written only by a complete poll, because `/aimod funding show` is
+`TierPublic` and must not fan a dozen RPC calls out on a member's command. The
+public view renders only rails holding something (a family has up to nine, and
+eight zeroes would bury the useful line), each linked to that chain's explorer,
+plus a whole-address explorer link so anybody can audit the jar without
+trusting merlin's arithmetic. For an EVM address that link is deliberately
+Etherscan's multi-chain view: a single per-chain explorer would show one of
+five ledgers and imply the other four were empty. The network list carries full
+weight and the caveat below it does not, since with several chains accepted
+"which networks are OK" is the actionable fact.
+
+TRON and every EVM chain share one code path: TronGrid answers Ethereum's
+JSON-RPC for reads, so the same `eth_call`, the same `balanceOf` selector, the
+same left-padded argument and the same `math/big` parse all stand. What TRON
+needed was a base58check decoder (`tronAddressToHex`, on `math/big` and
 `crypto/sha256`) for the `T...` form, applied to the **token contract as well
-as the wallet** since both fields want Ethereum-shaped addresses. Unlike an
-EVM address a TRON one carries a checksum, so `set-address` genuinely catches
-a mistyped one there rather than merely an ill-formed one.
+as the wallet** since both fields want Ethereum-shaped addresses. Solana is the
+one rail read differently, with `getTokenAccountsByOwner` rather than
+`eth_call`, marked by a single bool on the rail rather than a second client
+type since the timeout, the body cap and the HTTP-200-carries-a-JSON-RPC-error
+trap are all identical. Its accounts are **summed**, because an owner can hold
+several token accounts for one mint and reading the first would under report
+money somebody genuinely sent.
 
-**USDC on Base, matching what OpenRouter's own Coinbase checkout settles**
-(their payment session carries `asset: usdc`, `networkId: 8453`). Same token,
-same chain, so no bridge, no swap, no price oracle, and gas in cents. The
-contract is Circle's native USDC (`0x8335...2913`, verified live as symbol
-`USDC` / 6 decimals), **not** USDbC (`0xd9aA...b6CA`), which is a different
-token on the same chain and unspendable at that checkout. USDT TRC-20
-(`TR7NHq...Lj6t`) is the same argument for the other gateway.
-`MERLIN_ETH_RPC_URL`/`MERLIN_USDC_CONTRACT` and
-`MERLIN_TRON_RPC_URL`/`MERLIN_USDT_CONTRACT` move either jar elsewhere, and
-each pair must be set together: an endpoint on one chain with a token address
+Address validation is deliberately unequal and says so. A TRON address carries
+a checksum, so `set-address` genuinely catches a mistyped one. A Solana address
+is a raw ed25519 public key with **no** checksum, so a typo that still decodes
+to 32 bytes is accepted and cannot be caught short of asking the chain; an EVM
+address is not EIP-55 checked either, since a fully lowercase one is valid.
+`TestSolanaAddressValidation` pins that asymmetry so nobody later assumes
+parity between the families.
+
+**Stablecoins from a fixed table, not arbitrary tokens** (a `ponytail:` note
+marks the ceiling). Reading whatever a donor might send needs a token indexer
+plus a price oracle, which is an API key and a dependency for something a donor
+solves by swapping first. Overrides are `MERLIN_RPC_<CHAIN>` per chain and
+`MERLIN_TOKEN_<CHAIN>_<ASSET>` per rail, scanned by prefix so adding a rail
+needs no loader edit; the four superseded single-chain names still map onto
+base and tron so a deployed `.env` keeps working. An endpoint and its token
+contract must be set together: an endpoint on one chain with a token address
 from another reports a zero balance rather than an error. Reading the balance is one `eth_call` with
 the `balanceOf` selector and a left-padded address, parsed through `math/big`
 (a `uint256` does not fit a `uint64`), so there is no web3 dependency. A

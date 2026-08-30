@@ -98,24 +98,25 @@ type GlobalConfig struct {
 	// back to plaintext.
 	SecretKey string `yaml:"-"`
 
-	// Two pairs, one per chain the tip jar can collect on, each pointing at
-	// an endpoint and the token contract read there. Empty means the
-	// defaults, which are what each model gateway's own crypto checkout
-	// settles in: Circle's USDC on Base for OpenRouter's Coinbase flow, and
-	// Tether's USDT on TRON for OrcaRouter's NOWPayments one. So a donation
-	// is the same token on the same chain the credits are bought with, with
-	// no bridge and no swap in between.
+	// Per-rail overrides for the tip jar, each pointing at an endpoint and
+	// the token contract read there. Empty means the compiled-in defaults,
+	// which is the normal case: an operator sets these only to move a chain
+	// off a public RPC or to point a rail at a different token.
 	//
-	// Each pair travels together because that pair is what a chain is: an
-	// endpoint on one chain with a token address from another reports a zero
-	// balance rather than an error, which is the worst way for a
-	// misconfiguration to present. Environment only, never guild-settable:
-	// pointing a server's donations at an arbitrary contract is not an
-	// admin's decision to make.
-	ETHRPCURL    string `yaml:"-"`
-	USDCContract string `yaml:"-"`
-	TronRPCURL   string `yaml:"-"`
-	USDTContract string `yaml:"-"`
+	// An endpoint and a token address travel together because that pair is
+	// what a rail is: an endpoint on one chain with a token address from
+	// another reports a zero balance rather than an error, which is the worst
+	// way for a misconfiguration to present. Environment only, never
+	// guild-settable: pointing a server's donations at an arbitrary contract
+	// is not an admin's decision to make.
+	//
+	// Maps rather than a field per rail, because the tip jar reads a dozen of
+	// them and a struct field per rail would mean this file, the loader and
+	// the plugin's constructor all growing every time one is added.
+	// FundingRPCURLs is keyed by chain ("base"), since every rail on one chain
+	// shares an endpoint; FundingContracts is keyed by rail ("base:USDC").
+	FundingRPCURLs   map[string]string `yaml:"-"`
+	FundingContracts map[string]string `yaml:"-"`
 }
 
 // Level maps LogLevel onto slog. The value is validated at load time, so an

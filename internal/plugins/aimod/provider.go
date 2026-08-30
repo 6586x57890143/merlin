@@ -42,10 +42,21 @@ type providerSpec struct {
 	// costHeader asks for the billed cost inside the usage block, for a
 	// gateway that does not return it unasked. Empty means it always does.
 	costHeader string
-	// topUp names the asset and chain this gateway's crypto checkout
-	// settles in, which is what the tip jar has to collect to be worth
-	// anything. See funding.go.
-	topUp *fundingChain
+	// topUpChains names the chains this gateway's crypto checkout was last
+	// observed to accept, and topUpVerified is when somebody checked.
+	//
+	// Deliberately a dated observation rather than a fact, which is the whole
+	// difference between this field and a fundingRail. A rail is a property
+	// of a blockchain that this bot can verify from here. What a checkout
+	// accepts is a property of somebody else's merchant configuration: it can
+	// change without notice, nothing here can observe it, and the previous
+	// version stating it as certainty is exactly how merlin came to warn
+	// donors that Ethereum mainnet USDC would be lost when OpenRouter's
+	// checkout takes it perfectly well. Everything rendered from these two
+	// fields says "as of" and hedges; everything rendered from a rail does
+	// not need to.
+	topUpChains   []string
+	topUpVerified string
 
 	fastModels []string
 	deepModels []string
@@ -59,9 +70,15 @@ var openRouter = &providerSpec{
 	base:        openRouterBase,
 	keyPrefix:   "sk-or-",
 	strictPrefs: true,
-	topUp:       baseUSDC,
-	fastModels:  defaultFastModels,
-	deepModels:  defaultDeepModels,
+	// Their checkout runs on Coinbase Commerce's onchain payment protocol,
+	// which takes supported tokens across the Ethereum, Polygon and Base
+	// ecosystems and settles them to USDC. Confirmed by a live top-up paid in
+	// Ethereum mainnet USDC, which the old single-chain warning here claimed
+	// would be lost.
+	topUpChains:   []string{"base", "ethereum", "polygon"},
+	topUpVerified: topUpCheckedOn,
+	fastModels:    defaultFastModels,
+	deepModels:    defaultDeepModels,
 }
 
 // orcaRouter is the default gateway.
@@ -78,7 +95,14 @@ var orcaRouter = &providerSpec{
 	keyPrefix:   "sk-orca-",
 	singleModel: true,
 	costHeader:  orcaCostHeader,
-	topUp:       tronUSDT,
+	// Their crypto top-up is a NOWPayments checkout, which as a platform
+	// settles roughly 350 assets across Ethereum, Tron, BSC, Solana and
+	// Polygon. Which of those reach OrcaRouter's own checkout is OrcaRouter's
+	// merchant setting, not a platform limit, and it cannot be read from
+	// here. Only TRON has actually been seen offered, so only TRON is
+	// claimed.
+	topUpChains:   []string{"tron"},
+	topUpVerified: topUpCheckedOn,
 	// orcarouter/free routes by difficulty across the free lineup, which is
 	// the same job the fallback array did on the other gateway.
 	fastModels: []string{"orcarouter/free"},
@@ -87,6 +111,24 @@ var orcaRouter = &providerSpec{
 	// classifier decide it gets the light model would put the cheapest tier
 	// behind the most consequential call.
 	deepModels: []string{"deepseek/deepseek-v4-pro-free"},
+}
+
+// topUpCheckedOn is when a human last opened both checkouts and read the
+// networks off them. One shared constant rather than a date per gateway,
+// because they are checked in the same sitting and two dates drifting apart
+// would imply a rigour this process does not have. Bump it when somebody
+// actually looks again.
+const topUpCheckedOn = "2026-08-30"
+
+// acceptsChain reports whether this gateway's checkout was last seen taking
+// the given chain.
+func (s *providerSpec) acceptsChain(chain string) bool {
+	for _, c := range s.topUpChains {
+		if c == chain {
+			return true
+		}
+	}
+	return false
 }
 
 // providers lists every gateway, newest default first. Used by the key

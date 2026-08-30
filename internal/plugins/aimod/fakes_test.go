@@ -216,7 +216,7 @@ func (f *fakeStore) Funding(_ context.Context, guildID string) (Funding, error) 
 	return fu, nil
 }
 
-func (f *fakeStore) SetFundingAddress(_ context.Context, guildID, address, setBy string, at time.Time, baseline float64) error {
+func (f *fakeStore) SetFundingAddress(_ context.Context, guildID, address, setBy string, at time.Time, baseline float64, balances map[string]float64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fundingErr != nil {
@@ -226,7 +226,7 @@ func (f *fakeStore) SetFundingAddress(_ context.Context, guildID, address, setBy
 	// baseline is stored with checked_at so the first poll counts nothing.
 	f.funding[guildID] = Funding{
 		GuildID: guildID, Address: address, SetBy: setBy, SetAt: at,
-		BalanceUSD: baseline, CheckedAt: at,
+		BalanceUSD: baseline, CheckedAt: at, Balances: balances,
 	}
 	return nil
 }
@@ -241,7 +241,7 @@ func (f *fakeStore) ClearFunding(_ context.Context, guildID string) error {
 	return nil
 }
 
-func (f *fakeStore) UpdateFundingBalance(_ context.Context, guildID string, balance, donation float64, at time.Time) error {
+func (f *fakeStore) UpdateFundingBalance(_ context.Context, guildID string, balance, donation float64, balances map[string]float64, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fundingErr != nil {
@@ -253,6 +253,7 @@ func (f *fakeStore) UpdateFundingBalance(_ context.Context, guildID string, bala
 	}
 	fu.BalanceUSD = balance
 	fu.CheckedAt = at
+	fu.Balances = balances
 	fu.ReceivedUSD += donation
 	if donation > 0 {
 		fu.Donations++
