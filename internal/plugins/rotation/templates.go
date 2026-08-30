@@ -44,8 +44,51 @@ func resolveSticky(rc settings.RotationChannel) []string {
 // That history is why the placeholder requirement is enforced by the build
 // rather than left to whoever writes the next line.
 func (p *Plugin) retentionNotice(ctx context.Context, rc settings.RotationChannel) string {
+	return RetentionNotice(ctx, p.voice, rc)
+}
+
+// HeadsUpNotice renders the pre-rotation warning for one slot, given a
+// speaker and how long is left.
+//
+// Exported alongside RetentionNotice and for the same reason: these are the
+// two messages a member actually sees in a rotating channel, minutes apart,
+// and cmd/lab previews both by calling this rather than by reimplementing the
+// selection. Returns "" when the catalog has nothing to say, which the caller
+// treats as "post nothing" rather than posting visible braces.
+func HeadsUpNotice(ctx context.Context, speaker voice.Source, rc settings.RotationChannel, remaining time.Duration) string {
+	// A channel on generic disclosure gets the same courtesy warning without
+	// the countdown. Naming the remaining minutes would hand over the
+	// rotation schedule the guild chose not to publish, and doing it in the
+	// message that immediately precedes the deliberately vague intro notice
+	// would make the setting pointless. Turning the heads-up off entirely is
+	// still a separate decision: notice_lead_minutes = 0.
+	if rc.Disclosure.Resolve() == settings.DisclosureGeneric {
+		return speaker.Line(ctx, rc.GuildID, voice.KeyRotationHeadsUpGeneric, nil)
+	}
+	return speaker.Line(ctx, rc.GuildID, voice.KeyRotationHeadsUp, map[string]string{
+		// humanDuration, not core.FormatDuration: this is a member-facing
+		// message and its sibling intro notice in the same channel says
+		// "18 hours", so saying "18h" here would have the same bot describe
+		// the same window two different ways minutes apart.
+		"when": humanDuration(remaining.Round(time.Minute)),
+	})
+}
+
+// RetentionNotice renders the notice for one rotation slot, given a speaker.
+//
+// Exported and taking voice.Source rather than living only as the method
+// above, so cmd/lab can preview the real notice in a browser instead of
+// reimplementing this selection in JavaScript. That distinction is the whole
+// reason the preview is worth having: a reimplementation drifts, and what it
+// would drift on is a guild's published retention policy. The method is a
+// one-line delegation for the same reason, so there is exactly one path and
+// the preview cannot diverge from what actually gets posted.
+//
+// It needs nothing from Plugin but the speaker, which is what made the split
+// free.
+func RetentionNotice(ctx context.Context, speaker voice.Source, rc settings.RotationChannel) string {
 	key, vars := introKey(rc)
-	if line := p.voice.Line(ctx, rc.GuildID, key, vars); line != "" {
+	if line := speaker.Line(ctx, rc.GuildID, key, vars); line != "" {
 		return line
 	}
 

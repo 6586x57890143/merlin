@@ -125,7 +125,7 @@ func TestRotationIntervalAcceptsMinutePrecisionAboveTheFloor(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			rc := base
 			rc.IntervalMinutes = c.minutes
-			err := validateRotationChannel(rc)
+			err := ValidateChannel(rc)
 			if c.wantErr && err == nil {
 				t.Errorf("interval of %d minutes was accepted; the floor is %d", c.minutes, minRotationIntervalMinutes)
 			}
@@ -141,7 +141,7 @@ func TestRotationIntervalAcceptsMinutePrecisionAboveTheFloor(t *testing.T) {
 func TestRotationIntervalRefusalNamesTheFloor(t *testing.T) {
 	rc := finiteRetentionRC()
 	rc.IntervalMinutes = 15
-	err := validateRotationChannel(rc)
+	err := ValidateChannel(rc)
 	if err == nil {
 		t.Fatal("expected a sub-hour interval to be refused")
 	}

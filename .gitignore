@@ -7,3 +7,8 @@ AI_CODE_REVIEW.md
 
 # Coverage profiles, written by the test and floor commands in CLAUDE.md.
 coverage.out
+
+# Built by scripts/build-lab.sh: a 13MB binary and a copy of the Go runtime's
+# JS shim, both reproducible from source and neither belonging in git.
+web/lab/lab.wasm
+web/lab/wasm_exec.js

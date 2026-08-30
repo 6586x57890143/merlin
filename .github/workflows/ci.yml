@@ -47,6 +47,19 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # The browser lab compiles merlin's own packages rather than
+      # reimplementing them, which is the whole reason it can be trusted about
+      # a guild's published retention policy. That guarantee is only worth
+      # anything while it still builds, and nothing else in this pipeline
+      # would notice it stop: a signature moving under cmd/lab breaks no test.
+      - name: build the wasm lab
+        # CGO_ENABLED pinned off rather than left to the cross-compile default:
+        # something in the tree pulls os/user, which needs cgo on a host build
+        # and has a pure-Go fallback without it. Go disables cgo automatically
+        # when GOOS differs from the host, so this is belt and braces against a
+        # future CGO_ENABLED: 1 in this job'''s env silently breaking the step.
+        run: CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o /dev/null ./cmd/lab
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
