@@ -162,10 +162,16 @@ func (p *Plugin) pollFunding(ctx context.Context, guildID string) error {
 		return nil
 	}
 
-	// The chain comes from the address, so a guild that repointed its jar
-	// from one chain to the other is read on the right one from the very
+	// The family comes from the address, so a guild that repointed its jar
+	// from one family to another is read on the right rails from the very
 	// next poll with nothing to migrate.
-	balance, err := p.eth.Balance(ctx, chainFor(f.Address), f.Address)
+	//
+	// Balances is all or nothing on purpose. A sum missing one unreachable
+	// rail looks exactly like a withdrawal, and the branch below reads a fall
+	// as the operator buying credits, so a partial read would book a
+	// withdrawal that never happened and then book the recovery as a donation
+	// nobody made. Failing costs one fifteen minute retry.
+	balances, balance, err := p.eth.Balances(ctx, f.Address)
 	if err != nil {
 		return fmt.Errorf("aimod: read tip jar balance: %w", err)
 	}
@@ -182,7 +188,7 @@ func (p *Plugin) pollFunding(ctx context.Context, guildID string) error {
 		}
 	}
 
-	if err := p.store.UpdateFundingBalance(ctx, guildID, balance, donation, p.now()); err != nil {
+	if err := p.store.UpdateFundingBalance(ctx, guildID, balance, donation, balances, p.now()); err != nil {
 		return fmt.Errorf("aimod: record tip jar balance: %w", err)
 	}
 
@@ -278,20 +284,63 @@ func creditUnknown(spec *providerSpec) string {
 			"and stops a leaked key draining the account.")
 }
 
-// swapAdvice is the how-to-get-here line, per chain. Separate strings rather
-// than one with the network interpolated: the cheapest route onto Base and
-// the cheapest route onto TRON are different routes, and a sentence that
-// merely swapped the noun would be wrong about one of them.
-func swapAdvice(chain *fundingChain) string {
-	switch chain {
-	case baseUSDC:
-		return "Holding SOL, ETH or anything else? Swap it to USDC on an exchange, then withdraw on the " +
-			"Base network. That is usually the cheapest way across."
-	case tronUSDT:
-		return "Most exchanges let you withdraw USDT directly on TRON, which is usually the cheapest " +
-			"transfer of the lot. You need a little TRX in the sending wallet for gas."
+// acceptedChains lists the chains in this family that the gateway's checkout
+// was last seen taking, in rail-table order and without repeats.
+//
+// The answer drives a hedge, never a claim. What a checkout accepts is an
+// observation with a date on it (providerSpec.topUpChains), so an empty result
+// means "we have not seen it take any of these", not "these are worthless".
+func acceptedChains(spec *providerSpec, family *walletFamily) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, rail := range railsFor(family) {
+		if seen[rail.chain] || !spec.acceptsChain(rail.chain) {
+			continue
+		}
+		seen[rail.chain] = true
+		out = append(out, chainLabels[rail.chain])
 	}
-	return ""
+	return out
+}
+
+// chainLabels renders a chain key the way a wallet's network picker does, so
+// the name on screen matches the one somebody is about to select.
+var chainLabels = map[string]string{
+	"base":     "Base",
+	"ethereum": "Ethereum",
+	"polygon":  "Polygon",
+	"arbitrum": "Arbitrum",
+	"bsc":      "BNB Chain",
+	"tron":     "TRON",
+	"solana":   "Solana",
+}
+
+// railBreakdown renders where the money in a jar actually sits, one line per
+// rail holding something, each linked to that chain's own explorer.
+//
+// Only non-empty rails are listed. A family has up to nine rails and a jar
+// usually has money on one, so listing them all would bury the useful line in
+// eight zeroes. An empty result means the jar is empty, which the caller says
+// in words instead.
+func railBreakdown(f Funding) []string {
+	var out []string
+	for _, key := range sortedRailKeys(f.Balances) {
+		amount := f.Balances[key]
+		if amount < donationDust {
+			continue
+		}
+		rail := railByKey(key)
+		if rail == nil {
+			// A rail this build no longer lists. Skipped rather than guessed
+			// at: the total already counts it, and inventing a name for a
+			// chain nobody here knows about would be the one kind of wrong
+			// this field cannot afford.
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s in %s on [%s](%s)", formatUSD(amount), rail.asset,
+			chainLabels[rail.chain], fmt.Sprintf(rail.explorer, f.Address)))
+	}
+	return out
 }
 
 // humanRunway renders a countdown as prose, not as core.FormatDuration's
@@ -339,6 +388,33 @@ func agoWords(d time.Duration) string {
 // a rule for callers is shorter than the comment explaining the rule would
 // have been, and it cannot be forgotten at a call site.
 func subtext(s string) string { return "-# " + strings.ReplaceAll(s, "\n", "\n-# ") }
+
+// joinWords renders a short list the way a sentence does, so a network list
+// reads as prose rather than as CSV in the middle of a warning.
+func joinWords(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+// chainNames maps chain keys to the names a wallet's network picker shows,
+// falling back to the key so an unmapped chain reads as itself rather than
+// vanishing from a sentence about where money can be sent.
+func chainNames(chains []string) []string {
+	out := make([]string, 0, len(chains))
+	for _, c := range chains {
+		if label, ok := chainLabels[c]; ok {
+			out = append(out, label)
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
 
 func plural(n int, one, many string) string {
 	if n == 1 {
@@ -460,6 +536,13 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		})
 	} else {
 		jar := "**" + formatUSD(f.BalanceUSD) + "** waiting to be loaded"
+		// Where it sits, not just how much. A donor who sent on Polygon can
+		// confirm their own transfer landed, and anybody can follow a link and
+		// check the figure above against the chain rather than taking this
+		// bot's word for it.
+		if lines := railBreakdown(f); len(lines) > 0 {
+			jar += "\n" + subtext(strings.Join(lines, "\n"))
+		}
 		if f.Donations > 0 {
 			jar += "\n" + subtext(fmt.Sprintf("%s raised from %d %s so far", formatUSD(f.ReceivedUSD), f.Donations,
 				plural(f.Donations, "donation", "donations")))
@@ -484,38 +567,60 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		// subtext, which is Discord's own small grey style: still on the
 		// screen for whoever is deciding, out of the way of whoever just
 		// wanted the address.
-		chain := chainFor(f.Address)
-		if chain == nil {
+		family := familyFor(f.Address)
+		if family == nil {
 			// Only reachable from a hand-edited row: set-address refuses
-			// anything chainFor cannot place. Naming no chain at all is the
-			// one safe answer, since guessing would print a network somebody
+			// anything familyFor cannot place. Naming no network at all is the
+			// one safe answer, since guessing would print a chain somebody
 			// might send on.
-			chain = &fundingChain{label: "an unrecognised network", note: "merlin cannot tell which chain this address is on. Do not send anything until the server owner sets it again."}
+			family = &walletFamily{
+				label:    "an unrecognised address",
+				networks: "unknown",
+				note: "merlin cannot tell which network this address belongs to. Do not send anything " +
+					"until the server owner sets it again.",
+			}
 		}
 		where := "```\n" + f.Address + "\n```" +
-			"**" + chain.note + "**\n" +
-			subtext(swapAdvice(chain))
+			"**Networks: " + family.networks + "**\n" +
+			family.note + "\n"
+		if family.swap != "" {
+			where += subtext(family.swap) + "\n"
+		}
+		// Anybody can audit the jar without trusting the arithmetic above.
+		// For an EVM address this is deliberately the multi-chain view: one
+		// per-chain explorer would show a single ledger and imply the other
+		// four were empty.
+		if family.explorer != "" {
+			where += subtext("[Check this wallet yourself]("+fmt.Sprintf(family.explorer, f.Address)+")") + "\n"
+		}
 
-		// The gateway and the jar have to agree, or the money arrives on a
-		// ledger the credits cannot be bought from. Derived from the address
-		// rather than assumed, for the same reason the warning above is: this
-		// is the sentence that decides where somebody sends money.
-		if spec.topUp != nil && chain != spec.topUp {
-			where += "\n" + subtext("Note for the operator: this server scans through "+spec.label+
-				", which buys credit with "+spec.topUp.label+". Donations here will need swapping and bridging first.")
+		// Whether donations can buy credit without a detour. Hedged and dated,
+		// unlike everything above it, because what a checkout accepts is an
+		// observation of somebody else's merchant configuration rather than a
+		// property of a chain. The previous version stated it flatly and was
+		// wrong: it told donors Ethereum mainnet USDC would be lost, which
+		// OpenRouter's checkout takes perfectly well.
+		if accepted := acceptedChains(spec, family); len(accepted) == 0 {
+			where += subtext("Note for the operator: as of "+spec.topUpVerified+", "+spec.label+
+				"'s checkout was taking "+joinWords(chainNames(spec.topUpChains))+
+				". Donations here will probably need swapping or bridging first.") + "\n"
 			if color == core.ColorSuccess {
 				color = core.ColorWarning
 			}
+		} else {
+			where += subtext("As of "+spec.topUpVerified+", "+spec.label+"'s checkout took "+
+				joinWords(accepted)+", so donations on "+plural(len(accepted), "that network", "those networks")+
+				" buy scanning credit directly.") + "\n"
 		}
 
 		provenance := "merlin only reads this wallet. Funds go to whoever controls it."
 		if f.SetBy != "" {
 			provenance = "Set by " + core.MentionUser(f.SetBy) + " " + agoWords(p.now().Sub(f.SetAt)) + ". " + provenance
 		}
-		where += "\n" + subtext(provenance)
+		where += subtext(provenance)
 
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Send " + chain.label + " to",
+			Name:  "Send " + family.label + " to",
 			Value: core.TruncateEmbedField(where),
 		})
 	}
@@ -586,11 +691,13 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 	}
 
 	address := strings.TrimSpace(core.LeafArgs(i)["address"].StringValue())
-	chain := chainFor(address)
-	if chain == nil {
+	family := familyFor(address)
+	if family == nil {
 		_ = core.FollowUpErr(s, i, "That is not a wallet address",
-			fmt.Errorf("give either an EVM address (`0x` and 40 hex characters, read as %s) "+
-				"or a TRON one (`T` and 33 more characters, read as %s)", baseUSDC.label, tronUSDT.label))
+			fmt.Errorf("give an EVM address (`0x` and 40 hex characters, read on %s), "+
+				"a TRON one (`T` and 33 more characters, read on %s), "+
+				"or a Solana one (read on %s)",
+				familyEVM.networks, familyTron.networks, familySolana.networks))
 		return
 	}
 	if p.eth == nil {
@@ -599,17 +706,20 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 		return
 	}
 
-	// The chain is the authority on whether this address can be read at all,
-	// and the balance it reports becomes the baseline in the same write, so
-	// the first poll cannot report an existing balance as a donation.
-	balance, err := p.eth.Balance(ctx, chain, address)
+	// The chains are the authority on whether this address can be read at all,
+	// and the balances they report become the baseline in the same write, so
+	// the first poll cannot report an existing balance as a donation. Every
+	// rail in the family has to answer: an address accepted while one chain
+	// was unreachable would bank an incomplete baseline and then report that
+	// chain's existing holdings as a gift on the next poll.
+	balances, balance, err := p.eth.Balances(ctx, address)
 	if err != nil {
 		_ = core.FollowUpErr(s, i, "Could not read that wallet", err)
 		return
 	}
 
 	previous, _ := p.store.Funding(ctx, i.GuildID)
-	if err := p.store.SetFundingAddress(ctx, i.GuildID, address, userID, p.now(), balance); err != nil {
+	if err := p.store.SetFundingAddress(ctx, i.GuildID, address, userID, p.now(), balance, balances); err != nil {
 		_ = core.FollowUpErr(s, i, "Failed to save the address", err)
 		return
 	}
@@ -624,9 +734,10 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 	}
 
 	_ = core.FollowUpOK(s, i, "Tip jar set",
-		"Donations in USDC on Base to `"+address+"` show up on `/aimod funding` within "+
-			core.FormatDuration(fundingPollInterval)+". It currently holds "+formatUSD(balance)+".\n\n"+
-			"merlin only reads this wallet and can never spend from it. Buying credits is still a human on OpenRouter's checkout.")
+		"Donations of "+family.label+" to `"+address+"` show up on `/aimod funding` within "+
+			core.FormatDuration(fundingPollInterval)+". Networks read: "+family.networks+
+			". It currently holds "+formatUSD(balance)+".\n\n"+
+			"merlin only reads this wallet and can never spend from it. Buying credits is still a human on the gateway's checkout.")
 }
 
 // handleFundingClear takes the jar down.

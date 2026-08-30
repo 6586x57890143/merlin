@@ -248,7 +248,7 @@ func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker
 		calibrateRegistered: make(map[string]bool),
 		fundingRegistered:   make(map[string]bool),
 		fundingNoticed:      make(map[string]time.Time),
-		eth:                 newETHClient("", "", "", ""),
+		eth:                 newETHClient(nil, nil),
 		stopped:             make(chan struct{}),
 	}, nil
 }
@@ -261,17 +261,16 @@ func (p *Plugin) WithGate(g PluginGate) *Plugin {
 	return p
 }
 
-// WithFundingChains points the tip jar's two chains at different endpoints.
+// WithFundingChains points the tip jar's rails at different endpoints.
 //
-// Each endpoint and its token address travel together on purpose: they are
-// what a chain is, and an endpoint on one chain with a token address from
-// another reports a zero balance rather than an error, which is the worst way
-// for a misconfiguration to present. Wired in cmd/bot/main.go from
-// MERLIN_ETH_RPC_URL/MERLIN_USDC_CONTRACT and
-// MERLIN_TRON_RPC_URL/MERLIN_USDT_CONTRACT; unset leaves the defaults, which
-// are what each gateway's own crypto checkout settles in.
-func (p *Plugin) WithFundingChains(ethRPC, usdc, tronRPC, usdt string) *Plugin {
-	p.eth = newETHClient(ethRPC, usdc, tronRPC, usdt)
+// An endpoint and its token address travel together on purpose: they are what
+// a rail is, and an endpoint on one chain with a token address from another
+// reports a zero balance rather than an error, which is the worst way for a
+// misconfiguration to present. Wired in cmd/bot/main.go from the
+// MERLIN_RPC_<CHAIN> and MERLIN_TOKEN_<CHAIN>_<ASSET> environment variables;
+// anything unset leaves that rail on its compiled-in default.
+func (p *Plugin) WithFundingChains(rpcURLs, contracts map[string]string) *Plugin {
+	p.eth = newETHClient(rpcURLs, contracts)
 	return p
 }
 

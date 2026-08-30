@@ -423,8 +423,16 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 			jar += fmt.Sprintf(", %s raised across %d %s", formatUSD(f.ReceivedUSD), f.Donations,
 				plural(f.Donations, "donation", "donations"))
 		}
+		// The heading names the networks the jar is actually read on, derived
+		// from its own address rather than written as a constant. This is the
+		// mod-facing screen, so it stays compact and leaves the full warning,
+		// the routing advice and the explorer link to /aimod funding.
+		name := "Tip jar"
+		if family := familyFor(f.Address); family != nil {
+			name += " (" + family.networks + ")"
+		}
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Tip jar (USDC on Base)",
+			Name:  name,
 			Value: core.TruncateEmbedField(jar),
 		})
 	}

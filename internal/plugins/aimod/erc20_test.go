@@ -9,24 +9,79 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // ethServer stands in for a public RPC endpoint, returning one canned body
 // and recording the request that asked for it.
-func ethServer(t *testing.T, body string) (*ethClient, *string) {
+// The recorded request is returned as an accessor rather than a pointer, and
+// guarded, because a family read now fans its rails out concurrently: several
+// handler goroutines write here at once, which is a genuine race however
+// briefly the value is wanted afterwards.
+func ethServer(t *testing.T, body string) (*ethClient, func() string) {
 	t.Helper()
-	var seen string
+	var (
+		mu   sync.Mutex
+		seen string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		seen = string(raw)
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(srv.Close)
 
-	c := newETHClient(srv.URL, defaultUSDCContract, srv.URL, defaultUSDTContract)
-	return c, &seen
+	c := newETHClient(nil, nil)
+	// base overrides every rail's endpoint at once, which is exactly what it
+	// exists for: a family read now fans out to several chains and a test
+	// wants all of them landing on this one server.
+	c.base = srv.URL
+	return c, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return seen
+	}
+}
+
+// The two rails these tests exercise directly, resolved from the shipped
+// table rather than restated here, so a table edit that dropped one fails the
+// test instead of quietly testing nothing.
+var (
+	testRailBase = railByKey("base:USDC")
+	testRailTron = railByKey("tron:USDT")
+)
+
+// railBalanceOf reads a single rail, which is the unit most of the decoding
+// tests below care about. Balances (the whole family, all or nothing) has its
+// own tests further down.
+func railBalanceOf(c *ethClient, rail *fundingRail, addr string) (float64, error) {
+	return c.railBalance(context.Background(), rail, addr)
+}
+
+// railServer answers each request from the body that asked for it, so a test
+// can make one rail fail while the rest succeed. Returning ok=false answers
+// with an HTTP 500, standing in for an endpoint that is simply down.
+func railServer(t *testing.T, reply func(body string) (string, bool)) *ethClient {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body, ok := reply(string(raw))
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newETHClient(nil, nil)
+	c.base = srv.URL
+	return c
 }
 
 func result(hex string) string {
@@ -39,7 +94,7 @@ func TestUSDCBalanceDecodesAtSixDecimals(t *testing.T) {
 	// 41.20 USDC in base units.
 	c, _ := ethServer(t, result(fmt.Sprintf("0x%x", 41_200_000)))
 
-	got, err := c.Balance(context.Background(), baseUSDC, testWallet)
+	got, err := railBalanceOf(c, testRailBase, testWallet)
 	if err != nil {
 		t.Fatalf("USDCBalance: %v", err)
 	}
@@ -54,7 +109,7 @@ func TestUSDCBalanceDecodesAtSixDecimals(t *testing.T) {
 func TestUSDCBalanceEmptyIsZeroNotAnError(t *testing.T) {
 	for _, hex := range []string{"0x", "0x0", strings.Repeat("0", 64), "0x" + strings.Repeat("0", 64)} {
 		c, _ := ethServer(t, result(hex))
-		got, err := c.Balance(context.Background(), baseUSDC, testWallet)
+		got, err := railBalanceOf(c, testRailBase, testWallet)
 		if err != nil {
 			t.Fatalf("%q: unexpected error: %v", hex, err)
 		}
@@ -71,7 +126,7 @@ func TestUSDCBalanceEmptyIsZeroNotAnError(t *testing.T) {
 func TestUSDCBalanceRPCErrorAtHTTP200(t *testing.T) {
 	c, _ := ethServer(t, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"execution reverted"}}`)
 
-	if _, err := c.Balance(context.Background(), baseUSDC, testWallet); err == nil {
+	if _, err := railBalanceOf(c, testRailBase, testWallet); err == nil {
 		t.Fatal("want an error for a JSON-RPC error body, got nil")
 	} else if !strings.Contains(err.Error(), "execution reverted") {
 		t.Fatalf("error should carry the node's message, got %v", err)
@@ -86,7 +141,7 @@ func TestUSDCBalanceRejectsUnusableResults(t *testing.T) {
 	for name, hex := range cases {
 		t.Run(name, func(t *testing.T) {
 			c, _ := ethServer(t, result(hex))
-			if _, err := c.Balance(context.Background(), baseUSDC, testWallet); err == nil {
+			if _, err := railBalanceOf(c, testRailBase, testWallet); err == nil {
 				t.Fatal("want an error, got nil")
 			}
 		})
@@ -99,7 +154,7 @@ func TestUSDCBalanceRejectsUnusableResults(t *testing.T) {
 func TestUSDCBalanceHandlesFullUint256(t *testing.T) {
 	c, _ := ethServer(t, result("0x"+strings.Repeat("f", 64)))
 
-	got, err := c.Balance(context.Background(), baseUSDC, testWallet)
+	got, err := railBalanceOf(c, testRailBase, testWallet)
 	if err != nil {
 		t.Fatalf("USDCBalance: %v", err)
 	}
@@ -111,7 +166,7 @@ func TestUSDCBalanceHandlesFullUint256(t *testing.T) {
 func TestUSDCBalanceRefusesAMalformedAddress(t *testing.T) {
 	c, _ := ethServer(t, result("0x0"))
 	for _, addr := range []string{"", "0x", "nonsense", "0x4C3f2E391498e2590bd327a7A1CAA68Dd42c46", testWallet + "ff"} {
-		if _, err := c.Balance(context.Background(), baseUSDC, addr); err == nil {
+		if _, err := railBalanceOf(c, testRailBase, addr); err == nil {
 			t.Fatalf("%q should be refused before any request is made", addr)
 		}
 	}
@@ -139,7 +194,7 @@ func TestBalanceOfCalldataIsSelectorPlusPaddedAddress(t *testing.T) {
 
 func TestUSDCBalanceCallsTheConfiguredContract(t *testing.T) {
 	c, seen := ethServer(t, result("0x0"))
-	if _, err := c.Balance(context.Background(), baseUSDC, testWallet); err != nil {
+	if _, err := railBalanceOf(c, testRailBase, testWallet); err != nil {
 		t.Fatalf("USDCBalance: %v", err)
 	}
 
@@ -147,7 +202,7 @@ func TestUSDCBalanceCallsTheConfiguredContract(t *testing.T) {
 		Method string `json:"method"`
 		Params []any  `json:"params"`
 	}
-	if err := json.Unmarshal([]byte(*seen), &req); err != nil {
+	if err := json.Unmarshal([]byte(seen()), &req); err != nil {
 		t.Fatalf("request was not JSON: %v", err)
 	}
 	if req.Method != "eth_call" {
@@ -161,8 +216,8 @@ func TestUSDCBalanceCallsTheConfiguredContract(t *testing.T) {
 	// mixed-case form and goes over the wire lowercased, because the same
 	// conversion now serves TRON, where an address arrives base58 and comes
 	// out of the decoder as plain hex. RPC treats the two as one address.
-	if !strings.EqualFold(fmt.Sprint(call["to"]), defaultUSDCContract) {
-		t.Fatalf("to = %v, want the USDC contract %s", call["to"], defaultUSDCContract)
+	if !strings.EqualFold(fmt.Sprint(call["to"]), testRailBase.defaultContract) {
+		t.Fatalf("to = %v, want the USDC contract %s", call["to"], testRailBase.defaultContract)
 	}
 	if req.Params[1] != "latest" {
 		t.Fatalf("block = %v, want latest", req.Params[1])
@@ -189,29 +244,72 @@ func TestValidAddress(t *testing.T) {
 	}
 }
 
-func TestNewETHClientDefaultsEveryChain(t *testing.T) {
-	c := newETHClient("", "", "", "")
-	// The token addresses are the ones each gateway's own checkout settles
-	// in. Getting either wrong points donors at a different token on the
-	// right chain, which reports a zero balance rather than an error.
-	want := map[string]chainEndpoint{
-		baseUSDC.name: {rpcURL: defaultETHRPCURL, contract: defaultUSDCContract},
-		tronUSDT.name: {rpcURL: defaultTronRPCURL, contract: defaultUSDTContract},
-	}
-	for name, w := range want {
-		if got := c.endpoints[name]; got != w {
-			t.Fatalf("%s endpoint = %+v, want %+v", name, got, w)
+func TestNewETHClientDefaultsEveryRail(t *testing.T) {
+	c := newETHClient(nil, nil)
+	for _, rail := range fundingRails {
+		got, ok := c.endpoints[rail.key()]
+		if !ok {
+			t.Fatalf("%s has no endpoint", rail.key())
+		}
+		// An endpoint on one chain with a token address from another reports
+		// a zero balance rather than an error, so a rail that lost either
+		// half of its pair fails silently in production.
+		if got.rpcURL != rail.defaultRPCURL || got.contract != rail.defaultContract {
+			t.Fatalf("%s endpoint = %+v, want %s / %s", rail.key(), got, rail.defaultRPCURL, rail.defaultContract)
+		}
+		if rail.decimals <= 0 {
+			t.Fatalf("%s has no decimals set", rail.key())
+		}
+		if rail.family == nil || rail.explorer == "" {
+			t.Fatalf("%s is missing a family or an explorer link", rail.key())
 		}
 	}
-	if stablecoinDecimals != 6 {
-		t.Fatalf("USDC and USDT are both 6 decimals, got %d", stablecoinDecimals)
+}
+
+// Decimals are per deployment and were confirmed live against each contract.
+// BNB Chain is the one that bites: its USDT and USDC are 18, and reading them
+// at the usual 6 would report a one dollar donation as a trillion.
+func TestBNBChainRailsAreEighteenDecimals(t *testing.T) {
+	for _, key := range []string{"bsc:USDT", "bsc:USDC"} {
+		rail := railByKey(key)
+		if rail == nil {
+			t.Fatalf("%s is missing from the table", key)
+		}
+		if rail.decimals != 18 {
+			t.Fatalf("%s decimals = %d, want 18", key, rail.decimals)
+		}
+	}
+	// And the rest really are 6, so the constant that used to be shared was
+	// not merely renamed away.
+	for _, key := range []string{"base:USDC", "ethereum:USDT", "tron:USDT", "solana:USDC"} {
+		if rail := railByKey(key); rail == nil || rail.decimals != 6 {
+			t.Fatalf("%s should be 6 decimals", key)
+		}
+	}
+}
+
+// A rail override is keyed per rail and an endpoint override per chain, so
+// moving one chain off a public node moves every token on it.
+func TestNewETHClientAppliesOverrides(t *testing.T) {
+	c := newETHClient(
+		map[string]string{"ethereum": "https://example.invalid/eth"},
+		map[string]string{"ethereum:USDT": "0x" + strings.Repeat("a", 40)},
+	)
+	if got := c.endpoints["ethereum:USDC"]; got.rpcURL != "https://example.invalid/eth" {
+		t.Fatalf("chain override missed a rail on the same chain: %+v", got)
+	}
+	if got := c.endpoints["ethereum:USDT"]; got.contract != "0x"+strings.Repeat("a", 40) {
+		t.Fatalf("token override not applied: %+v", got)
+	}
+	if got := c.endpoints["base:USDC"]; got.rpcURL != railByKey("base:USDC").defaultRPCURL {
+		t.Fatalf("an override on one chain changed another: %+v", got)
 	}
 }
 
 // A real TRON mainnet address: Tether's own USDT contract, which is also the
 // default this file ships. Chosen because it is verifiable from any block
 // explorer rather than invented here.
-const testTronAddress = defaultUSDTContract
+const testTronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
 // The 20 byte hex form of the address above, which is what an eth_call
 // carries. TRON's own tooling shows it with the 0x41 version byte in front;
@@ -249,23 +347,56 @@ func TestTronAddressRejectsBadInput(t *testing.T) {
 		if _, err := tronAddressToHex(bad); err == nil {
 			t.Errorf("tronAddressToHex(%q) succeeded, want an error", bad)
 		}
-		if chainFor(bad) == tronUSDT {
-			t.Errorf("chainFor(%q) placed it on TRON", bad)
+		if familyFor(bad) == familyTron {
+			t.Errorf("familyFor(%q) placed it on TRON", bad)
 		}
 	}
 }
 
-// The chain is read off the address so that the two can never disagree, which
-// is what makes the warning printed under an address trustworthy.
-func TestChainForPicksByAddressShape(t *testing.T) {
-	if got := chainFor(testWallet); got != baseUSDC {
-		t.Errorf("chainFor(EVM address) = %v, want Base", got)
+// The family is read off the address so the two can never disagree, which is
+// what makes the networks printed under an address trustworthy. A family
+// rather than a chain, because a 0x address is the same account on all five
+// EVM chains and "which chain is this" has no answer to derive.
+func TestFamilyForPicksByAddressShape(t *testing.T) {
+	cases := map[string]*walletFamily{
+		testWallet:                  familyEVM,
+		strings.ToLower(testWallet): familyEVM,
+		testTronAddress:             familyTron,
+		"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": familySolana,
+		"not an address": nil,
+		"":               nil,
 	}
-	if got := chainFor(testTronAddress); got != tronUSDT {
-		t.Errorf("chainFor(TRON address) = %v, want TRON", got)
+	for addr, want := range cases {
+		if got := familyFor(addr); got != want {
+			t.Errorf("familyFor(%q) = %v, want %v", addr, got, want)
+		}
 	}
-	if got := chainFor("not an address"); got != nil {
-		t.Errorf("chainFor(junk) = %v, want nil", got)
+}
+
+// The three address forms cannot be confused for one another. A TRON address
+// decodes to 25 bytes and a Solana one to 32, which needs at least 43 base58
+// characters, so the 34 character TRON form can never reach the Solana branch.
+func TestSolanaAddressValidation(t *testing.T) {
+	if err := validSolanaAddress("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"); err != nil {
+		t.Fatalf("a real mint address was rejected: %v", err)
+	}
+	for _, bad := range []string{
+		testTronAddress, // 25 bytes, not 32
+		"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt",    // truncated
+		"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v0", // 0 is not base58
+		"",
+	} {
+		if err := validSolanaAddress(bad); err == nil {
+			t.Errorf("validSolanaAddress(%q) succeeded, want an error", bad)
+		}
+	}
+	// Weaker than the TRON check by nature, and the comment on the function
+	// says so: a Solana address is a raw key with no checksum, so a typo that
+	// still decodes to 32 bytes is accepted. Pinned so nobody later assumes
+	// parity between the two families.
+	mangled := "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1u"
+	if err := validSolanaAddress(mangled); err != nil {
+		t.Fatalf("a one character change should still pass: there is no checksum to catch it (%v)", err)
 	}
 }
 
@@ -273,9 +404,9 @@ func TestChainForPicksByAddressShape(t *testing.T) {
 // both chains once the address is in hex. Same raw units, same decimals, same
 // number out: if that stops being true the jar reports the wrong figure to
 // donors rather than failing.
-func TestTronBalanceUsesTheSameCallAsBase(t *testing.T) {
+func TestTronBalanceUsesTheSameCallAsEVM(t *testing.T) {
 	c, seen := ethServer(t, result("0x0000000000000000000000000000000000000000000000000000000000989680"))
-	got, err := c.Balance(context.Background(), tronUSDT, testTronAddress)
+	got, err := railBalanceOf(c, testRailTron, testTronAddress)
 	if err != nil {
 		t.Fatalf("Balance: %v", err)
 	}
@@ -287,7 +418,7 @@ func TestTronBalanceUsesTheSameCallAsBase(t *testing.T) {
 		Method string `json:"method"`
 		Params []any  `json:"params"`
 	}
-	if err := json.Unmarshal([]byte(*seen), &req); err != nil {
+	if err := json.Unmarshal([]byte(seen()), &req); err != nil {
 		t.Fatalf("request was not JSON: %v", err)
 	}
 	if req.Method != "eth_call" {
@@ -302,5 +433,28 @@ func TestTronBalanceUsesTheSameCallAsBase(t *testing.T) {
 	}
 	if data, _ := call["data"].(string); !strings.HasSuffix(data, testTronHex) {
 		t.Errorf("data = %v, want the wallet left padded into the argument word", call["data"])
+	}
+}
+
+// Every family has to carry a full set of strings. The renderer prints the
+// swap advice and the explorer link conditionally, so a family missing either
+// loses a line from the public jar silently rather than failing anywhere a
+// test or a log would notice.
+func TestEveryWalletFamilyIsComplete(t *testing.T) {
+	for _, f := range walletFamilies {
+		if f.name == "" || f.label == "" || f.networks == "" || f.note == "" {
+			t.Errorf("family %+v is missing a name, label, networks or note", f)
+		}
+		if f.swap == "" || f.explorer == "" {
+			t.Errorf("family %q has no routing advice or no explorer link", f.name)
+		}
+		if !strings.Contains(f.explorer, "%s") {
+			t.Errorf("family %q explorer %q has no address placeholder", f.name, f.explorer)
+		}
+		// Every family needs at least one rail, or an address in it reads as
+		// permanently empty rather than as unsupported.
+		if len(railsFor(f)) == 0 {
+			t.Errorf("family %q has no rails", f.name)
+		}
 	}
 }

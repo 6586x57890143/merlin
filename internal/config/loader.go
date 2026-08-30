@@ -69,10 +69,7 @@ func (l *Loader) reload() error {
 	// GlobalConfig.MessageContentIntent for why the defaults differ.
 	next.MessageContentIntent = isTruthy(os.Getenv("MERLIN_ENABLE_MESSAGE_CONTENT_INTENT"))
 	next.SecretKey = os.Getenv("MERLIN_SECRET_KEY")
-	next.ETHRPCURL = os.Getenv("MERLIN_ETH_RPC_URL")
-	next.USDCContract = os.Getenv("MERLIN_USDC_CONTRACT")
-	next.TronRPCURL = os.Getenv("MERLIN_TRON_RPC_URL")
-	next.USDTContract = os.Getenv("MERLIN_USDT_CONTRACT")
+	next.FundingRPCURLs, next.FundingContracts = fundingOverrides()
 	// LOG_LEVEL overrides the YAML value when set. On a deployed host .env is
 	// already the file an operator edits; config.yaml is a read-only mount,
 	// so requiring a file change to raise verbosity mid-incident would be the
@@ -122,6 +119,58 @@ func (l *Loader) OnReload(fn func(*GlobalConfig)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.onReload = append(l.onReload, fn)
+}
+
+// fundingOverrides collects the tip jar's per-rail endpoint and token
+// overrides from the environment.
+//
+// Scanned by prefix rather than enumerated, so adding a rail to the plugin's
+// table needs no edit here. MERLIN_RPC_<CHAIN> points one chain at a different
+// endpoint; MERLIN_TOKEN_<CHAIN>_<ASSET> points one rail at a different token
+// contract. The chain and asset parts are lowercased and uppercased
+// respectively to match the plugin's own keys, so MERLIN_RPC_BASE and
+// MERLIN_TOKEN_BASE_USDC are what an operator writes.
+//
+// The four names that existed when the jar read one chain per family are still
+// honored. A deployed .env on the VPS sets them, and silently ignoring a
+// configured RPC endpoint would send that operator's donations to a public
+// node they had deliberately moved off.
+func fundingOverrides() (rpcs, contracts map[string]string) {
+	rpcs, contracts = map[string]string{}, map[string]string{}
+	for _, kv := range os.Environ() {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok || value == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(name, "MERLIN_RPC_"):
+			rpcs[strings.ToLower(strings.TrimPrefix(name, "MERLIN_RPC_"))] = value
+		case strings.HasPrefix(name, "MERLIN_TOKEN_"):
+			chain, asset, ok := strings.Cut(strings.TrimPrefix(name, "MERLIN_TOKEN_"), "_")
+			if !ok {
+				continue
+			}
+			contracts[strings.ToLower(chain)+":"+strings.ToUpper(asset)] = value
+		}
+	}
+	// Legacy names, applied only where the modern one did not already speak.
+	for name, key := range map[string]string{
+		"MERLIN_ETH_RPC_URL":  "base",
+		"MERLIN_TRON_RPC_URL": "tron",
+	} {
+		if v := os.Getenv(name); v != "" && rpcs[key] == "" {
+			rpcs[key] = v
+		}
+	}
+	for name, key := range map[string]string{
+		"MERLIN_USDC_CONTRACT": "base:USDC",
+		"MERLIN_USDT_CONTRACT": "tron:USDT",
+	} {
+		if v := os.Getenv(name); v != "" && contracts[key] == "" {
+			contracts[key] = v
+		}
+	}
+	return rpcs, contracts
 }
 
 // isTruthy accepts the spellings an operator under pressure is likely to

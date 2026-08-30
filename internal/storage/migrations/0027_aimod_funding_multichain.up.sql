@@ -1,0 +1,17 @@
+-- The tip jar reads more than one chain.
+--
+-- An address does not name a chain. A 0x address is the same account on Base,
+-- Ethereum, Polygon, Arbitrum and BNB Chain, so the old scheme of deriving one
+-- chain from the address form had no answer to give once a second EVM chain
+-- was supported. merlin now reads every rail in the address's family and sums
+-- them, which is why balance_usd keeps its meaning and needs no migration:
+-- it was one chain's balance and is now the family's total.
+--
+-- balances is the per-rail breakdown behind that total, keyed "chain:asset"
+-- ("base:USDC"). Stored rather than read live because /aimod funding show is
+-- TierPublic and must not fan twelve RPC calls out on a member's command.
+--
+-- Written only by a complete poll. A partial read is never stored, for the
+-- same reason it never books a donation: a sum missing one unreachable rail
+-- is indistinguishable from a withdrawal.
+ALTER TABLE aimod_funding ADD COLUMN balances JSONB NOT NULL DEFAULT '{}'::jsonb;

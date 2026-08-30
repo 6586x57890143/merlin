@@ -328,7 +328,7 @@ func (p *Plugin) registerCommands() {
 						Options: []*discordgo.ApplicationCommandOption{
 							{
 								Type: discordgo.ApplicationCommandOptionString, Name: "address",
-								Description: "A wallet address that receives USDC on Base, like 0x1234...",
+								Description: "An EVM (0x...), TRON (T...) or Solana wallet address",
 								Required:    true,
 							},
 						},
