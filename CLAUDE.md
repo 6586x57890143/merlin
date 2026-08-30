@@ -266,6 +266,78 @@ status` rather than appearing to work.
   listed there serves a stale config for up to the TTL, which is most of why
   the TTL exists at all.
 
+### Rung 1.5: the local triage model (`internal/plugins/aimod/triage.go`)
+
+A per-guild logistic regression over hashed character n-grams that decides
+whether a message is worth a model call at all. Roughly a hundred lines of
+`math` and no new dependency.
+
+**It approximates rung 2 rather than judging policy, and that framing is the
+safety argument.** Rung 2 is already the gate for everything below it: nothing
+reaches the deep pass unflagged. So this rung predicts *the fast pass's own
+output* and its only decision is whether to spend that call. It can skip or
+pass through. It can never flag, remove, rewrite or sanction, which is the same
+rule that keeps rung 2 off the delete path, and it means the rung adds its own
+error rate on top of rung 2's without introducing a new class of miss.
+
+**Training is online, from verdicts, with nothing retained.** The label is what
+the fast pass just decided, and the text is the copy already in hand; both are
+discarded when the batch returns. There is no training set and no table of
+examples, which is deliberate: a nightly pass over stored messages would mean
+storing messages, and `aimod_incidents` holds only what was acted on (no
+negatives) and prunes its content on `evidence_hours` anyway. `aimod_triage`
+holds a block of gradient-updated float32s and nothing a member wrote is
+recoverable from it, so continuous learning extends this plugin's retention by
+zero bytes. This is the one place the milestone plan was wrong and the code
+deviates from it on purpose.
+
+**Five things stand between the model and a missed violation**, and each fails
+toward scanning:
+- `triageWarmup` (500 examples) before it may skip anything, so a fresh guild,
+  a new deployment and a restored backup all behave exactly as before.
+- `triageSkipThreshold` (0.02) is not "probably fine", it is "the model has
+  essentially never seen the fast pass flag anything like this".
+- `neverSkipPattern` vetoes the child-safety vocabulary outright, checked
+  *before* the model is consulted so no amount of confidence routes around it.
+  Deliberately over-inclusive: a false positive costs one call that would have
+  happened anyway, and it is not a detector, since nothing acts on a match.
+- `triagePosWeight` (12) is what stops the model collapsing to always-clean.
+  About 1% of messages are flagged, so the loss is minimised by answering
+  "clean" to everything, and that model is right 99% of the time while skipping
+  every violation on the server.
+- `triageSampleRate` (5% of would-be skips) is scanned anyway. **This is not a
+  hedge.** A model that skips a region of its input stops receiving labels from
+  it, so its picture freezes on the day it started skipping and later drift is
+  invisible precisely where it is trusted most. Sampling keeps labels flowing
+  from the skipped region and is the only honest measure of the miss rate,
+  which `/aimod status` reports as "missed N of M sampled".
+
+**`triage_mode` is off/shadow/on, defaulting to shadow**, the same
+suggest-before-auto shape as `calibration_mode` and for the same reason: this
+changes what gets looked at, so a guild watches it work rather than discovering
+it. Shadow scores and learns and changes nothing, which is what makes the
+`/aimod status` figures evidence an admin can act on. The counters behind them
+(`considered`/`wouldSkip`) are incremented in every mode for exactly that
+reason.
+
+The skip sits ahead of `userMeter.allowScan` in `HandleMessage`, and behind the
+dedupe lookup. Ahead of the meter because a message that was never scanned must
+not draw on the member's scan ceiling, or ordinary chatter would exhaust the
+quota that exists for content nobody has judged; a sampled message is exempt
+too, since the audit must not spend somebody else's protection. Behind the
+dedupe because that answer is remembered fact and this one is a guess, and a
+guess must never override a verdict already reached on identical text.
+
+Weights live in `aimod_triage` rather than on `aimod_config`, the same split
+the tip jar uses: they are runtime state written every `triageSaveEvery` (500)
+examples and on `Shutdown`, and the config row behind `cachingStore` is read on
+every message. Persistence matters because this bot redeploys on every push to
+main, and a model that never saved would be cold most of the time. A stored
+blob of the wrong length is refused rather than reinterpreted: it means the
+table size changed between releases, and old weights against a new hash space
+give a model that is confidently wrong about everything, where starting again
+is only a warmup during which nothing is skipped.
+
 ### Two gateways (`internal/plugins/aimod/provider.go`)
 
 `providerSpec` is a table of two: OrcaRouter, the default, and OpenRouter, the

@@ -306,6 +306,18 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "triage",
+						Description: "The local pre-filter that decides which messages are worth a model call",
+						Options: []*discordgo.ApplicationCommandOption{
+							{
+								Type: discordgo.ApplicationCommandOptionString, Name: "mode",
+								Description: "off, shadow (learn only) or on", Required: true,
+								Choices: triageModeChoices(),
+							},
+						},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "show",
 						Description: "Everything configured here, with the key masked",
 					},
@@ -425,6 +437,11 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("aimod", "configure/exempt-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleExemptChannel)
 	p.commands.Handle("aimod", "configure/exempt-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleExemptRole)
 	p.commands.Handle("aimod", "configure/sanctions", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleSetSanction)
+	// actionPolicy rather than actionConfigure, matching sanctions: this
+	// changes how much of the server actually gets looked at, which is a
+	// policy decision rather than a plumbing one, and a guild can lower the
+	// tier on it separately with /config permissions set-tier.
+	p.commands.Handle("aimod", "configure/triage", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleSetTriage)
 	p.commands.Handle("aimod", "configure/show", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleConfigureShow)
 
 	// Reading the calibration is a moderator's business: it explains why a

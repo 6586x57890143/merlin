@@ -3,6 +3,7 @@ package aimod
 import (
 	"context"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -204,6 +205,16 @@ type Plugin struct {
 	fundingNoticeMu sync.Mutex
 	fundingNoticed  map[string]time.Time
 
+	// triage holds one local rung 1.5 model per guild, loaded lazily and kept
+	// for the process lifetime. See triage.go.
+	triageMu sync.Mutex
+	triage   map[string]*triageModel
+	// triageSample decides whether a message the model would skip is scanned
+	// anyway. Injected so a test can make the decision deterministic, the
+	// same reason internal/voice takes its RNG rather than reaching for the
+	// global one.
+	triageSample func() bool
+
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 	stopped  chan struct{}
@@ -248,6 +259,8 @@ func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker
 		calibrateRegistered: make(map[string]bool),
 		fundingRegistered:   make(map[string]bool),
 		fundingNoticed:      make(map[string]time.Time),
+		triage:              make(map[string]*triageModel),
+		triageSample:        func() bool { return rand.Float64() < triageSampleRate },
 		eth:                 newETHClient(nil, nil),
 		stopped:             make(chan struct{}),
 	}, nil
@@ -320,6 +333,13 @@ func (p *Plugin) Shutdown(ctx context.Context) error {
 		delete(p.batches, id)
 	}
 	p.batchMu.Unlock()
+
+	// Saved before waiting on in-flight work rather than after, because the
+	// wait below has a deadline and can return with work still running. A
+	// model that is a few hundred examples stale costs a shorter warmup; one
+	// that never saved at all costs the whole of it on every deploy, and this
+	// bot redeploys on every push to main.
+	p.saveAllTriage(ctx)
 
 	done := make(chan struct{})
 	go func() {
@@ -506,12 +526,27 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 		})
 		return
 	}
-	// The per-member ceiling sits here rather than in shouldSkip, so it
-	// gates only the paid rungs: a member who has spent their scan quota is
-	// still matched against the free patterns above, which is what stops the
-	// meter itself becoming a way to buy immunity by flooding first.
-	if !p.meter.allowScan(cfg.GuildID, c.AuthorID, p.now()) {
+	// Rung 1.5. Ahead of the meter because a message this rung skips was
+	// never scanned, so it must not draw on the member's scan ceiling either:
+	// charging for a call that was never made would let quiet, obviously fine
+	// chatter exhaust the quota that exists for content nobody has judged.
+	//
+	// Behind the dedupe lookup because that answer is remembered fact and
+	// this one is a guess, and a guess must never override a verdict already
+	// reached on the identical text.
+	d := p.triageDecide(ctx, cfg, c.Content)
+	if d.skip {
 		return
+	}
+	// A sampled message is deliberately exempt from the ceiling too. It is
+	// being scanned to measure this rung rather than because anything about
+	// it asked to be, and letting that measurement consume a member's quota
+	// would make the audit itself a way to spend someone else's protection.
+	if !d.sampled && !p.meter.allowScan(cfg.GuildID, c.AuthorID, p.now()) {
+		return
+	}
+	if d.sampled {
+		c.TriageSampled = true
 	}
 	p.queue(cfg.GuildID, c)
 }
@@ -656,6 +691,18 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 		for i, c := range batch {
 			if !flagged[i+1] {
 				p.dedupe.markClean(guildID, c.Content, p.now())
+			}
+			// Rung 1.5 learns here, from the answer of the rung it is
+			// approximating. This is the only training input it has, and the
+			// text is the copy already in hand: nothing is stored to train
+			// from later, and nothing is kept after this returns.
+			p.triageLearn(ctx, cfg, c.Content, flagged[i+1])
+			// A message this rung wanted to skip, scanned anyway because it
+			// was sampled, and flagged after all. That is a miss it would
+			// have made, and counting it is the only reason the sampling is
+			// worth its cost. See TriageStats.
+			if c.TriageSampled && flagged[i+1] {
+				p.triageMiss(ctx, cfg)
 			}
 		}
 
