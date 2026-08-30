@@ -123,9 +123,9 @@ const calibrationPreamble = `You are auditing an automated moderation filter tha
 The server is a blunt, high-free-speech internet community. Judge by what that kind of community treats as ordinary, not by what is polite:
 
 - Insults, profanity, mockery, hostile argument, dark humour and offensive opinions are ordinary here. They are not violations and the filter must not act on them.
-- Irony, sarcasm, hyperbole, trash talk and in-group banter are the DEFAULT reading of a heated line in a fast channel, not the exception. "I am going to kill you" after a lost match is a figure of speech. Read the surrounding messages before concluding that anything is sincere.
+- Irony, sarcasm, hyperbole, trash talk and in-group banter are the DEFAULT reading of a heated line in a fast channel, not the exception. "I am going to kill you" after a lost match is a figure of speech. Read the surrounding messages before concluding that anything is sincere. The one exception is child_safety: Discord grants no humour exception there, so a joking or boasting delivery does not make a stated sexual interest in minors ordinary, and the filter acting on one is not a false positive.
 - Words with slur origins used as generic profanity about an idea, an object or one person's behaviour are ordinary here and must be left alone. "this is retarded", "you are retarded" and "that patch is gay" are NOT violations on this server. Treat any incident where the filter acted on one of those as a clear false positive.
-- What genuinely does breach Discord's Community Guidelines should be acted on almost every time: slurs aimed at people for a protected characteristic, credible threats against a real person, doxxing, sexual content involving minors, promotion of violent extremism, malware and phishing.
+- What genuinely does breach Discord's Community Guidelines should be acted on almost every time: slurs aimed at people for a protected characteristic, credible threats against a real person, doxxing, sexual content involving minors or a stated sexual interest in them however it is framed, promotion of violent extremism, malware and phishing.
 
 The two mistakes are not equal, but both are real. Acting on ordinary speech drives away the members the server was built for; missing a genuine breach is what gets the whole server reported off the platform. Report both directions honestly.
 
@@ -136,6 +136,7 @@ Return calibration examples the filter should carry from now on. These rules are
 - Write each example as a SHORT PARAPHRASE, or an invented stand-in with the same shape as what you saw. Never quote a real message verbatim. Never include a username, a mention, a channel reference, an ID or a link.
 - Use only the policy names you were given.
 - Prefer examples that correct something you actually watched go wrong over examples of things that already work.
+- Do not return a child_safety example with should_act false; that one is discarded unread. If you believe that filter genuinely overreached, say so as a too_strict finding instead, where a moderator will read it and can change the policy itself. Examples that sharpen child_safety are welcome.
 - Fewer, sharper examples beat a long list. Return an empty list if the filter looks correctly calibrated.`
 
 func calibrationSchema() *responseFormat {
@@ -391,6 +392,27 @@ func validateCalibration(cfg Config, in []CalibrationExample) (kept []Calibratio
 		}
 		if !known(ex.Bucket) {
 			problems = append(problems, "example for unknown policy "+string(ex.Bucket))
+			continue
+		}
+		if ex.Bucket == BucketChildSafety && !ex.ShouldAct {
+			// The bucket a guild cannot switch off is not one a self-tuning
+			// loop may quietly relax either. Everything about the reviewer
+			// points this way: it is asked to hunt for over-strictness, its
+			// preamble tells it irony is the default reading of a heated
+			// line, and on CalibrationAuto its answer applies without anyone
+			// reading it. One example saying "text like this, in this
+			// bucket, should not be acted on" would be carried into every
+			// prompt from then on, which is the same outcome as turning the
+			// bucket off, reached by a route EffectiveAction does not guard.
+			// The other direction stays allowed: an example that says to act
+			// can only tighten this. And the observation itself is not lost,
+			// which is the difference between this guard and a wall: the
+			// preamble routes a genuine child_safety overreach to a
+			// too_strict finding, which a moderator reads in
+			// /aimod calibrate show and can act on by editing the policy
+			// file. What is blocked is one unattended run at four in the
+			// morning writing that judgement into every prompt itself.
+			problems = append(problems, "example telling the filter to stand down on "+string(ex.Bucket))
 			continue
 		}
 		if EffectiveAction(cfg.BucketActions, ex.Bucket) == ActionOff {

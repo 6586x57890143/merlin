@@ -538,3 +538,48 @@ func TestReviewGuildRoutesAndAllowsTimeToAnswer(t *testing.T) {
 			req.timeout, httpTimeout)
 	}
 }
+
+// The bucket a guild cannot switch off must not be relaxable by the weekly
+// reviewer either. Everything about that reviewer points this way: it is
+// asked to find over-strictness, its preamble tells it irony is the default
+// reading, and on CalibrationAuto its answer applies with nobody reading it.
+func TestCalibrationCannotStandDownChildSafety(t *testing.T) {
+	cfg := calibratingConfig()
+	kept, problems := validateCalibration(cfg, []CalibrationExample{
+		{Text: "just a joke about minors", Bucket: BucketChildSafety, ShouldAct: false, Note: "reads as banter"},
+		{Text: "an example that tightens it", Bucket: BucketChildSafety, ShouldAct: true, Note: "still a boast"},
+	})
+	if len(problems) != 1 {
+		t.Fatalf("problems = %v, want exactly the stand-down example rejected", problems)
+	}
+	if len(kept) != 1 || !kept[0].ShouldAct {
+		t.Fatalf("kept = %+v, want only the example that tightens the bucket", kept)
+	}
+}
+
+// The reviewer and the classifier have to be reading the same rule. They are
+// written in different places (a Go const and a YAML file) and nothing but
+// this test stops one being edited without the other, which would produce the
+// worst version of this mechanism: a reviewer that reports the filter as too
+// strict for enforcing a policy it is required to enforce, week after week.
+func TestCalibrationPromptCarriesTheSameChildSafetyRule(t *testing.T) {
+	store := newFakeStore()
+	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+	prompt := p.calibrationPrompt(calibratingConfig())
+
+	if !strings.Contains(prompt, p.policies[BucketChildSafety].Short) {
+		t.Error("the reviewer is not shown the child_safety short line the classifier judges by")
+	}
+	// The preamble tells it irony is the default reading of a heated line,
+	// which is right everywhere except here. Without the carve-out it reads
+	// a boast as banter and calls the removal a false positive.
+	lower := strings.ToLower(prompt)
+	if !strings.Contains(lower, "no humour exception") && !strings.Contains(lower, "grants no humour exception") {
+		t.Error("the reviewer is not told that child_safety has no humour exception")
+	}
+	// Smarter, not more difficult: the stand-down example is refused, but
+	// the observation has somewhere to go.
+	if !strings.Contains(lower, "too_strict finding") {
+		t.Error("the reviewer is not told where a genuine child_safety overreach should be reported instead")
+	}
+}
