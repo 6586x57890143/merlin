@@ -122,6 +122,12 @@ type candidate struct {
 	// Forwarded reports that Content came from a message snapshot rather than
 	// from the member's own typing. It changes the action; see enforce.
 	Forwarded bool
+	// TriageSampled marks a message the local rung 1.5 model wanted to skip
+	// that is being scanned anyway, as the sampled share that keeps that rung
+	// honest. It changes nothing about how the message is judged; it only
+	// makes a flag on this message countable as a miss the rung would have
+	// made. See triage.go.
+	TriageSampled bool
 }
 
 // maxReplyContext bounds the quoted reply. Enough to see who is being

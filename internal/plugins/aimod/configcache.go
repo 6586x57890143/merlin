@@ -154,6 +154,11 @@ func (c *cachingStore) SetCalibration(ctx context.Context, guildID string, activ
 	return c.Store.SetCalibration(ctx, guildID, active, pending, ranAt)
 }
 
+func (c *cachingStore) SetTriageMode(ctx context.Context, guildID string, mode TriageMode) error {
+	defer c.invalidate(guildID)
+	return c.Store.SetTriageMode(ctx, guildID, mode)
+}
+
 func (c *cachingStore) SetCalibrationMode(ctx context.Context, guildID string, mode CalibrationMode) error {
 	defer c.invalidate(guildID)
 	return c.Store.SetCalibrationMode(ctx, guildID, mode)

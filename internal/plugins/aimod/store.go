@@ -77,6 +77,13 @@ type Config struct {
 	// /aimod calibrate show; nothing schedules from it, because the
 	// Scheduler owns its own last-run bookkeeping.
 	CalibrationRanAt time.Time
+
+	// TriageMode is how much the local rung 1.5 model may do. On aimod_config
+	// rather than beside the weights, because this one is read on the message
+	// hot path and belongs behind cachingStore; the weights are runtime state
+	// written every few hundred messages and live in their own table, exactly
+	// the split the tip jar uses.
+	TriageMode TriageMode
 }
 
 // Mode is the guild-wide switch, above the per-bucket actions.
@@ -224,6 +231,13 @@ type Store interface {
 	ClearFunding(ctx context.Context, guildID string) error
 	UpdateFundingBalance(ctx context.Context, guildID string, balance, donation float64, balances map[string]float64, at time.Time) error
 
+	// The local triage model's weights. Their own table for the same reason
+	// the tip jar has one: written on a cadence of its own and never read by
+	// the config hot path, so neither needs a cachingStore override.
+	TriageModel(ctx context.Context, guildID string) (raw []byte, examples int64, err error)
+	SaveTriageModel(ctx context.Context, guildID string, raw []byte, examples int64) error
+	SetTriageMode(ctx context.Context, guildID string, mode TriageMode) error
+
 	// RecordIncident writes before anything is done to the message. See
 	// enforce.go: the other order loses the only copy of what was removed.
 	RecordIncident(ctx context.Context, inc Incident) (int64, error)
@@ -275,7 +289,11 @@ func defaultConfig(guildID string) Config {
 		// Matches the column default. It costs nothing while Mode is off,
 		// since reconcileCalibrationJob registers no job unless both are on.
 		CalibrationMode: CalibrationSuggest,
-		BucketActions:   map[Bucket]Action{},
+		// Matches the column default, and for the same reason calibration
+		// defaults to suggest: this changes what gets looked at, so a guild
+		// watches it work before it acts.
+		TriageMode:    TriageShadow,
+		BucketActions: map[Bucket]Action{},
 	}
 }
 
@@ -286,11 +304,12 @@ func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT api_key_sealed, orca_key_sealed, mode, daily_budget_usd, evidence_hours,
 		       fast_models, deep_models, exempt_channel_ids, exempt_role_ids, sanction_action, sanction_optin_user_ids, bucket_actions,
-		       calibration, calibration_pending, calibration_mode, calibration_ran_at
+		       calibration, calibration_pending, calibration_mode, calibration_ran_at,
+		       triage_mode
 		FROM aimod_config WHERE guild_id = $1
 	`, guildID).Scan(&cfg.APIKeySealed, &cfg.OrcaKeySealed, &cfg.Mode, &cfg.DailyBudgetUSD, &cfg.EvidenceHours,
 		&cfg.FastModels, &cfg.DeepModels, &cfg.ExemptChannelIDs, &cfg.ExemptRoleIDs, &cfg.SanctionAction, &cfg.SanctionOptInUserIDs, &actionsJSON,
-		&calJSON, &calPendingJSON, &cfg.CalibrationMode, &ranAt)
+		&calJSON, &calPendingJSON, &cfg.CalibrationMode, &ranAt, &cfg.TriageMode)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return cfg, nil
@@ -857,6 +876,43 @@ func encodeBalances(balances map[string]float64) ([]byte, error) {
 		return nil, fmt.Errorf("aimod store: encode balances: %w", err)
 	}
 	return encoded, nil
+}
+
+func (s *pgStore) SetTriageMode(ctx context.Context, guildID string, mode TriageMode) error {
+	return s.upsert(ctx, guildID, "triage_mode", string(mode))
+}
+
+// TriageModel reads a guild's stored weights. A missing row is not an error:
+// it is a guild whose model has never been saved, which starts fresh and
+// therefore skips nothing until it has warmed up.
+func (s *pgStore) TriageModel(ctx context.Context, guildID string) ([]byte, int64, error) {
+	var raw []byte
+	var examples int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT weights, examples FROM aimod_triage WHERE guild_id = $1
+	`, guildID).Scan(&raw, &examples)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, nil
+		}
+		return nil, 0, fmt.Errorf("aimod store: triage model: %w", err)
+	}
+	return raw, examples, nil
+}
+
+func (s *pgStore) SaveTriageModel(ctx context.Context, guildID string, raw []byte, examples int64) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO aimod_triage (guild_id, weights, examples, updated_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (guild_id) DO UPDATE SET
+			weights    = EXCLUDED.weights,
+			examples   = EXCLUDED.examples,
+			updated_at = EXCLUDED.updated_at
+	`, guildID, raw, examples)
+	if err != nil {
+		return fmt.Errorf("aimod store: save triage model: %w", err)
+	}
+	return nil
 }
 
 func (s *pgStore) ClearFunding(ctx context.Context, guildID string) error {

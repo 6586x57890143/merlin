@@ -11,10 +11,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/6586x57890143/merlin/internal/dbtest"
 	"github.com/6586x57890143/merlin/internal/storage"
@@ -231,5 +233,121 @@ func TestHealthyReflectsConnectivity(t *testing.T) {
 	pool.Close()
 	if err := store.Healthy(ctx); err == nil {
 		t.Error("Healthy on a closed pool returned nil")
+	}
+}
+
+// Two migrators against one empty database, which is what actually happens:
+// in production more than one instance can start at once, and in the tests
+// every package using internal/dbtest migrates the same database while Go runs
+// those packages in parallel.
+//
+// Without the advisory lock the version check is a check-then-act, so both
+// callers see a version as unapplied, both run its DDL, and the loser fails on
+// a duplicate object. That was a real CI flake, and it got likelier every time
+// another package started using the shared test database: it surfaced as
+// "duplicate key value violates unique constraint pg_type_typname_nsp_index"
+// out of migration 0002, from a test that had nothing to do with migrations.
+func TestMigrateIsSafeUnderConcurrency(t *testing.T) {
+	pool := dbtest.FreshSchema(t)
+	ctx := context.Background()
+
+	const racers = 4
+	errs := make(chan error, racers)
+	var start sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < racers; i++ {
+		go func() {
+			// Released together, so the calls genuinely overlap rather than
+			// finishing one after another and never touching the bug.
+			start.Wait()
+			errs <- storage.Migrate(ctx, pool)
+		}()
+	}
+	start.Done()
+
+	for i := 0; i < racers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent migrator %d failed: %v", i, err)
+		}
+	}
+
+	// And exactly one row per migration: a lock that serialised the runs but
+	// let both record their work would leave duplicates behind.
+	var versions, distinct int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*), count(DISTINCT version) FROM schema_migrations`).Scan(&versions, &distinct); err != nil {
+		t.Fatalf("count applied migrations: %v", err)
+	}
+	if versions != distinct || versions == 0 {
+		t.Fatalf("schema_migrations holds %d rows across %d versions", versions, distinct)
+	}
+}
+
+// The lock has to be released back to the pool, or a pooled connection carries
+// an orphaned session-level lock and every later migrator in the process
+// blocks on it. Sequential calls after a completed run must simply return.
+func TestMigrateReleasesItsLock(t *testing.T) {
+	pool := dbtest.FreshSchema(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		done := make(chan error, 1)
+		go func() { done <- storage.Migrate(ctx, pool) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("run %d: %v", i, err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("run %d blocked, so the previous run did not release its lock", i)
+		}
+	}
+}
+
+// One connection is enough for a migrator, and this is the test that says so.
+//
+// The first version of the advisory lock held a pooled connection for the lock
+// and then asked the pool for another to run the DDL on. That deadlocks the
+// moment the number of concurrent migrators reaches the pool size: every one
+// holds a connection and waits forever for a second. pgxpool sizes itself from
+// the CPU count, so it passed on a developer machine and hung for the full ten
+// minute test timeout on a two-core CI runner.
+//
+// A pool of exactly one makes that failure deterministic rather than dependent
+// on the host: with the lock and the work on the same connection these callers
+// take turns, and with them on different connections the first caller blocks
+// forever.
+func TestMigrateNeedsOnlyOneConnectionPerCaller(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set, skipping Postgres-backed test (see CLAUDE.md)")
+	}
+	ctx := context.Background()
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connect single-connection pool: %v", err)
+	}
+	defer pool.Close()
+
+	const racers = 4
+	errs := make(chan error, racers)
+	for i := 0; i < racers; i++ {
+		go func() { errs <- storage.Migrate(ctx, pool) }()
+	}
+	for i := 0; i < racers; i++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("migrator %d failed on a single-connection pool: %v", i, err)
+			}
+		case <-time.After(60 * time.Second):
+			t.Fatal("a migrator blocked on a single-connection pool: the lock and the work are on different connections")
+		}
 	}
 }

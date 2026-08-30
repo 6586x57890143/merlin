@@ -33,12 +33,20 @@ type fakeStore struct {
 	spendErr    error
 	incidentErr error
 
-	funding    map[string]Funding
-	fundingErr error
+	funding   map[string]Funding
+	triage    map[string]storedTriage
+	triageErr error
+	// triageSaves counts persistence calls, so a test can assert that the
+	// model is written on a cadence rather than on every single message.
+	triageSaves int
+	fundingErr  error
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{cfg: make(map[string]Config), spend: make(map[string]Spend), funding: make(map[string]Funding)}
+	return &fakeStore{
+		cfg: make(map[string]Config), spend: make(map[string]Spend),
+		funding: make(map[string]Funding), triage: make(map[string]storedTriage),
+	}
 }
 
 func (f *fakeStore) setConfig(cfg Config) {
@@ -228,6 +236,40 @@ func (f *fakeStore) SetFundingAddress(_ context.Context, guildID, address, setBy
 		GuildID: guildID, Address: address, SetBy: setBy, SetAt: at,
 		BalanceUSD: baseline, CheckedAt: at, Balances: balances,
 	}
+	return nil
+}
+
+func (f *fakeStore) SetTriageMode(_ context.Context, guildID string, mode TriageMode) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cfg := f.cfg[guildID]
+	cfg.GuildID = guildID
+	cfg.TriageMode = mode
+	f.cfg[guildID] = cfg
+	return nil
+}
+
+func (f *fakeStore) TriageModel(_ context.Context, guildID string) ([]byte, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.triageErr != nil {
+		return nil, 0, f.triageErr
+	}
+	m := f.triage[guildID]
+	return m.raw, m.examples, nil
+}
+
+func (f *fakeStore) SaveTriageModel(_ context.Context, guildID string, raw []byte, examples int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.triageErr != nil {
+		return f.triageErr
+	}
+	if f.triage == nil {
+		f.triage = map[string]storedTriage{}
+	}
+	f.triage[guildID] = storedTriage{raw: raw, examples: examples}
+	f.triageSaves++
 	return nil
 }
 
@@ -742,4 +784,10 @@ func specNames(specs []*providerSpec) []string {
 		names = append(names, providerName(s))
 	}
 	return names
+}
+
+// storedTriage is one guild's persisted model in the fake store.
+type storedTriage struct {
+	raw      []byte
+	examples int64
 }

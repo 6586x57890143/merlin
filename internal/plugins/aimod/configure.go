@@ -255,6 +255,53 @@ func (p *Plugin) handleSetSanction(ctx context.Context, s *discordgo.Session, i 
 	core.RespondOK(s, i, "Sanctions set", body)
 }
 
+// handleSetTriage switches the local pre-filter between off, shadow and on.
+func (p *Plugin) handleSetTriage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	mode := TriageMode(core.LeafArgs(i)["mode"].Value.(string))
+	if !mode.Valid() {
+		core.RespondErr(s, i, "Unknown mode", fmt.Errorf("%q is not a triage mode", mode))
+		return
+	}
+	if err := p.store.SetTriageMode(ctx, i.GuildID, mode); err != nil {
+		core.RespondErr(s, i, "Failed to set the local pre-filter", err)
+		return
+	}
+	p.auditConfig(ctx, i, "aimod.triage_mode_set", "", string(mode))
+
+	// What it can never do is stated first and in every branch, because it is
+	// the fact that makes the rest safe to skim. An admin reading only the
+	// "on" branch could otherwise come away thinking they had just given a
+	// local model a say in what gets deleted.
+	body := "The local pre-filter guesses whether a message is worth sending to a model. It can only ever skip that " +
+		"call or let it happen: it never flags, removes, rewrites or sanctions anything, and messages about child " +
+		"safety are never skipped on its guess.\n\n"
+	switch mode {
+	case TriageOn:
+		body += fmt.Sprintf("It will now skip the model call on messages it is confident about, after it has learned from "+
+			"%d of this server's own messages. About %.0f%% of those are scanned anyway at random, both to keep it "+
+			"learning and to measure what it misses. `/aimod status` reports that miss count.",
+			triageWarmup, triageSampleRate*100)
+	case TriageShadow:
+		body += "It will learn and keep score without changing anything: every message is still sent to the model exactly " +
+			"as before. `/aimod status` will report how much it would have saved and what it would have missed, which is " +
+			"what to read before turning it on."
+	default:
+		body += "It is off. Every message that gets past the free pattern checks goes to a model, which is how this " +
+			"plugin worked before this rung existed."
+	}
+	core.RespondOK(s, i, "Local pre-filter set", body)
+}
+
+// triageModeChoices are the three values, described by what each one does to
+// the scanning rather than by its own name.
+func triageModeChoices() []*discordgo.ApplicationCommandOptionChoice {
+	return []*discordgo.ApplicationCommandOptionChoice{
+		{Name: "off: send everything to a model", Value: string(TriageOff)},
+		{Name: "shadow: learn and keep score, change nothing", Value: string(TriageShadow)},
+		{Name: "on: skip the model call when confident", Value: string(TriageOn)},
+	}
+}
+
 func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
@@ -414,6 +461,16 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		}
 	}
 
+	// The local pre-filter. Reported whenever it is not off, including in
+	// shadow, because shadow exists precisely to produce a number an admin
+	// reads here before deciding.
+	if cfg.TriageMode != TriageOff {
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:  "Local pre-filter",
+			Value: core.TruncateEmbedField(p.triageLine(ctx, cfg)),
+		})
+	}
+
 	// The tip jar, if there is one. Shown here as well as on /aimod funding
 	// so a mod checking why scanning stopped can see whether the money to
 	// restart it is already sitting there.
@@ -441,6 +498,41 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	if err := core.FollowUpEmbed(s, i, embed); err != nil {
 		p.log.Error("aimod: respond status", "guild", i.GuildID, "err", err)
 	}
+}
+
+// triageLine describes what the local rung is doing, in the terms an admin
+// needs to decide whether to trust it.
+//
+// The miss count is reported even when it is zero, and deliberately next to
+// how many messages it was measured over. "Missed 0" means nothing on its own;
+// "missed 0 of 340 sampled" is the sentence that earns a mode change.
+func (p *Plugin) triageLine(ctx context.Context, cfg Config) string {
+	st := p.triageFor(ctx, cfg.GuildID).Stats()
+
+	var b strings.Builder
+	if !st.Ready {
+		fmt.Fprintf(&b, "warming up: %d of %d messages learned from, skipping nothing until then",
+			st.Examples, triageWarmup)
+	} else {
+		fmt.Fprintf(&b, "trained on %d messages", st.Examples)
+	}
+
+	if st.Considered > 0 {
+		share := 100 * float64(st.WouldSkip) / float64(st.Considered)
+		verb := "would have saved"
+		if cfg.TriageMode == TriageOn {
+			verb = "saved"
+		}
+		fmt.Fprintf(&b, "\n%s %.0f%% of model calls this session (%d of %d)",
+			verb, share, st.WouldSkip, st.Considered)
+	}
+	if st.Sampled > 0 {
+		fmt.Fprintf(&b, "\nmissed %d of %d sampled checks", st.Missed, st.Sampled)
+	}
+	if cfg.TriageMode == TriageShadow {
+		b.WriteString("\nshadow mode: changing nothing yet. `/aimod configure triage on` to act on it.")
+	}
+	return b.String()
 }
 
 func (p *Plugin) handlePolicyList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
