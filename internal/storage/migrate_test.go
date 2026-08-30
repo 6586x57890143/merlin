@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,5 +232,73 @@ func TestHealthyReflectsConnectivity(t *testing.T) {
 	pool.Close()
 	if err := store.Healthy(ctx); err == nil {
 		t.Error("Healthy on a closed pool returned nil")
+	}
+}
+
+// Two migrators against one empty database, which is what actually happens:
+// in production more than one instance can start at once, and in the tests
+// every package using internal/dbtest migrates the same database while Go runs
+// those packages in parallel.
+//
+// Without the advisory lock the version check is a check-then-act, so both
+// callers see a version as unapplied, both run its DDL, and the loser fails on
+// a duplicate object. That was a real CI flake, and it got likelier every time
+// another package started using the shared test database: it surfaced as
+// "duplicate key value violates unique constraint pg_type_typname_nsp_index"
+// out of migration 0002, from a test that had nothing to do with migrations.
+func TestMigrateIsSafeUnderConcurrency(t *testing.T) {
+	pool := dbtest.FreshSchema(t)
+	ctx := context.Background()
+
+	const racers = 4
+	errs := make(chan error, racers)
+	var start sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < racers; i++ {
+		go func() {
+			// Released together, so the calls genuinely overlap rather than
+			// finishing one after another and never touching the bug.
+			start.Wait()
+			errs <- storage.Migrate(ctx, pool)
+		}()
+	}
+	start.Done()
+
+	for i := 0; i < racers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent migrator %d failed: %v", i, err)
+		}
+	}
+
+	// And exactly one row per migration: a lock that serialised the runs but
+	// let both record their work would leave duplicates behind.
+	var versions, distinct int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*), count(DISTINCT version) FROM schema_migrations`).Scan(&versions, &distinct); err != nil {
+		t.Fatalf("count applied migrations: %v", err)
+	}
+	if versions != distinct || versions == 0 {
+		t.Fatalf("schema_migrations holds %d rows across %d versions", versions, distinct)
+	}
+}
+
+// The lock has to be released back to the pool, or a pooled connection carries
+// an orphaned session-level lock and every later migrator in the process
+// blocks on it. Sequential calls after a completed run must simply return.
+func TestMigrateReleasesItsLock(t *testing.T) {
+	pool := dbtest.FreshSchema(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		done := make(chan error, 1)
+		go func() { done <- storage.Migrate(ctx, pool) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("run %d: %v", i, err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("run %d blocked, so the previous run did not release its lock", i)
+		}
 	}
 }

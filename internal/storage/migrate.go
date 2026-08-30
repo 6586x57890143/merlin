@@ -21,15 +21,60 @@ type migration struct {
 	sql     string
 }
 
+// migrateLockKey namespaces this application's advisory lock. Arbitrary but
+// fixed: any value works as long as nothing else in the database picks the
+// same one, and it is spelled in hex so it is recognisable in pg_locks.
+const migrateLockKey int64 = 0x6D65726C696E // "merlin"
+
 // Migrate applies every embedded *.up.sql migration not yet recorded in
 // schema_migrations, in ascending version order, each in its own
 // transaction. Safe to call on every startup; already-applied versions are
 // skipped.
+//
+// Safe to call concurrently, which it has to be for two separate reasons. In
+// production more than one instance can start at once, and in the tests every
+// package using internal/dbtest migrates the same database while Go runs those
+// packages in parallel. The version check below is a check-then-act: without
+// serialising, two callers both see a version as unapplied and both run its
+// DDL, and the loser fails on a duplicate object rather than skipping. That
+// surfaced as a flake in CI that got likelier every time another package
+// started using the shared test database.
+//
+// A session-level advisory lock rather than a table lock or a transaction:
+// each migration deliberately runs in its own transaction, so there is no
+// single transaction to scope a lock to, and this serialises the whole run
+// including the schema_migrations bookkeeping between them.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	migrations, err := loadMigrations()
 	if err != nil {
 		return err
 	}
+
+	// Held on one pinned connection for the duration. The lock is
+	// session-scoped, so it has to be released explicitly before that
+	// connection goes back to the pool: a pooled connection carrying an
+	// orphaned advisory lock would block every later migrator in the process
+	// for as long as the pool kept it.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration lock connection: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockKey); err != nil {
+		return fmt.Errorf("take migration lock: %w", err)
+	}
+	defer func() {
+		// Detached, so a cancelled or timed-out ctx still releases the lock
+		// rather than leaving it held until the connection is closed. Same
+		// reasoning as the Scheduler's post-run bookkeeping.
+		if _, err := conn.Exec(context.WithoutCancel(ctx),
+			`SELECT pg_advisory_unlock($1)`, migrateLockKey); err != nil {
+			// Nothing useful to do about it here, and the lock dies with the
+			// connection regardless, so this must not mask a real error from
+			// the migration run itself.
+			_ = err
+		}
+	}()
 
 	// 0001_init creates schema_migrations itself, so it can't be gated on
 	// that table's existence, so apply it unconditionally if the table is
