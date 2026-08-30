@@ -14,13 +14,15 @@
 # is trying to put the reader on the right end.
 bucket: hate_speech
 severity: high
-short: "A slur aimed at a person, or degrading or inciting hostility against people for a protected characteristic. Not insults or slur-origin profanity about a thing."
+short: "A slur aimed at a person or group, hypothetical framing included, or hostility toward a protected group. Not insults or slur-origin profanity about a thing."
 definitions:
   - "Hate speech is any expression that degrades, vilifies or dehumanizes individuals, incites hostility towards specific groups, or promotes harm based on protected characteristics."
+  - "A slur is being used, not mentioned, whenever the speaker writes it in their own voice about somebody. A hypothetical (\"when I call you X\"), an example of what the speaker says or would say, or a complaint that they are no longer allowed to say it are all frames around the speaker's own use, and none of them is a quotation, a reclaiming, or educational use."
   - "Protected characteristics are age, caste, colour, disability, ethnicity, family responsibilities, gender and gender identity, housing status, national origin, race, refugee or immigration status, religious affiliation, serious illness, sex, sexual orientation, socioeconomic status, source of income, status as a victim of domestic or sexual violence or stalking, and weight or size."
 violations:
   - "A slur for a protected characteristic used as a name for a person, in a message that is hostile to them. Calling somebody the word is the clearest form of this policy, not a borderline one: it names them for what they are rather than calling something they said or did stupid. Do not clear it because the rest of the sentence is an ordinary insult, and do not clear it because no group is named; the person is the target."
   - "A slur for a protected characteristic, on its own or in any sentence, with no visible reclaiming, quoting, condemnation or educational framing around it. A slur posted alone with no target named is still a violation: there is no ambiguity to resolve in its favour."
+  - "A slur written inside a hypothetical, an example, or a description of the speaker's own habits. \"When I call you a <slur>\", \"imagine if I said <slur>\" and \"I can't even say <slur> anymore\" are the speaker using the word about somebody, with the frame supplying nothing but deniability. Judge the sentence as though the frame were not there. A message that complains about moderation, censorship or this bot while using a slur is complaining, not educating."
   - "Dehumanizing language aimed at people for a protected characteristic"
   - "Claiming one group is inherently superior or inferior to another"
   - "Hate symbols or imagery used to target, threaten or intimidate"
@@ -31,7 +33,7 @@ not_violations:
   - "A word with slur origins used as generic profanity about an idea, an object, a situation or one person's behaviour, naming no protected group and targeting nobody for what they are. \"This update is retarded\", \"that patch is gay\", \"stop being autistic about it\" are ordinary profanity on this server, not hate speech. This line is about the word standing in for stupid or bad, aimed at what somebody said, made or did. It does not cover the word used as a name for the person in a hostile message, which is the first violation above."
   - "A greeting, a joke, or trash talk between people who are plainly on friendly terms, where the word is how these two speak to each other and nothing in the message is hostile. A short greeting reads as friendly by default, and a joke that lands on nobody in particular is a joke. Read the reply context and the surrounding lines before reading a greeting as an attack."
   - "Reclaimed language, where the message or the surrounding context shows the speaker is using it of their own group or as in-group banter rather than against anyone"
-  - "Obvious satire, or educational, historical, newsworthy or documentary use of a symbol or a slur"
+  - "Obvious satire, or educational, historical, newsworthy or documentary use of a symbol or a slur. The discussion has to be what the message is for. A message that uses the slur about somebody and mentions satire, education, free speech or moderation alongside it is not covered by this line."
   - "Criticism of a religion, an ideology, a government, a policy or an institution rather than of people for what they are"
   - "Rude, hostile, offensive or extreme opinions that name no protected characteristic"
-  - "Quoting or reporting hate speech in order to condemn it or ask a moderator to act"
+  - "Quoting or reporting hate speech in order to condemn it or ask a moderator to act. Repeating your own words, or giving an example of what you say to people, is not quoting: nobody else is being quoted and nothing is being condemned."

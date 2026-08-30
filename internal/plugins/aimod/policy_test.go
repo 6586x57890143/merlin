@@ -221,3 +221,33 @@ func TestChildSafetyCoversStatedInterestAndSaysJokesAreNoExcuse(t *testing.T) {
 		t.Error("child_safety states no boundary for the insult case; calling somebody a paedophile is an attack on them, not sexual interest in a minor")
 	}
 }
+
+// The reported miss: a slur written inside a hypothetical ("when i call you
+// X") matched no violations line, because every one of them described the
+// word being used as a name right now, while both the satire line and the
+// quoting line offered a framed message somewhere to land. The preamble
+// then tells the model that anything plausibly covered by a not_violations
+// line is not a violation, so the model cleared it correctly per the file.
+// Rung 2 only ever sees Short, and nothing reaches the deep pass unflagged,
+// so the rule has to be in both places.
+func TestHateSpeechCoversFramedSlurs(t *testing.T) {
+	policies, err := LoadPolicies()
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	pol := policies[BucketHateSpeech]
+	if !strings.Contains(strings.ToLower(pol.Short), "hypothetical") {
+		t.Error("the fast pass is not told that a hypothetical frame does not clear a slur")
+	}
+	if !strings.Contains(strings.ToLower(strings.Join(pol.Violations, " ")), "hypothetical") {
+		t.Error("no violations line covers a slur written inside a hypothetical")
+	}
+	// The two exceptions that a framed message used to fall through.
+	joined := strings.ToLower(strings.Join(pol.NotViolations, " "))
+	if !strings.Contains(joined, "is not quoting") {
+		t.Error("the quoting exception still covers a speaker repeating their own words")
+	}
+	if !strings.Contains(joined, "not covered by this line") {
+		t.Error("the satire and education exception still covers a slur used alongside a moderation complaint")
+	}
+}
