@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/6586x57890143/merlin/internal/dbtest"
 	"github.com/6586x57890143/merlin/internal/storage"
@@ -299,6 +300,54 @@ func TestMigrateReleasesItsLock(t *testing.T) {
 			}
 		case <-time.After(30 * time.Second):
 			t.Fatalf("run %d blocked, so the previous run did not release its lock", i)
+		}
+	}
+}
+
+// One connection is enough for a migrator, and this is the test that says so.
+//
+// The first version of the advisory lock held a pooled connection for the lock
+// and then asked the pool for another to run the DDL on. That deadlocks the
+// moment the number of concurrent migrators reaches the pool size: every one
+// holds a connection and waits forever for a second. pgxpool sizes itself from
+// the CPU count, so it passed on a developer machine and hung for the full ten
+// minute test timeout on a two-core CI runner.
+//
+// A pool of exactly one makes that failure deterministic rather than dependent
+// on the host: with the lock and the work on the same connection these callers
+// take turns, and with them on different connections the first caller blocks
+// forever.
+func TestMigrateNeedsOnlyOneConnectionPerCaller(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set, skipping Postgres-backed test (see CLAUDE.md)")
+	}
+	ctx := context.Background()
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connect single-connection pool: %v", err)
+	}
+	defer pool.Close()
+
+	const racers = 4
+	errs := make(chan error, racers)
+	for i := 0; i < racers; i++ {
+		go func() { errs <- storage.Migrate(ctx, pool) }()
+	}
+	for i := 0; i < racers; i++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("migrator %d failed on a single-connection pool: %v", i, err)
+			}
+		case <-time.After(60 * time.Second):
+			t.Fatal("a migrator blocked on a single-connection pool: the lock and the work are on different connections")
 		}
 	}
 }

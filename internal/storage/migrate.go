@@ -44,14 +44,23 @@ const migrateLockKey int64 = 0x6D65726C696E // "merlin"
 // each migration deliberately runs in its own transaction, so there is no
 // single transaction to scope a lock to, and this serialises the whole run
 // including the schema_migrations bookkeeping between them.
+//
+// Every statement below runs on the one connection holding that lock, which is
+// not a stylistic choice. Holding a pooled connection for the lock while asking
+// the pool for another to do the work deadlocks as soon as the number of
+// concurrent migrators reaches the pool size: each one holds a connection and
+// waits forever for a second. pgxpool sizes itself from the CPU count, so that
+// is a bug that hides on a developer laptop and appears on a small CI runner,
+// which is exactly how it was found. One connection per migrator means one is
+// always enough to make progress.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	migrations, err := loadMigrations()
 	if err != nil {
 		return err
 	}
 
-	// Held on one pinned connection for the duration. The lock is
-	// session-scoped, so it has to be released explicitly before that
+	// Pinned for the duration, and every statement below uses it. The lock is
+	// session-scoped, so it has to be released explicitly before the
 	// connection goes back to the pool: a pooled connection carrying an
 	// orphaned advisory lock would block every later migrator in the process
 	// for as long as the pool kept it.
@@ -79,7 +88,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	// 0001_init creates schema_migrations itself, so it can't be gated on
 	// that table's existence, so apply it unconditionally if the table is
 	// missing, then let every later migration go through the normal check.
-	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version BIGINT PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`); err != nil {
@@ -88,14 +97,14 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 
 	for _, m := range migrations {
 		var applied bool
-		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, m.version).Scan(&applied); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, m.version).Scan(&applied); err != nil {
 			return fmt.Errorf("check migration %d: %w", m.version, err)
 		}
 		if applied {
 			continue
 		}
 
-		tx, err := pool.Begin(ctx)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin migration %d: %w", m.version, err)
 		}
