@@ -16,9 +16,15 @@ cd "$(dirname "$0")/.."
 out=web/contest/public/stickers
 mkdir -p "$out"
 
+# The six moods have one owner in internal/core/assets, where the bot embeds
+# them as embed thumbnails. Copied rather than duplicated in git, so redrawing
+# her updates both surfaces.
 for mood in ok error warn info notice idle; do
   cp "internal/core/assets/merlin_$mood.png" "$out/merlin_$mood.png"
 done
+
+# Contest-only art, which nothing else uses and which therefore lives here.
+cp web/contest/art/*.png "$out/"
 
 echo "staged $(ls -1 "$out" | wc -l | tr -d ' ') stickers into $out"
 echo "deploy with:  cd web/contest && wrangler deploy"

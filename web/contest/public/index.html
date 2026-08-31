@@ -37,12 +37,18 @@
              one colour everything is drawn with. Borders are 3px of --ink,
              never a lighter grey, because a drawn line has one weight.
 
-   PENS      Six, and they are a set: within a theme every pen sits at the
-             same lightness and saturation, so they read as one box of
-             crayons or one stick of chalk rather than six unrelated hues.
-             Light is mid-tone crayon on white. Dark is pale chalk on slate.
-             --badge is the solid marker for things with text on top,
-             --hi the translucent highlighter for things drawn over text.
+   PENS      Twelve hues, taken wholesale from one row of Open Color
+             (yeun.github.io/open-color), the palette Excalidraw is built
+             on. Every colour in an Open Color row is tuned to the same
+             perceived lightness, which is the whole trick: twelve hues give
+             real variety while the equal lightness keeps them reading as
+             one box of crayons rather than twelve unrelated colours. Light
+             takes row 7, dark takes row 3, so the two themes are the same
+             drawing in a different medium.
+
+             Decoration and meaning are separate. --pen-1..12 draw the title
+             and the doodles and mean nothing at all. --ok, --bad, --badge
+             and --hi carry state and never rotate.
 
    TYPE      Two faces. Marker (Permanent Marker) is the hand: title, phase,
              countdown, section headings, labels. The system sans is the
@@ -62,24 +68,29 @@
              That is what lets it fill the background without ever landing
              on a word.
 
-   MOTION    Slow, per item, never in step: 9 to 22 seconds, random delay,
-             a couple of degrees of sway. If you notice it as animation it
-             is too fast. All of it off under prefers-reduced-motion.
+   MOTION    Slow, per item, never in step: 10 to 26 seconds, random delay,
+             four to nine degrees of sway and a dozen pixels of rise. Enough
+             that the margin is alive when you look at it, slow enough that
+             it never pulls the eye off an entry. Cards arrive with a small
+             pop, once, on first paint only. All off under
+             prefers-reduced-motion.
    ========================================================================= */
 
 :root {
   color-scheme: light dark;
 
-  /* Crayon on a whiteboard. Mid-tone: dark enough to read on paper, not so
-     dark that the margin competes with the text. */
-  --red:    #e0503f;
-  --orange: #e8912a;
-  --yellow: #d8a81c;
-  --green:  #46a154;
-  --blue:   #3d78d1;
-  --purple: #9450c4;
-  /* Text that sits on top of a pen colour. */
+  /* Crayon on a whiteboard: Open Color row 7. */
+  --pen-1:  #f03e3e; --pen-2:  #d6336c; --pen-3:  #ae3ec9; --pen-4:  #7050f2;
+  --pen-5:  #4263eb; --pen-6:  #1c7ed6; --pen-7:  #1098ad; --pen-8:  #0ca678;
+  --pen-9:  #37b24d; --pen-10: #74b816; --pen-11: #f59f00; --pen-12: #f76707;
+  /* State. Never rotates with the decorative set. */
+  --ok:    #37b24d;
+  --bad:   #f03e3e;
+  --focus: #1c7ed6;
   --on-pen: #fff;
+  /* The bands at the top and bottom: the same paper one step warmer, so the
+     page has an edge without a hard rule doing all the work. */
+  --band: #f5efe1;
 
   --paper: #fdfbf6;
   --card:  #ffffff;
@@ -112,23 +123,23 @@
     --ink:   #eceae0;
     --muted: #a9b0a8;
     --shadow: rgba(0, 0, 0, .5);
-    /* A chalk smudge in the same family as the pens, rather than a saturated
+    /* A chalk smudge from the same family as the pens, rather than a saturated
        navy sitting behind them refusing to belong. */
-    --blob: #7fa9cf;
-    --blob-alpha: .28;
-    --hi: rgba(232, 214, 142, .3);
-    --badge: #e8d68e;
+    --blob: #74c0fc;
+    --blob-alpha: .26;
+    --hi: rgba(255, 224, 102, .3);
+    --badge: #ffe066;
     --sticker-op: .88;
     --doodle-op: .92;
-    /* One dust, six tints, all within a few points of each other. That is what
-       makes it read as one hand rather than six unrelated pastels. */
-    --red:    #eba49c;
-    --orange: #ebbe94;
-    --yellow: #e8d68e;
-    --green:  #a8cfa5;
-    --blue:   #a2c2dd;
-    --purple: #c4a9d8;
+    /* Chalk on a blackboard: Open Color row 3. */
+    --pen-1:  #ffa8a8; --pen-2:  #faa2c1; --pen-3:  #e599f7; --pen-4:  #b197fc;
+    --pen-5:  #91a7ff; --pen-6:  #74c0fc; --pen-7:  #66d9e8; --pen-8:  #63e6be;
+    --pen-9:  #8ce99a; --pen-10: #c0eb75; --pen-11: #ffe066; --pen-12: #ffc078;
+    --ok:    #8ce99a;
+    --bad:   #ffa8a8;
+    --focus: #74c0fc;
     --on-pen: #1b211f;
+    --band: #222a27;
   }
 }
 :root[data-theme="dark"] {
@@ -137,23 +148,23 @@
   --ink:   #eceae0;
   --muted: #a9b0a8;
   --shadow: rgba(0, 0, 0, .5);
-  /* A chalk smudge in the same family as the pens, rather than a saturated
+  /* A chalk smudge from the same family as the pens, rather than a saturated
      navy sitting behind them refusing to belong. */
-  --blob: #7fa9cf;
-  --blob-alpha: .28;
-  --hi: rgba(232, 214, 142, .3);
-  --badge: #e8d68e;
+  --blob: #74c0fc;
+  --blob-alpha: .26;
+  --hi: rgba(255, 224, 102, .3);
+  --badge: #ffe066;
   --sticker-op: .88;
   --doodle-op: .92;
-  /* One dust, six tints, all within a few points of each other. That is what
-     makes it read as one hand rather than six unrelated pastels. */
-  --red:    #eba49c;
-  --orange: #ebbe94;
-  --yellow: #e8d68e;
-  --green:  #a8cfa5;
-  --blue:   #a2c2dd;
-  --purple: #c4a9d8;
+  /* Chalk on a blackboard: Open Color row 3. */
+  --pen-1:  #ffa8a8; --pen-2:  #faa2c1; --pen-3:  #e599f7; --pen-4:  #b197fc;
+  --pen-5:  #91a7ff; --pen-6:  #74c0fc; --pen-7:  #66d9e8; --pen-8:  #63e6be;
+  --pen-9:  #8ce99a; --pen-10: #c0eb75; --pen-11: #ffe066; --pen-12: #ffc078;
+  --ok:    #8ce99a;
+  --bad:   #ffa8a8;
+  --focus: #74c0fc;
   --on-pen: #1b211f;
+  --band: #222a27;
 }
 
 @font-face {
@@ -182,7 +193,7 @@ body {
 h1, h2, .chip, .theme-btn, button { font-family: 'Nunito', ui-rounded, ui-sans-serif, system-ui, sans-serif; font-weight: 900; }
 
 main {
-  min-height: 68vh;
+  min-height: 44vh;
   max-width: 64rem;
   margin: 0 auto;
   padding: 1rem 1rem 7rem;
@@ -211,9 +222,15 @@ main {
   animation: drift var(--dur) ease-in-out var(--delay) infinite alternate;
 }
 @keyframes drift {
-  from { transform: rotate(var(--rot)) translateY(0); }
-  to   { transform: rotate(calc(var(--rot) + var(--sway))) translateY(var(--rise)); }
+  from { transform: rotate(var(--rot)) translate(0, 0); }
+  to   { transform: rotate(calc(var(--rot) + var(--sway))) translate(var(--slide), var(--rise)); }
 }
+
+/* Entries arrive rather than appear, once, on the first paint. Re-running
+   this on every thirty second poll would make the page twitch at people who
+   are just reading it. */
+.grid.first .card { animation: pop .38s cubic-bezier(.2, .9, .3, 1.2) backwards; }
+@keyframes pop { from { opacity: 0; transform: translateY(14px) scale(.96) rotate(0); } }
 @media (max-width: 900px) { .stickers { display: none; } }
 
 /* --- theme toggle ------------------------------------------------------ */
@@ -228,7 +245,7 @@ main {
   transition: transform .12s ease;
 }
 .theme-btn:hover { transform: rotate(0) scale(1.04); }
-.theme-btn:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.theme-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 
 /* --- header ------------------------------------------------------------ */
 header { text-align: center; padding: 2.8rem 0 1.2rem; }
@@ -253,7 +270,7 @@ h1 .sp { width: .3em; }
 }
 .brief svg {
   position: absolute; left: 0; bottom: 0; width: 100%; height: 9px;
-  fill: none; stroke: var(--orange); stroke-width: 3;
+  fill: none; stroke: var(--pen-12); stroke-width: 3;
   stroke-linecap: round; opacity: .95;
 }
 
@@ -273,11 +290,11 @@ h1 .sp { width: .3em; }
   transform: rotate(-1.5deg);
   letter-spacing: .02em;
 }
-.pill.announce { background: var(--blue); color: var(--on-pen); }
-.pill.submit   { background: var(--green); color: var(--on-pen); }
+.pill.announce { background: var(--pen-6); color: var(--on-pen); }
+.pill.submit   { background: var(--ok); color: var(--on-pen); }
 .pill.vote     { background: var(--badge); color: #17150f; }
-.pill.results  { background: var(--purple); color: var(--on-pen); }
-.pill.cancelled { background: var(--red); color: var(--on-pen); }
+.pill.results  { background: var(--pen-3); color: var(--on-pen); }
+.pill.cancelled { background: var(--bad); color: var(--on-pen); }
 
 /* The countdown and the links used to share one row, which put a marker
    display face, a bold sans and two outlined bubbles on the same line at
@@ -317,8 +334,8 @@ h2 {
    has just opened the tab, and it is aria-hidden because the same facts are
    in the header as real text. */
 .ticker {
-  overflow: hidden; padding: .45rem 0 .3rem;
-  border-bottom: 0; position: relative; z-index: 2;
+  overflow: hidden; padding: .5rem 0 .4rem;
+  position: relative; z-index: 2; background: var(--band);
 }
 .ticker .run {
   display: inline-flex; white-space: nowrap; will-change: transform;
@@ -331,10 +348,13 @@ h2 {
 .ticker span::after { content: "\2022"; margin-left: 1.1rem; color: var(--badge); }
 @keyframes run { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 
-footer { position: relative; z-index: 1; margin: 3rem 0 0; padding-bottom: 2rem; text-align: center; }
+footer {
+  position: relative; z-index: 1; margin: 1.6rem 0 0;
+  padding-bottom: .9rem; text-align: center; background: var(--band);
+}
 footer p {
-  margin: .7rem 0 0; font-family: 'Marker', cursive;
-  font-size: 1rem; color: var(--muted);
+  margin: .5rem 0 0; font-family: 'Marker', cursive;
+  font-size: .95rem; color: var(--muted);
 }
 
 .wobble {
@@ -365,7 +385,7 @@ button.card { cursor: pointer; }
 .card:nth-child(odd)  { transform: rotate(-1.2deg); }
 .card:nth-child(even) { transform: rotate(.9deg); }
 button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-2px); box-shadow: 6px 6px 0 var(--shadow); }
-.card:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.card:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 
 .card figure { margin: 0; display: grid; gap: .35rem; }
 /* Two across once there is more than one image, so four attachments read as
@@ -393,13 +413,13 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 .card .more { color: var(--muted); font-size: .82rem; margin: .3rem 0 0; }
 
 .card[aria-pressed="true"] {
-  border-color: var(--green);
-  box-shadow: 0 0 0 3px var(--green), 5px 5px 0 var(--shadow);
+  border-color: var(--ok);
+  box-shadow: 0 0 0 3px var(--ok), 5px 5px 0 var(--shadow);
 }
 .card[aria-pressed="true"]::after {
   content: "picked";
   position: absolute; top: -.7rem; right: -.5rem;
-  background: var(--green); color: var(--on-pen);
+  background: var(--ok); color: var(--on-pen);
   font-family: 'Marker', cursive; font-size: .95rem;
   padding: .05rem .6rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
   transform: rotate(6deg);
@@ -450,8 +470,8 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
   color: var(--muted);
 }
 a.chip:hover { background: var(--badge); color: #17150f; }
-.chip.go { background: var(--green); color: var(--on-pen); }
-a.chip.go:hover { background: var(--green); color: var(--on-pen); }
+.chip.go { background: var(--ok); color: var(--on-pen); }
+a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
 
 /* --- the picks bar ----------------------------------------------------- */
 .bar {
@@ -461,9 +481,9 @@ a.chip.go:hover { background: var(--green); color: var(--on-pen); }
   max-width: calc(100vw - 1.5rem); font-size: .95rem;
 }
 .bar.on { display: flex; }
-.bar .dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--green); flex: none; }
-.bar .dot.busy { background: var(--yellow); }
-.bar .dot.bad  { background: var(--red); }
+.bar .dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--ok); flex: none; }
+.bar .dot.busy { background: var(--badge); }
+.bar .dot.bad  { background: var(--bad); }
 
 .empty { padding: 2.5rem 0; text-align: center; color: var(--muted); }
 
@@ -490,6 +510,7 @@ a.chip.go:hover { background: var(--green); color: var(--on-pen); }
 
 @media (prefers-reduced-motion: reduce) {
   .ticker .run, .stickers .gut > * { animation: none; }
+  .grid.first .card { animation: none; }
   .card, .prize, .rank, .theme-btn,
   .card[aria-pressed="true"]::after, .card.mine::after,
   .stickers > *, h1 span { transform: none !important; }
@@ -605,7 +626,8 @@ function seeded(str) {
   };
 }
 
-const PENS = ["--red", "--orange", "--yellow", "--green", "--blue", "--purple"];
+const PENS = ["--pen-1", "--pen-2", "--pen-3", "--pen-4", "--pen-5", "--pen-6",
+  "--pen-7", "--pen-8", "--pen-9", "--pen-10", "--pen-11", "--pen-12"];
 
 // Marker doodles, drawn as strokes so each takes a pen colour and reads on
 // either ground. Crude on purpose: this is a felt tip on paper, not an icon
@@ -668,22 +690,17 @@ function drawCollage() {
   const stage = $("stage").getBoundingClientRect();
   if (stage.width < 900) { box.innerHTML = ""; return; }
 
-  const rnd = seeded("collage:" + slug);
   const blocked = collageBoxes();
   const hits = (x, y, size) => blocked.some((b) =>
     x + size > b.x && x < b.x + b.w && y + size > b.y && y < b.y + b.h);
 
-  // One shuffled bag of everything, dealt onto the grid in order, so merlin
-  // and the doodles interleave instead of clustering by kind.
-  const moods = ["ok", "warn", "info", "notice", "idle", "error"];
+  // Six mood sprites the bot also uses, plus five drawn for this page.
+  const moods = ["ok", "warn", "info", "notice", "idle", "error",
+    "bomb", "fire", "rip", "party", "jail"];
   const bag = [];
   for (let i = 0; i < 3; i++) {
     for (const m of moods) bag.push({ mood: m });
     for (const d of DOODLES) bag.push({ path: d });
-  }
-  for (let i = bag.length - 1; i > 0; i--) {
-    const j = Math.floor(rnd() * (i + 1));
-    [bag[i], bag[j]] = [bag[j], bag[i]];
   }
 
   // A cell a little wider than the biggest sticker, so neighbours have air
@@ -695,10 +712,16 @@ function drawCollage() {
   const gapY = stage.height / rows;
 
   const bits = [];
-  let n = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const item = bag[n % bag.length];
+      // Each cell draws from its own seed rather than from one sequence
+      // shared across the grid. That is what makes a sticker stay put: an
+      // entry arriving, or the window changing size, changes which cells
+      // are blocked, and with a shared sequence every survivor after the
+      // change would be handed somebody else's numbers and jump. Keyed on
+      // the slug, so two contests never look alike.
+      const rnd = seeded(slug + ":" + r + ":" + c);
+      const item = bag[Math.floor(rnd() * bag.length)];
       // Long tail: most are marginalia, a few are big enough to look stuck
       // on. Skewing rather than a flat range is what stops it reading as a
       // grid of same-sized icons.
@@ -706,12 +729,12 @@ function drawCollage() {
       const x = c * gapX + rnd() * Math.max(0, gapX - size);
       const y = r * gapY + rnd() * Math.max(0, gapY - size);
       if (hits(x, y, size)) continue;
-      n++;
 
       const rot = (rnd() * 34 - 17).toFixed(1);
-      const motion = `--rot:${rot}deg;--sway:${(rnd() * 5 - 2.5).toFixed(1)}deg;` +
-        `--rise:${(-4 - rnd() * 8).toFixed(1)}px;--dur:${(9 + rnd() * 13).toFixed(1)}s;` +
-        `--delay:${(-rnd() * 20).toFixed(1)}s`;
+      const sway = (4 + rnd() * 5) * (rnd() < .5 ? -1 : 1);
+      const motion = `--rot:${rot}deg;--sway:${sway.toFixed(1)}deg;` +
+        `--rise:${(-7 - rnd() * 10).toFixed(1)}px;--slide:${(rnd() * 10 - 5).toFixed(1)}px;` +
+        `--dur:${(10 + rnd() * 16).toFixed(1)}s;--delay:${(-rnd() * 24).toFixed(1)}s`;
       const at = `left:${Math.round(x)}px;top:${Math.round(y)}px;${motion}`;
 
       if (item.mood) {
@@ -838,7 +861,11 @@ function render() {
   $("entriesHead").textContent = snap.phase === "results"
     ? "how it landed" : order.length + (order.length === 1 ? " entry" : " entries");
 
-  $("grid").innerHTML = order.map((e) => card(e, rankOf.get(e.id), votable)).join("");
+  const grid = $("grid");
+  const fresh = !grid.dataset.painted && order.length > 0;
+  grid.innerHTML = order.map((e) => card(e, rankOf.get(e.id), votable)).join("");
+  grid.classList.toggle("first", fresh);
+  if (fresh) grid.dataset.painted = "1";
   if (votable) {
     for (const el of document.querySelectorAll("button.card[data-id]")) {
       el.addEventListener("click", () => toggle(el.dataset.id));
