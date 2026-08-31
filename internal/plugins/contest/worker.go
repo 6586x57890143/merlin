@@ -55,8 +55,12 @@ type snapshot struct {
 	MaxVotes  int    `json:"max_votes"`
 	// Guild is what the Worker checks OAuth membership against. It is
 	// stripped from the public view before a browser sees it, like by_hash.
-	Guild   string       `json:"guild"`
-	Forum   string       `json:"forum,omitempty"`
+	Guild string `json:"guild"`
+	Forum string `json:"forum,omitempty"`
+	// Quips are merlin's own lines, chosen from the voice catalog at push
+	// time. Ambient: the page runs them through a ticker and nothing acts
+	// on them.
+	Quips   []string     `json:"quips,omitempty"`
 	Entries []entryView  `json:"entries"`
 	Prizes  []prizeView  `json:"prizes"`
 	Results []resultView `json:"results,omitempty"`

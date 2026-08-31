@@ -95,6 +95,13 @@ const (
 	KeyContestWinner          Key = "contest.winner"
 	KeyContestNoEntries       Key = "contest.no_entries"
 	KeyContestPrizePledged    Key = "contest.prize_pledged"
+	// KeyContestTicker is the only one of these that does not land in
+	// Discord: it is pushed to the gallery in the contest snapshot and runs
+	// across the top of the page. It is in the catalog anyway, and not
+	// written into the HTML, because the rule that merlin's words live in
+	// one reviewable place does not stop being true when the surface is a
+	// web page.
+	KeyContestTicker Key = "contest.ticker"
 )
 
 // Register is how much personality a surface gets.
@@ -350,6 +357,14 @@ var specs = map[Key]spec{
 		required: []string{"donor", "prize"},
 		maxLen:   maxEmbedDescription,
 		fallback: "{donor} put up {prize}.",
+	},
+	KeyContestTicker: {
+		register: RegisterPlayful,
+		// No placeholders at all, deliberately: this scrolls past in a
+		// margin and carries no fact anybody acts on. Everything load
+		// bearing on that page is a code-authored field beside it.
+		maxLen:   maxMessageContent,
+		fallback: "somebody made a thing. be nice about it",
 	},
 	KeyFundingThanks: {
 		register: RegisterPlayful,
