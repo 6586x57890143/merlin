@@ -81,6 +81,20 @@ const (
 	KeyFundingThanks Key = "funding.thanks"
 	KeyFundingLow    Key = "funding.low"
 	KeyFundingDry    Key = "funding.dry"
+
+	// Contests. Every one of these lands in a public channel in front of the
+	// whole server rather than in front of one person, so they are all
+	// playful: nothing here is a moderation outcome and nothing here is a
+	// published policy, which is the pair of exceptions PERSONA.md carves
+	// out. The facts that do matter (deadlines, entry counts, the prize
+	// itself) are embed fields built in code beside these lines, for the
+	// same reason funding.* keeps its numbers out of the catalog.
+	KeyContestAnnounce        Key = "contest.announce"
+	KeyContestSubmissionsOpen Key = "contest.submissions_open"
+	KeyContestVotingOpen      Key = "contest.voting_open"
+	KeyContestWinner          Key = "contest.winner"
+	KeyContestNoEntries       Key = "contest.no_entries"
+	KeyContestPrizePledged    Key = "contest.prize_pledged"
 )
 
 // Register is how much personality a surface gets.
@@ -297,6 +311,45 @@ var specs = map[Key]spec{
 		register: RegisterPlayful,
 		maxLen:   maxEmbedDescription,
 		fallback: "this filter runs on donated credit. the jar is below.",
+	},
+	KeyContestAnnounce: {
+		register: RegisterPlayful,
+		// opens is Discord's own relative timestamp markup, the same choice
+		// KeyJailNotice makes: each reader sees it counted down in their own
+		// timezone, and it stays right when somebody scrolls back to it.
+		required: []string{"title", "opens"},
+		maxLen:   maxEmbedDescription,
+		fallback: "contest time: {title}. submissions open {opens}.",
+	},
+	KeyContestSubmissionsOpen: {
+		register: RegisterPlayful,
+		required: []string{"title", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "{title} is open for entries, closing {until}.",
+	},
+	KeyContestVotingOpen: {
+		register: RegisterPlayful,
+		required: []string{"title", "count", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "voting is open on {title}. {count} entries, closing {until}.",
+	},
+	KeyContestWinner: {
+		register: RegisterPlayful,
+		required: []string{"winner", "votes"},
+		maxLen:   maxEmbedDescription,
+		fallback: "{winner} takes it with {votes} votes.",
+	},
+	KeyContestNoEntries: {
+		register: RegisterPlayful,
+		required: []string{"title"},
+		maxLen:   maxEmbedDescription,
+		fallback: "nobody entered {title}. it happens.",
+	},
+	KeyContestPrizePledged: {
+		register: RegisterPlayful,
+		required: []string{"donor", "prize"},
+		maxLen:   maxEmbedDescription,
+		fallback: "{donor} put up {prize}.",
 	},
 	KeyFundingThanks: {
 		register: RegisterPlayful,

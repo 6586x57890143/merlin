@@ -169,6 +169,10 @@ merlin/
 
 
 
+\- Anything hosted outside this binary gets the least it can work with. The contest gallery (§9, Milestone 11) is the only such surface: it holds what a contest is and how people voted, and it is told the display names members already show each other and never a Discord ID. Voters arrive as an HMAC computed under a key that never leaves the host, so the vote ledger cannot be turned back into a list of who voted for what by whoever holds it. The bot itself stays outbound-only either way: it pushes to that service and asks it two questions, and there is still no inbound port on this process.
+
+
+
 \### Authorization — layered, not single-point
 
 Every privileged command/action checks, in order, before its handler ever runs:
@@ -410,6 +414,10 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 | 9 | Role Management (delivered ahead of Factions/Reporting) | `internal/plugins/roles` — jail (snapshot-and-strip + channel-visibility deny via a shared marker role) and timed single-role grants, Scheduler-driven automatic release/revoke, `Permissions.CanManageRole` role-hierarchy safeguard wired up for the first time, full audit logging |
 
 | 10 | AI Moderation (delivered ahead of Factions/Reporting) | `internal/plugins/aimod` — messages checked against Discord's own Community Guidelines and removed or rewritten. A cost ladder (free local filters, then a cheap model on a micro-batch, then a frontier model only on something already flagged, where a cheap-tier hit can never do more than flag), per-guild model gateway key encrypted at rest with a per-guild daily USD cap, routed through OrcaRouter's free tier by default and falling over to OpenRouter on the deep rung, ten policy areas as reviewable YAML carrying both what each rule covers and where it stops, per-member scan ceilings against budget-drain abuse, and an escalating jail ladder through `roles.JailAutomatic` |
+
+
+
+| 11 | Contests (delivered ahead of Factions/Reporting) | `internal/plugins/contest` — announce, submit, vote and results phases on one per-guild Scheduler tick, with entries arriving as posts in a Discord forum channel merlin creates per contest (so Discord's own CDN hosts every file for free and the bot stores none of them), a prize ledger whose redeemable codes are sealed at rest with `internal/secret` and DMed to the winner then wiped, and a Cloudflare Worker serving the gallery and the ballot. merlin stays outbound-only: it pushes a full snapshot and asks for a tally, and the Worker cannot make it do anything |
 
 
 

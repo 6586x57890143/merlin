@@ -41,6 +41,21 @@ off. There's a bulk version and a `/roles jail-role` for when a raid shows up.
 **Timed role grants.** `/roles grant @someone @role 24h`, and it comes off by
 itself.
 
+**Contests.** `/contest new title:neon cats` and merlin runs the whole thing:
+an announce window while the prize pool fills, then a forum channel she creates
+for the entries, then voting, then the winner. People enter by posting in the
+forum like any other forum, so files are Discord's problem and not the bot's,
+and deleting your post is how you withdraw. Voting happens on a web gallery
+because forty pieces of art is the one thing Discord is genuinely bad at.
+Everyone signs in with Discord there, so it is one vote per member of your
+server and no one else, and the page is an unguessable link no search engine
+indexes.
+
+**Prizes.** `/contest prize` opens a form. Steam key, Nitro gift link, crypto,
+anything. If it has a code, merlin keeps it encrypted and DMs it to the winner
+the moment the contest ends, then wipes it. If it does not, she introduces the
+two of you and stays out of it. She never holds money.
+
 **Everything is configured in Discord.** No YAML editing on the host for
 day-to-day stuff. `/config setup` walks you through the audit log channel,
 status channel, mod role and admins. After that it's `/config admins`,

@@ -117,6 +117,21 @@ type GlobalConfig struct {
 	// shares an endpoint; FundingContracts is keyed by rail ("base:USDC").
 	FundingRPCURLs   map[string]string `yaml:"-"`
 	FundingContracts map[string]string `yaml:"-"`
+
+	// The contest plugin's Cloudflare Worker: the gallery and voting page.
+	// Env rather than per-guild settings because one deployment means one
+	// Worker, the same reasoning that keeps the funding rails here.
+	//
+	// ContestWorkerURL empty is a supported state, not a misconfiguration:
+	// the Discord half of a contest (the forum, the phases, the prizes, the
+	// announcements) runs without a Worker, and /contest status says plainly
+	// that there is nowhere to browse or vote. ContestLinkKey hashes Discord
+	// IDs before they cross to Cloudflare, so the vote ledger holds no
+	// Discord identities; it has to match the Worker's own LINK_KEY secret,
+	// which the Worker uses to hash the account OAuth just confirmed.
+	ContestWorkerURL   string `yaml:"-"`
+	ContestWorkerToken string `yaml:"-"`
+	ContestLinkKey     string `yaml:"-"`
 }
 
 // Level maps LogLevel onto slog. The value is validated at load time, so an
