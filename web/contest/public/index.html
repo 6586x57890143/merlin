@@ -239,7 +239,11 @@ main {
    are just reading it. */
 .grid.first .card { animation: pop .38s cubic-bezier(.2, .9, .3, 1.2) backwards; }
 @keyframes pop { from { opacity: 0; transform: translateY(14px) scale(.96) rotate(0); } }
-@media (max-width: 900px) { .stickers { display: none; } }
+/* Kept down to a phone. They used to vanish under 900px, from back when
+   placement was two fixed gutters and anything narrower had none. Placement
+   is measured against the real content boxes now, so a narrow screen is
+   just a smaller canvas rather than an impossible one. */
+@media (max-width: 400px) { .stickers { display: none; } }
 
 /* --- theme toggle ------------------------------------------------------ */
 .theme-btn {
@@ -466,7 +470,10 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
   transform: rotate(-8deg);
 }
 .card.win { border-color: var(--badge); box-shadow: 0 0 0 4px var(--badge), 5px 5px 0 var(--shadow); }
-.votes { font-family: 'Marker', cursive; font-size: 1.3rem; color: var(--ink); }
+.votes {
+  font-family: 'Nunito', ui-rounded, ui-sans-serif, system-ui, sans-serif;
+  font-weight: 900; font-size: 1.02rem; color: var(--ink);
+}
 
 /* --- prizes ------------------------------------------------------------ */
 .prizes { display: flex; flex-wrap: wrap; justify-content: center; gap: .8rem; }
@@ -693,9 +700,11 @@ const DOODLES = [
 // move with the phase, the entry count and the window width.
 //
 // Re-run after every render and on resize, since both change the boxes.
-function collageBoxes() {
+function collageBoxes(k = 1) {
   const stage = $("stage").getBoundingClientRect();
-  const pad = 26;
+  // The keep-out margin scales too: 26px around every box is breathing room
+  // on a desktop and most of the width of a phone.
+  const pad = Math.round(10 + 16 * k);
   const out = [];
   for (const sel of ["header", "#prizesWrap", "#entriesWrap", "#empty", ".bar", ".theme-btn"]) {
     for (const el of document.querySelectorAll(sel)) {
@@ -714,9 +723,14 @@ function collageBoxes() {
 function drawCollage() {
   const box = $("stickers");
   const stage = $("stage").getBoundingClientRect();
-  if (stage.width < 900) { box.innerHTML = ""; return; }
+  if (stage.width < 400) { box.innerHTML = ""; return; }
 
-  const blocked = collageBoxes();
+  // Everything below is sized off the viewport rather than in fixed pixels.
+  // A 190px cell and a 200px sticker are right on a desktop and absurd on a
+  // phone, where they would be most of the screen and leave no cell that
+  // clears the content at all.
+  const k = Math.max(0.42, Math.min(1, stage.width / 1200));
+  const blocked = collageBoxes(k);
   const hits = (x, y, size) => blocked.some((b) =>
     x + size > b.x && x < b.x + b.w && y + size > b.y && y < b.y + b.h);
 
@@ -726,7 +740,7 @@ function drawCollage() {
 
   // A cell a little wider than the biggest sticker, so neighbours have air
   // between them even at the top of the size range.
-  const cell = 190;
+  const cell = Math.round(190 * k);
   const cols = Math.max(1, Math.floor(stage.width / cell));
   const rows = Math.max(1, Math.floor(stage.height / cell));
   const gapX = stage.width / cols;
@@ -751,9 +765,9 @@ function drawCollage() {
       // two hundred pixel scribble, which reads as a mistake rather than as
       // depth. Both still skew small, so most of the page is marginalia.
       const roll = rnd();
-      const size = wantsMerlin
-        ? Math.round(104 + Math.pow(roll, 1.6) * 96)
-        : Math.round(70 + Math.pow(roll, 2.1) * 130);
+      const size = Math.round(k * (wantsMerlin
+        ? 104 + Math.pow(roll, 1.6) * 96
+        : 70 + Math.pow(roll, 2.1) * 130));
       const x = c * gapX + rnd() * Math.max(0, gapX - size);
       const y = r * gapY + rnd() * Math.max(0, gapY - size);
       if (hits(x, y, size)) continue;
