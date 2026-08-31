@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -688,5 +689,68 @@ func TestDeletingAPostDuringVotingDoesNotRemoveTheEntry(t *testing.T) {
 	subs, _ := store.Submissions(context.Background(), "c1")
 	if len(subs) != 1 {
 		t.Fatalf("entries after a mid-vote delete = %d, want the entry kept", len(subs))
+	}
+}
+
+// Somebody posting four drawings had three of them silently dropped while
+// the forum thread they came from showed all four, so this pins that every
+// attachment is kept, in order, up to the cap.
+func TestEveryAttachmentIsKeptUpToTheCap(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops := newFakeStore(), newFakeOps()
+	c := liveContest(PhaseSubmit, base)
+	p := newTestPlugin(t, store, ops, newFakeSched(), &fakeAudit{}, "")
+
+	var atts []*discordgo.MessageAttachment
+	for i := 0; i < maxEntryMedia+3; i++ {
+		atts = append(atts, &discordgo.MessageAttachment{
+			URL:         "https://cdn.discordapp.com/" + strconv.Itoa(i) + ".png",
+			ContentType: "image/png", Filename: strconv.Itoa(i) + ".png",
+		})
+	}
+	ops.messages["1"] = []*discordgo.Message{{
+		ID: "1", Content: "a caption too",
+		Author: &discordgo.User{ID: "u1", Username: "ana"}, Attachments: atts,
+	}}
+
+	sub, err := p.readThread(context.Background(), c,
+		&discordgo.Channel{ID: "1", OwnerID: "u1", Name: "four drawings"})
+	if err != nil {
+		t.Fatalf("readThread: %v", err)
+	}
+	if len(sub.MediaURLs) != maxEntryMedia {
+		t.Fatalf("kept %d attachments, want the cap of %d", len(sub.MediaURLs), maxEntryMedia)
+	}
+	for i, got := range sub.MediaURLs {
+		if want := "https://cdn.discordapp.com/" + strconv.Itoa(i) + ".png"; got != want {
+			t.Errorf("attachment %d = %q, want %q: order is the order they were posted", i, got, want)
+		}
+	}
+	// The single-URL column stays populated, because the previous release
+	// reads it and a rollback should still render art.
+	if sub.MediaURL != sub.MediaURLs[0] {
+		t.Errorf("MediaURL = %q, want the first attachment", sub.MediaURL)
+	}
+	// Text alongside art, not instead of it. The page used to render one or
+	// the other, so a drawing with a caption lost the caption.
+	if sub.Body != "a caption too" {
+		t.Errorf("body = %q, want the caption kept next to the art", sub.Body)
+	}
+}
+
+func TestSnapshotCarriesEveryAttachment(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	p := newTestPlugin(t, newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}, "https://w.test")
+	snap := p.snapshotOf(liveContest(PhaseVote, base), []Submission{{
+		ID: "s1", UserID: "u1", Author: "ana", Title: "one",
+		MediaURL:  "https://cdn/a.png",
+		MediaURLs: []string{"https://cdn/a.png", "https://cdn/b.png"},
+	}}, nil)
+
+	if got := snap.Entries[0].URLs; len(got) != 2 {
+		t.Fatalf("snapshot carried %d urls, want 2", len(got))
+	}
+	if snap.Entries[0].URL != "https://cdn/a.png" {
+		t.Errorf("url = %q, want the first attachment for older readers", snap.Entries[0].URL)
 	}
 }

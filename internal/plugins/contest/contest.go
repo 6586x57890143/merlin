@@ -46,6 +46,18 @@ const (
 	// a hard platform limit.
 	channelCapHeadroom = 20
 
+	// tickerQuips is how many of merlin's lines ride along in a snapshot.
+	// Three, because the ticker also carries the phase, the countdown and
+	// the entry count, and past that it stops being ambient and starts
+	// being something you feel obliged to read.
+	tickerQuips = 3
+
+	// maxEntryMedia bounds how many attachments one entry contributes to the
+	// gallery. Four fits a card without turning it into a scroller, and
+	// anything past that is a portfolio rather than a contest entry. The
+	// rest stay visible in the forum thread, which the card links to.
+	maxEntryMedia = 4
+
 	// maxEntries bounds one contest. Past this the gallery is unusable and
 	// the snapshot stops being small, and a server that genuinely needs more
 	// wants heats rather than a longer page.
@@ -395,6 +407,7 @@ func (p *Plugin) snapshotOf(c Contest, subs []Submission, prizes []Prize) snapsh
 		ResultsAt: c.ResultsAt.Unix(),
 		MaxVotes:  c.MaxVotes,
 		Guild:     c.GuildID,
+		Quips:     p.quips(c.GuildID),
 		Entries:   make([]entryView, 0, len(subs)),
 		Prizes:    make([]prizeView, 0, len(prizes)),
 	}
@@ -409,6 +422,7 @@ func (p *Plugin) snapshotOf(c Contest, subs []Submission, prizes []Prize) snapsh
 			Title:  s.Title,
 			Kind:   s.Kind,
 			URL:    s.MediaURL,
+			URLs:   s.MediaURLs,
 			Link:   s.Link,
 			Body:   s.Body,
 			Thread: channelLink(c.GuildID, s.ThreadID),
@@ -426,6 +440,26 @@ func (p *Plugin) snapshotOf(c Contest, subs []Submission, prizes []Prize) snapsh
 		}
 	}
 	return snap
+}
+
+// quips picks a few of merlin's lines for the gallery ticker. Separate
+// calls rather than one, because voice.Line guarantees no immediate repeat
+// per guild and key, so asking three times is what spreads them out.
+func (p *Plugin) quips(guildID string) []string {
+	if p.speaker == nil {
+		return nil
+	}
+	out := make([]string, 0, tickerQuips)
+	seen := make(map[string]bool, tickerQuips)
+	for i := 0; i < tickerQuips; i++ {
+		line := p.speaker.Line(context.Background(), guildID, voice.KeyContestTicker, nil)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		out = append(out, line)
+	}
+	return out
 }
 
 func channelLink(guildID, channelID string) string {

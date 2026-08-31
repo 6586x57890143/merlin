@@ -217,9 +217,19 @@ func (p *Plugin) readThread(ctx context.Context, c Contest, th *discordgo.Channe
 		sub.Author = displayName(msg)
 	}
 	if len(msg.Attachments) > 0 {
-		a := msg.Attachments[0]
-		sub.MediaURL = a.URL
-		sub.Kind = kindOf(a.ContentType, a.Filename)
+		// Every attachment, not just the first. Somebody posting four
+		// drawings had three of them silently dropped, while the forum
+		// thread they came from showed all four. Capped because the card
+		// has to stay a card: past maxEntryMedia the gallery is a scroll.
+		for _, a := range msg.Attachments {
+			if len(sub.MediaURLs) >= maxEntryMedia {
+				break
+			}
+			sub.MediaURLs = append(sub.MediaURLs, a.URL)
+		}
+		first := msg.Attachments[0]
+		sub.MediaURL = first.URL
+		sub.Kind = kindOf(first.ContentType, first.Filename)
 	} else if link := firstLink(sub.Body); link != "" {
 		sub.Link = link
 		sub.Kind = "link"

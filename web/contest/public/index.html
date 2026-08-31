@@ -14,43 +14,161 @@
 
   No framework and no build step, matching web/lab. Everything below is hand
   written CSS: the wobble is a border-radius trick, the collage is six PNGs
-  merlin already ships as her own mood icons, and the headline is spans with
-  a seeded rotation. Nothing is generated, nothing is a gradient, nothing is
-  frosted glass.
+  merlin already ships as her own mood icons plus a dozen inline SVG doodles,
+  and the headline is spans with a seeded rotation. Nothing is generated,
+  nothing is a gradient, nothing is frosted glass.
 
-  Dark mode is one media query and it works because of how the palette is
-  built: everything is drawn as ink outlines on paper, with the marker
-  colours as fills. Swap paper and ink and the markers still read.
+  Theme is three-state: follow the system, or force light or dark. The
+  palette is built so that costs almost nothing, because everything is drawn
+  as ink outlines on paper with a fixed six-pen marker palette, and a felt
+  tip reads on white paper and on a blackboard alike.
 -->
 
 <style>
+/* =========================================================================
+   STYLE GUIDE
+
+   The page is a sticker collage on a drawing surface. Two surfaces: paper
+   under crayon, and a blackboard under chalk. Everything else follows from
+   that, and the one rule the whole thing has to obey is that the collage
+   supports the content and never competes with it. The entries win.
+
+   SURFACE   --paper is the ground, --card the thing lying on it, --ink the
+             one colour everything is drawn with. Borders are 3px of --ink,
+             never a lighter grey, because a drawn line has one weight.
+
+   PENS      Twelve hues, taken wholesale from one row of Open Color
+             (yeun.github.io/open-color), the palette Excalidraw is built
+             on. Every colour in an Open Color row is tuned to the same
+             perceived lightness, which is the whole trick: twelve hues give
+             real variety while the equal lightness keeps them reading as
+             one box of crayons rather than twelve unrelated colours. Light
+             takes row 7, dark takes row 3, so the two themes are the same
+             drawing in a different medium.
+
+             Decoration and meaning are separate. --pen-1..12 draw the title
+             and the doodles and mean nothing at all. --ok, --bad, --badge
+             and --hi carry state and never rotate.
+
+   TYPE      Two faces. Marker (Permanent Marker) is the hand: title, phase,
+             countdown, section headings, labels. The system sans is the
+             voice: entry titles, captions, anything somebody wrote. Nothing
+             important is set in the hand at body size, because a display
+             face at 15px is a smudge.
+
+   EDGES     Nothing is blurred. Shadows are hard offsets (3-6px, no blur),
+             corners are the wobble radius, and cards sit at a degree or two
+             off square. Every one of those says drawn by hand rather than
+             rendered.
+
+   COLLAGE   Full bleed and dense, sized 64px to 200px with a long tail so
+             a few dominate and most are marginalia. Placed on a jittered
+             grid across the whole page, skipping any cell that would touch
+             the real bounding box of the header, the entries or the footer.
+             That is what lets it fill the background without ever landing
+             on a word.
+
+   MOTION    Slow, per item, never in step: 10 to 26 seconds, random delay,
+             four to nine degrees of sway and a dozen pixels of rise. Enough
+             that the margin is alive when you look at it, slow enough that
+             it never pulls the eye off an entry. Cards arrive with a small
+             pop, once, on first paint only. All off under
+             prefers-reduced-motion.
+   ========================================================================= */
+
 :root {
   color-scheme: light dark;
 
-  /* Marker pens. The same six in both themes on purpose: a felt tip reads
-     on white paper and on a blackboard, which is the whole trick that makes
-     the dark mode below three lines long. */
-  --red:    #e5372a;
-  --orange: #f08c1e;
-  --yellow: #f2c230;
-  --green:  #3aa34a;
-  --blue:   #2f6fd0;
-  --purple: #8b3fbf;
+  /* Crayon on a whiteboard: Open Color row 7. */
+  --pen-1:  #f03e3e; --pen-2:  #d6336c; --pen-3:  #ae3ec9; --pen-4:  #7050f2;
+  --pen-5:  #4263eb; --pen-6:  #1c7ed6; --pen-7:  #1098ad; --pen-8:  #0ca678;
+  --pen-9:  #37b24d; --pen-10: #74b816; --pen-11: #f59f00; --pen-12: #f76707;
+  /* State. Never rotates with the decorative set. */
+  --ok:    #37b24d;
+  --bad:   #f03e3e;
+  --focus: #1c7ed6;
+  --on-pen: #fff;
+  /* The bands at the top and bottom: the same paper one step warmer, so the
+     page has an edge without a hard rule doing all the work. */
+  --band: #f5efe1;
 
   --paper: #fdfbf6;
   --card:  #ffffff;
   --ink:   #17150f;
   --muted: #6b6459;
   --shadow: rgba(23, 21, 15, .18);
+  /* The headline cloud needs its own token rather than --blue at low alpha.
+     A wash that reads as sky on paper turns into a murky navy bruise on a
+     dark ground, so the two themes want genuinely different values. */
+  --blob: #bcd6f5;
+  --blob-alpha: .85;
+  /* Highlighter behind the countdown. Solid on paper; on a dark ground a
+     solid marker swatch is louder than the text it is meant to underline. */
+  --hi: #f2c230;
+  --badge: #f2c230;
+  /* A deep crayon at half strength is just a pale crayon, so the light
+     theme leans on the colour being darker rather than on transparency. */
+  --sticker-op: .8;
+  --doodle-op: .9;
+  /* One wave, three tiles: the line, and the same line closed upward and
+     downward into a fill. Shared prefix, so they cannot drift apart. */
+  --wave: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='72' height='14' viewBox='0 0 72 14'><path d='M0 7q9-7 18 0t18 0 18 0 18 0' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'/></svg>");
+  --wave-up: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='72' height='14' viewBox='0 0 72 14'><path d='M0 7q9-7 18 0t18 0 18 0 18 0 V0 H0 Z' fill='black'/></svg>");
+  --wave-down: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='72' height='14' viewBox='0 0 72 14'><path d='M0 7q9-7 18 0t18 0 18 0 18 0 V14 H0 Z' fill='black'/></svg>");
 }
+
+/* Dark, in three places that must agree: the system default, and both
+   explicit overrides. Bare :root above is the light palette, so no token is
+   ever defined only inside a media query. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #16150f;
-    --card:  #1e1c15;
-    --ink:   #f0ece2;
-    --muted: #98918a;
+  :root:not([data-theme="light"]) {
+    --paper: #1b211f;
+    --card:  #242b28;
+    --ink:   #eceae0;
+    --muted: #a9b0a8;
     --shadow: rgba(0, 0, 0, .5);
+    /* A chalk smudge from the same family as the pens, rather than a saturated
+       navy sitting behind them refusing to belong. */
+    --blob: #74c0fc;
+    --blob-alpha: .26;
+    --hi: rgba(255, 224, 102, .3);
+    --badge: #ffe066;
+    --sticker-op: .88;
+    --doodle-op: .92;
+    /* Chalk on a blackboard: Open Color row 3. */
+    --pen-1:  #ffa8a8; --pen-2:  #faa2c1; --pen-3:  #e599f7; --pen-4:  #b197fc;
+    --pen-5:  #91a7ff; --pen-6:  #74c0fc; --pen-7:  #66d9e8; --pen-8:  #63e6be;
+    --pen-9:  #8ce99a; --pen-10: #c0eb75; --pen-11: #ffe066; --pen-12: #ffc078;
+    --ok:    #8ce99a;
+    --bad:   #ffa8a8;
+    --focus: #74c0fc;
+    --on-pen: #1b211f;
+    --band: #222a27;
   }
+}
+:root[data-theme="dark"] {
+  --paper: #1b211f;
+  --card:  #242b28;
+  --ink:   #eceae0;
+  --muted: #a9b0a8;
+  --shadow: rgba(0, 0, 0, .5);
+  /* A chalk smudge from the same family as the pens, rather than a saturated
+     navy sitting behind them refusing to belong. */
+  --blob: #74c0fc;
+  --blob-alpha: .26;
+  --hi: rgba(255, 224, 102, .3);
+  --badge: #ffe066;
+  --sticker-op: .88;
+  --doodle-op: .92;
+  /* Chalk on a blackboard: Open Color row 3. */
+  --pen-1:  #ffa8a8; --pen-2:  #faa2c1; --pen-3:  #e599f7; --pen-4:  #b197fc;
+  --pen-5:  #91a7ff; --pen-6:  #74c0fc; --pen-7:  #66d9e8; --pen-8:  #63e6be;
+  --pen-9:  #8ce99a; --pen-10: #c0eb75; --pen-11: #ffe066; --pen-12: #ffc078;
+  --ok:    #8ce99a;
+  --bad:   #ffa8a8;
+  --focus: #74c0fc;
+  --on-pen: #1b211f;
+  --band: #222a27;
 }
 
 @font-face {
@@ -70,173 +188,387 @@
 
 body {
   margin: 0;
+  min-height: 100vh; display: flex; flex-direction: column;
   background: var(--paper);
   color: var(--ink);
   font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   overflow-x: hidden;
 }
+/* The stage takes whatever is left, which is also what gives the collage
+   room to fill on a contest with two entries. */
+.stage { flex: 1 0 auto; }
+.ticker, .rule, footer { flex: none; }
 
-h1, h2, .chip, button {
-  font-family: 'Nunito', ui-rounded, ui-sans-serif, system-ui, sans-serif;
-  font-weight: 900;
-}
+h1, h2, .chip, .theme-btn, button { font-family: 'Nunito', ui-rounded, ui-sans-serif, system-ui, sans-serif; font-weight: 900; }
 
 main {
-  max-width: 62rem;
+  max-width: 64rem;
   margin: 0 auto;
-  padding: 1.5rem 1rem 8rem;
+  padding: 1rem 1rem 7rem;
   position: relative;
   z-index: 1;
 }
 
-/* The collage. Absolutely positioned, decorative, and gone on a phone where
-   the screen is the content and a sticker over it is just in the way. */
-.stickers { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
-.stickers img { position: absolute; width: 88px; opacity: .5; }
+/* --- the collage ------------------------------------------------------- */
+.stage { position: relative; }
+/* Absolute to the page rather than fixed to the viewport, so the collage
+   belongs to the document it decorates and stops short of the footer. */
+.stickers { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+.stickers > * { position: absolute; }
+.stickers img { opacity: var(--sticker-op); }
+/* Stroke width lives in viewBox units, so it scales with the shape and a
+   200px sticker keeps the same fat marker line as a 70px one. */
+.stickers svg {
+  fill: none; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round;
+  opacity: var(--doodle-op);
+}
+/* Slow enough that you notice it only if you stop and watch. The rotation
+   each piece was placed at rides as a custom property so the animation can
+   move around it instead of overwriting it. */
+.stickers > * {
+  transform: rotate(var(--rot));
+  animation: drift var(--dur) ease-in-out var(--delay) infinite alternate;
+}
+@keyframes drift {
+  from { transform: rotate(var(--rot)) translate(0, 0); }
+  to   { transform: rotate(calc(var(--rot) + var(--sway))) translate(var(--slide), var(--rise)); }
+}
+
+/* Entries arrive rather than appear, once, on the first paint. Re-running
+   this on every thirty second poll would make the page twitch at people who
+   are just reading it. */
+.grid.first .card { animation: pop .38s cubic-bezier(.2, .9, .3, 1.2) backwards; }
+@keyframes pop { from { opacity: 0; transform: translateY(14px) scale(.96) rotate(0); } }
 @media (max-width: 900px) { .stickers { display: none; } }
 
-/* The cloud behind the title. One inline SVG path, filled with the blue
-   marker at low opacity so it sits under the letters rather than fighting
-   them. */
-header { position: relative; text-align: center; padding: 2rem 0 1rem; }
-header svg.blob {
-  position: absolute; left: 50%; top: 50%;
-  width: min(46rem, 108%); transform: translate(-50%, -52%);
-  fill: var(--blue); opacity: .22; z-index: -1;
+/* --- theme toggle ------------------------------------------------------ */
+.theme-btn {
+  position: fixed; top: .9rem; right: .9rem; z-index: 10;
+  padding: .3rem .85rem; font-size: .9rem; cursor: pointer;
+  color: var(--ink); background: var(--card);
+  border: 3px solid var(--ink);
+  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
+  box-shadow: 3px 3px 0 var(--shadow);
+  transform: rotate(-2deg);
+  transition: transform .12s ease;
+}
+.theme-btn:hover { transform: rotate(0) scale(1.04); }
+.theme-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+/* --- header ------------------------------------------------------------ */
+header { text-align: center; padding: 2.8rem 0 1.2rem; }
+.titlewrap { position: relative; display: inline-block; padding: .6rem 2.6rem; }
+.titlewrap svg.blob {
+  position: absolute; left: 50%; top: 52%;
+  width: 118%; height: 128%; transform: translate(-50%, -50%);
+  fill: var(--blob); opacity: var(--blob-alpha); z-index: -1;
 }
 
-h1 { margin: 0; font-size: clamp(2.4rem, 9vw, 5rem); line-height: .95; letter-spacing: -.01em; }
+h1 { margin: 0; font-size: clamp(2.1rem, 8.5vw, 4.6rem); line-height: .95; }
 h1 span { display: inline-block; font-family: 'Marker', 'Nunito', cursive; }
-h1 .sp { width: .35em; }
+h1 .sp { width: .3em; }
 
-.theme { margin: .75rem auto 0; max-width: 34rem; color: var(--muted); }
-.clock { margin: .5rem 0 0; font-weight: 700; }
+/* The brief is the guild's own words, so it gets the hand and a crayon
+   underline rather than sitting there as unstyled body copy. */
+.brief { margin: 1.4rem 0 0; }
+.brief .ul {
+  position: relative; display: inline-block; max-width: 32rem;
+  font-family: 'Marker', cursive; font-size: 1.25rem; line-height: 1.3;
+  color: var(--ink); padding: 0 .35rem .4rem;
+}
+.brief svg {
+  position: absolute; left: 0; bottom: 0; width: 100%; height: 9px;
+  fill: none; stroke: var(--pen-12); stroke-width: 3;
+  stroke-linecap: round; opacity: .95;
+}
+
+/* What the contest is doing right now, said rather than implied. The
+   countdown alone made you infer the phase from the verb. */
+.phase { margin: 2rem 0 0; }
+.pill {
+  display: inline-block; padding: .1rem 1rem .16rem;
+  font-family: 'Marker', cursive; font-size: 1.05rem;
+  color: #17150f; background: var(--badge);
+  border: 3px solid var(--ink);
+  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
+  /* Offset like everything else on this page rather than a soft drop
+     shadow, which was the one blurred edge in a document drawn entirely in
+     hard lines. */
+  box-shadow: 3px 3px 0 var(--shadow);
+  transform: rotate(-1.5deg);
+  letter-spacing: .02em;
+}
+.pill.announce { background: var(--pen-6); color: var(--on-pen); }
+.pill.submit   { background: var(--ok); color: var(--on-pen); }
+.pill.vote     { background: var(--badge); color: #17150f; }
+.pill.results  { background: var(--pen-3); color: var(--on-pen); }
+.pill.cancelled { background: var(--bad); color: var(--on-pen); }
+
+/* The countdown and the links used to share one row, which put a marker
+   display face, a bold sans and two outlined bubbles on the same line at
+   three different sizes. They are different kinds of thing and now sit on
+   their own lines. */
+.clock {
+  margin: .8rem 0 0; text-align: center;
+  font-family: 'Marker', cursive; font-size: 1.55rem; line-height: 1.15;
+}
+.clock b {
+  font-weight: 400; position: relative; padding: 0 .12em;
+  background: linear-gradient(var(--hi), var(--hi)) 0 88% / 100% .28em no-repeat;
+}
+
+.links {
+  margin: 1.7rem 0 0; display: flex; flex-wrap: wrap;
+  gap: .6rem; align-items: center; justify-content: center;
+}
 
 h2 {
-  font-size: 1.15rem; margin: 2.25rem 0 .85rem;
-  text-transform: lowercase; letter-spacing: .01em;
+  font-family: 'Marker', cursive; font-weight: 400;
+  font-size: 1.4rem; margin: 3rem 0 1.3rem; text-align: center;
+  color: var(--ink);
 }
 
-/* Wobble. Two irregular radii on one element read as a marker outline
-   without a single image, and the alternating tilt below is what stops a
-   grid of them looking like a grid. */
+/* A crayon line, not a border. Stretched with preserveAspectRatio="none" so
+   one path covers any width, which is why the wave is drawn in a viewBox
+   that tiles cleanly rather than as a repeating background image. */
+.rule {
+  display: block; width: 100%; height: 14px; opacity: .5;
+  position: relative; z-index: 3;
+  background-color: var(--ink);
+  -webkit-mask: var(--wave) repeat-x left center / 72px 14px;
+  mask: var(--wave) repeat-x left center / 72px 14px;
+}
+/* Each rule is pulled back over the band it terminates, so the ink line
+   lands exactly on the edge of the fill instead of below it. */
+.ticker + .rule { margin-top: -14px; }
+.rule.above-foot { margin-top: 2.2rem; margin-bottom: -14px; }
+
+/* The ticker is ambient: it says where the contest is up to for somebody who
+   has just opened the tab, and it is aria-hidden because the same facts are
+   in the header as real text. */
+.ticker {
+  overflow: hidden; padding: .5rem 0 1.1rem;
+  position: relative; z-index: 2; background: var(--band);
+  /* Two mask layers: everything above the wave, plus the wave itself. */
+  -webkit-mask: linear-gradient(#000 0 0) left top / 100% calc(100% - 13px) no-repeat,
+                var(--wave-up) repeat-x left bottom / 72px 14px;
+  mask: linear-gradient(#000 0 0) left top / 100% calc(100% - 13px) no-repeat,
+        var(--wave-up) repeat-x left bottom / 72px 14px;
+}
+.ticker .run {
+  display: inline-flex; white-space: nowrap; will-change: transform;
+  animation: run var(--run-dur, 42s) linear infinite;
+}
+.ticker span {
+  font-family: 'Marker', cursive; font-size: 1rem;
+  color: var(--muted); padding: 0 1.1rem;
+}
+.ticker span::after { content: "\2022"; margin-left: 1.1rem; color: var(--badge); }
+@keyframes run { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+footer {
+  position: relative; z-index: 1; margin: 0;
+  padding: 1rem 0 1.6rem; text-align: center; background: var(--band);
+  -webkit-mask: var(--wave-down) repeat-x left top / 72px 14px,
+                linear-gradient(#000 0 0) left bottom / 100% calc(100% - 13px) no-repeat;
+  mask: var(--wave-down) repeat-x left top / 72px 14px,
+        linear-gradient(#000 0 0) left bottom / 100% calc(100% - 13px) no-repeat;
+}
+footer p {
+  margin: .15rem 0 0; font-family: 'Marker', cursive;
+  font-size: .9rem; color: var(--muted);
+}
+
 .wobble {
   border: 3px solid var(--ink);
   border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
   background: var(--card);
 }
 
+/* --- entries ----------------------------------------------------------- */
+/* Flex-wrap centred rather than a grid. A grid left-aligns, so a contest
+   with one or two entries stranded them in the top-left with the rest of
+   the screen empty, and small contests are the common case on a server this
+   size. */
 .grid {
-  display: grid; gap: 1.25rem;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  display: flex; flex-wrap: wrap; justify-content: center;
+  align-items: flex-start; gap: 1.4rem;
 }
 
 .card {
   position: relative;
-  padding: .7rem;
-  text-align: left; width: 100%;
-  color: inherit; font: inherit; cursor: pointer;
-  box-shadow: 3px 3px 0 var(--shadow);
+  flex: 0 1 18.5rem; max-width: 21rem;
+  padding: .7rem; text-align: left;
+  color: inherit; font: inherit;
+  box-shadow: 4px 4px 0 var(--shadow);
   transition: transform .12s ease, box-shadow .12s ease;
 }
-.card:nth-child(odd)  { transform: rotate(-1.3deg); }
+button.card { cursor: pointer; }
+.card:nth-child(odd)  { transform: rotate(-1.2deg); }
 .card:nth-child(even) { transform: rotate(.9deg); }
-.card:hover, .card:focus-visible { transform: rotate(0); box-shadow: 5px 5px 0 var(--shadow); }
-.card:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
-.card[disabled] { cursor: default; }
+button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-2px); box-shadow: 6px 6px 0 var(--shadow); }
+.card:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 
-.card figure { margin: 0; }
+.card figure { margin: 0; display: grid; gap: .35rem; }
+/* Two across once there is more than one image, so four attachments read as
+   a small contact sheet rather than a column you have to scroll. */
+.card figure.multi { grid-template-columns: 1fr 1fr; }
+/* contain, not cover. The old fixed 4:3 crop guillotined anything that was
+   not already landscape, which for a meme or a tall drawing is the half you
+   wanted. Letterboxing onto paper is the honest option. */
 .card img.art, .card video {
-  display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover;
-  border-radius: 12px; background: var(--paper);
+  display: block; width: 100%; height: auto;
+  max-height: 22rem; object-fit: contain;
+  border-radius: 10px; background: var(--paper);
 }
-.card audio { width: 100%; margin: .5rem 0; }
+.card figure.multi img.art { max-height: 11rem; object-fit: cover; }
+.card audio { width: 100%; margin: .4rem 0; }
+/* Text sits with the art now instead of instead of it. An entry that was a
+   drawing plus a caption used to lose the caption entirely. */
 .card .body {
-  margin: .25rem 0 0; white-space: pre-wrap; overflow: hidden;
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; line-clamp: 6;
+  margin: .5rem 0 0; white-space: pre-wrap; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7; line-clamp: 7;
 }
-.card .name { font-weight: 700; margin: .5rem 0 0; }
-.card .by { color: var(--muted); font-size: .9rem; }
+.card .body.only { margin-top: 0; -webkit-line-clamp: 12; line-clamp: 12; }
+.card .name { font-weight: 800; margin: .55rem 0 0; }
+.card .by { color: var(--muted); font-size: .9rem; margin: .1rem 0 0; }
+.card .more { color: var(--muted); font-size: .82rem; margin: .3rem 0 0; }
 
 .card[aria-pressed="true"] {
-  border-color: var(--green);
-  box-shadow: 0 0 0 3px var(--green), 4px 4px 0 var(--shadow);
+  border-color: var(--ok);
+  box-shadow: 0 0 0 3px var(--ok), 5px 5px 0 var(--shadow);
 }
 .card[aria-pressed="true"]::after {
   content: "picked";
-  position: absolute; top: -.65rem; right: -.4rem;
-  background: var(--green); color: #fff;
+  position: absolute; top: -.7rem; right: -.5rem;
+  background: var(--ok); color: var(--on-pen);
   font-family: 'Marker', cursive; font-size: .95rem;
-  padding: .05rem .55rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
+  padding: .05rem .6rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
   transform: rotate(6deg);
+}
+.card.mine::after {
+  content: "yours";
+  position: absolute; top: -.7rem; right: -.5rem;
+  background: var(--card); color: var(--muted);
+  border: 3px solid var(--ink);
+  font-family: 'Marker', cursive; font-size: .9rem;
+  padding: 0 .55rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
+  transform: rotate(4deg);
 }
 
 .rank {
-  position: absolute; top: -.9rem; left: -.7rem;
-  width: 2.2rem; height: 2.2rem; display: grid; place-items: center;
-  background: var(--yellow); color: #17150f;
+  position: absolute; top: -1rem; left: -.8rem;
+  width: 2.3rem; height: 2.3rem; display: grid; place-items: center;
+  background: var(--badge); color: #17150f;
   font-family: 'Marker', cursive; font-size: 1.2rem;
   border: 3px solid var(--ink);
   border-radius: 48% 52% 55% 45% / 55% 48% 52% 45%;
   transform: rotate(-8deg);
 }
-.card.win { border-color: var(--yellow); box-shadow: 0 0 0 4px var(--yellow), 4px 4px 0 var(--shadow); }
-.votes { font-family: 'Marker', cursive; font-size: 1.05rem; }
+.card.win { border-color: var(--badge); box-shadow: 0 0 0 4px var(--badge), 5px 5px 0 var(--shadow); }
+.votes { font-family: 'Marker', cursive; font-size: 1.3rem; color: var(--ink); }
 
-.prize { padding: .6rem .85rem; margin-bottom: .7rem; box-shadow: 3px 3px 0 var(--shadow); }
-.prize:nth-child(odd) { transform: rotate(-.6deg); }
+/* --- prizes ------------------------------------------------------------ */
+.prizes { display: flex; flex-wrap: wrap; justify-content: center; gap: .8rem; }
+.prize { padding: .55rem .9rem; max-width: 20rem; box-shadow: 3px 3px 0 var(--shadow); }
+.prize:nth-child(odd) { transform: rotate(-.7deg); }
+.prize:nth-child(even) { transform: rotate(.5deg); }
 .prize b { display: block; }
 .prize small { color: var(--muted); }
 
 .chip {
-  display: inline-block; padding: .3rem .8rem; margin: 0 .35rem .35rem 0;
+  display: inline-block; padding: .32rem .95rem;
   border: 3px solid var(--ink); background: var(--card);
   border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
   text-decoration: none; color: inherit; font-size: .95rem;
+  box-shadow: 2px 2px 0 var(--shadow);
 }
-.chip:hover { background: var(--yellow); color: #17150f; }
+/* Not every chip is a link. The one naming who you are signed in as is a
+   label, so it gets a dashed crayon outline instead of a solid one: clearly
+   drawn on purpose, clearly not a thing you press. */
+.chip.who {
+  border-style: dashed; box-shadow: none; background: none;
+  font-family: 'Marker', cursive; font-weight: 400; font-size: 1rem;
+  color: var(--muted);
+}
+a.chip:hover { background: var(--badge); color: #17150f; }
+.chip.go { background: var(--ok); color: var(--on-pen); }
+a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
 
-/* The bar. Fixed, because it is the answer to "how many have i picked" and
-   that question comes up while scrolling. */
+/* --- the picks bar ----------------------------------------------------- */
 .bar {
-  position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%);
-  display: none; align-items: center; gap: .75rem; z-index: 5;
-  padding: .55rem 1.1rem; box-shadow: 4px 4px 0 var(--shadow);
-  max-width: calc(100vw - 2rem);
+  position: fixed; left: 50%; bottom: 4.6rem; transform: translateX(-50%);
+  display: none; align-items: center; gap: .7rem; z-index: 9;
+  padding: .5rem 1.1rem; box-shadow: 4px 4px 0 var(--shadow);
+  max-width: calc(100vw - 1.5rem); font-size: .95rem;
 }
 .bar.on { display: flex; }
-.bar .dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--green); }
-.bar .dot.busy { background: var(--yellow); }
-.bar .dot.bad  { background: var(--red); }
+.bar .dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--ok); flex: none; }
+.bar .dot.busy { background: var(--badge); }
+.bar .dot.bad  { background: var(--bad); }
 
-.note { color: var(--muted); }
-.empty { padding: 2rem 0; text-align: center; color: var(--muted); }
+.empty { padding: 2.5rem 0; text-align: center; color: var(--muted); }
+
+/* --- narrow ------------------------------------------------------------ */
+/* A phone is where most people open a link from Discord, so this is the
+   case the defaults should suit rather than the one they degrade into. */
+@media (max-width: 640px) {
+  main { padding: .5rem .75rem 6.5rem; }
+  header { padding: 2.6rem 0 .2rem; }
+  .titlewrap { padding: .4rem 1.1rem; }
+  h1 { font-size: clamp(1.9rem, 11vw, 3rem); }
+  h2 { margin: 1.4rem 0 .7rem; font-size: 1.2rem; }
+  .clock { font-size: 1.25rem; margin-top: .4rem; }
+  .brief { font-size: 1.05rem; }
+  .phase { margin-top: .75rem; }
+  .card { flex: 1 1 100%; max-width: 100%; transform: none; }
+  button.card:hover, button.card:focus-visible { transform: translateY(-2px); }
+  .card img.art, .card video { max-height: 65vh; }
+  .card figure.multi img.art { max-height: 9rem; }
+  .prize { max-width: 100%; }
+  .bar { left: .75rem; right: .75rem; bottom: 4.2rem; transform: none; max-width: none; justify-content: center; }
+  .theme-btn { top: .6rem; right: .6rem; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .card, .prize, .rank, .card[aria-pressed="true"]::after,
-  .stickers img, h1 span { transform: none !important; }
-  .card { transition: none; }
+  .ticker .run, .stickers .gut > * { animation: none; }
+  .grid.first .card { animation: none; }
+  .card, .prize, .rank, .theme-btn,
+  .card[aria-pressed="true"]::after, .card.mine::after,
+  .stickers > *, h1 span { transform: none !important; }
+  .card, .theme-btn { transition: none; }
 }
 </style>
 </head>
 <body>
 
-<div class="stickers" aria-hidden="true"></div>
+<div class="ticker" aria-hidden="true"><div class="run" id="tickerRun"></div></div>
+<div class="rule" aria-hidden="true"></div>
 
+<button class="theme-btn" id="themeBtn" type="button" title="light, dark, or follow your system"></button>
+
+<div class="stage" id="stage">
+<div class="stickers" id="stickers" aria-hidden="true"></div>
 <main>
   <header>
-    <svg class="blob" viewBox="0 0 600 200" aria-hidden="true">
-      <path d="M62 116C22 104 26 62 66 52c10-28 52-36 74-18 22-24 74-26 94-2 30-16 74-6 82 20 34 2 52 34 34 58 12 26-14 52-48 48-16 22-60 26-82 8-24 20-72 18-90-6-28 12-64 0-68-24z"/>
-    </svg>
-    <h1 id="title"></h1>
-    <p class="theme" id="theme" hidden></p>
+    <div class="titlewrap">
+      <svg class="blob" viewBox="34 15 323 165" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M62 116C22 104 26 62 66 52c10-28 52-36 74-18 22-24 74-26 94-2 30-16 74-6 82 20 34 2 52 34 34 58 12 26-14 52-48 48-16 22-60 26-82 8-24 20-72 18-90-6-28 12-64 0-68-24z"/>
+      </svg>
+      <h1 id="title"></h1>
+    </div>
+    <p class="brief" id="brief" hidden><span class="ul"><span id="briefText"></span>
+      <svg viewBox="0 0 200 9" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M2 6q12-4 24-1t24 1 24-2 24 1 24-1 24 2 22-1"/>
+      </svg></span></p>
+    <p class="phase" id="phase"></p>
     <p class="clock" id="clock"></p>
-    <p id="links"></p>
+    <p class="links" id="links"></p>
   </header>
 
   <section id="prizesWrap" hidden>
     <h2>on the table</h2>
-    <div id="prizes"></div>
+    <div class="prizes" id="prizes"></div>
   </section>
 
   <section id="entriesWrap" hidden>
@@ -246,6 +578,12 @@ h2 {
 
   <p class="empty" id="empty"></p>
 </main>
+</div>
+
+<div class="rule above-foot" aria-hidden="true"></div>
+<footer>
+  <p id="foot">merlin</p>
+</footer>
 
 <div class="bar wobble" id="bar" role="status">
   <span class="dot" id="dot"></span>
@@ -266,14 +604,39 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// Only http(s) links from the snapshot are ever put in an href. The text
-// comes from members, and a javascript: URL in an entry body would otherwise
-// be one click from running here.
+// Only http(s) links from the snapshot are ever put in an href or a src. The
+// text comes from members, and a javascript: URL in an entry body would
+// otherwise be one click from running here.
 const safeURL = (u) => (/^https?:\/\//i.test(u || "") ? u : "");
 
-// Seeded RNG so the headline is scribbled the same way every time this
-// contest is opened, and differently from the next one. A random tilt on
-// every load would read as a page that cannot sit still.
+// --- theme ---------------------------------------------------------------
+// Three states, because two would throw away the useful default. Unset means
+// follow the system, which is what a first visit gets; an explicit choice is
+// remembered. Every read and write is wrapped, since a browser set to block
+// site data throws on access rather than returning null.
+const THEMES = ["auto", "light", "dark"];
+
+function readTheme() {
+  try { return THEMES.includes(localStorage.theme) ? localStorage.theme : "auto"; }
+  catch { return "auto"; }
+}
+function applyTheme(t) {
+  if (t === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", t);
+  $("themeBtn").textContent = t;
+  $("themeBtn").setAttribute("aria-label", "theme: " + t + ", click to change");
+}
+applyTheme(readTheme());
+$("themeBtn").addEventListener("click", () => {
+  const next = THEMES[(THEMES.indexOf(readTheme()) + 1) % THEMES.length];
+  try { localStorage.theme = next; } catch { /* private window: this visit only */ }
+  applyTheme(next);
+});
+
+// --- the collage ---------------------------------------------------------
+// Seeded so a contest is scribbled the same way every time it is opened, and
+// differently from the next one. A fresh tilt on every load reads as a page
+// that cannot sit still.
 function seeded(str) {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
@@ -285,7 +648,161 @@ function seeded(str) {
   };
 }
 
-const PENS = ["--red", "--orange", "--yellow", "--green", "--blue", "--purple"];
+// Six mood sprites the bot also uses, plus five drawn for this page.
+const MOODS = ["ok", "warn", "info", "notice", "idle", "error",
+  "bomb", "fire", "rip", "party", "jail"];
+
+const PENS = ["--pen-1", "--pen-2", "--pen-3", "--pen-4", "--pen-5", "--pen-6",
+  "--pen-7", "--pen-8", "--pen-9", "--pen-10", "--pen-11", "--pen-12"];
+
+// Marker doodles, drawn as strokes so each takes a pen colour and reads on
+// either ground. Crude on purpose: this is a felt tip on paper, not an icon
+// set.
+// Every one of these was drawn, rendered at size and looked at before it got
+// in. Four earlier attempts (a spiral, a flower, a duck and a snail) came out
+// as tangles of stroke and were cut rather than shipped as shapes nobody
+// could name.
+const DOODLES = [
+  "M32 6 39 24 58 25 43 37 48 56 32 45 16 56 21 37 6 25 25 24Z",
+  "M32 56C10 40 8 22 20 16c7-4 12 2 12 6 0-4 5-10 12-6 12 6 10 24-12 40Z",
+  "M36 4 16 34h14l-4 26 22-32H34Z",
+  "M16 46C6 46 5 31 17 31 18 18 37 14 41 27 53 23 59 42 47 46Z",
+  "M5 32a27 27 0 0 1 54 0 27 27 0 0 1-54 0M22 25v5M42 25v5M20 40a16 14 0 0 0 24 0",
+  "M32 8 58 54H6ZM32 24v14M32 44v3",
+  "M20 10h24v13a12 12 0 0 1-24 0ZM20 14h-8a9 9 0 0 0 9 9M44 14h8a9 9 0 0 1-9 9M32 35v10M21 55h22l-3-9H24Z",
+  "M26 47a7 6 0 1 0 14 0 7 6 0 1 0-14 0M40 47V13c10 3 14 8 12 16",
+  "M13 27 17 8l13 9h4l13-9 4 19v9a21 19 0 0 1-42 0ZM23 33v3M41 33v3M32 41l-4 4M32 41l4 4",
+  "M8 32c12-17 36-17 48 0-12 17-36 17-48 0ZM32 25a7 7 0 1 1 0 14 7 7 0 1 1 0-14",
+  "M32 6l5 17 17 5-17 5-5 17-5-17-17-5 17-5Z",
+  "M6 40c10-16 20 8 30-6s14 2 22-4M52 24l6 4-3 7",
+  "M41 8a25 25 0 1 0 11 33A21 21 0 0 1 41 8Z",
+  "M12 20h30v18a15 15 0 0 1-30 0ZM42 24h6a7 7 0 0 1 0 14h-6M12 54h32",
+  "M32 18a14 14 0 1 1 0 28 14 14 0 1 1 0-28M32 3v9M32 52v9M3 32h9M52 32h9M11 11l7 7M46 46l7 7M53 11l-7 7M18 46l-7 7",
+  "M32 59c-11 0-17-8-17-16 0-11 11-14 9-26 8 4 10 10 10 14 0-6 4-9 7-11 0 6 8 9 8 18 0 11-6 21-17 21Z",
+  "M8 12h48v30H33L20 55V42H8Z",
+];
+
+// Fills the whole page behind the content, not two thin gutters beside it.
+//
+// The rule the reference collage obeys, and the one this has to obey too, is
+// that the marginalia support the content and never compete with it. So the
+// pieces go anywhere except on top of something you are meant to read: a
+// jittered grid is laid over the stage, and any cell whose footprint would
+// touch the real bounding box of the header, the prizes, the entries or the
+// picks bar is dropped. Measured rather than assumed, because those boxes
+// move with the phase, the entry count and the window width.
+//
+// Re-run after every render and on resize, since both change the boxes.
+function collageBoxes() {
+  const stage = $("stage").getBoundingClientRect();
+  const pad = 26;
+  const out = [];
+  for (const sel of ["header", "#prizesWrap", "#entriesWrap", "#empty", ".bar", ".theme-btn"]) {
+    for (const el of document.querySelectorAll(sel)) {
+      if (el.hidden || !el.getClientRects().length) continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      out.push({
+        x: r.left - stage.left - pad, y: r.top - stage.top - pad,
+        w: r.width + pad * 2, h: r.height + pad * 2,
+      });
+    }
+  }
+  return out;
+}
+
+function drawCollage() {
+  const box = $("stickers");
+  const stage = $("stage").getBoundingClientRect();
+  if (stage.width < 900) { box.innerHTML = ""; return; }
+
+  const blocked = collageBoxes();
+  const hits = (x, y, size) => blocked.some((b) =>
+    x + size > b.x && x < b.x + b.w && y + size > b.y && y < b.y + b.h);
+
+  // One offset per contest, so two contests never lay out alike while each
+  // stays completely stable within itself.
+  const slugSeed = Math.floor(seeded("offset:" + slug)() * 997);
+
+  // A cell a little wider than the biggest sticker, so neighbours have air
+  // between them even at the top of the size range.
+  const cell = 190;
+  const cols = Math.max(1, Math.floor(stage.width / cell));
+  const rows = Math.max(1, Math.floor(stage.height / cell));
+  const gapX = stage.width / cols;
+  const gapY = stage.height / rows;
+
+  // Pass one: where things go. Each cell draws from its own seed rather than
+  // from one sequence shared across the grid, which is what makes a sticker
+  // stay put: an entry arriving, or the window resizing, changes which cells
+  // are blocked, and with a shared sequence every survivor after the change
+  // would be handed somebody else's numbers and jump.
+  const placed = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const rnd = seeded(slug + ":" + r + ":" + c);
+      // Merlin can only land on one colour of a checkerboard, so two of her
+      // are never side by side however the rest falls out. Decided here
+      // rather than in pass two because the collision check below needs to
+      // know how much room this cell is going to want.
+      const wantsMerlin = (r + c) % 2 === 0;
+      // She is the character, so she gets a higher floor than the doodles:
+      // at the bottom of a shared range she came out as a speck next to a
+      // two hundred pixel scribble, which reads as a mistake rather than as
+      // depth. Both still skew small, so most of the page is marginalia.
+      const roll = rnd();
+      const size = wantsMerlin
+        ? Math.round(104 + Math.pow(roll, 1.6) * 96)
+        : Math.round(70 + Math.pow(roll, 2.1) * 130);
+      const x = c * gapX + rnd() * Math.max(0, gapX - size);
+      const y = r * gapY + rnd() * Math.max(0, gapY - size);
+      if (hits(x, y, size)) continue;
+
+      const rot = (rnd() * 34 - 17).toFixed(1);
+      const sway = (4 + rnd() * 5) * (rnd() < .5 ? -1 : 1);
+      placed.push({
+        r, c, x, y, size, wantsMerlin,
+        style: `left:${Math.round(x)}px;top:${Math.round(y)}px;` +
+          `--rot:${rot}deg;--sway:${sway.toFixed(1)}deg;` +
+          `--rise:${(-7 - rnd() * 10).toFixed(1)}px;--slide:${(rnd() * 10 - 5).toFixed(1)}px;` +
+          `--dur:${(10 + rnd() * 16).toFixed(1)}s;--delay:${(-rnd() * 24).toFixed(1)}s`,
+      });
+    }
+  }
+
+  // Pass two: hand out the merlins. She appears at most once each, so the
+  // eleven sprites are dealt to eleven candidate cells and everything else
+  // becomes a doodle. Candidates are taken at an even stride down the list
+  // rather than the first eleven, because the list is in row order and the
+  // first eleven would put every one of her along the top of the page.
+  const wants = placed.filter((q) => q.wantsMerlin);
+  const deck = MOODS.slice();
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(seeded("deck:" + slug + ":" + i)() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  const stride = wants.length / Math.min(deck.length, wants.length || 1);
+  const mine = new Map();
+  for (let k = 0; k < deck.length && k < wants.length; k++) {
+    mine.set(wants[Math.floor(k * stride)], deck[k]);
+  }
+
+  box.innerHTML = placed.map((q) => {
+    const mood = mine.get(q);
+    if (mood) {
+      return `<img src="/stickers/merlin_${mood}.png" alt="" loading="lazy"
+        style="${q.style};width:${q.size}px">`;
+    }
+    // Which doodle is decided purely by position, with one offset per
+    // contest. The strides are coprime with the list length, so stepping one
+    // cell in any direction always lands on a different shape.
+    const path = DOODLES[(q.r * 3 + q.c * 7 + slugSeed) % DOODLES.length];
+    const pen = PENS[(q.r * 5 + q.c * 3 + slugSeed) % PENS.length];
+    return `<svg viewBox="0 0 64 64"
+      style="${q.style};width:${q.size}px;height:${q.size}px;stroke:var(${pen})">
+      <path d="${path}"/></svg>`;
+  }).join("");
+}
 
 function drawTitle(text) {
   const rnd = seeded(slug || text);
@@ -295,19 +812,6 @@ function drawTitle(text) {
     const dy = (rnd() * 8 - 4).toFixed(1);
     const pen = PENS[Math.floor(rnd() * PENS.length)];
     return `<span style="transform:rotate(${rot}deg) translateY(${dy}px);color:var(${pen})">${esc(ch)}</span>`;
-  }).join("");
-}
-
-function drawStickers() {
-  const rnd = seeded("stickers:" + slug);
-  const names = ["ok", "warn", "info", "notice", "idle", "error"];
-  const spots = [[3, 12], [88, 8], [6, 62], [90, 55], [2, 86], [92, 84]];
-  const box = document.querySelector(".stickers");
-  box.innerHTML = names.map((n, i) => {
-    const [x, y] = spots[i];
-    const rot = (rnd() * 30 - 15).toFixed(1);
-    return `<img src="/stickers/merlin_${n}.png" alt="" loading="lazy"
-             style="left:${x}%;top:${y}%;transform:rotate(${rot}deg)">`;
   }).join("");
 }
 
@@ -325,26 +829,69 @@ function human(sec) {
 let snap = null;
 const picks = new Set();
 
+// The pill names the phase outright; the line under it counts down to the
+// end of that phase. Splitting them means neither has to carry both jobs.
 function phaseLine() {
   const now = Math.floor(Date.now() / 1000);
   switch (snap.phase) {
-    case "announce": return "entries open in " + human(snap.submit_at - now);
-    case "submit":   return "entries close in " + human(snap.vote_at - now);
-    case "vote":     return "voting shuts in " + human(snap.results_at - now);
-    case "results":  return "done";
-    default:         return "called off";
+    case "announce": return ["not open yet", "doors open in", human(snap.submit_at - now)];
+    case "submit":   return ["taking entries", "closes in", human(snap.vote_at - now)];
+    case "vote":     return ["voting", "shuts in", human(snap.results_at - now)];
+    case "results":  return ["done", "that is a wrap", ""];
+    default:         return ["called off", "nothing to see", ""];
   }
+}
+
+function renderMeta() {
+  const [pill, label, value] = phaseLine();
+  const forum = safeURL(snap.forum);
+  const open = snap.phase === "vote" && !snap.frozen;
+
+  $("phase").innerHTML = `<span class="pill ${esc(snap.phase)}">${esc(pill)}</span>`;
+  $("clock").innerHTML = esc(label) + (value ? " <b>" + esc(value) + "</b>" : "");
+
+  const bits = [];
+  if (open && !me.signed_in) {
+    bits.push(`<a class="chip go" href="/c/${encodeURIComponent(slug)}/login">sign in to vote</a>`);
+  }
+  if (forum) bits.push(`<a class="chip" href="${esc(forum)}">discord forum</a>`);
+  if (me.signed_in && me.name) {
+    bits.push(`<span class="chip who">you are ${esc(me.name)}</span>`);
+  }
+  $("links").innerHTML = bits.join("");
+
+  // The ticker carries the same facts as the header, so it is decorative and
+  // hidden from assistive tech. Duplicated once because the loop translates
+  // by half its own width.
+  const n = (snap.entries || []).length;
+  const facts = [pill, value ? label + " " + value : label,
+    n + (n === 1 ? " entry" : " entries")];
+  if (snap.theme) facts.push(snap.theme);
+  // merlin's own lines arrive in the snapshot from the voice catalog, so
+  // this page never authors a word she says.
+  runTicker(facts.concat(snap.quips || []));
+}
+
+// The strip has to be at least twice the viewport wide or the loop shows a
+// gap, and it translates by half its own width to hide the seam. So one
+// pass is repeated until it is wide enough and the duration scales with the
+// result, which keeps the speed constant however many facts there are.
+function runTicker(items) {
+  const run = $("tickerRun");
+  const one = items.map((t) => `<span>${esc(t)}</span>`).join("");
+  run.innerHTML = one;
+  const oneWidth = run.scrollWidth || 1;
+  const reps = Math.max(1, Math.ceil(window.innerWidth / oneWidth));
+  const half = one.repeat(reps);
+  run.innerHTML = half + half;
+  run.style.setProperty("--run-dur", ((oneWidth * reps) / 38).toFixed(1) + "s");
 }
 
 function render() {
   document.title = snap.title + " · contest";
   drawTitle(snap.title || "contest");
-  if (snap.theme) { $("theme").textContent = snap.theme; $("theme").hidden = false; }
-  $("clock").textContent = phaseLine();
-
-  const forum = safeURL(snap.forum);
-  $("links").innerHTML = forum
-    ? `<a class="chip" href="${esc(forum)}">the forum, in discord</a>` : "";
+  if (snap.theme) { $("briefText").textContent = snap.theme; $("brief").hidden = false; }
+  renderMeta();
 
   const prizes = snap.prizes || [];
   $("prizesWrap").hidden = prizes.length === 0;
@@ -361,23 +908,21 @@ function render() {
     ? results.map((r) => entries.find((e) => e.id === r.id)).filter(Boolean)
     : entries;
 
+  const votable = snap.phase === "vote" && !snap.frozen && me.signed_in;
+
   $("entriesWrap").hidden = order.length === 0;
   $("entriesHead").textContent = snap.phase === "results"
     ? "how it landed" : order.length + (order.length === 1 ? " entry" : " entries");
 
-  const open = snap.phase === "vote" && !snap.frozen;
-  const votable = open && me.signed_in;
-  $("grid").innerHTML = order.map((e) => card(e, rankOf.get(e.id), votable)).join("");
-
+  const grid = $("grid");
+  const fresh = !grid.dataset.painted && order.length > 0;
+  grid.innerHTML = order.map((e) => card(e, rankOf.get(e.id), votable)).join("");
+  grid.classList.toggle("first", fresh);
+  if (fresh) grid.dataset.painted = "1";
   if (votable) {
-    for (const el of document.querySelectorAll(".card[data-id]")) {
+    for (const el of document.querySelectorAll("button.card[data-id]")) {
       el.addEventListener("click", () => toggle(el.dataset.id));
     }
-  }
-  // The sign in chip is the only prompt on the page, and it is only here
-  // while there is something to sign in for.
-  if (open && !me.signed_in) {
-    $("links").innerHTML += `<a class="chip" href="/c/${encodeURIComponent(slug)}/login">sign in with discord to vote</a>`;
   }
 
   $("empty").textContent = order.length === 0
@@ -385,52 +930,68 @@ function render() {
     : "";
 
   updateBar();
+  drawCollage();
 }
 
 function card(e, r, votable) {
   // Your own entry is not a button. The Worker refuses a self-vote either
   // way, but being told no after tapping is worse than not being able to.
-  const mine = votable && me.mine && e.id === me.mine;
+  const mine = me.mine && e.id === me.mine;
   const tag = votable && !mine ? "button" : "div";
   const win = r && r.rank === 1 && snap.phase === "results";
   const link = safeURL(e.link);
-  const media = safeURL(e.url);
+
+  // urls is every attachment; url is the first, and all this falls back to
+  // it so a snapshot pushed by an older bot still renders.
+  const media = (Array.isArray(e.urls) && e.urls.length ? e.urls : [e.url])
+    .map(safeURL).filter(Boolean);
 
   let art = "";
-  if (e.kind === "image" && media) {
-    art = `<img class="art" src="${esc(media)}" alt="${esc(e.title || "entry")} by ${esc(e.by)}" loading="lazy" decoding="async">`;
-  } else if (e.kind === "video" && media) {
-    art = `<video src="${esc(media)}" controls preload="none"></video>`;
-  } else if (e.kind === "audio" && media) {
-    art = `<audio src="${esc(media)}" controls preload="none"></audio>`;
-  } else if (link) {
-    art = `<p class="body">${esc(link)}</p>`;
-  } else if (e.body) {
-    art = `<p class="body">${esc(e.body)}</p>`;
+  if (media.length && (e.kind === "image" || e.kind === "other")) {
+    const cls = media.length > 1 ? "multi" : "";
+    art = `<figure class="${cls}">` + media.map((u, i) =>
+      `<img class="art" src="${esc(u)}" alt="${esc(e.title || "entry")} by ${esc(e.by)}${media.length > 1 ? ", " + (i + 1) + " of " + media.length : ""}" loading="lazy" decoding="async">`
+    ).join("") + `</figure>`;
+  } else if (media.length && e.kind === "video") {
+    art = `<figure><video src="${esc(media[0])}" controls preload="none"></video></figure>`;
+  } else if (media.length && e.kind === "audio") {
+    art = `<figure><audio src="${esc(media[0])}" controls preload="none"></audio></figure>`;
   }
 
-  return `<${tag} class="card wobble${win ? " win" : ""}" data-id="${esc(e.id)}"
-      ${votable ? `aria-pressed="${picks.has(e.id)}"` : ""}>
+  // Text now sits with the art rather than instead of it. A drawing with a
+  // caption used to lose the caption entirely.
+  let words = "";
+  if (e.body) words = `<p class="body${art ? "" : " only"}">${esc(e.body)}</p>`;
+  else if (link && !art) words = `<p class="body only">${esc(link)}</p>`;
+
+  const extra = media.length > 1
+    ? `<p class="more">${media.length} images</p>` : "";
+
+  return `<${tag} class="card wobble${win ? " win" : ""}${mine ? " mine" : ""}" data-id="${esc(e.id)}"
+      ${votable && !mine ? `type="button" aria-pressed="${picks.has(e.id)}"` : ""}>
     ${r ? `<span class="rank">${r.rank}</span>` : ""}
-    <figure>${art}</figure>
+    ${art}${extra}
     <p class="name">${esc(e.title || "untitled")}</p>
-    <p class="by">${esc(e.by)}${r ? ` · <span class="votes">${r.votes}</span>` : ""}</p>
+    <p class="by">${esc(e.by)}${r ? ` · <span class="votes">${r.votes}</span> ${r.votes === 1 ? "vote" : "votes"}` : ""}</p>
+    ${words}
   </${tag}>`;
 }
 
 let saveTimer = null;
+let touched = false;
 
 // Optimistic: the pick lands in the UI immediately and the write is coalesced
 // a moment later, so tapping through six entries is one request rather than
 // six. The server replaces the whole ballot on every call, so a dropped
 // intermediate save is not a lost vote, it is a vote that was superseded.
 function toggle(id) {
+  touched = true;
   if (picks.has(id)) picks.delete(id);
   else if (picks.size >= (snap.max_votes || 1)) {
     return setBar("bad", "that is all " + snap.max_votes + " of your picks. unpick one first");
   } else picks.add(id);
 
-  for (const el of document.querySelectorAll(".card[data-id]")) {
+  for (const el of document.querySelectorAll("button.card[data-id]")) {
     el.setAttribute("aria-pressed", picks.has(el.dataset.id));
   }
   updateBar("busy");
@@ -486,25 +1047,34 @@ async function load() {
   ]);
   if (!viewRes.ok) {
     drawTitle("not here");
+    $("phase").innerHTML = "";
     $("clock").textContent = "that link does not go anywhere any more";
     return;
   }
   snap = await viewRes.json();
   me = meRes.ok ? await meRes.json() : { signed_in: false };
-  if (me.signed_in && !saveTimer) {
+  // Server state seeds the ballot until the viewer touches it, after which
+  // their own clicks win rather than being reverted by the next poll.
+  if (me.signed_in && !touched) {
     picks.clear();
     for (const id of me.picks || []) picks.add(id);
   }
   render();
 }
 
-drawStickers();
 load();
+
+let resizeTimer = null;
+addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (snap) drawCollage(); runTickerAgain(); }, 200);
+});
+function runTickerAgain() { if (snap) renderMeta(); }
 
 // Two timers, both cheap and both paused when the tab is not being looked
 // at. The clock is local arithmetic; the reload is what makes an entry
 // posted in discord show up here without anybody refreshing.
-setInterval(() => { if (snap && document.visibilityState === "visible") $("clock").textContent = phaseLine(); }, 15000);
+setInterval(() => { if (snap && document.visibilityState === "visible") renderMeta(); }, 15000);
 setInterval(() => { if (document.visibilityState === "visible") load(); }, 30000);
 </script>
 </body>

@@ -110,3 +110,28 @@ contest.prize_pledged:
   # blunt
   - "{donor}: {prize}. in the pool"
   - "{prize}. {donor}. noted"
+
+# The gallery ticker. Ambient text scrolling across the top of the contest
+# page, carrying nothing anybody acts on: the phase, the countdown and the
+# entry count run beside these as code-authored fields.
+#
+# In the catalog rather than written into the HTML because the rule that
+# merlin's words live in one reviewable place does not stop being true when
+# the surface happens to be a web page instead of a channel. Short, because
+# this scrolls past at reading speed and nobody rewinds a ticker.
+contest.ticker:
+  # calm
+  - "somebody made a thing. be nice about it"
+  - "have a proper look before you pick"
+  - "no wrong answers, just one that wins"
+  # neutral
+  - "one vote each. i did check"
+  - "the pile goes to whoever takes it"
+  - "nothing counts until it shuts"
+  # witty
+  - "i counted twice and got the same answer, worryingly"
+  - "peregrine tried to vote nine times"
+  - "art is subjective. the tally is not"
+  # blunt
+  - "pick one. anything but your own"
+  - "vote or don't, the clock does not care"
