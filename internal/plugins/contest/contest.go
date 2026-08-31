@@ -46,6 +46,12 @@ const (
 	// a hard platform limit.
 	channelCapHeadroom = 20
 
+	// maxEntryMedia bounds how many attachments one entry contributes to the
+	// gallery. Four fits a card without turning it into a scroller, and
+	// anything past that is a portfolio rather than a contest entry. The
+	// rest stay visible in the forum thread, which the card links to.
+	maxEntryMedia = 4
+
 	// maxEntries bounds one contest. Past this the gallery is unusable and
 	// the snapshot stops being small, and a server that genuinely needs more
 	// wants heats rather than a longer page.
@@ -409,6 +415,7 @@ func (p *Plugin) snapshotOf(c Contest, subs []Submission, prizes []Prize) snapsh
 			Title:  s.Title,
 			Kind:   s.Kind,
 			URL:    s.MediaURL,
+			URLs:   s.MediaURLs,
 			Link:   s.Link,
 			Body:   s.Body,
 			Thread: channelLink(c.GuildID, s.ThreadID),

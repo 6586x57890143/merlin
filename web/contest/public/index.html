@@ -14,22 +14,21 @@
 
   No framework and no build step, matching web/lab. Everything below is hand
   written CSS: the wobble is a border-radius trick, the collage is six PNGs
-  merlin already ships as her own mood icons, and the headline is spans with
-  a seeded rotation. Nothing is generated, nothing is a gradient, nothing is
-  frosted glass.
+  merlin already ships as her own mood icons plus a dozen inline SVG doodles,
+  and the headline is spans with a seeded rotation. Nothing is generated,
+  nothing is a gradient, nothing is frosted glass.
 
-  Dark mode is one media query and it works because of how the palette is
-  built: everything is drawn as ink outlines on paper, with the marker
-  colours as fills. Swap paper and ink and the markers still read.
+  Theme is three-state: follow the system, or force light or dark. The
+  palette is built so that costs almost nothing, because everything is drawn
+  as ink outlines on paper with a fixed six-pen marker palette, and a felt
+  tip reads on white paper and on a blackboard alike.
 -->
 
 <style>
 :root {
   color-scheme: light dark;
 
-  /* Marker pens. The same six in both themes on purpose: a felt tip reads
-     on white paper and on a blackboard, which is the whole trick that makes
-     the dark mode below three lines long. */
+  /* Marker pens. The same six in both themes on purpose. */
   --red:    #e5372a;
   --orange: #f08c1e;
   --yellow: #f2c230;
@@ -42,15 +41,35 @@
   --ink:   #17150f;
   --muted: #6b6459;
   --shadow: rgba(23, 21, 15, .18);
+  /* The headline cloud needs its own token rather than --blue at low alpha.
+     A wash that reads as sky on paper turns into a murky navy bruise on a
+     dark ground, so the two themes want genuinely different values. */
+  --blob: #bcd6f5;
+  --blob-alpha: .85;
 }
+
+/* Dark, in three places that must agree: the system default, and both
+   explicit overrides. Bare :root above is the light palette, so no token is
+   ever defined only inside a media query. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #16150f;
-    --card:  #1e1c15;
+    --card:  #201e17;
     --ink:   #f0ece2;
-    --muted: #98918a;
-    --shadow: rgba(0, 0, 0, .5);
+    --muted: #9c958a;
+    --shadow: rgba(0, 0, 0, .55);
+    --blob: #2d5c96;
+    --blob-alpha: .5;
   }
+}
+:root[data-theme="dark"] {
+  --paper: #16150f;
+  --card:  #201e17;
+  --ink:   #f0ece2;
+  --muted: #9c958a;
+  --shadow: rgba(0, 0, 0, .55);
+  --blob: #2d5c96;
+  --blob-alpha: .5;
 }
 
 @font-face {
@@ -76,152 +95,224 @@ body {
   overflow-x: hidden;
 }
 
-h1, h2, .chip, button {
-  font-family: 'Nunito', ui-rounded, ui-sans-serif, system-ui, sans-serif;
-  font-weight: 900;
-}
+h1, h2, .chip, .theme-btn, button { font-family: 'Nunito', ui-rounded, ui-sans-serif, system-ui, sans-serif; font-weight: 900; }
 
 main {
-  max-width: 62rem;
+  max-width: 64rem;
   margin: 0 auto;
-  padding: 1.5rem 1rem 8rem;
+  padding: 1rem 1rem 7rem;
   position: relative;
   z-index: 1;
 }
 
-/* The collage. Absolutely positioned, decorative, and gone on a phone where
-   the screen is the content and a sticker over it is just in the way. */
+/* --- the collage ------------------------------------------------------- */
 .stickers { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
-.stickers img { position: absolute; width: 88px; opacity: .5; }
-@media (max-width: 900px) { .stickers { display: none; } }
+/* Each gutter is measured, not guessed. Placing by viewport percentage put
+   everything in a vertical strip against the window edge, which read as a
+   toolbar rather than a collage; sizing a column to the actual space beside
+   the content lets things scatter across it and still never overlap. */
+.stickers .gut { position: absolute; top: 0; bottom: 0; width: calc((100vw - 64rem) / 2); }
+.stickers .gut.l { left: 0; }
+.stickers .gut.r { right: 0; }
+.stickers .gut > * { position: absolute; }
+.stickers img { width: 72px; opacity: .5; }
+.stickers svg { fill: none; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; opacity: .45; }
+@media (max-width: 1280px) { .stickers { display: none; } }
 
-/* The cloud behind the title. One inline SVG path, filled with the blue
-   marker at low opacity so it sits under the letters rather than fighting
-   them. */
-header { position: relative; text-align: center; padding: 2rem 0 1rem; }
+/* --- theme toggle ------------------------------------------------------ */
+.theme-btn {
+  position: fixed; top: .9rem; right: .9rem; z-index: 10;
+  padding: .3rem .85rem; font-size: .9rem; cursor: pointer;
+  color: var(--ink); background: var(--card);
+  border: 3px solid var(--ink);
+  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
+  box-shadow: 3px 3px 0 var(--shadow);
+  transform: rotate(-2deg);
+  transition: transform .12s ease;
+}
+.theme-btn:hover { transform: rotate(0) scale(1.04); }
+.theme-btn:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+
+/* --- header ------------------------------------------------------------ */
+header { position: relative; text-align: center; padding: 1.6rem 0 .4rem; }
 header svg.blob {
-  position: absolute; left: 50%; top: 50%;
-  width: min(46rem, 108%); transform: translate(-50%, -52%);
-  fill: var(--blue); opacity: .22; z-index: -1;
+  position: absolute; left: 50%; top: 46%;
+  width: min(44rem, 106%); transform: translate(-50%, -50%);
+  fill: var(--blob); opacity: var(--blob-alpha); z-index: -1;
 }
 
-h1 { margin: 0; font-size: clamp(2.4rem, 9vw, 5rem); line-height: .95; letter-spacing: -.01em; }
+h1 { margin: 0; font-size: clamp(2.1rem, 8.5vw, 4.6rem); line-height: .95; }
 h1 span { display: inline-block; font-family: 'Marker', 'Nunito', cursive; }
-h1 .sp { width: .35em; }
+h1 .sp { width: .3em; }
 
-.theme { margin: .75rem auto 0; max-width: 34rem; color: var(--muted); }
-.clock { margin: .5rem 0 0; font-weight: 700; }
+.brief { margin: .5rem auto 0; max-width: 34rem; font-weight: 700; }
+/* One row, not three stacked lines. The phase, the countdown and the links
+   sitting in a centred column was most of the empty space above the first
+   entry. */
+.meta {
+  margin: .65rem 0 0; display: flex; flex-wrap: wrap;
+  gap: .45rem; align-items: center; justify-content: center;
+}
+.clock { font-family: 'Marker', cursive; font-size: 1.15rem; }
+.clock b { border-bottom: 4px solid var(--yellow); padding-bottom: 1px; font-weight: 400; }
 
 h2 {
-  font-size: 1.15rem; margin: 2.25rem 0 .85rem;
-  text-transform: lowercase; letter-spacing: .01em;
+  font-size: 1.05rem; margin: 1.7rem 0 .8rem; text-align: center;
+  text-transform: lowercase; color: var(--muted);
 }
 
-/* Wobble. Two irregular radii on one element read as a marker outline
-   without a single image, and the alternating tilt below is what stops a
-   grid of them looking like a grid. */
 .wobble {
   border: 3px solid var(--ink);
   border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
   background: var(--card);
 }
 
+/* --- entries ----------------------------------------------------------- */
+/* Flex-wrap centred rather than a grid. A grid left-aligns, so a contest
+   with one or two entries stranded them in the top-left with the rest of
+   the screen empty, and small contests are the common case on a server this
+   size. */
 .grid {
-  display: grid; gap: 1.25rem;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  display: flex; flex-wrap: wrap; justify-content: center;
+  align-items: flex-start; gap: 1.4rem;
 }
 
 .card {
   position: relative;
-  padding: .7rem;
-  text-align: left; width: 100%;
-  color: inherit; font: inherit; cursor: pointer;
-  box-shadow: 3px 3px 0 var(--shadow);
+  flex: 0 1 18.5rem; max-width: 21rem;
+  padding: .7rem; text-align: left;
+  color: inherit; font: inherit;
+  box-shadow: 4px 4px 0 var(--shadow);
   transition: transform .12s ease, box-shadow .12s ease;
 }
-.card:nth-child(odd)  { transform: rotate(-1.3deg); }
+button.card { cursor: pointer; }
+.card:nth-child(odd)  { transform: rotate(-1.2deg); }
 .card:nth-child(even) { transform: rotate(.9deg); }
-.card:hover, .card:focus-visible { transform: rotate(0); box-shadow: 5px 5px 0 var(--shadow); }
+button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-2px); box-shadow: 6px 6px 0 var(--shadow); }
 .card:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
-.card[disabled] { cursor: default; }
 
-.card figure { margin: 0; }
+.card figure { margin: 0; display: grid; gap: .35rem; }
+/* Two across once there is more than one image, so four attachments read as
+   a small contact sheet rather than a column you have to scroll. */
+.card figure.multi { grid-template-columns: 1fr 1fr; }
+/* contain, not cover. The old fixed 4:3 crop guillotined anything that was
+   not already landscape, which for a meme or a tall drawing is the half you
+   wanted. Letterboxing onto paper is the honest option. */
 .card img.art, .card video {
-  display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover;
-  border-radius: 12px; background: var(--paper);
+  display: block; width: 100%; height: auto;
+  max-height: 22rem; object-fit: contain;
+  border-radius: 10px; background: var(--paper);
 }
-.card audio { width: 100%; margin: .5rem 0; }
+.card figure.multi img.art { max-height: 11rem; object-fit: cover; }
+.card audio { width: 100%; margin: .4rem 0; }
+/* Text sits with the art now instead of instead of it. An entry that was a
+   drawing plus a caption used to lose the caption entirely. */
 .card .body {
-  margin: .25rem 0 0; white-space: pre-wrap; overflow: hidden;
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; line-clamp: 6;
+  margin: .5rem 0 0; white-space: pre-wrap; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7; line-clamp: 7;
 }
-.card .name { font-weight: 700; margin: .5rem 0 0; }
-.card .by { color: var(--muted); font-size: .9rem; }
+.card .body.only { margin-top: 0; -webkit-line-clamp: 12; line-clamp: 12; }
+.card .name { font-weight: 800; margin: .55rem 0 0; }
+.card .by { color: var(--muted); font-size: .9rem; margin: .1rem 0 0; }
+.card .more { color: var(--muted); font-size: .82rem; margin: .3rem 0 0; }
 
 .card[aria-pressed="true"] {
   border-color: var(--green);
-  box-shadow: 0 0 0 3px var(--green), 4px 4px 0 var(--shadow);
+  box-shadow: 0 0 0 3px var(--green), 5px 5px 0 var(--shadow);
 }
 .card[aria-pressed="true"]::after {
   content: "picked";
-  position: absolute; top: -.65rem; right: -.4rem;
+  position: absolute; top: -.7rem; right: -.5rem;
   background: var(--green); color: #fff;
   font-family: 'Marker', cursive; font-size: .95rem;
-  padding: .05rem .55rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
+  padding: .05rem .6rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
   transform: rotate(6deg);
+}
+.card.mine::after {
+  content: "yours";
+  position: absolute; top: -.7rem; right: -.5rem;
+  background: var(--card); color: var(--muted);
+  border: 3px solid var(--ink);
+  font-family: 'Marker', cursive; font-size: .9rem;
+  padding: 0 .55rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
+  transform: rotate(4deg);
 }
 
 .rank {
-  position: absolute; top: -.9rem; left: -.7rem;
-  width: 2.2rem; height: 2.2rem; display: grid; place-items: center;
+  position: absolute; top: -1rem; left: -.8rem;
+  width: 2.3rem; height: 2.3rem; display: grid; place-items: center;
   background: var(--yellow); color: #17150f;
   font-family: 'Marker', cursive; font-size: 1.2rem;
   border: 3px solid var(--ink);
   border-radius: 48% 52% 55% 45% / 55% 48% 52% 45%;
   transform: rotate(-8deg);
 }
-.card.win { border-color: var(--yellow); box-shadow: 0 0 0 4px var(--yellow), 4px 4px 0 var(--shadow); }
-.votes { font-family: 'Marker', cursive; font-size: 1.05rem; }
+.card.win { border-color: var(--yellow); box-shadow: 0 0 0 4px var(--yellow), 5px 5px 0 var(--shadow); }
+.votes { font-family: 'Marker', cursive; font-size: 1.05rem; color: var(--ink); }
 
-.prize { padding: .6rem .85rem; margin-bottom: .7rem; box-shadow: 3px 3px 0 var(--shadow); }
-.prize:nth-child(odd) { transform: rotate(-.6deg); }
+/* --- prizes ------------------------------------------------------------ */
+.prizes { display: flex; flex-wrap: wrap; justify-content: center; gap: .8rem; }
+.prize { padding: .55rem .9rem; max-width: 20rem; box-shadow: 3px 3px 0 var(--shadow); }
+.prize:nth-child(odd) { transform: rotate(-.7deg); }
+.prize:nth-child(even) { transform: rotate(.5deg); }
 .prize b { display: block; }
 .prize small { color: var(--muted); }
 
 .chip {
-  display: inline-block; padding: .3rem .8rem; margin: 0 .35rem .35rem 0;
+  display: inline-block; padding: .28rem .8rem;
   border: 3px solid var(--ink); background: var(--card);
   border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
-  text-decoration: none; color: inherit; font-size: .95rem;
+  text-decoration: none; color: inherit; font-size: .92rem;
+  box-shadow: 2px 2px 0 var(--shadow);
 }
-.chip:hover { background: var(--yellow); color: #17150f; }
+a.chip:hover { background: var(--yellow); color: #17150f; }
+.chip.go { background: var(--green); color: #fff; }
+a.chip.go:hover { background: var(--green); color: #fff; }
 
-/* The bar. Fixed, because it is the answer to "how many have i picked" and
-   that question comes up while scrolling. */
+/* --- the picks bar ----------------------------------------------------- */
 .bar {
   position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%);
-  display: none; align-items: center; gap: .75rem; z-index: 5;
-  padding: .55rem 1.1rem; box-shadow: 4px 4px 0 var(--shadow);
-  max-width: calc(100vw - 2rem);
+  display: none; align-items: center; gap: .7rem; z-index: 9;
+  padding: .5rem 1.1rem; box-shadow: 4px 4px 0 var(--shadow);
+  max-width: calc(100vw - 1.5rem); font-size: .95rem;
 }
 .bar.on { display: flex; }
-.bar .dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--green); }
+.bar .dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--green); flex: none; }
 .bar .dot.busy { background: var(--yellow); }
 .bar .dot.bad  { background: var(--red); }
 
-.note { color: var(--muted); }
-.empty { padding: 2rem 0; text-align: center; color: var(--muted); }
+.empty { padding: 2.5rem 0; text-align: center; color: var(--muted); }
+
+/* --- narrow ------------------------------------------------------------ */
+/* A phone is where most people open a link from Discord, so this is the
+   case the defaults should suit rather than the one they degrade into. */
+@media (max-width: 640px) {
+  main { padding: .5rem .75rem 6.5rem; }
+  header { padding: 2.6rem 0 .2rem; }
+  h1 { font-size: clamp(1.9rem, 11vw, 3rem); }
+  h2 { margin: 1.2rem 0 .6rem; }
+  .card { flex: 1 1 100%; max-width: 100%; transform: none; }
+  button.card:hover, button.card:focus-visible { transform: translateY(-2px); }
+  .card img.art, .card video { max-height: 65vh; }
+  .card figure.multi img.art { max-height: 9rem; }
+  .prize { max-width: 100%; }
+  .bar { left: .75rem; right: .75rem; transform: none; max-width: none; justify-content: center; }
+  .theme-btn { top: .6rem; right: .6rem; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .card, .prize, .rank, .card[aria-pressed="true"]::after,
-  .stickers img, h1 span { transform: none !important; }
-  .card { transition: none; }
+  .card, .prize, .rank, .theme-btn,
+  .card[aria-pressed="true"]::after, .card.mine::after,
+  .stickers > *, h1 span { transform: none !important; }
+  .card, .theme-btn { transition: none; }
 }
 </style>
 </head>
 <body>
 
-<div class="stickers" aria-hidden="true"></div>
+<div class="stickers" aria-hidden="true"><div class="gut l"></div><div class="gut r"></div></div>
+
+<button class="theme-btn" id="themeBtn" type="button" title="light, dark, or follow your system"></button>
 
 <main>
   <header>
@@ -229,14 +320,13 @@ h2 {
       <path d="M62 116C22 104 26 62 66 52c10-28 52-36 74-18 22-24 74-26 94-2 30-16 74-6 82 20 34 2 52 34 34 58 12 26-14 52-48 48-16 22-60 26-82 8-24 20-72 18-90-6-28 12-64 0-68-24z"/>
     </svg>
     <h1 id="title"></h1>
-    <p class="theme" id="theme" hidden></p>
-    <p class="clock" id="clock"></p>
-    <p id="links"></p>
+    <p class="brief" id="brief" hidden></p>
+    <p class="meta" id="meta"></p>
   </header>
 
   <section id="prizesWrap" hidden>
     <h2>on the table</h2>
-    <div id="prizes"></div>
+    <div class="prizes" id="prizes"></div>
   </section>
 
   <section id="entriesWrap" hidden>
@@ -266,14 +356,39 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// Only http(s) links from the snapshot are ever put in an href. The text
-// comes from members, and a javascript: URL in an entry body would otherwise
-// be one click from running here.
+// Only http(s) links from the snapshot are ever put in an href or a src. The
+// text comes from members, and a javascript: URL in an entry body would
+// otherwise be one click from running here.
 const safeURL = (u) => (/^https?:\/\//i.test(u || "") ? u : "");
 
-// Seeded RNG so the headline is scribbled the same way every time this
-// contest is opened, and differently from the next one. A random tilt on
-// every load would read as a page that cannot sit still.
+// --- theme ---------------------------------------------------------------
+// Three states, because two would throw away the useful default. Unset means
+// follow the system, which is what a first visit gets; an explicit choice is
+// remembered. Every read and write is wrapped, since a browser set to block
+// site data throws on access rather than returning null.
+const THEMES = ["auto", "light", "dark"];
+
+function readTheme() {
+  try { return THEMES.includes(localStorage.theme) ? localStorage.theme : "auto"; }
+  catch { return "auto"; }
+}
+function applyTheme(t) {
+  if (t === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", t);
+  $("themeBtn").textContent = t;
+  $("themeBtn").setAttribute("aria-label", "theme: " + t + ", click to change");
+}
+applyTheme(readTheme());
+$("themeBtn").addEventListener("click", () => {
+  const next = THEMES[(THEMES.indexOf(readTheme()) + 1) % THEMES.length];
+  try { localStorage.theme = next; } catch { /* private window: this visit only */ }
+  applyTheme(next);
+});
+
+// --- the collage ---------------------------------------------------------
+// Seeded so a contest is scribbled the same way every time it is opened, and
+// differently from the next one. A fresh tilt on every load reads as a page
+// that cannot sit still.
 function seeded(str) {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
@@ -287,6 +402,71 @@ function seeded(str) {
 
 const PENS = ["--red", "--orange", "--yellow", "--green", "--blue", "--purple"];
 
+// Marker doodles, drawn as strokes so each takes a pen colour and reads on
+// either ground. Crude on purpose: this is a felt tip on paper, not an icon
+// set.
+// Every one of these was drawn, rendered at size and looked at before it got
+// in. Four earlier attempts (a spiral, a flower, a duck and a snail) came out
+// as tangles of stroke and were cut rather than shipped as shapes nobody
+// could name.
+const DOODLES = [
+  "M32 6 39 24 58 25 43 37 48 56 32 45 16 56 21 37 6 25 25 24Z",
+  "M32 56C10 40 8 22 20 16c7-4 12 2 12 6 0-4 5-10 12-6 12 6 10 24-12 40Z",
+  "M36 4 16 34h14l-4 26 22-32H34Z",
+  "M16 46C6 46 5 31 17 31 18 18 37 14 41 27 53 23 59 42 47 46Z",
+  "M5 32a27 27 0 0 1 54 0 27 27 0 0 1-54 0M22 25v5M42 25v5M20 40a16 14 0 0 0 24 0",
+  "M32 8 58 54H6ZM32 24v14M32 44v3",
+  "M20 10h24v13a12 12 0 0 1-24 0ZM20 14h-8a9 9 0 0 0 9 9M44 14h8a9 9 0 0 1-9 9M32 35v10M21 55h22l-3-9H24Z",
+  "M26 47a7 6 0 1 0 14 0 7 6 0 1 0-14 0M40 47V13c10 3 14 8 12 16",
+  "M13 27 17 8l13 9h4l13-9 4 19v9a21 19 0 0 1-42 0ZM23 33v3M41 33v3M32 41l-4 4M32 41l4 4",
+  "M8 32c12-17 36-17 48 0-12 17-36 17-48 0ZM32 25a7 7 0 1 1 0 14 7 7 0 1 1 0-14",
+  "M32 6l5 17 17 5-17 5-5 17-5-17-17-5 17-5Z",
+  "M6 40c10-16 20 8 30-6s14 2 22-4M52 24l6 4-3 7",
+  "M41 8a25 25 0 1 0 11 33A21 21 0 0 1 41 8Z",
+  "M12 20h30v18a15 15 0 0 1-30 0ZM42 24h6a7 7 0 0 1 0 14h-6M12 54h32",
+  "M32 18a14 14 0 1 1 0 28 14 14 0 1 1 0-28M32 3v9M32 52v9M3 32h9M52 32h9M11 11l7 7M46 46l7 7M53 11l-7 7M18 46l-7 7",
+  "M32 59c-11 0-17-8-17-16 0-11 11-14 9-26 8 4 10 10 10 14 0-6 4-9 7-11 0 6 8 9 8 18 0 11-6 21-17 21Z",
+  "M8 12h48v30H33L20 55V42H8Z",
+];
+
+function drawCollage() {
+  const rnd = seeded("collage:" + slug);
+  const moods = ["ok", "warn", "info", "notice", "idle", "error"];
+
+  // Merlin and the doodles go into one shuffled pile, then get dealt
+  // alternately into the two gutters. Placing the two kinds independently let
+  // a doodle land on top of her, which read as a mistake rather than a
+  // collage.
+  const pile = moods.map((m) => ({ mood: m })).concat(DOODLES.map((d) => ({ path: d })));
+  for (let i = pile.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [pile[i], pile[j]] = [pile[j], pile[i]];
+  }
+
+  const lanes = { l: [], r: [] };
+  pile.forEach((item, i) => lanes[i % 2 ? "r" : "l"].push(item));
+
+  for (const side of ["l", "r"]) {
+    const items = lanes[side];
+    const step = 100 / items.length;
+    document.querySelector(".stickers .gut." + side).innerHTML = items.map((item, i) => {
+      // One per band down the lane, so nothing clumps and nothing collides.
+      const top = (i * step + step * 0.15 + rnd() * step * 0.5).toFixed(1);
+      const left = (4 + rnd() * 42).toFixed(1);
+      const rot = (rnd() * 34 - 17).toFixed(1);
+      if (item.mood) {
+        return `<img src="/stickers/merlin_${item.mood}.png" alt="" loading="lazy"
+          style="left:${left}%;top:${top}%;transform:rotate(${rot}deg)">`;
+      }
+      const pen = PENS[Math.floor(rnd() * PENS.length)];
+      const size = (40 + rnd() * 24).toFixed(0);
+      return `<svg viewBox="0 0 64 64"
+        style="left:${left}%;top:${top}%;width:${size}px;height:${size}px;stroke:var(${pen});transform:rotate(${rot}deg)">
+        <path d="${item.path}"/></svg>`;
+    }).join("");
+  }
+}
+
 function drawTitle(text) {
   const rnd = seeded(slug || text);
   $("title").innerHTML = [...text].map((ch) => {
@@ -295,19 +475,6 @@ function drawTitle(text) {
     const dy = (rnd() * 8 - 4).toFixed(1);
     const pen = PENS[Math.floor(rnd() * PENS.length)];
     return `<span style="transform:rotate(${rot}deg) translateY(${dy}px);color:var(${pen})">${esc(ch)}</span>`;
-  }).join("");
-}
-
-function drawStickers() {
-  const rnd = seeded("stickers:" + slug);
-  const names = ["ok", "warn", "info", "notice", "idle", "error"];
-  const spots = [[3, 12], [88, 8], [6, 62], [90, 55], [2, 86], [92, 84]];
-  const box = document.querySelector(".stickers");
-  box.innerHTML = names.map((n, i) => {
-    const [x, y] = spots[i];
-    const rot = (rnd() * 30 - 15).toFixed(1);
-    return `<img src="/stickers/merlin_${n}.png" alt="" loading="lazy"
-             style="left:${x}%;top:${y}%;transform:rotate(${rot}deg)">`;
   }).join("");
 }
 
@@ -328,23 +495,34 @@ const picks = new Set();
 function phaseLine() {
   const now = Math.floor(Date.now() / 1000);
   switch (snap.phase) {
-    case "announce": return "entries open in " + human(snap.submit_at - now);
-    case "submit":   return "entries close in " + human(snap.vote_at - now);
-    case "vote":     return "voting shuts in " + human(snap.results_at - now);
-    case "results":  return "done";
-    default:         return "called off";
+    case "announce": return ["entries open in", human(snap.submit_at - now)];
+    case "submit":   return ["entries close in", human(snap.vote_at - now)];
+    case "vote":     return ["voting shuts in", human(snap.results_at - now)];
+    case "results":  return ["that is a wrap", ""];
+    default:         return ["called off", ""];
   }
+}
+
+function renderMeta() {
+  const [label, value] = phaseLine();
+  const forum = safeURL(snap.forum);
+  const open = snap.phase === "vote" && !snap.frozen;
+
+  const bits = [`<span class="clock">${esc(label)}${value ? ' <b>' + esc(value) + '</b>' : ""}</span>`];
+  if (open && !me.signed_in) {
+    bits.push(`<a class="chip go" href="/c/${encodeURIComponent(slug)}/login">sign in with discord to vote</a>`);
+  } else if (me.signed_in && me.name) {
+    bits.push(`<span class="chip">voting as ${esc(me.name)}</span>`);
+  }
+  if (forum) bits.push(`<a class="chip" href="${esc(forum)}">the forum, in discord</a>`);
+  $("meta").innerHTML = bits.join("");
 }
 
 function render() {
   document.title = snap.title + " · contest";
   drawTitle(snap.title || "contest");
-  if (snap.theme) { $("theme").textContent = snap.theme; $("theme").hidden = false; }
-  $("clock").textContent = phaseLine();
-
-  const forum = safeURL(snap.forum);
-  $("links").innerHTML = forum
-    ? `<a class="chip" href="${esc(forum)}">the forum, in discord</a>` : "";
+  if (snap.theme) { $("brief").textContent = snap.theme; $("brief").hidden = false; }
+  renderMeta();
 
   const prizes = snap.prizes || [];
   $("prizesWrap").hidden = prizes.length === 0;
@@ -361,23 +539,17 @@ function render() {
     ? results.map((r) => entries.find((e) => e.id === r.id)).filter(Boolean)
     : entries;
 
+  const votable = snap.phase === "vote" && !snap.frozen && me.signed_in;
+
   $("entriesWrap").hidden = order.length === 0;
   $("entriesHead").textContent = snap.phase === "results"
     ? "how it landed" : order.length + (order.length === 1 ? " entry" : " entries");
 
-  const open = snap.phase === "vote" && !snap.frozen;
-  const votable = open && me.signed_in;
   $("grid").innerHTML = order.map((e) => card(e, rankOf.get(e.id), votable)).join("");
-
   if (votable) {
-    for (const el of document.querySelectorAll(".card[data-id]")) {
+    for (const el of document.querySelectorAll("button.card[data-id]")) {
       el.addEventListener("click", () => toggle(el.dataset.id));
     }
-  }
-  // The sign in chip is the only prompt on the page, and it is only here
-  // while there is something to sign in for.
-  if (open && !me.signed_in) {
-    $("links").innerHTML += `<a class="chip" href="/c/${encodeURIComponent(slug)}/login">sign in with discord to vote</a>`;
   }
 
   $("empty").textContent = order.length === 0
@@ -390,47 +562,62 @@ function render() {
 function card(e, r, votable) {
   // Your own entry is not a button. The Worker refuses a self-vote either
   // way, but being told no after tapping is worse than not being able to.
-  const mine = votable && me.mine && e.id === me.mine;
+  const mine = me.mine && e.id === me.mine;
   const tag = votable && !mine ? "button" : "div";
   const win = r && r.rank === 1 && snap.phase === "results";
   const link = safeURL(e.link);
-  const media = safeURL(e.url);
+
+  // urls is every attachment; url is the first, and all this falls back to
+  // it so a snapshot pushed by an older bot still renders.
+  const media = (Array.isArray(e.urls) && e.urls.length ? e.urls : [e.url])
+    .map(safeURL).filter(Boolean);
 
   let art = "";
-  if (e.kind === "image" && media) {
-    art = `<img class="art" src="${esc(media)}" alt="${esc(e.title || "entry")} by ${esc(e.by)}" loading="lazy" decoding="async">`;
-  } else if (e.kind === "video" && media) {
-    art = `<video src="${esc(media)}" controls preload="none"></video>`;
-  } else if (e.kind === "audio" && media) {
-    art = `<audio src="${esc(media)}" controls preload="none"></audio>`;
-  } else if (link) {
-    art = `<p class="body">${esc(link)}</p>`;
-  } else if (e.body) {
-    art = `<p class="body">${esc(e.body)}</p>`;
+  if (media.length && (e.kind === "image" || e.kind === "other")) {
+    const cls = media.length > 1 ? "multi" : "";
+    art = `<figure class="${cls}">` + media.map((u, i) =>
+      `<img class="art" src="${esc(u)}" alt="${esc(e.title || "entry")} by ${esc(e.by)}${media.length > 1 ? ", " + (i + 1) + " of " + media.length : ""}" loading="lazy" decoding="async">`
+    ).join("") + `</figure>`;
+  } else if (media.length && e.kind === "video") {
+    art = `<figure><video src="${esc(media[0])}" controls preload="none"></video></figure>`;
+  } else if (media.length && e.kind === "audio") {
+    art = `<figure><audio src="${esc(media[0])}" controls preload="none"></audio></figure>`;
   }
 
-  return `<${tag} class="card wobble${win ? " win" : ""}" data-id="${esc(e.id)}"
-      ${votable ? `aria-pressed="${picks.has(e.id)}"` : ""}>
+  // Text now sits with the art rather than instead of it. A drawing with a
+  // caption used to lose the caption entirely.
+  let words = "";
+  if (e.body) words = `<p class="body${art ? "" : " only"}">${esc(e.body)}</p>`;
+  else if (link && !art) words = `<p class="body only">${esc(link)}</p>`;
+
+  const extra = media.length > 1
+    ? `<p class="more">${media.length} images</p>` : "";
+
+  return `<${tag} class="card wobble${win ? " win" : ""}${mine ? " mine" : ""}" data-id="${esc(e.id)}"
+      ${votable && !mine ? `type="button" aria-pressed="${picks.has(e.id)}"` : ""}>
     ${r ? `<span class="rank">${r.rank}</span>` : ""}
-    <figure>${art}</figure>
+    ${art}${extra}
     <p class="name">${esc(e.title || "untitled")}</p>
     <p class="by">${esc(e.by)}${r ? ` · <span class="votes">${r.votes}</span>` : ""}</p>
+    ${words}
   </${tag}>`;
 }
 
 let saveTimer = null;
+let touched = false;
 
 // Optimistic: the pick lands in the UI immediately and the write is coalesced
 // a moment later, so tapping through six entries is one request rather than
 // six. The server replaces the whole ballot on every call, so a dropped
 // intermediate save is not a lost vote, it is a vote that was superseded.
 function toggle(id) {
+  touched = true;
   if (picks.has(id)) picks.delete(id);
   else if (picks.size >= (snap.max_votes || 1)) {
     return setBar("bad", "that is all " + snap.max_votes + " of your picks. unpick one first");
   } else picks.add(id);
 
-  for (const el of document.querySelectorAll(".card[data-id]")) {
+  for (const el of document.querySelectorAll("button.card[data-id]")) {
     el.setAttribute("aria-pressed", picks.has(el.dataset.id));
   }
   updateBar("busy");
@@ -486,25 +673,27 @@ async function load() {
   ]);
   if (!viewRes.ok) {
     drawTitle("not here");
-    $("clock").textContent = "that link does not go anywhere any more";
+    $("meta").innerHTML = '<span class="clock">that link does not go anywhere any more</span>';
     return;
   }
   snap = await viewRes.json();
   me = meRes.ok ? await meRes.json() : { signed_in: false };
-  if (me.signed_in && !saveTimer) {
+  // Server state seeds the ballot until the viewer touches it, after which
+  // their own clicks win rather than being reverted by the next poll.
+  if (me.signed_in && !touched) {
     picks.clear();
     for (const id of me.picks || []) picks.add(id);
   }
   render();
 }
 
-drawStickers();
+drawCollage();
 load();
 
 // Two timers, both cheap and both paused when the tab is not being looked
 // at. The clock is local arithmetic; the reload is what makes an entry
 // posted in discord show up here without anybody refreshing.
-setInterval(() => { if (snap && document.visibilityState === "visible") $("clock").textContent = phaseLine(); }, 15000);
+setInterval(() => { if (snap && document.visibilityState === "visible") renderMeta(); }, 15000);
 setInterval(() => { if (document.visibilityState === "visible") load(); }, 30000);
 </script>
 </body>

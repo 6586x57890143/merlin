@@ -71,10 +71,14 @@ type entryView struct {
 	ByHash string `json:"by_hash"`
 	Title  string `json:"title"`
 	Kind   string `json:"kind"`
-	URL    string `json:"url,omitempty"`
-	Link   string `json:"link,omitempty"`
-	Body   string `json:"body,omitempty"`
-	Thread string `json:"thread,omitempty"`
+	// URL is the first attachment and URLs is all of them. Both, because a
+	// Worker still serving the previous snapshot shape reads url, and the
+	// page prefers urls when it is there.
+	URL    string   `json:"url,omitempty"`
+	URLs   []string `json:"urls,omitempty"`
+	Link   string   `json:"link,omitempty"`
+	Body   string   `json:"body,omitempty"`
+	Thread string   `json:"thread,omitempty"`
 }
 
 // prizeView is a pledge as the public page shows it. There is no field here

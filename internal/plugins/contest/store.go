@@ -116,13 +116,17 @@ func (c Contest) Live() bool {
 // refresh path is to re-read the thread's starter message, which is what the
 // tick does during vote and results.
 type Submission struct {
-	ID          string
-	ContestID   string
-	UserID      string
-	ThreadID    string
-	Title       string
-	Author      string
-	Kind        string // image | audio | video | text | link | other
+	ID        string
+	ContestID string
+	UserID    string
+	ThreadID  string
+	Title     string
+	Author    string
+	Kind      string // image | audio | video | text | link | other
+	// MediaURLs is every attachment on the post, in the order they were
+	// posted. MediaURL is the first of them, kept because the previous
+	// release reads that column and a rollback should still render art.
+	MediaURLs   []string
 	MediaURL    string
 	Link        string
 	Body        string
@@ -343,6 +347,12 @@ func (s *pgStore) SetTallyError(ctx context.Context, contestID, msg string) erro
 }
 
 func (s *pgStore) UpsertSubmission(ctx context.Context, sub Submission) error {
+	// pgx encodes a nil slice as NULL, and the column is NOT NULL. An entry
+	// with no attachments is the ordinary text-only case, not an error.
+	urls := sub.MediaURLs
+	if urls == nil {
+		urls = []string{}
+	}
 	// Keyed on thread_id, not (contest, user): the forum post is the entry,
 	// and re-reading it on every tick is how a stale CDN link gets refreshed
 	// and an edited title gets picked up. The one-live-entry-per-member rule
@@ -351,14 +361,15 @@ func (s *pgStore) UpsertSubmission(ctx context.Context, sub Submission) error {
 	// gets told which post counts instead of silently replacing the first.
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO contest_submissions
-			(id, contest_id, user_id, thread_id, title, author, kind, media_url, link, body)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			(id, contest_id, user_id, thread_id, title, author, kind, media_url, media_urls, link, body)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT (thread_id) DO UPDATE SET
 			title = EXCLUDED.title, author = EXCLUDED.author, kind = EXCLUDED.kind,
-			media_url = EXCLUDED.media_url, link = EXCLUDED.link, body = EXCLUDED.body,
+			media_url = EXCLUDED.media_url, media_urls = EXCLUDED.media_urls,
+			link = EXCLUDED.link, body = EXCLUDED.body,
 			withdrawn_at = NULL
 	`, sub.ID, sub.ContestID, sub.UserID, sub.ThreadID, sub.Title, sub.Author,
-		sub.Kind, sub.MediaURL, sub.Link, sub.Body)
+		sub.Kind, sub.MediaURL, urls, sub.Link, sub.Body)
 	if err != nil {
 		return fmt.Errorf("contest store: upsert submission: %w", err)
 	}
@@ -367,7 +378,7 @@ func (s *pgStore) UpsertSubmission(ctx context.Context, sub Submission) error {
 
 func (s *pgStore) Submissions(ctx context.Context, contestID string) ([]Submission, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, contest_id, user_id, thread_id, title, author, kind, media_url, link, body, created_at, withdrawn_at
+		SELECT id, contest_id, user_id, thread_id, title, author, kind, media_url, media_urls, link, body, created_at, withdrawn_at
 		FROM contest_submissions
 		WHERE contest_id = $1 AND withdrawn_at IS NULL
 		ORDER BY created_at
@@ -380,7 +391,7 @@ func (s *pgStore) Submissions(ctx context.Context, contestID string) ([]Submissi
 	for rows.Next() {
 		var sub Submission
 		if err := rows.Scan(&sub.ID, &sub.ContestID, &sub.UserID, &sub.ThreadID, &sub.Title,
-			&sub.Author, &sub.Kind, &sub.MediaURL, &sub.Link, &sub.Body,
+			&sub.Author, &sub.Kind, &sub.MediaURL, &sub.MediaURLs, &sub.Link, &sub.Body,
 			&sub.CreatedAt, &sub.WithdrawnAt); err != nil {
 			return nil, fmt.Errorf("contest store: scan submission: %w", err)
 		}
