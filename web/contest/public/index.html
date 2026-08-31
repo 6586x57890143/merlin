@@ -28,13 +28,16 @@
 :root {
   color-scheme: light dark;
 
-  /* Marker pens. The same six in both themes on purpose. */
-  --red:    #e5372a;
-  --orange: #f08c1e;
-  --yellow: #f2c230;
-  --green:  #3aa34a;
-  --blue:   #2f6fd0;
-  --purple: #8b3fbf;
+  /* Crayon on a whiteboard: deep and saturated, because a pale line on
+     paper is a line nobody sees. */
+  --red:    #cc3326;
+  --orange: #d97a12;
+  --yellow: #c9960f;
+  --green:  #2f8a3e;
+  --blue:   #2760bd;
+  --purple: #7a34ab;
+  /* Text that sits on top of a pen colour. */
+  --on-pen: #fff;
 
   --paper: #fdfbf6;
   --card:  #ffffff;
@@ -46,6 +49,15 @@
      dark ground, so the two themes want genuinely different values. */
   --blob: #bcd6f5;
   --blob-alpha: .85;
+  /* Highlighter behind the countdown. Solid on paper; on a dark ground a
+     solid marker swatch is louder than the text it is meant to underline. */
+  --hi: #f2c230;
+  --badge: #f2c230;
+  /* A deep crayon at half strength is just a pale crayon, so the light
+     theme leans on the colour being darker rather than on transparency. */
+  --sticker-op: .62;
+  --doodle-op: .8;
+  --wave: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='72' height='16' viewBox='0 0 72 16'><path d='M0 8q9-7 18 0t18 0 18 0 18 0' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'/></svg>");
 }
 
 /* Dark, in three places that must agree: the system default, and both
@@ -53,23 +65,46 @@
    ever defined only inside a media query. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper: #16150f;
-    --card:  #201e17;
+    --paper: #171c1a;
+    --card:  #1f2523;
     --ink:   #f0ece2;
-    --muted: #9c958a;
+    --muted: #b5ada0;
     --shadow: rgba(0, 0, 0, .55);
-    --blob: #2d5c96;
+    --blob: #35618f;
     --blob-alpha: .5;
+    --hi: rgba(242, 194, 48, .38);
+    --badge: #ffe79b;
+    --sticker-op: .72;
+    --doodle-op: .74;
+    /* Chalk on a blackboard: pale and slightly dusty. */
+    --red:    #ff9d90;
+    --orange: #ffc47c;
+    --yellow: #ffe79b;
+    --green:  #a2ddae;
+    --blue:   #a1c6f2;
+    --purple: #d5a8ec;
+    --on-pen: #17150f;
   }
 }
 :root[data-theme="dark"] {
-  --paper: #16150f;
-  --card:  #201e17;
+  --paper: #171c1a;
+  --card:  #1f2523;
   --ink:   #f0ece2;
-  --muted: #9c958a;
+  --muted: #b5ada0;
   --shadow: rgba(0, 0, 0, .55);
-  --blob: #2d5c96;
+  --blob: #35618f;
   --blob-alpha: .5;
+  --hi: rgba(242, 194, 48, .38);
+  --badge: #ffe79b;
+  --sticker-op: .72;
+  --doodle-op: .74;
+  --red:    #ff9d90;
+  --orange: #ffc47c;
+  --yellow: #ffe79b;
+  --green:  #a2ddae;
+  --blue:   #a1c6f2;
+  --purple: #d5a8ec;
+  --on-pen: #17150f;
 }
 
 @font-face {
@@ -115,8 +150,19 @@ main {
 .stickers .gut.l { left: 0; }
 .stickers .gut.r { right: 0; }
 .stickers .gut > * { position: absolute; }
-.stickers img { width: 72px; opacity: .5; }
-.stickers svg { fill: none; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; opacity: .45; }
+.stickers img { opacity: var(--sticker-op); }
+.stickers svg { fill: none; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; opacity: var(--doodle-op); }
+/* A drift slow enough that you notice it only if you stop and watch. The
+   rotation each one was placed at is carried as a custom property so the
+   animation can move around it rather than overwrite it. */
+.stickers .gut > * {
+  transform: rotate(var(--rot));
+  animation: drift var(--dur) ease-in-out var(--delay) infinite alternate;
+}
+@keyframes drift {
+  from { transform: rotate(var(--rot)) translateY(0); }
+  to   { transform: rotate(calc(var(--rot) + var(--sway))) translateY(var(--rise)); }
+}
 @media (max-width: 1280px) { .stickers { display: none; } }
 
 /* --- theme toggle ------------------------------------------------------ */
@@ -134,10 +180,11 @@ main {
 .theme-btn:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
 
 /* --- header ------------------------------------------------------------ */
-header { position: relative; text-align: center; padding: 1.6rem 0 .4rem; }
-header svg.blob {
-  position: absolute; left: 50%; top: 46%;
-  width: min(44rem, 106%); transform: translate(-50%, -50%);
+header { text-align: center; padding: 1.6rem 0 .4rem; }
+.titlewrap { position: relative; display: inline-block; padding: .5rem 2.2rem; }
+.titlewrap svg.blob {
+  position: absolute; left: 50%; top: 52%;
+  width: 118%; height: 128%; transform: translate(-50%, -50%);
   fill: var(--blob); opacity: var(--blob-alpha); z-index: -1;
 }
 
@@ -145,20 +192,98 @@ h1 { margin: 0; font-size: clamp(2.1rem, 8.5vw, 4.6rem); line-height: .95; }
 h1 span { display: inline-block; font-family: 'Marker', 'Nunito', cursive; }
 h1 .sp { width: .3em; }
 
-.brief { margin: .5rem auto 0; max-width: 34rem; font-weight: 700; }
-/* One row, not three stacked lines. The phase, the countdown and the links
-   sitting in a centred column was most of the empty space above the first
-   entry. */
-.meta {
-  margin: .65rem 0 0; display: flex; flex-wrap: wrap;
-  gap: .45rem; align-items: center; justify-content: center;
+/* The brief is the guild's own words, so it gets the hand and a crayon
+   underline rather than sitting there as unstyled body copy. */
+.brief { margin: .8rem 0 0; }
+.brief .ul {
+  position: relative; display: inline-block; max-width: 32rem;
+  font-family: 'Marker', cursive; font-size: 1.25rem; line-height: 1.3;
+  color: var(--ink); padding: 0 .35rem .4rem;
 }
-.clock { font-family: 'Marker', cursive; font-size: 1.15rem; }
-.clock b { border-bottom: 4px solid var(--yellow); padding-bottom: 1px; font-weight: 400; }
+.brief svg {
+  position: absolute; left: 0; bottom: 0; width: 100%; height: 9px;
+  fill: none; stroke: var(--orange); stroke-width: 3;
+  stroke-linecap: round; opacity: .95;
+}
+
+/* What the contest is doing right now, said rather than implied. The
+   countdown alone made you infer the phase from the verb. */
+.phase { margin: .9rem 0 0; }
+.pill {
+  display: inline-block; padding: .1rem 1rem .16rem;
+  font-family: 'Marker', cursive; font-size: 1.05rem;
+  color: #17150f; background: var(--badge);
+  border: 3px solid var(--ink);
+  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
+  /* Offset like everything else on this page rather than a soft drop
+     shadow, which was the one blurred edge in a document drawn entirely in
+     hard lines. */
+  box-shadow: 3px 3px 0 var(--shadow);
+  transform: rotate(-1.5deg);
+  letter-spacing: .02em;
+}
+.pill.announce { background: var(--blue); color: var(--on-pen); }
+.pill.submit   { background: var(--green); color: var(--on-pen); }
+.pill.vote     { background: var(--badge); color: #17150f; }
+.pill.results  { background: var(--purple); color: var(--on-pen); }
+.pill.cancelled { background: var(--red); color: var(--on-pen); }
+
+/* The countdown and the links used to share one row, which put a marker
+   display face, a bold sans and two outlined bubbles on the same line at
+   three different sizes. They are different kinds of thing and now sit on
+   their own lines. */
+.clock {
+  margin: .5rem 0 0; text-align: center;
+  font-family: 'Marker', cursive; font-size: 1.5rem; line-height: 1.15;
+}
+.clock b {
+  font-weight: 400; position: relative; padding: 0 .12em;
+  background: linear-gradient(var(--hi), var(--hi)) 0 88% / 100% .28em no-repeat;
+}
+
+.links {
+  margin: .8rem 0 0; display: flex; flex-wrap: wrap;
+  gap: .5rem; align-items: center; justify-content: center;
+}
 
 h2 {
-  font-size: 1.05rem; margin: 1.7rem 0 .8rem; text-align: center;
-  text-transform: lowercase; color: var(--muted);
+  font-family: 'Marker', cursive; font-weight: 400;
+  font-size: 1.35rem; margin: 2rem 0 .9rem; text-align: center;
+  color: var(--ink);
+}
+
+/* A crayon line, not a border. Stretched with preserveAspectRatio="none" so
+   one path covers any width, which is why the wave is drawn in a viewBox
+   that tiles cleanly rather than as a repeating background image. */
+.rule {
+  display: block; width: 100%; height: 16px; opacity: .5;
+  background-color: var(--ink);
+  -webkit-mask: var(--wave) repeat-x center / 72px 16px;
+  mask: var(--wave) repeat-x center / 72px 16px;
+}
+
+/* The ticker is ambient: it says where the contest is up to for somebody who
+   has just opened the tab, and it is aria-hidden because the same facts are
+   in the header as real text. */
+.ticker {
+  overflow: hidden; padding: .45rem 0 .3rem;
+  border-bottom: 0; position: relative; z-index: 2;
+}
+.ticker .run {
+  display: inline-flex; white-space: nowrap; will-change: transform;
+  animation: run 42s linear infinite;
+}
+.ticker span {
+  font-family: 'Marker', cursive; font-size: 1rem;
+  color: var(--muted); padding: 0 1.1rem;
+}
+.ticker span::after { content: "\2022"; margin-left: 1.1rem; color: var(--badge); }
+@keyframes run { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+footer { position: relative; z-index: 1; margin: 3rem 0 0; padding-bottom: 2rem; text-align: center; }
+footer p {
+  margin: .7rem 0 0; font-family: 'Marker', cursive;
+  font-size: 1rem; color: var(--muted);
 }
 
 .wobble {
@@ -223,7 +348,7 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 .card[aria-pressed="true"]::after {
   content: "picked";
   position: absolute; top: -.7rem; right: -.5rem;
-  background: var(--green); color: #fff;
+  background: var(--green); color: var(--on-pen);
   font-family: 'Marker', cursive; font-size: .95rem;
   padding: .05rem .6rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
   transform: rotate(6deg);
@@ -241,14 +366,14 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 .rank {
   position: absolute; top: -1rem; left: -.8rem;
   width: 2.3rem; height: 2.3rem; display: grid; place-items: center;
-  background: var(--yellow); color: #17150f;
+  background: var(--badge); color: #17150f;
   font-family: 'Marker', cursive; font-size: 1.2rem;
   border: 3px solid var(--ink);
   border-radius: 48% 52% 55% 45% / 55% 48% 52% 45%;
   transform: rotate(-8deg);
 }
-.card.win { border-color: var(--yellow); box-shadow: 0 0 0 4px var(--yellow), 5px 5px 0 var(--shadow); }
-.votes { font-family: 'Marker', cursive; font-size: 1.05rem; color: var(--ink); }
+.card.win { border-color: var(--badge); box-shadow: 0 0 0 4px var(--badge), 5px 5px 0 var(--shadow); }
+.votes { font-family: 'Marker', cursive; font-size: 1.3rem; color: var(--ink); }
 
 /* --- prizes ------------------------------------------------------------ */
 .prizes { display: flex; flex-wrap: wrap; justify-content: center; gap: .8rem; }
@@ -259,15 +384,23 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 .prize small { color: var(--muted); }
 
 .chip {
-  display: inline-block; padding: .28rem .8rem;
+  display: inline-block; padding: .32rem .95rem;
   border: 3px solid var(--ink); background: var(--card);
   border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
-  text-decoration: none; color: inherit; font-size: .92rem;
+  text-decoration: none; color: inherit; font-size: .95rem;
   box-shadow: 2px 2px 0 var(--shadow);
 }
-a.chip:hover { background: var(--yellow); color: #17150f; }
-.chip.go { background: var(--green); color: #fff; }
-a.chip.go:hover { background: var(--green); color: #fff; }
+/* Not every chip is a link. The one naming who you are signed in as is a
+   label, so it gets a dashed crayon outline instead of a solid one: clearly
+   drawn on purpose, clearly not a thing you press. */
+.chip.who {
+  border-style: dashed; box-shadow: none; background: none;
+  font-family: 'Marker', cursive; font-weight: 400; font-size: 1rem;
+  color: var(--muted);
+}
+a.chip:hover { background: var(--badge); color: #17150f; }
+.chip.go { background: var(--green); color: var(--on-pen); }
+a.chip.go:hover { background: var(--green); color: var(--on-pen); }
 
 /* --- the picks bar ----------------------------------------------------- */
 .bar {
@@ -289,8 +422,12 @@ a.chip.go:hover { background: var(--green); color: #fff; }
 @media (max-width: 640px) {
   main { padding: .5rem .75rem 6.5rem; }
   header { padding: 2.6rem 0 .2rem; }
+  .titlewrap { padding: .4rem 1.1rem; }
   h1 { font-size: clamp(1.9rem, 11vw, 3rem); }
-  h2 { margin: 1.2rem 0 .6rem; }
+  h2 { margin: 1.4rem 0 .7rem; font-size: 1.2rem; }
+  .clock { font-size: 1.25rem; margin-top: .4rem; }
+  .brief { font-size: 1.05rem; }
+  .phase { margin-top: .75rem; }
   .card { flex: 1 1 100%; max-width: 100%; transform: none; }
   button.card:hover, button.card:focus-visible { transform: translateY(-2px); }
   .card img.art, .card video { max-height: 65vh; }
@@ -301,6 +438,7 @@ a.chip.go:hover { background: var(--green); color: #fff; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .ticker .run, .stickers .gut > * { animation: none; }
   .card, .prize, .rank, .theme-btn,
   .card[aria-pressed="true"]::after, .card.mine::after,
   .stickers > *, h1 span { transform: none !important; }
@@ -312,16 +450,26 @@ a.chip.go:hover { background: var(--green); color: #fff; }
 
 <div class="stickers" aria-hidden="true"><div class="gut l"></div><div class="gut r"></div></div>
 
+<div class="ticker" aria-hidden="true"><div class="run" id="tickerRun"></div></div>
+<div class="rule" aria-hidden="true"></div>
+
 <button class="theme-btn" id="themeBtn" type="button" title="light, dark, or follow your system"></button>
 
 <main>
   <header>
-    <svg class="blob" viewBox="0 0 600 200" aria-hidden="true">
-      <path d="M62 116C22 104 26 62 66 52c10-28 52-36 74-18 22-24 74-26 94-2 30-16 74-6 82 20 34 2 52 34 34 58 12 26-14 52-48 48-16 22-60 26-82 8-24 20-72 18-90-6-28 12-64 0-68-24z"/>
-    </svg>
-    <h1 id="title"></h1>
-    <p class="brief" id="brief" hidden></p>
-    <p class="meta" id="meta"></p>
+    <div class="titlewrap">
+      <svg class="blob" viewBox="34 15 323 165" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M62 116C22 104 26 62 66 52c10-28 52-36 74-18 22-24 74-26 94-2 30-16 74-6 82 20 34 2 52 34 34 58 12 26-14 52-48 48-16 22-60 26-82 8-24 20-72 18-90-6-28 12-64 0-68-24z"/>
+      </svg>
+      <h1 id="title"></h1>
+    </div>
+    <p class="brief" id="brief" hidden><span class="ul"><span id="briefText"></span>
+      <svg viewBox="0 0 200 9" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M2 6q12-4 24-1t24 1 24-2 24 1 24-1 24 2 22-1"/>
+      </svg></span></p>
+    <p class="phase" id="phase"></p>
+    <p class="clock" id="clock"></p>
+    <p class="links" id="links"></p>
   </header>
 
   <section id="prizesWrap" hidden>
@@ -336,6 +484,11 @@ a.chip.go:hover { background: var(--green); color: #fff; }
 
   <p class="empty" id="empty"></p>
 </main>
+
+<footer>
+  <div class="rule" aria-hidden="true"></div>
+  <p id="foot">merlin</p>
+</footer>
 
 <div class="bar wobble" id="bar" role="status">
   <span class="dot" id="dot"></span>
@@ -433,35 +586,56 @@ function drawCollage() {
   const rnd = seeded("collage:" + slug);
   const moods = ["ok", "warn", "info", "notice", "idle", "error"];
 
-  // Merlin and the doodles go into one shuffled pile, then get dealt
-  // alternately into the two gutters. Placing the two kinds independently let
-  // a doodle land on top of her, which read as a mistake rather than a
-  // collage.
-  const pile = moods.map((m) => ({ mood: m })).concat(DOODLES.map((d) => ({ path: d })));
-  for (let i = pile.length - 1; i > 0; i--) {
-    const j = Math.floor(rnd() * (i + 1));
-    [pile[i], pile[j]] = [pile[j], pile[i]];
-  }
+  const shuffle = (a) => {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  };
 
-  const lanes = { l: [], r: [] };
-  pile.forEach((item, i) => lanes[i % 2 ? "r" : "l"].push(item));
+  const mood = shuffle(moods.slice());
+  const doodle = shuffle(DOODLES.slice());
 
   for (const side of ["l", "r"]) {
-    const items = lanes[side];
-    const step = 100 / items.length;
-    document.querySelector(".stickers .gut." + side).innerHTML = items.map((item, i) => {
-      // One per band down the lane, so nothing clumps and nothing collides.
-      const top = (i * step + step * 0.15 + rnd() * step * 0.5).toFixed(1);
-      const left = (4 + rnd() * 42).toFixed(1);
+    const mine = side === "l" ? mood.slice(0, 3) : mood.slice(3);
+    const mineDoodles = doodle.filter((_, i) => (i % 2 === 0) === (side === "l"));
+    const slots = mine.length + mineDoodles.length;
+
+    // Merlin is dealt to evenly spaced slots first, so two of her can never
+    // end up neighbours however the shuffle came out. The doodles then fill
+    // whatever is left.
+    const lane = new Array(slots).fill(null);
+    mine.forEach((m, i) => {
+      lane[Math.min(slots - 1, Math.round((i + 0.5) * slots / mine.length))] = { mood: m };
+    });
+    let d = 0;
+    for (let i = 0; i < slots; i++) if (!lane[i]) lane[i] = { path: mineDoodles[d++] };
+
+    const step = 100 / slots;
+    document.querySelector(".stickers .gut." + side).innerHTML = lane.map((item, i) => {
+      const top = (i * step + step * 0.28 + rnd() * step * 0.24).toFixed(1);
+      const left = (3 + rnd() * 44).toFixed(1);
       const rot = (rnd() * 34 - 17).toFixed(1);
+      // Every one gets its own drift, so nothing moves in step with
+      // anything else and the whole margin never pulses together.
+      const motion = `--rot:${rot}deg;--sway:${(rnd() * 5 - 2.5).toFixed(1)}deg;` +
+        `--rise:${(-4 - rnd() * 7).toFixed(1)}px;--dur:${(7 + rnd() * 9).toFixed(1)}s;` +
+        `--delay:${(-rnd() * 12).toFixed(1)}s`;
       if (item.mood) {
+        // Her own size varies too, and widely. A narrow range made six
+        // near-identical stamps down the page, which is the opposite of a
+        // collage.
+        const w = (40 + Math.pow(rnd(), 1.7) * 76).toFixed(0);
         return `<img src="/stickers/merlin_${item.mood}.png" alt="" loading="lazy"
-          style="left:${left}%;top:${top}%;transform:rotate(${rot}deg)">`;
+          style="left:${left}%;top:${top}%;width:${w}px;${motion}">`;
       }
       const pen = PENS[Math.floor(rnd() * PENS.length)];
-      const size = (40 + rnd() * 24).toFixed(0);
+      // Skewed small, so most read as scribbles in the margin and a few land
+      // big enough to look stuck on.
+      const size = (24 + Math.pow(rnd(), 1.8) * 66).toFixed(0);
       return `<svg viewBox="0 0 64 64"
-        style="left:${left}%;top:${top}%;width:${size}px;height:${size}px;stroke:var(${pen});transform:rotate(${rot}deg)">
+        style="left:${left}%;top:${top}%;width:${size}px;height:${size}px;stroke:var(${pen});${motion}">
         <path d="${item.path}"/></svg>`;
     }).join("");
   }
@@ -492,36 +666,50 @@ function human(sec) {
 let snap = null;
 const picks = new Set();
 
+// The pill names the phase outright; the line under it counts down to the
+// end of that phase. Splitting them means neither has to carry both jobs.
 function phaseLine() {
   const now = Math.floor(Date.now() / 1000);
   switch (snap.phase) {
-    case "announce": return ["entries open in", human(snap.submit_at - now)];
-    case "submit":   return ["entries close in", human(snap.vote_at - now)];
-    case "vote":     return ["voting shuts in", human(snap.results_at - now)];
-    case "results":  return ["that is a wrap", ""];
-    default:         return ["called off", ""];
+    case "announce": return ["not open yet", "doors open in", human(snap.submit_at - now)];
+    case "submit":   return ["taking entries", "closes in", human(snap.vote_at - now)];
+    case "vote":     return ["voting", "shuts in", human(snap.results_at - now)];
+    case "results":  return ["done", "that is a wrap", ""];
+    default:         return ["called off", "nothing to see", ""];
   }
 }
 
 function renderMeta() {
-  const [label, value] = phaseLine();
+  const [pill, label, value] = phaseLine();
   const forum = safeURL(snap.forum);
   const open = snap.phase === "vote" && !snap.frozen;
 
-  const bits = [`<span class="clock">${esc(label)}${value ? ' <b>' + esc(value) + '</b>' : ""}</span>`];
+  $("phase").innerHTML = `<span class="pill ${esc(snap.phase)}">${esc(pill)}</span>`;
+  $("clock").innerHTML = esc(label) + (value ? " <b>" + esc(value) + "</b>" : "");
+
+  const bits = [];
   if (open && !me.signed_in) {
-    bits.push(`<a class="chip go" href="/c/${encodeURIComponent(slug)}/login">sign in with discord to vote</a>`);
-  } else if (me.signed_in && me.name) {
-    bits.push(`<span class="chip">voting as ${esc(me.name)}</span>`);
+    bits.push(`<a class="chip go" href="/c/${encodeURIComponent(slug)}/login">sign in to vote</a>`);
   }
-  if (forum) bits.push(`<a class="chip" href="${esc(forum)}">the forum, in discord</a>`);
-  $("meta").innerHTML = bits.join("");
+  if (forum) bits.push(`<a class="chip" href="${esc(forum)}">discord forum</a>`);
+  if (me.signed_in && me.name) {
+    bits.push(`<span class="chip who">you are ${esc(me.name)}</span>`);
+  }
+  $("links").innerHTML = bits.join("");
+
+  // The ticker carries the same facts as the header, so it is decorative and
+  // hidden from assistive tech. Duplicated once because the loop translates
+  // by half its own width.
+  const n = (snap.entries || []).length;
+  const items = [pill, value ? label + " " + value : label,
+    n + (n === 1 ? " entry" : " entries"), snap.theme || "merlin"];
+  $("tickerRun").innerHTML = items.concat(items).map((t) => `<span>${esc(t)}</span>`).join("");
 }
 
 function render() {
   document.title = snap.title + " · contest";
   drawTitle(snap.title || "contest");
-  if (snap.theme) { $("brief").textContent = snap.theme; $("brief").hidden = false; }
+  if (snap.theme) { $("briefText").textContent = snap.theme; $("brief").hidden = false; }
   renderMeta();
 
   const prizes = snap.prizes || [];
@@ -598,7 +786,7 @@ function card(e, r, votable) {
     ${r ? `<span class="rank">${r.rank}</span>` : ""}
     ${art}${extra}
     <p class="name">${esc(e.title || "untitled")}</p>
-    <p class="by">${esc(e.by)}${r ? ` · <span class="votes">${r.votes}</span>` : ""}</p>
+    <p class="by">${esc(e.by)}${r ? ` · <span class="votes">${r.votes}</span> ${r.votes === 1 ? "vote" : "votes"}` : ""}</p>
     ${words}
   </${tag}>`;
 }
@@ -673,7 +861,8 @@ async function load() {
   ]);
   if (!viewRes.ok) {
     drawTitle("not here");
-    $("meta").innerHTML = '<span class="clock">that link does not go anywhere any more</span>';
+    $("phase").innerHTML = "";
+    $("clock").textContent = "that link does not go anywhere any more";
     return;
   }
   snap = await viewRes.json();
