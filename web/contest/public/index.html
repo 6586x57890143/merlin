@@ -110,7 +110,11 @@
      theme leans on the colour being darker rather than on transparency. */
   --sticker-op: .8;
   --doodle-op: .9;
-  --wave: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='72' height='16' viewBox='0 0 72 16'><path d='M0 8q9-7 18 0t18 0 18 0 18 0' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'/></svg>");
+  /* One wave, three tiles: the line, and the same line closed upward and
+     downward into a fill. Shared prefix, so they cannot drift apart. */
+  --wave: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='72' height='14' viewBox='0 0 72 14'><path d='M0 7q9-7 18 0t18 0 18 0 18 0' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'/></svg>");
+  --wave-up: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='72' height='14' viewBox='0 0 72 14'><path d='M0 7q9-7 18 0t18 0 18 0 18 0 V0 H0 Z' fill='black'/></svg>");
+  --wave-down: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='72' height='14' viewBox='0 0 72 14'><path d='M0 7q9-7 18 0t18 0 18 0 18 0 V14 H0 Z' fill='black'/></svg>");
 }
 
 /* Dark, in three places that must agree: the system default, and both
@@ -324,18 +328,28 @@ h2 {
    one path covers any width, which is why the wave is drawn in a viewBox
    that tiles cleanly rather than as a repeating background image. */
 .rule {
-  display: block; width: 100%; height: 16px; opacity: .5;
+  display: block; width: 100%; height: 14px; opacity: .5;
+  position: relative; z-index: 3;
   background-color: var(--ink);
-  -webkit-mask: var(--wave) repeat-x center / 72px 16px;
-  mask: var(--wave) repeat-x center / 72px 16px;
+  -webkit-mask: var(--wave) repeat-x left center / 72px 14px;
+  mask: var(--wave) repeat-x left center / 72px 14px;
 }
+/* Each rule is pulled back over the band it terminates, so the ink line
+   lands exactly on the edge of the fill instead of below it. */
+.ticker + .rule { margin-top: -14px; }
+.rule.above-foot { margin-bottom: -14px; }
 
 /* The ticker is ambient: it says where the contest is up to for somebody who
    has just opened the tab, and it is aria-hidden because the same facts are
    in the header as real text. */
 .ticker {
-  overflow: hidden; padding: .5rem 0 .4rem;
+  overflow: hidden; padding: .5rem 0 1.1rem;
   position: relative; z-index: 2; background: var(--band);
+  /* Two mask layers: everything above the wave, plus the wave itself. */
+  -webkit-mask: linear-gradient(#000 0 0) left top / 100% calc(100% - 13px) no-repeat,
+                var(--wave-up) repeat-x left bottom / 72px 14px;
+  mask: linear-gradient(#000 0 0) left top / 100% calc(100% - 13px) no-repeat,
+        var(--wave-up) repeat-x left bottom / 72px 14px;
 }
 .ticker .run {
   display: inline-flex; white-space: nowrap; will-change: transform;
@@ -350,7 +364,11 @@ h2 {
 
 footer {
   position: relative; z-index: 1; margin: 1.6rem 0 0;
-  padding-bottom: .9rem; text-align: center; background: var(--band);
+  padding: 1.1rem 0 .9rem; text-align: center; background: var(--band);
+  -webkit-mask: var(--wave-down) repeat-x left top / 72px 14px,
+                linear-gradient(#000 0 0) left bottom / 100% calc(100% - 13px) no-repeat;
+  mask: var(--wave-down) repeat-x left top / 72px 14px,
+        linear-gradient(#000 0 0) left bottom / 100% calc(100% - 13px) no-repeat;
 }
 footer p {
   margin: .5rem 0 0; font-family: 'Marker', cursive;
@@ -558,8 +576,8 @@ a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
 </main>
 </div>
 
+<div class="rule above-foot" aria-hidden="true"></div>
 <footer>
-  <div class="rule" aria-hidden="true"></div>
   <p id="foot">merlin</p>
 </footer>
 
@@ -625,6 +643,10 @@ function seeded(str) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+// Six mood sprites the bot also uses, plus five drawn for this page.
+const MOODS = ["ok", "warn", "info", "notice", "idle", "error",
+  "bomb", "fire", "rip", "party", "jail"];
 
 const PENS = ["--pen-1", "--pen-2", "--pen-3", "--pen-4", "--pen-5", "--pen-6",
   "--pen-7", "--pen-8", "--pen-9", "--pen-10", "--pen-11", "--pen-12"];
@@ -694,14 +716,9 @@ function drawCollage() {
   const hits = (x, y, size) => blocked.some((b) =>
     x + size > b.x && x < b.x + b.w && y + size > b.y && y < b.y + b.h);
 
-  // Six mood sprites the bot also uses, plus five drawn for this page.
-  const moods = ["ok", "warn", "info", "notice", "idle", "error",
-    "bomb", "fire", "rip", "party", "jail"];
-  const bag = [];
-  for (let i = 0; i < 3; i++) {
-    for (const m of moods) bag.push({ mood: m });
-    for (const d of DOODLES) bag.push({ path: d });
-  }
+  // One offset per contest, so two contests never lay out alike while each
+  // stays completely stable within itself.
+  const slugSeed = Math.floor(seeded("offset:" + slug)() * 997);
 
   // A cell a little wider than the biggest sticker, so neighbours have air
   // between them even at the top of the size range.
@@ -711,20 +728,15 @@ function drawCollage() {
   const gapX = stage.width / cols;
   const gapY = stage.height / rows;
 
-  const bits = [];
+  // Pass one: where things go. Each cell draws from its own seed rather than
+  // from one sequence shared across the grid, which is what makes a sticker
+  // stay put: an entry arriving, or the window resizing, changes which cells
+  // are blocked, and with a shared sequence every survivor after the change
+  // would be handed somebody else's numbers and jump.
+  const placed = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      // Each cell draws from its own seed rather than from one sequence
-      // shared across the grid. That is what makes a sticker stay put: an
-      // entry arriving, or the window changing size, changes which cells
-      // are blocked, and with a shared sequence every survivor after the
-      // change would be handed somebody else's numbers and jump. Keyed on
-      // the slug, so two contests never look alike.
       const rnd = seeded(slug + ":" + r + ":" + c);
-      const item = bag[Math.floor(rnd() * bag.length)];
-      // Long tail: most are marginalia, a few are big enough to look stuck
-      // on. Skewing rather than a flat range is what stops it reading as a
-      // grid of same-sized icons.
       const size = Math.round(64 + Math.pow(rnd(), 2.1) * 136);
       const x = c * gapX + rnd() * Math.max(0, gapX - size);
       const y = r * gapY + rnd() * Math.max(0, gapY - size);
@@ -732,23 +744,51 @@ function drawCollage() {
 
       const rot = (rnd() * 34 - 17).toFixed(1);
       const sway = (4 + rnd() * 5) * (rnd() < .5 ? -1 : 1);
-      const motion = `--rot:${rot}deg;--sway:${sway.toFixed(1)}deg;` +
-        `--rise:${(-7 - rnd() * 10).toFixed(1)}px;--slide:${(rnd() * 10 - 5).toFixed(1)}px;` +
-        `--dur:${(10 + rnd() * 16).toFixed(1)}s;--delay:${(-rnd() * 24).toFixed(1)}s`;
-      const at = `left:${Math.round(x)}px;top:${Math.round(y)}px;${motion}`;
-
-      if (item.mood) {
-        bits.push(`<img src="/stickers/merlin_${item.mood}.png" alt="" loading="lazy"
-          style="${at};width:${size}px">`);
-      } else {
-        const pen = PENS[Math.floor(rnd() * PENS.length)];
-        bits.push(`<svg viewBox="0 0 64 64"
-          style="${at};width:${size}px;height:${size}px;stroke:var(${pen})">
-          <path d="${item.path}"/></svg>`);
-      }
+      placed.push({
+        r, c, x, y, size,
+        // Merlin can only land on one colour of a checkerboard, so two of
+        // her are never side by side however the rest falls out.
+        wantsMerlin: (r + c) % 2 === 0,
+        style: `left:${Math.round(x)}px;top:${Math.round(y)}px;` +
+          `--rot:${rot}deg;--sway:${sway.toFixed(1)}deg;` +
+          `--rise:${(-7 - rnd() * 10).toFixed(1)}px;--slide:${(rnd() * 10 - 5).toFixed(1)}px;` +
+          `--dur:${(10 + rnd() * 16).toFixed(1)}s;--delay:${(-rnd() * 24).toFixed(1)}s`,
+      });
     }
   }
-  box.innerHTML = bits.join("");
+
+  // Pass two: hand out the merlins. She appears at most once each, so the
+  // eleven sprites are dealt to eleven candidate cells and everything else
+  // becomes a doodle. Candidates are taken at an even stride down the list
+  // rather than the first eleven, because the list is in row order and the
+  // first eleven would put every one of her along the top of the page.
+  const wants = placed.filter((q) => q.wantsMerlin);
+  const deck = MOODS.slice();
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(seeded("deck:" + slug + ":" + i)() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  const stride = wants.length / Math.min(deck.length, wants.length || 1);
+  const mine = new Map();
+  for (let k = 0; k < deck.length && k < wants.length; k++) {
+    mine.set(wants[Math.floor(k * stride)], deck[k]);
+  }
+
+  box.innerHTML = placed.map((q) => {
+    const mood = mine.get(q);
+    if (mood) {
+      return `<img src="/stickers/merlin_${mood}.png" alt="" loading="lazy"
+        style="${q.style};width:${q.size}px">`;
+    }
+    // Which doodle is decided purely by position, with one offset per
+    // contest. The strides are coprime with the list length, so stepping one
+    // cell in any direction always lands on a different shape.
+    const path = DOODLES[(q.r * 3 + q.c * 7 + slugSeed) % DOODLES.length];
+    const pen = PENS[(q.r * 5 + q.c * 3 + slugSeed) % PENS.length];
+    return `<svg viewBox="0 0 64 64"
+      style="${q.style};width:${q.size}px;height:${q.size}px;stroke:var(${pen})">
+      <path d="${path}"/></svg>`;
+  }).join("");
 }
 
 function drawTitle(text) {
