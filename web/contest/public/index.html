@@ -737,7 +737,19 @@ function drawCollage() {
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const rnd = seeded(slug + ":" + r + ":" + c);
-      const size = Math.round(64 + Math.pow(rnd(), 2.1) * 136);
+      // Merlin can only land on one colour of a checkerboard, so two of her
+      // are never side by side however the rest falls out. Decided here
+      // rather than in pass two because the collision check below needs to
+      // know how much room this cell is going to want.
+      const wantsMerlin = (r + c) % 2 === 0;
+      // She is the character, so she gets a higher floor than the doodles:
+      // at the bottom of a shared range she came out as a speck next to a
+      // two hundred pixel scribble, which reads as a mistake rather than as
+      // depth. Both still skew small, so most of the page is marginalia.
+      const roll = rnd();
+      const size = wantsMerlin
+        ? Math.round(104 + Math.pow(roll, 1.6) * 96)
+        : Math.round(70 + Math.pow(roll, 2.1) * 130);
       const x = c * gapX + rnd() * Math.max(0, gapX - size);
       const y = r * gapY + rnd() * Math.max(0, gapY - size);
       if (hits(x, y, size)) continue;
@@ -745,10 +757,7 @@ function drawCollage() {
       const rot = (rnd() * 34 - 17).toFixed(1);
       const sway = (4 + rnd() * 5) * (rnd() < .5 ? -1 : 1);
       placed.push({
-        r, c, x, y, size,
-        // Merlin can only land on one colour of a checkerboard, so two of
-        // her are never side by side however the rest falls out.
-        wantsMerlin: (r + c) % 2 === 0,
+        r, c, x, y, size, wantsMerlin,
         style: `left:${Math.round(x)}px;top:${Math.round(y)}px;` +
           `--rot:${rot}deg;--sway:${sway.toFixed(1)}deg;` +
           `--rise:${(-7 - rnd() * 10).toFixed(1)}px;--slide:${(rnd() * 10 - 5).toFixed(1)}px;` +
