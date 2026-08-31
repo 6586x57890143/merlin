@@ -70,6 +70,9 @@ func (l *Loader) reload() error {
 	next.MessageContentIntent = isTruthy(os.Getenv("MERLIN_ENABLE_MESSAGE_CONTENT_INTENT"))
 	next.SecretKey = os.Getenv("MERLIN_SECRET_KEY")
 	next.FundingRPCURLs, next.FundingContracts = fundingOverrides()
+	next.ContestWorkerURL = os.Getenv("MERLIN_CONTEST_WORKER_URL")
+	next.ContestWorkerToken = os.Getenv("MERLIN_CONTEST_WORKER_TOKEN")
+	next.ContestLinkKey = os.Getenv("MERLIN_CONTEST_LINK_KEY")
 	// LOG_LEVEL overrides the YAML value when set. On a deployed host .env is
 	// already the file an operator edits; config.yaml is a read-only mount,
 	// so requiring a file change to raise verbosity mid-incident would be the
@@ -83,6 +86,14 @@ func (l *Loader) reload() error {
 	}
 	if next.Discord.Token == "" {
 		return errors.New("DISCORD_BOT_TOKEN not set")
+	}
+	// A Worker with no link key is worse than no Worker: that key is what
+	// hashes a voter's Discord ID and what signs the session cookie the vote
+	// endpoint trusts, and an empty one means anybody who knows the format
+	// can mint a session for any member. Refusing to start is the only safe
+	// reading of a half-configured pair, and it is a one-line fix.
+	if next.ContestWorkerURL != "" && next.ContestLinkKey == "" {
+		return errors.New("MERLIN_CONTEST_WORKER_URL is set but MERLIN_CONTEST_LINK_KEY is not: contest voting sessions would be forgeable by anyone. Generate one with `openssl rand -base64 32` and give the Worker the same value")
 	}
 	if next.BootstrapAdminUserID == "" {
 		return errors.New("MERLIN_BOOTSTRAP_ADMIN_USER_ID not set: without it, a guild with no settings configured yet has no way to run /config at all")

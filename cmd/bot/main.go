@@ -22,10 +22,12 @@ import (
 	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
+	"github.com/6586x57890143/merlin/internal/plugins/contest"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
 	"github.com/6586x57890143/merlin/internal/scheduler"
+	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/6586x57890143/merlin/internal/settings"
 	"github.com/6586x57890143/merlin/internal/storage"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -219,6 +221,24 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// sets these to move off a public RPC or to point a rail somewhere else.
 	aimodPlugin.WithFundingChains(cfg.FundingRPCURLs, cfg.FundingContracts)
 
+	// Contests. The Worker URL may be empty, in which case the gallery and
+	// voting simply do not exist on this deployment and the Discord half
+	// still runs; /contest status says so rather than failing quietly. The
+	// sealer is built from the same MERLIN_SECRET_KEY aimod uses, and a nil
+	// one means /contest prize refuses to store a prize code rather than
+	// storing one in the clear.
+	contestSealer, err := secret.New(cfg.SecretKey)
+	if err != nil {
+		return fmt.Errorf("read MERLIN_SECRET_KEY: %w", err)
+	}
+	contestPlugin := contest.New(
+		contest.NewPostgresStore(db.Pool),
+		func(guildID string) contest.DiscordOps { return guard.For(guildID) },
+		speaker,
+		contestSealer,
+		cfg.ContestWorkerURL, cfg.ContestWorkerToken, cfg.ContestLinkKey,
+	)
+
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New(speaker))
@@ -226,6 +246,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
 	registry.Register(aimodPlugin)
+	registry.Register(contestPlugin)
 	registry.Register(adminconfigPlugin)
 
 	if err := registry.InitAll(); err != nil {
@@ -287,6 +308,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// rotation below it does not wait on settingsLoaded: a guild whose
 		// settings refresh failed still gets its weekly calibration review.
 		aimodPlugin.SyncGuild(guildCtx, gc.ID)
+		// Reads its own tables too, so like aimod it does not wait on
+		// settingsLoaded: a guild whose settings refresh failed still gets
+		// its running contest ticked on to the next phase.
+		contestPlugin.SyncGuild(guildCtx, gc.ID)
 		if settingsLoaded {
 			// Rotation, unlike the sweep, derives which jobs should exist from
 			// settings, and reconciling against fail-closed defaults would read as
@@ -399,6 +424,18 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		aimodPlugin.HandleChannelDeleted(cd.ID)
 	})
 
+	// A new forum post in a contest's forum is an entry. This handler is
+	// latency, not correctness: the contest tick re-derives the whole entry
+	// list from the forum every minute anyway, so this failing costs a
+	// member up to a minute of not seeing their post counted, and never
+	// costs them the entry.
+	//
+	// ThreadCreate carries the thread's id, name and owner, none of which
+	// are message-content fields, so it arrives with no privileged intent.
+	// The plugin then reads that one starter message over REST. contest
+	// deliberately does not join aimod on the gateway firehose.
+	session.AddHandler(contestPlugin.HandleThreadCreate)
+
 	// A deleted role is invisible to this bot otherwise, and it leaves two
 	// distinct traces: entries in the guild's settings that name a role
 	// nobody can see any more, and, if it was the jail marker, a cached ID
@@ -447,6 +484,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		rotationPlugin.ForgetGuild(gd.ID)
 		rolesPlugin.ForgetGuild(gd.ID)
 		aimodPlugin.ForgetGuild(gd.ID)
+		contestPlugin.ForgetGuild(gd.ID)
 		settingsStore.Forget(gd.ID)
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
 	})

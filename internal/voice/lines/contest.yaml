@@ -1,0 +1,112 @@
+# What merlin says while a contest runs.
+#
+# Five of these six land in one announcement channel over about three days,
+# in front of the same people, which is exactly the case PERSONA.md's "range
+# within a key" section exists for: a bot with one mood becomes furniture.
+# So each key runs calm to blunt, and the bands are grouped below so the
+# balance is visible to whoever adds a line.
+#
+# Nothing here is a moderation outcome and nothing here is a published
+# policy, so unlike moderation.* and rotation.intro.* the register is
+# playful throughout and the wording is genuinely free.
+#
+# What is deliberately NOT here: the deadlines, the entry count, the prize
+# itself, and the link. Those are embed fields built in code beside these
+# lines. Selection here is random and falls back silently on a line it
+# cannot render, which is fine for a greeting and wrong for the sentence
+# telling somebody when they stop being able to enter. Personality varies
+# the wording around the facts, never the facts.
+#
+# {opens} and {until} are Discord's own relative timestamp markup, so they
+# render as "in 3 hours" in each reader's timezone and keep counting down
+# after the message is posted. Write around them like a phrase, not a date.
+
+contest.announce:
+  # calm
+  - "we're running a contest: {title}. entries open {opens} 🪶"
+  - "{title} is happening. you can start posting {opens}"
+  - "new contest, {title}. doors open {opens}, no rush"
+  # neutral
+  - "contest time. {title}, entries from {opens}"
+  - "{title} starts {opens}. get something ready or don't, up to you"
+  # witty
+  - "{title}. i have been told this is a contest and not a fight, {opens}"
+  - "{title} opens {opens}. peregrine has already asked if she can enter twice"
+  # blunt
+  - "{title}. {opens}. make something"
+  - "contest: {title}. clock starts {opens}"
+
+contest.submissions_open:
+  # calm
+  - "{title} is open. post whatever you've got, closes {until}"
+  - "entries are open for {title}. you have until {until} 🍵"
+  - "go on then, {title} is taking entries until {until}"
+  # neutral
+  - "{title}: entries open now, closing {until}"
+  - "post your thing for {title}. one each, deadline {until}"
+  # witty
+  - "{title} is open. the deadline is {until} and it does not negotiate"
+  - "entries open for {title}. i will be counting until {until}, allegedly fairly"
+  # blunt
+  - "{title}. entries open. {until} and it shuts"
+  - "post it or don't. {title} closes {until}"
+
+contest.voting_open:
+  # calm
+  - "voting is open on {title}. {count} entries, closes {until}"
+  - "{count} people entered {title}. go pick your favourites, until {until} 🪶"
+  - "entries are in for {title}, {count} of them. voting until {until}"
+  # neutral
+  - "{title}: {count} entries, voting closes {until}"
+  - "voting time. {count} entries in {title}, you have until {until}"
+  # witty
+  - "{count} entries in {title} and somehow only one can win. voting until {until}"
+  - "{count} entries in {title}. go be a critic until {until}"
+  # blunt
+  - "{title}. {count} entries. vote. {until}"
+  - "voting open on {title}, {count} entries, shuts {until}"
+
+contest.winner:
+  # calm
+  - "{winner} takes it with {votes} votes. nicely done 🪶"
+  - "that's it then. {winner} wins on {votes} votes"
+  - "{winner} wins with {votes}. thanks to everyone who entered"
+  # neutral
+  - "{winner} wins, {votes} votes"
+  - "results are in. {winner}, {votes} votes"
+  # witty
+  - "{winner} wins with {votes} votes and i have counted twice"
+  - "{votes} votes to {winner}. democracy, briefly, working"
+  # blunt
+  - "{winner}. {votes} votes. done"
+  - "won by {winner} on {votes}"
+
+contest.no_entries:
+  # calm
+  - "nobody entered {title}. it happens, we'll run another"
+  - "{title} closed with nothing in it. no harm done"
+  - "zero entries for {title}. genuinely fine"
+  # neutral
+  - "{title} got no entries, so there is nothing to vote on"
+  - "no entries for {title}. calling it there"
+  # witty
+  - "{title} received zero entries. i have counted them all very carefully"
+  - "nobody entered {title}. the void wins again"
+  # blunt
+  - "{title}: nothing. moving on"
+  - "no entries. {title} is over"
+
+contest.prize_pledged:
+  # calm
+  - "{donor} put up {prize} 🪶"
+  - "{prize}, from {donor}. that's in the pool now"
+  - "{donor} has added {prize} to the pile"
+  # neutral
+  - "prize pool grows: {prize}, from {donor}"
+  - "{donor} pledged {prize}"
+  # witty
+  - "{donor} has raised the stakes with {prize}. no going back now"
+  - "{prize} from {donor}. the pressure is on whoever wins"
+  # blunt
+  - "{donor}: {prize}. in the pool"
+  - "{prize}. {donor}. noted"

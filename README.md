@@ -41,6 +41,21 @@ off. There's a bulk version and a `/roles jail-role` for when a raid shows up.
 **Timed role grants.** `/roles grant @someone @role 24h`, and it comes off by
 itself.
 
+**Contests.** `/contest new title:neon cats` and merlin runs the whole thing:
+an announce window while the prize pool fills, then a forum channel she creates
+for the entries, then voting, then the winner. People enter by posting in the
+forum like any other forum, so files are Discord's problem and not the bot's,
+and deleting your post is how you withdraw. Voting happens on a web gallery
+because forty pieces of art is the one thing Discord is genuinely bad at.
+Everyone signs in with Discord there, so it is one vote per member of your
+server and no one else, and the page is an unguessable link no search engine
+indexes.
+
+**Prizes.** `/contest prize` opens a form. Steam key, Nitro gift link, crypto,
+anything. If it has a code, merlin keeps it encrypted and DMs it to the winner
+the moment the contest ends, then wipes it. If it does not, she introduces the
+two of you and stays out of it. She never holds money.
+
 **Everything is configured in Discord.** No YAML editing on the host for
 day-to-day stuff. `/config setup` walks you through the audit log channel,
 status channel, mod role and admins. After that it's `/config admins`,
@@ -220,6 +235,34 @@ cp .env.example .env
 cp config.example.yaml config.yaml
 ```
 
+### The contest gallery
+
+Separate from the bot and deployed by hand, because it changes rarely and
+nothing else depends on it. It is a Cloudflare Worker on the free plan: one
+D1 database, one static HTML file, no bucket and no card on file.
+
+```sh
+scripts/build-contest.sh                    # copies her mood art in as stickers
+cd web/contest
+wrangler d1 create merlin-contests          # put the id in wrangler.jsonc
+wrangler d1 execute merlin-contests --remote --file schema.sql
+wrangler secret put BOT_TOKEN               # = MERLIN_CONTEST_WORKER_TOKEN
+wrangler secret put LINK_KEY                # = MERLIN_CONTEST_LINK_KEY
+wrangler secret put DISCORD_CLIENT_ID
+wrangler secret put DISCORD_CLIENT_SECRET
+wrangler deploy
+```
+
+Voting is Discord OAuth, so add `https://<your-worker>/oauth/callback` as a
+redirect URI on the same application as the bot. The scopes are `identify`
+and `guilds.members.read`, and the second one is the point: it is what proves
+a voter is in your server rather than merely holding a Discord account.
+
+Then put the Worker's URL and the two shared secrets in the bot's `.env` and
+restart it. Leave them empty and contests still run, just without a gallery.
+`node scripts/check-contest.mjs` drives the Worker's own logic under Node if
+you change it.
+
 Repo secrets you'll need: `VPS_HOST` and `VPS_SSH_KEY`. GHCR auth uses the
 workflow's own `GITHUB_TOKEN`, so there's no long-lived registry credential
 sitting on the box. The SSH user needs to be able to run `docker compose`
@@ -310,10 +353,15 @@ event bus.
 | `internal/scheduler` | cron core with persisted last-run state, backoff and failure alerts |
 | `internal/audit` | audit rows and the `#bird-audit-log` embeds |
 | `internal/voice` | what merlin says to members, lines as reviewable YAML, contract in code |
+| `internal/secret` | AES-256-GCM for the few things stored encrypted at rest |
 | `internal/plugins/rotation` | channel rotation and the archive sweep |
 | `internal/plugins/roles` | jail and timed role grants |
+| `internal/plugins/aimod` | the AI moderation ladder, its policy files and the tip jar |
+| `internal/plugins/contest` | contests: phases, the entry forum, the prize ledger |
 | `internal/plugins/adminconfig` | the `/config` command tree |
 | `internal/plugins/ping` | reference plugin, exercises the full lifecycle |
+| `web/contest` | the contest gallery and ballot, a Cloudflare Worker |
+| `web/lab`, `cmd/lab` | merlin's own packages compiled to wasm, so the voice lines and rotation notices can be read in a browser |
 
 ## Contributing
 

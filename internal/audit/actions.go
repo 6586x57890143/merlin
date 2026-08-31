@@ -51,10 +51,25 @@ var actions = map[string]meta{
 	// message, not how serious the policy area was: a moderator scanning
 	// this channel needs to find the irreversible ones, and a removal is
 	// irreversible whether it was a slur or a phishing link.
-	"aimod.remove":           {title: "AI moderation: message removed", color: core.ColorError},
-	"aimod.rewrite":          {title: "AI moderation: message rewritten", color: core.ColorWarning},
-	"aimod.flagged":          {title: "AI moderation: message flagged", color: core.ColorWarning},
-	"aimod.sanctioned":       {title: "AI moderation: member jailed", color: core.ColorError},
+	"aimod.remove":     {title: "AI moderation: message removed", color: core.ColorError},
+	"aimod.rewrite":    {title: "AI moderation: message rewritten", color: core.ColorWarning},
+	"aimod.flagged":    {title: "AI moderation: message flagged", color: core.ColorWarning},
+	"aimod.sanctioned": {title: "AI moderation: member jailed", color: core.ColorError},
+	// Contests. Nothing here is destructive: the worst a contest does is
+	// create a channel and post in it, and cancelling deliberately deletes
+	// nothing. So the palette runs info for routine, success for anything
+	// that hands somebody something, and warning only for calling one off,
+	// which is the entry a mod scrolls back for.
+	"contest.created":        {title: "Contest: started", color: core.ColorInfo},
+	"contest.phase_advanced": {title: "Contest: moved to the next phase early", color: core.ColorInfo},
+	"contest.cancelled":      {title: "Contest: called off", color: core.ColorWarning},
+	"contest.configured":     {title: "Contest: setup changed", color: core.ColorInfo},
+	// The prize entries name the prize and the people, never the code. The
+	// ciphertext lives in contest_prizes and the plaintext exists for the
+	// length of one direct message.
+	"contest.prize_pledged": {title: "Contest: prize pledged", color: core.ColorSuccess},
+	"contest.prize_awarded": {title: "Contest: prize handed over", color: core.ColorSuccess},
+
 	"aimod.abuse_detected":   {title: "AI moderation: scan budget abuse", color: core.ColorWarning},
 	"aimod.undone":           {title: "AI moderation: reversed by a moderator", color: core.ColorSuccess},
 	"aimod.budget_exhausted": {title: "AI moderation: daily budget spent", color: core.ColorWarning},

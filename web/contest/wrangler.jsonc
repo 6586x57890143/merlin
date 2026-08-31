@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "merlin-contests",
+  "main": "worker.js",
+  "compatibility_date": "2025-08-01",
+
+  // Static assets are served from here, but not automatically: the Worker
+  // fetches index.html itself so it can attach the noindex headers. A
+  // gallery of members' work on a server whose threat model is mass
+  // reporting should be reachable by anyone with the link and by no crawler.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "merlin-contests",
+      "database_id": "REPLACE_WITH_YOUR_D1_ID"
+    }
+  ],
+
+  "observability": { "enabled": true }
+
+  // Secrets, set with `wrangler secret put` and never written here:
+  //   BOT_TOKEN  must equal merlin's MERLIN_CONTEST_WORKER_TOKEN
+  //   LINK_KEY   must equal merlin's MERLIN_CONTEST_LINK_KEY
+}

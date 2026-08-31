@@ -608,6 +608,92 @@ was renamed off the `_windows.go` suffix, because a GOOS filename suffix
 carries an implicit constraint that ANDs with the explicit tag and would have
 left js/wasm with no definition at all.
 
+### Contests (`internal/plugins/contest`)
+
+Milestone 11. Four phases (announce, submit, vote, results) on one per-guild
+`contest-tick` job, entries arriving as posts in a Discord forum channel, and
+a Cloudflare Worker serving the gallery and the ballot.
+
+- **Submissions come in through a forum, and that is what makes the storage
+  problem disappear.** merlin creates one forum channel per contest and
+  members post in it; Discord's own CDN hosts every file for free and
+  forever, so there is no R2 bucket, no upload endpoint, no size or type
+  validation, and no bytes on the VPS. The signed CDN links expire in about a
+  day, and re-reading the thread's starter message returns a fresh one, so
+  `media_url` is a cache with a known refresh path rather than a record and
+  the tick refreshes it every `refreshInterval` during voting.
+- **Reading a post needs no gateway intent.** `ThreadCreate` carries the
+  thread's id, name and owner, none of which are message-content fields, so
+  it arrives unprivileged; the plugin then fetches exactly that one starter
+  message over REST (a forum post's first message shares the thread's id, so
+  `ChannelMessages(threadID, 1, "", "", threadID)` returns it). That is
+  strictly narrower than aimod, which needs the live firehose. It does need
+  the portal's Message Content toggle, which is HTTP-side and independent of
+  what is passed at identify, and that dependency **fails loud**: an
+  unreadable post and an empty one look identical over the wire, so
+  `ErrNoMessageContent` says so in the thread and in `/contest status` rather
+  than dropping somebody's entry.
+- **The entry list is re-derived from `ThreadsActive` every tick, but only
+  withdrawn while submissions are open.** Deleting your post is how you
+  withdraw, which is why there is no `/contest withdraw` to keep in sync.
+  Once voting starts the list freezes: people are casting votes against a
+  specific set, and letting a deleted post retroactively remove an entry
+  would discard every vote already cast for it, so somebody losing could
+  delete their post and take their voters' ballots with them.
+- **Every phase transition claims the move before doing anything visible**
+  (`AdvancePhase` is `UPDATE ... WHERE phase = $old`), the same
+  claim-before-acting rule as rotation's pre-rotation notices and chosen the
+  same way: a missed announcement is invisible, a doubled one reads as a
+  broken bot. `finish` is the exception that proves it, claiming *last*,
+  because the tally comes from the Worker and claiming first would leave a
+  contest sitting in results with no winner and nothing scheduled to retry.
+  A failed close records `tally_error`, stays in vote, and lets the
+  Scheduler's own backoff have another go.
+- **The Worker is dumb storage and a vote ledger, deliberately.** merlin owns
+  the schema and pushes a complete snapshot on every change rather than
+  diffing, so a push landing after a missed one is still correct with nothing
+  to reconcile. It computes no standings and decides no winners: merlin ranks
+  and pushes the numbers, so the results post and the page cannot disagree.
+  Three calls out (`PUT` a snapshot, `POST` a close, `GET` stats) and nothing
+  in. There is still no inbound HTTP surface on this bot.
+- **One vote per member is Discord OAuth, not a link.** The page sends people
+  through Discord with `identify guilds.members.read`; the second scope is
+  the one that matters, since `identify` alone would let anybody with a
+  Discord account vote in any server's contest, and Discord answers 404 on
+  the member endpoint for a stranger. The Discord ID is hashed the instant it
+  arrives with the same HMAC merlin uses, so the ledger holds opaque strings
+  and cannot be turned back into a list of who voted for what. That shared
+  hash is also what refuses a self-vote, which is why `TestTokenGoldenVector`
+  and `scripts/check-contest.mjs` pin the same vector from both sides.
+- **A prize code is sealed with `internal/secret` and lives in merlin's
+  Postgres**, never on Cloudflare and never in a snapshot. `/contest prize`
+  is a Discord modal because that is the only surface that takes free text
+  from a member without it landing in a channel or in their command history.
+  The ordering is `roles.applyJail`'s: the pairing is recorded, then the DM
+  carrying the code is sent, and only a DM that actually landed wipes the
+  ciphertext. A failed DM therefore leaves a recoverable state, which is what
+  `/contest claim` finishes, and closed DMs are the common case.
+- **Cancelling deletes nothing.** The forum, the posts and the pledges all
+  stay: calling a contest off is a decision about the contest, not about
+  anybody's work, and channel deletion has no undo.
+- Degrades rather than failing: with no `MERLIN_CONTEST_WORKER_URL` the whole
+  Discord half runs and `/contest status` says there is nowhere to vote; with
+  no `MERLIN_SECRET_KEY` pledges work and codes are refused rather than
+  stored in the clear. A Worker URL with no link key is the one combination
+  that refuses to boot, since an empty HMAC key makes every session forgeable.
+
+The gallery (`web/contest`) is one HTML file with inline CSS and JS, no
+framework and no build step, the same call `web/lab` made. It is a sticker
+collage on paper: everything is drawn as ink outlines on paper with a fixed
+six-pen marker palette, which is the whole reason dark mode is one media
+query, since a felt tip reads on white paper and on a blackboard alike. The
+wobble is a `border-radius` trick, the collage is the six merlin mood PNGs
+`internal/core/assets` already ships, and the headline's per-letter tilt is
+seeded from the contest slug so it is stable for that contest and different
+from the next. `scripts/check-contest.mjs` drives the real Worker under Node
+with D1 and Discord stubbed, and is deliberately not wired into CI for the
+same reason `check-lab.mjs` is not.
+
 ### Rotation disclosure modes
 
 `settings_rotation_channels.disclosure` (migration 0018, default `full`) is how much a freshly rotated channel is told about its own rotation: `full` (cadence + archival window), `cadence`, `retention`, or `generic` (neither). Per channel rather than per guild, matching `retention_hours` itself. Set via `/rotation configure add|edit`, a fixed four-value `Choices` option rather than autocomplete, since §4a's autocomplete rule is about values that come from bot state and cannot be enumerated at compile time.
