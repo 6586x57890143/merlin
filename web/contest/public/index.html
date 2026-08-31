@@ -188,16 +188,20 @@
 
 body {
   margin: 0;
+  min-height: 100vh; display: flex; flex-direction: column;
   background: var(--paper);
   color: var(--ink);
   font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   overflow-x: hidden;
 }
+/* The stage takes whatever is left, which is also what gives the collage
+   room to fill on a contest with two entries. */
+.stage { flex: 1 0 auto; }
+.ticker, .rule, footer { flex: none; }
 
 h1, h2, .chip, .theme-btn, button { font-family: 'Nunito', ui-rounded, ui-sans-serif, system-ui, sans-serif; font-weight: 900; }
 
 main {
-  min-height: 44vh;
   max-width: 64rem;
   margin: 0 auto;
   padding: 1rem 1rem 7rem;
@@ -364,7 +368,7 @@ h2 {
 
 footer {
   position: relative; z-index: 1; margin: 0;
-  padding: 1rem 0 .55rem; text-align: center; background: var(--band);
+  padding: 1rem 0 1.6rem; text-align: center; background: var(--band);
   -webkit-mask: var(--wave-down) repeat-x left top / 72px 14px,
                 linear-gradient(#000 0 0) left bottom / 100% calc(100% - 13px) no-repeat;
   mask: var(--wave-down) repeat-x left top / 72px 14px,
@@ -493,7 +497,7 @@ a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
 
 /* --- the picks bar ----------------------------------------------------- */
 .bar {
-  position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%);
+  position: fixed; left: 50%; bottom: 4.6rem; transform: translateX(-50%);
   display: none; align-items: center; gap: .7rem; z-index: 9;
   padding: .5rem 1.1rem; box-shadow: 4px 4px 0 var(--shadow);
   max-width: calc(100vw - 1.5rem); font-size: .95rem;
@@ -522,7 +526,7 @@ a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
   .card img.art, .card video { max-height: 65vh; }
   .card figure.multi img.art { max-height: 9rem; }
   .prize { max-width: 100%; }
-  .bar { left: .75rem; right: .75rem; transform: none; max-width: none; justify-content: center; }
+  .bar { left: .75rem; right: .75rem; bottom: 4.2rem; transform: none; max-width: none; justify-content: center; }
   .theme-btn { top: .6rem; right: .6rem; }
 }
 
