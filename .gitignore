@@ -12,3 +12,7 @@ coverage.out
 # JS shim, both reproducible from source and neither belonging in git.
 web/lab/lab.wasm
 web/lab/wasm_exec.js
+
+# Copied out of internal/core/assets by scripts/build-contest.sh. The mood
+# drawings have one owner; a second copy in git is a second copy to forget.
+web/contest/public/stickers/
