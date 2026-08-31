@@ -3,6 +3,7 @@ package aimod
 import (
 	"context"
 	"errors"
+	"github.com/6586x57890143/merlin/internal/secret"
 	"math"
 	"testing"
 	"time"
@@ -35,12 +36,12 @@ func TestTodayIsAUTCDateKey(t *testing.T) {
 func TestBudgetBlocksOnceSpent(t *testing.T) {
 	store := newFakeStore()
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	sealer, err := newSealer(testSecretKey)
+	sealer, err := secret.New(testSecretKey)
 	if err != nil {
 		t.Fatalf("newSealer: %v", err)
 	}
 	p.sealer = sealer
-	sealed, err := sealer.seal("sk-or-v1-test")
+	sealed, err := sealer.Seal("sk-or-v1-test")
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
@@ -81,9 +82,9 @@ func TestUnreadableSpendFailsClosed(t *testing.T) {
 	store := newFakeStore()
 	store.spendErr = errors.New("database is down")
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	sealer, _ := newSealer(testSecretKey)
+	sealer, _ := secret.New(testSecretKey)
 	p.sealer = sealer
-	sealed, _ := sealer.seal("k")
+	sealed, _ := sealer.Seal("k")
 
 	state, err := p.checkBudget(context.Background(), Config{GuildID: "g1", APIKeySealed: sealed, DailyBudgetUSD: 10})
 	if err == nil {
@@ -115,9 +116,9 @@ func TestUsageIsBookedEvenWhenTheAnswerIsUnusable(t *testing.T) {
 		usage: Usage{Cost: 0.004, PromptTokens: 900, CompletionTokens: 8},
 	}
 	p := testPlugin(t, store, client, newFakeOps(), &fakeAudit{})
-	sealer, _ := newSealer(testSecretKey)
+	sealer, _ := secret.New(testSecretKey)
 	p.sealer = sealer
-	sealed, _ := sealer.seal("k")
+	sealed, _ := sealer.Seal("k")
 
 	cfg := enforcingConfig()
 	cfg.APIKeySealed = sealed

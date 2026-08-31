@@ -12,6 +12,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/secret"
 )
 
 // Admin surfaces are deliberately not routed through internal/voice. They
@@ -57,7 +58,7 @@ func (p *Plugin) handleSetKey(ctx context.Context, s *discordgo.Session, i *disc
 		return
 	}
 
-	sealed, err := p.sealer.seal(key)
+	sealed, err := p.sealer.Seal(key)
 	if err != nil {
 		// The MERLIN_SECRET_KEY case reaches here, and its message is
 		// actionable on purpose: an admin who cannot fix it can at least
@@ -72,13 +73,13 @@ func (p *Plugin) handleSetKey(ctx context.Context, s *discordgo.Session, i *disc
 
 	// The key itself never reaches the audit row or the log. maskKey's tail
 	// is enough to tell two keys apart, which is all an audit trail needs.
-	p.auditConfig(ctx, i, "aimod.key_set", "", spec.label+" "+maskKey(key))
+	p.auditConfig(ctx, i, "aimod.key_set", "", spec.label+" "+secret.Mask(key))
 	core.RespondOK(s, i, spec.label+" key stored",
 		fmt.Sprintf("Stored encrypted as `%s`. It is never shown again, and never written to the logs.\n\n"+
 			"%s\n\nGive this key its own spend limit with the provider as well: this bot's daily budget is a "+
 			"second line of defence, not the only one.\n\nRun `/aimod configure mode flag` next and watch it "+
 			"for a week before enforcing.",
-			maskKey(key), routingNote(spec)))
+			secret.Mask(key), routingNote(spec)))
 }
 
 // routingNote says what storing this key just changed, because an OrcaRouter
@@ -311,8 +312,8 @@ func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, 
 
 	key := "not set"
 	if len(cfg.APIKeySealed) > 0 {
-		if plain, err := p.sealer.open(cfg.APIKeySealed); err == nil {
-			key = maskKey(plain)
+		if plain, err := p.sealer.Open(cfg.APIKeySealed); err == nil {
+			key = secret.Mask(plain)
 		} else {
 			key = "stored, but unreadable: " + err.Error()
 		}
@@ -422,7 +423,7 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	// The live account balance, which is a different question from this
 	// server's own cap and the one that actually stops the key working.
 	if len(sealed) > 0 {
-		if plain, err := p.sealer.open(sealed); err != nil {
+		if plain, err := p.sealer.Open(sealed); err != nil {
 			color = core.ColorError
 			fields = append(fields, &discordgo.MessageEmbedField{Name: "API key", Value: "stored, but cannot be decrypted: " + err.Error()})
 		} else if info, err := p.keyInfo(ctx, spec, plain); err != nil {

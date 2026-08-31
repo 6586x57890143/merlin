@@ -262,7 +262,7 @@ func (p *Plugin) checkCredit(ctx context.Context, guildID string) {
 	if len(sealed) == 0 {
 		return
 	}
-	plain, err := p.sealer.open(sealed)
+	plain, err := p.sealer.Open(sealed)
 	if err != nil {
 		return
 	}
@@ -550,7 +550,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	var remaining, limit *float64
 	spec, sealed := route(cfg)
 	if len(sealed) > 0 {
-		if plain, err := p.sealer.open(sealed); err == nil {
+		if plain, err := p.sealer.Open(sealed); err == nil {
 			if info, err := p.keyInfo(ctx, spec, plain); err == nil {
 				remaining, limit = info.LimitRemaining, info.Limit
 			}

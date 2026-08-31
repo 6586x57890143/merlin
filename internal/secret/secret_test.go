@@ -1,4 +1,4 @@
-package aimod
+package secret
 
 import (
 	"crypto/rand"
@@ -16,7 +16,7 @@ import (
 // right to refuse to make that judgement on our behalf. Generating it also
 // costs nothing: seal and open only need to agree within a run.
 var testSecretKey = func() string {
-	key := make([]byte, secretKeyBytes)
+	key := make([]byte, KeyBytes)
 	if _, err := rand.Read(key); err != nil {
 		panic("aimod: generating a test key: " + err.Error())
 	}
@@ -24,7 +24,7 @@ var testSecretKey = func() string {
 }()
 
 func TestSealRoundTrip(t *testing.T) {
-	s, err := newSealer(testSecretKey)
+	s, err := New(testSecretKey)
 	if err != nil {
 		t.Fatalf("newSealer: %v", err)
 	}
@@ -32,14 +32,14 @@ func TestSealRoundTrip(t *testing.T) {
 	// credential, for the same reason as above.
 	const plaintext = "sk-or-v1-fake-value-for-tests"
 
-	sealed, err := s.seal(plaintext)
+	sealed, err := s.Seal(plaintext)
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	if strings.Contains(string(sealed), plaintext) {
 		t.Fatal("the plaintext key is present in the sealed bytes")
 	}
-	got, err := s.open(sealed)
+	got, err := s.Open(sealed)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -51,9 +51,9 @@ func TestSealRoundTrip(t *testing.T) {
 // The nonce is fresh per seal, so the same key stored twice does not produce
 // the same bytes and a database dump does not reveal which guilds share one.
 func TestSealIsNotDeterministic(t *testing.T) {
-	s, _ := newSealer(testSecretKey)
-	a, _ := s.seal("sk-or-v1-same")
-	b, _ := s.seal("sk-or-v1-same")
+	s, _ := New(testSecretKey)
+	a, _ := s.Seal("sk-or-v1-same")
+	b, _ := s.Seal("sk-or-v1-same")
 	if string(a) == string(b) {
 		t.Error("sealing the same key twice produced identical bytes")
 	}
@@ -62,19 +62,19 @@ func TestSealIsNotDeterministic(t *testing.T) {
 // A rotated or mistyped MERLIN_SECRET_KEY must fail loudly with the one
 // error whose message names the actual fix, not return junk.
 func TestOpenWithTheWrongKeyFails(t *testing.T) {
-	other := make([]byte, secretKeyBytes)
+	other := make([]byte, KeyBytes)
 	if _, err := rand.Read(other); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	first, _ := newSealer(testSecretKey)
-	second, err := newSealer(base64.StdEncoding.EncodeToString(other))
+	first, _ := New(testSecretKey)
+	second, err := New(base64.StdEncoding.EncodeToString(other))
 	if err != nil {
 		t.Fatalf("newSealer: %v", err)
 	}
 
-	sealed, _ := first.seal("sk-or-v1-secret")
-	if _, err := second.open(sealed); !errors.Is(err, ErrSecretKeyChanged) {
-		t.Errorf("open with the wrong key = %v, want ErrSecretKeyChanged", err)
+	sealed, _ := first.Seal("sk-or-v1-secret")
+	if _, err := second.Open(sealed); !errors.Is(err, ErrKeyChanged) {
+		t.Errorf("open with the wrong key = %v, want ErrKeyChanged", err)
 	}
 }
 
@@ -82,16 +82,16 @@ func TestOpenWithTheWrongKeyFails(t *testing.T) {
 // process later trusts enough to send to a third party with money attached,
 // so a modified row has to be detected rather than decrypted into rubbish.
 func TestTamperedCiphertextIsRejected(t *testing.T) {
-	s, _ := newSealer(testSecretKey)
-	sealed, _ := s.seal("sk-or-v1-secret")
+	s, _ := New(testSecretKey)
+	sealed, _ := s.Seal("sk-or-v1-secret")
 
 	tampered := append([]byte(nil), sealed...)
 	tampered[len(tampered)-1] ^= 0xff
-	if _, err := s.open(tampered); err == nil {
+	if _, err := s.Open(tampered); err == nil {
 		t.Error("a modified ciphertext was accepted")
 	}
 
-	if _, err := s.open([]byte("short")); err == nil {
+	if _, err := s.Open([]byte("short")); err == nil {
 		t.Error("bytes shorter than the nonce were accepted")
 	}
 }
@@ -100,18 +100,18 @@ func TestTamperedCiphertextIsRejected(t *testing.T) {
 // refuses only the command that would store a secret. It must never fall
 // back to storing one in the clear.
 func TestNoSecretKeyRefusesRatherThanStoringPlaintext(t *testing.T) {
-	s, err := newSealer("")
+	s, err := New("")
 	if err != nil {
-		t.Fatalf("newSealer(\"\"): %v", err)
+		t.Fatalf("New(\"\"): %v", err)
 	}
 	if s != nil {
-		t.Fatal("an empty MERLIN_SECRET_KEY produced a working sealer")
+		t.Fatal("an empty MERLIN_SECRET_KEY produced a working Sealer")
 	}
-	if _, err := s.seal("sk-or-v1-secret"); !errors.Is(err, ErrNoSecretKey) {
-		t.Errorf("seal without a key = %v, want ErrNoSecretKey", err)
+	if _, err := s.Seal("sk-or-v1-secret"); !errors.Is(err, ErrNoKey) {
+		t.Errorf("seal without a key = %v, want ErrNoKey", err)
 	}
-	if _, err := s.open([]byte("anything")); !errors.Is(err, ErrNoSecretKey) {
-		t.Errorf("open without a key = %v, want ErrNoSecretKey", err)
+	if _, err := s.Open([]byte("anything")); !errors.Is(err, ErrNoKey) {
+		t.Errorf("open without a key = %v, want ErrNoKey", err)
 	}
 }
 
@@ -122,11 +122,11 @@ func TestMalformedSecretKeysAreRejected(t *testing.T) {
 		"not base64":   "this is not base64 at all !!",
 		"too short":    base64.StdEncoding.EncodeToString([]byte("sixteen bytes!!!")),
 		"too long":     base64.StdEncoding.EncodeToString(make([]byte, 64)),
-		"almost right": base64.StdEncoding.EncodeToString(make([]byte, secretKeyBytes-1)),
+		"almost right": base64.StdEncoding.EncodeToString(make([]byte, KeyBytes-1)),
 	}
 	for name, key := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := newSealer(key); err == nil {
+			if _, err := New(key); err == nil {
 				t.Error("accepted a malformed MERLIN_SECRET_KEY")
 			}
 		})
@@ -137,14 +137,14 @@ func TestMalformedSecretKeysAreRejected(t *testing.T) {
 // identify a key without being one.
 func TestMaskKeyRevealsOnlyATail(t *testing.T) {
 	const stored = "sk-or-v1-fake-value-for-tests-dead"
-	got := maskKey(stored)
+	got := Mask(stored)
 	if strings.Contains(got, "0123456789") {
 		t.Errorf("maskKey = %q, which leaks the body of the key", got)
 	}
 	if !strings.HasSuffix(got, "dead") {
 		t.Errorf("maskKey = %q, want it to end in the last four so two keys can be told apart", got)
 	}
-	if maskKey("abc") == "abc" {
+	if Mask("abc") == "abc" {
 		t.Error("a short value was echoed back verbatim")
 	}
 }

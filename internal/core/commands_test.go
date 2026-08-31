@@ -197,3 +197,71 @@ func TestActionsDedupesAndSkipsEmpty(t *testing.T) {
 		t.Fatalf("expected exactly one deduped action, got %+v", actions)
 	}
 }
+
+// Modals route exactly like components, so the matching rule has to be the
+// same one: longest prefix wins, and an unregistered CustomID matches
+// nothing rather than falling into whichever handler happened to be first.
+func TestMatchModalLongestPrefixWins(t *testing.T) {
+	r, _ := newTestRouter()
+	generic := func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {}
+	r.HandleModal("shorter-prefix-plugin", "contest:", PermSpec{Tier: TierPublic}, generic)
+	r.HandleModal("longer-prefix-plugin", "contest:prize:", PermSpec{Tier: TierPublic}, generic)
+
+	matched := r.matchModal("contest:prize:abc123")
+	if matched == nil {
+		t.Fatal("expected a match")
+	}
+	if matched.pluginName != "longer-prefix-plugin" {
+		t.Fatalf("expected the longer, more specific prefix to win, got plugin %q", matched.pluginName)
+	}
+	if matched := r.matchModal("roles:something:1"); matched != nil {
+		t.Fatalf("expected no match for an unrelated CustomID, got %+v", matched)
+	}
+}
+
+// A modal submission is its own fresh interaction that arrives minutes after
+// whatever opened it, so a forgotten tier here would be exactly as dangerous
+// as one on a command. Finalize has to refuse it the same way.
+func TestFinalizeRejectsAModalWithNoTier(t *testing.T) {
+	r, _ := newTestRouter()
+	r.HandleModal("testplugin", "contest:prize:", PermSpec{}, func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {})
+
+	if err := r.Finalize(); err == nil {
+		t.Fatal("expected Finalize to reject a modal with no declared tier")
+	}
+}
+
+// ModalValues exists so the two-level walk into Discord's nested ActionsRows
+// has one implementation. An absent optional field reads as empty rather
+// than missing, which is what every caller wants anyway.
+func TestModalValuesReadsEveryFieldAndToleratesJunk(t *testing.T) {
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		Type: discordgo.InteractionModalSubmit,
+		Data: discordgo.ModalSubmitInteractionData{
+			CustomID: "contest:prize:c1",
+			Components: []discordgo.MessageComponent{
+				&discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+					&discordgo.TextInput{CustomID: "title", Value: "a steam key"},
+				}},
+				&discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+					&discordgo.TextInput{CustomID: "code", Value: ""},
+				}},
+				// Anything that is not an ActionsRow of TextInputs is skipped
+				// rather than panicked on: Discord may add component types
+				// this build has never heard of.
+				&discordgo.Button{CustomID: "not-a-field"},
+			},
+		},
+	}}
+
+	got := ModalValues(i)
+	if got["title"] != "a steam key" {
+		t.Errorf("title = %q", got["title"])
+	}
+	if v, ok := got["code"]; !ok || v != "" {
+		t.Errorf("an empty optional field should read as empty, got %q %v", v, ok)
+	}
+	if _, ok := got["not-a-field"]; ok {
+		t.Error("a non-text component was read as a field")
+	}
+}
