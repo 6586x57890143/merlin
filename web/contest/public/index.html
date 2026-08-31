@@ -337,7 +337,7 @@ h2 {
 /* Each rule is pulled back over the band it terminates, so the ink line
    lands exactly on the edge of the fill instead of below it. */
 .ticker + .rule { margin-top: -14px; }
-.rule.above-foot { margin-bottom: -14px; }
+.rule.above-foot { margin-top: 2.2rem; margin-bottom: -14px; }
 
 /* The ticker is ambient: it says where the contest is up to for somebody who
    has just opened the tab, and it is aria-hidden because the same facts are
@@ -363,16 +363,16 @@ h2 {
 @keyframes run { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 
 footer {
-  position: relative; z-index: 1; margin: 1.6rem 0 0;
-  padding: 1.1rem 0 .9rem; text-align: center; background: var(--band);
+  position: relative; z-index: 1; margin: 0;
+  padding: 1rem 0 .55rem; text-align: center; background: var(--band);
   -webkit-mask: var(--wave-down) repeat-x left top / 72px 14px,
                 linear-gradient(#000 0 0) left bottom / 100% calc(100% - 13px) no-repeat;
   mask: var(--wave-down) repeat-x left top / 72px 14px,
         linear-gradient(#000 0 0) left bottom / 100% calc(100% - 13px) no-repeat;
 }
 footer p {
-  margin: .5rem 0 0; font-family: 'Marker', cursive;
-  font-size: .95rem; color: var(--muted);
+  margin: .15rem 0 0; font-family: 'Marker', cursive;
+  font-size: .9rem; color: var(--muted);
 }
 
 .wobble {
