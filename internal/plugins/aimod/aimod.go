@@ -10,6 +10,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
@@ -124,7 +125,7 @@ type Plugin struct {
 	store    Store
 	client   classifier
 	ops      OpsProvider
-	sealer   *sealer
+	sealer   *secret.Sealer
 	policies map[Bucket]Policy
 	voice    voice.Source
 
@@ -232,7 +233,7 @@ type batch struct {
 // explicitly rather than through core.Deps, matching roles.New: none of them
 // is a service every plugin needs.
 func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker voice.Source, scanning bool) (*Plugin, error) {
-	seal, err := newSealer(secretKey)
+	seal, err := secret.New(secretKey)
 	if err != nil {
 		return nil, err
 	}

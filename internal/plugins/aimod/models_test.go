@@ -2,6 +2,7 @@ package aimod
 
 import (
 	"context"
+	"github.com/6586x57890143/merlin/internal/secret"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,12 +48,12 @@ func stubCatalogue(t *testing.T, store *fakeStore) *Plugin {
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 	p.client = client
 
-	sealer, err := newSealer(testSecretKey)
+	sealer, err := secret.New(testSecretKey)
 	if err != nil {
 		t.Fatalf("newSealer: %v", err)
 	}
 	p.sealer = sealer
-	sealed, err := sealer.seal("sk-or-v1-test")
+	sealed, err := sealer.Seal("sk-or-v1-test")
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestPriceSurfacesDegradeWithoutARealClient(t *testing.T) {
 	store := newFakeStore()
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	sealer, _ := newSealer(testSecretKey)
+	sealer, _ := secret.New(testSecretKey)
 	p.sealer = sealer
 
 	if _, err := p.keyInfo(context.Background(), openRouter, "k"); err == nil {

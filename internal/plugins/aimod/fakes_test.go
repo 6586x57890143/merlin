@@ -2,7 +2,10 @@ package aimod
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
+	"github.com/6586x57890143/merlin/internal/secret"
 	"io"
 	"log/slog"
 	"sync"
@@ -791,3 +794,15 @@ type storedTriage struct {
 	raw      []byte
 	examples int64
 }
+
+// testSecretKey stands in for MERLIN_SECRET_KEY. Generated per process
+// rather than written down, for the same reason internal/secret's own test
+// does it: a fixed base64 string of exactly the right length is
+// indistinguishable from a leaked key to a secret scanner.
+var testSecretKey = func() string {
+	key := make([]byte, secret.KeyBytes)
+	if _, err := rand.Read(key); err != nil {
+		panic("aimod: generate test secret key: " + err.Error())
+	}
+	return base64.StdEncoding.EncodeToString(key)
+}()

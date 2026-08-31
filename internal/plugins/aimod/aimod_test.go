@@ -3,6 +3,7 @@ package aimod
 import (
 	"context"
 	"errors"
+	"github.com/6586x57890143/merlin/internal/secret"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,12 +19,12 @@ import (
 func intakePlugin(t *testing.T, store *fakeStore, client *fakeClassifier, ops *fakeOps) *Plugin {
 	t.Helper()
 	p := testPlugin(t, store, client, ops, &fakeAudit{})
-	sealer, err := newSealer(testSecretKey)
+	sealer, err := secret.New(testSecretKey)
 	if err != nil {
 		t.Fatalf("newSealer: %v", err)
 	}
 	p.sealer = sealer
-	sealed, err := sealer.seal("sk-or-v1-test")
+	sealed, err := sealer.Seal("sk-or-v1-test")
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}

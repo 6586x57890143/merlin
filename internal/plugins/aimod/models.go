@@ -85,7 +85,7 @@ func (p *Plugin) catalogue(ctx context.Context, guildID string) ([]Model, error)
 	if len(cfg.APIKeySealed) == 0 {
 		return nil, fmt.Errorf("aimod: no API key configured, so model prices cannot be looked up")
 	}
-	key, err := p.sealer.open(cfg.APIKeySealed)
+	key, err := p.sealer.Open(cfg.APIKeySealed)
 	if err != nil {
 		return nil, err
 	}

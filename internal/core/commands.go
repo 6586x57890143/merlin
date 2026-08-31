@@ -31,6 +31,14 @@ type AutocompleteHandler func(ctx context.Context, i *discordgo.InteractionCreat
 // refers to). Components carry no other server-side session of their own.
 type ComponentHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string)
 
+// ModalHandler handles a submitted modal whose CustomID matched a registered
+// prefix. customID is the modal's full CustomID, so a handler can decode
+// whatever state it encoded into it (which record the modal was opened for,
+// say). Modals exist here for one reason: they are the only Discord surface
+// that takes free text from a member without that text ever appearing in a
+// channel or in their command history, which is what a prize code needs.
+type ModalHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string)
+
 type registeredLeaf struct {
 	spec         PermSpec
 	handler      CommandHandler
@@ -41,6 +49,12 @@ type registeredComponent struct {
 	pluginName string
 	spec       PermSpec
 	handler    ComponentHandler
+}
+
+type registeredModal struct {
+	pluginName string
+	spec       PermSpec
+	handler    ModalHandler
 }
 
 // CommandRouter is the single owner of slash-command registration and
@@ -66,6 +80,7 @@ type CommandRouter struct {
 	topLevelPlugin map[string]string // top-level command name -> owning plugin name
 	leaves         map[string]*registeredLeaf
 	components     map[string]*registeredComponent // CustomID prefix -> handler
+	modals         map[string]*registeredModal     // CustomID prefix -> handler
 }
 
 func NewCommandRouter(perms *Permissions, gate PluginGate, log *slog.Logger) *CommandRouter {
@@ -76,6 +91,7 @@ func NewCommandRouter(perms *Permissions, gate PluginGate, log *slog.Logger) *Co
 		leaves:         make(map[string]*registeredLeaf),
 		topLevelPlugin: make(map[string]string),
 		components:     make(map[string]*registeredComponent),
+		modals:         make(map[string]*registeredModal),
 	}
 }
 
@@ -163,6 +179,16 @@ func (r *CommandRouter) HandleComponent(pluginName, prefix string, spec PermSpec
 	r.components[prefix] = &registeredComponent{pluginName: pluginName, spec: spec, handler: fn}
 }
 
+// HandleModal registers fn for every modal submission whose CustomID starts
+// with prefix. Same rules as HandleComponent: callers namespace their own
+// prefixes, the longest match wins, and pluginName and spec are re-checked
+// before fn runs. A modal is opened from an earlier interaction that was
+// already authorized, but the submission arrives as its own interaction
+// minutes later and gets no exemption for that.
+func (r *CommandRouter) HandleModal(pluginName, prefix string, spec PermSpec, fn ModalHandler) {
+	r.modals[prefix] = &registeredModal{pluginName: pluginName, spec: spec, handler: fn}
+}
+
 // Actions returns every distinct, non-empty PermSpec.Action currently
 // registered, used by /config permissions grant/revoke's autocomplete so
 // admins can discover valid action names without reading source code.
@@ -200,6 +226,18 @@ func (r *CommandRouter) Finalize() error {
 		}
 		if rc.spec.Tier != TierPublic && rc.spec.Action == "" {
 			return fmt.Errorf("core: component %q is above TierPublic but has no PermSpec.Action", prefix)
+		}
+	}
+	// Modals are validated on the same terms as components, and for the same
+	// reason: a submission arrives as its own interaction minutes after
+	// whatever opened it, so an unset tier here is exactly as dangerous as
+	// one on a command.
+	for prefix, rm := range r.modals {
+		if rm.spec.Tier == tierUnset {
+			return fmt.Errorf("core: modal %q registered with no PermSpec.Tier", prefix)
+		}
+		if rm.spec.Tier != TierPublic && rm.spec.Action == "" {
+			return fmt.Errorf("core: modal %q is above TierPublic but has no PermSpec.Action", prefix)
 		}
 	}
 	for key, leaf := range r.leaves {
@@ -306,6 +344,8 @@ func (r *CommandRouter) HandleInteraction(s *discordgo.Session, i *discordgo.Int
 		r.dispatchAutocomplete(s, i)
 	case discordgo.InteractionMessageComponent:
 		r.dispatchComponent(s, i)
+	case discordgo.InteractionModalSubmit:
+		r.dispatchModal(s, i)
 	}
 }
 
@@ -350,6 +390,62 @@ func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.Int
 	if matched == nil {
 		r.log.Error("component dispatch: no handler registered", "custom_id", customID)
 		r.respondEphemeral(s, i, r.say(voice.KeyStaleComponent, "This button or menu isn't wired up yet."))
+		return
+	}
+
+	if !r.gate.PluginEnabled(i.GuildID, matched.pluginName) {
+		r.respondEphemeral(s, i, r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
+		return
+	}
+	if err := r.perms.Authorize(i, matched.spec); err != nil {
+		r.respondEphemeral(s, i, r.say(voice.KeyDenied, "You are not allowed to do that."))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	matched.handler(ctx, s, i, customID)
+}
+
+// matchModal is matchComponent for modal submissions. Split out for the same
+// reason: the matching itself is worth testing without a live session.
+func (r *CommandRouter) matchModal(customID string) *registeredModal {
+	var matched *registeredModal
+	var matchedPrefix string
+	for prefix, rm := range r.modals {
+		if strings.HasPrefix(customID, prefix) && len(prefix) > len(matchedPrefix) {
+			matched, matchedPrefix = rm, prefix
+		}
+	}
+	return matched
+}
+
+// dispatchModal resolves a submitted modal to whichever registered prefix its
+// CustomID starts with, then runs the same plugin-enabled and Authorize
+// checks every other dispatch runs.
+//
+// Deliberately a copy of dispatchComponent's shape rather than a shared
+// generic: the two differ only in which map they read, and the checks are the
+// part that must not drift, so having them written out where a reviewer can
+// see them is worth twenty duplicated lines.
+func (r *CommandRouter) dispatchModal(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.log.Error("modal handler panicked", "panic", rec)
+			r.respondEphemeral(s, i, r.say(voice.KeyBroken, "Something went wrong handling that."))
+		}
+	}()
+
+	if i.GuildID == "" {
+		r.respondEphemeral(s, i, r.say(voice.KeyGuildOnly, "This only works inside a server."))
+		return
+	}
+
+	customID := i.ModalSubmitData().CustomID
+	matched := r.matchModal(customID)
+	if matched == nil {
+		r.log.Error("modal dispatch: no handler registered", "custom_id", customID)
+		r.respondEphemeral(s, i, r.say(voice.KeyStaleComponent, "This form isn't wired up yet."))
 		return
 	}
 
@@ -525,4 +621,27 @@ func (r *CommandRouter) respondEphemeral(s *discordgo.Session, i *discordgo.Inte
 		return
 	}
 	r.log.Error("interaction response failed", "err", err)
+}
+
+// ModalValues returns a submitted modal's text inputs keyed by their
+// CustomID. Discord nests every input inside its own ActionsRow, so reading
+// one field means two levels of type assertion; this exists so that walk has
+// exactly one implementation, for the same reason LeafArgs does.
+//
+// A missing key reads as the empty string, which is what an optional field
+// means anyway, so callers check for content rather than for presence.
+func ModalValues(i *discordgo.InteractionCreate) map[string]string {
+	out := make(map[string]string)
+	for _, row := range i.ModalSubmitData().Components {
+		ar, ok := row.(*discordgo.ActionsRow)
+		if !ok {
+			continue
+		}
+		for _, c := range ar.Components {
+			if in, ok := c.(*discordgo.TextInput); ok {
+				out[in.CustomID] = in.Value
+			}
+		}
+	}
+	return out
 }

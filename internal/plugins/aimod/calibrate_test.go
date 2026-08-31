@@ -3,6 +3,7 @@ package aimod
 import (
 	"context"
 	"errors"
+	"github.com/6586x57890143/merlin/internal/secret"
 	"strings"
 	"testing"
 	"time"
@@ -344,12 +345,12 @@ func TestReviewGuildEndToEnd(t *testing.T) {
 	}
 
 	p := testPlugin(t, store, client, ops, &fakeAudit{})
-	sealer, err := newSealer(testSecretKey)
+	sealer, err := secret.New(testSecretKey)
 	if err != nil {
 		t.Fatalf("newSealer: %v", err)
 	}
 	p.sealer = sealer
-	sealed, err := sealer.seal("sk-or-v1-test")
+	sealed, err := sealer.Seal("sk-or-v1-test")
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
@@ -394,9 +395,9 @@ func TestReviewGuildRejectsAnUnparseableAnswer(t *testing.T) {
 	store := newFakeStore()
 	client := &fakeClassifier{calibration: []string{"I cannot help with that."}}
 	p := testPlugin(t, store, client, newFakeOps(), &fakeAudit{})
-	sealer, _ := newSealer(testSecretKey)
+	sealer, _ := secret.New(testSecretKey)
 	p.sealer = sealer
-	sealed, _ := sealer.seal("sk-or-v1-test")
+	sealed, _ := sealer.Seal("sk-or-v1-test")
 
 	cfg := calibratingConfig()
 	cfg.APIKeySealed = sealed
@@ -501,12 +502,12 @@ func TestReviewGuildRoutesAndAllowsTimeToAnswer(t *testing.T) {
 	store := newFakeStore()
 	client := &fakeClassifier{calibration: []string{`{"examples":[],"findings":[]}`}}
 	p := testPlugin(t, store, client, newFakeOps(), &fakeAudit{})
-	sealer, err := newSealer(testSecretKey)
+	sealer, err := secret.New(testSecretKey)
 	if err != nil {
 		t.Fatalf("newSealer: %v", err)
 	}
 	p.sealer = sealer
-	sealed, err := sealer.seal("sk-orca-test")
+	sealed, err := sealer.Seal("sk-orca-test")
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}

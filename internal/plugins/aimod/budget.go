@@ -51,7 +51,7 @@ func (p *Plugin) checkBudget(ctx context.Context, cfg Config) (budgetState, erro
 	if len(sealed) == 0 {
 		return budgetState{Exhausted: true}, nil
 	}
-	key, err := p.sealer.open(sealed)
+	key, err := p.sealer.Open(sealed)
 	if err != nil {
 		return budgetState{Exhausted: true}, err
 	}
@@ -75,7 +75,7 @@ func (p *Plugin) checkBudget(ctx context.Context, cfg Config) (budgetState, erro
 	// rather than failing the whole check closed the way a missing primary
 	// does.
 	if spec != openRouter && len(cfg.APIKeySealed) > 0 {
-		if fb, err := p.sealer.open(cfg.APIKeySealed); err == nil {
+		if fb, err := p.sealer.Open(cfg.APIKeySealed); err == nil {
 			st.FallbackKey = fb
 		} else {
 			p.log.Warn("aimod: fallback key unreadable", "guild", cfg.GuildID, "err", err)
