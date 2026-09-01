@@ -135,7 +135,7 @@ func (p *Plugin) syncSubmissions(ctx context.Context, c Contest) error {
 		return nil
 	}
 	ops := p.opsFor(c.GuildID)
-	list, err := ops.ThreadsActive(c.ForumChannelID)
+	list, err := ops.GuildThreadsActive(c.GuildID)
 	if err != nil {
 		return fmt.Errorf("contest: list threads: %w", err)
 	}

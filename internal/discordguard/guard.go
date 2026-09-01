@@ -66,7 +66,7 @@ type GuildGate interface {
 type Session interface {
 	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
-	ThreadsActive(channelID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
+	GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
 	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
@@ -202,8 +202,13 @@ func (o *GuildOps) GuildChannels(guildID string, options ...discordgo.RequestOpt
 	return o.guard.session.GuildChannels(guildID, options...)
 }
 
-func (o *GuildOps) ThreadsActive(channelID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
-	return o.guard.session.ThreadsActive(channelID, options...)
+// GuildThreadsActive, not the channel-scoped ThreadsActive it replaced.
+// Discord deprecated GET /channels/{id}/threads/active and removed it in API
+// v10, and it answers 404 well before a client gets there; the guild endpoint
+// is the documented replacement. It returns every active thread in the guild,
+// so both callers filter the result by ParentID themselves.
+func (o *GuildOps) GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+	return o.guard.session.GuildThreadsActive(guildID, options...)
 }
 
 func (o *GuildOps) ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error) {

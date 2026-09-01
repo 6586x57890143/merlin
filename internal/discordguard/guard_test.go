@@ -37,7 +37,7 @@ func (f *fakeSession) GuildChannels(string, ...discordgo.RequestOption) ([]*disc
 	return nil, nil
 }
 
-func (f *fakeSession) ThreadsActive(string, ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+func (f *fakeSession) GuildThreadsActive(string, ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
 	f.reads++
 	return &discordgo.ThreadsList{}, nil
 }
@@ -324,8 +324,8 @@ func TestReadsAreNeverGated(t *testing.T) {
 	if _, err := o.GuildRoles("g1"); err != nil {
 		t.Errorf("GuildRoles: %v", err)
 	}
-	if _, err := o.ThreadsActive("c"); err != nil {
-		t.Errorf("ThreadsActive: %v", err)
+	if _, err := o.GuildThreadsActive("g"); err != nil {
+		t.Errorf("GuildThreadsActive: %v", err)
 	}
 	if _, err := o.ChannelMessages("c", 1, "", "", ""); err != nil {
 		t.Errorf("ChannelMessages: %v", err)
