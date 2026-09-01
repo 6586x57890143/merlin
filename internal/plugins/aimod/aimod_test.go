@@ -114,6 +114,52 @@ func TestHardHitNeverRewrites(t *testing.T) {
 	}
 }
 
+// A slur is the other half of that rule: the word is the violation, the
+// sentence around it is not, so this one really is reposted cleaned up. It
+// obeys hate_speech like any other hit in that bucket, off included.
+func TestHardSlurIsRewrittenWhereHateSpeechIsOn(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
+
+	cfg := enforcingConfig()
+	cfg.BucketActions[BucketHateSpeech] = ActionRewrite
+	store.setConfig(cfg)
+
+	msg := &discordgo.Message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1",
+		Content: "shut up you faggot",
+		Author:  &discordgo.User{ID: "u1"},
+		Member:  &discordgo.Member{},
+	}
+	p.HandleMessage(msg)
+	p.wg.Wait()
+
+	deleted, posted := ops.snapshot()
+	if len(deleted) != 1 || len(posted) != 1 {
+		t.Fatalf("deleted %v, posted %d, want the message replaced", deleted, len(posted))
+	}
+	if _, still := redactSlurs(posted[0].Content); still {
+		t.Errorf("reposted %q, which still carries the word", posted[0].Content)
+	}
+	if !strings.HasPrefix(posted[0].Content, "shut up you ") {
+		t.Errorf("reposted %q, which lost the rest of the sentence", posted[0].Content)
+	}
+
+	// The same message where the guild has hate_speech off is left alone:
+	// rung 1 skips the model, it does not skip the policy.
+	ops2, store2 := newFakeOps(), newFakeStore()
+	p2 := testPlugin(t, store2, &fakeClassifier{}, ops2, &fakeAudit{})
+	off := enforcingConfig()
+	off.BucketActions[BucketHateSpeech] = ActionOff
+	store2.setConfig(off)
+	p2.HandleMessage(msg)
+	p2.wg.Wait()
+	if deleted, posted := ops2.snapshot(); len(deleted) != 0 || len(posted) != 0 {
+		t.Errorf("acted with hate_speech off: deleted %v, posted %d", deleted, len(posted))
+	}
+}
+
 // Nothing is read at all without the intent, and the plugin says so rather
 // than appearing to work.
 func TestNothingIsScannedWithoutTheIntent(t *testing.T) {

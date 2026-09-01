@@ -487,20 +487,25 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// with the bucket's own configured action and no model in the loop, so
 	// a token leak or a phishing link is gone in well under a second even on
 	// a guild whose budget is spent.
-	if bucket, reason, hit := hardHit(c.Content); hit {
+	if bucket, reason, rewrite, hit := hardHit(c.Content); hit {
 		action := EffectiveAction(cfg.BucketActions, bucket)
+		// A slur hit is a hate_speech hit and obeys that bucket, off
+		// included. What rung 1 buys is not an exemption from the guild's
+		// policy, it is skipping the model on the words where no reading of
+		// the sentence would change the answer.
 		if action == ActionOff {
 			return
 		}
-		// Never a rewrite: these patterns match a credential or a link, and
-		// a "cleaned" version of a phishing message is still a phishing
-		// message with a hole in it.
-		if action == ActionRewrite {
+		// Never a rewrite with nothing to clean: the patterns above match a
+		// credential or a link, and a "cleaned" version of a phishing
+		// message is still a phishing message with a hole in it.
+		if action == ActionRewrite && rewrite == "" {
 			action = ActionRemove
 		}
 		p.spawn(func(bg context.Context) {
 			p.enforce(bg, cfg, c, bucket, action, deepVerdict{
-				Violation: true, Bucket: bucket, Confidence: 1, Reason: reason,
+				Violation: true, Bucket: bucket, Confidence: 1,
+				Reason: reason, Rewrite: rewrite,
 			})
 		})
 		return

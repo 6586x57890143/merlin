@@ -2,6 +2,7 @@ package aimod
 
 import (
 	"hash/fnv"
+	"math/rand/v2"
 	"regexp"
 	"slices"
 	"strings"
@@ -338,9 +339,114 @@ var hardPatterns = []struct {
 	},
 }
 
+// sub is one replacement: the singular form and the plural, picked by how
+// the matched word ended.
+type sub struct{ one, many string }
+
+// hardSlurs are the words Discord's guidelines treat as a violation on
+// sight. They sit in rung 1 rather than with the model rungs because they
+// are the one part of hate speech that needs no sentence read around it:
+// there is no framing in which these are the word somebody reached for by
+// accident, and waiting for a model to agree costs a call and a second.
+//
+// Unlike everything above, a hit here is *rewritable*: the violation is a
+// word rather than the whole message, so replacing it leaves an otherwise
+// ordinary sentence standing. The replacements are deliberately silly. A
+// member who tries again gets the same treatment and no argument, which is
+// a cheaper outcome for a moderator than a removal somebody appeals.
+//
+// The patterns are the hard part, because the whole word is the violation
+// and typing it with a dot in the middle is the obvious next move. Each one
+// therefore reads as a letter sequence with substitutions and slack between
+// the letters rather than as a spelling: n.i.g.g.e.r, f*ggot and
+// "t r a n n y" all land, and the replacement swallows the separators with
+// the word. The slack is bounded and letters-and-digits are never part of
+// it, which is what keeps snigger and niggardly out.
+//
+// It stops at ASCII. Unicode homoglyphs are the next rung of evasion and
+// deliberately not chased here: normalising them is a table that needs
+// maintaining, the win is one round of whack-a-mole, and anything that gets
+// past this is still read by the model rungs, which is what they are for.
+// slurSep is what may sit between two letters of a slur: up to two
+// characters that are neither a letter nor a digit. Excluding both is the
+// whole safety property, since it means the letters have to be adjacent in
+// the word itself.
+const slurSep = `[^\p{L}\p{N}]{0,2}`
+
+var hardSlurs = []struct {
+	pattern *regexp.Regexp
+	// subs is picked from at random per match, so a member spamming one
+	// word gets a different daft answer every time and nothing to argue
+	// with. Any of them is publishable, which is what the switch below
+	// relies on.
+	subs []sub
+}{
+	{
+		regexp.MustCompile(`(?i)\bn` + slurSep + `[i1!|*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[e3*]` + slurSep + `r+(s|z)?\b`),
+		[]sub{
+			{"ninja", "ninjas"},
+			{"ninjago", "ninjagos"},
+			{"nice person", "nice people"},
+			{"night owl", "night owls"},
+			{"nintendo enjoyer", "nintendo enjoyers"},
+		},
+	},
+	{
+		regexp.MustCompile(`(?i)\bf` + slurSep + `[a4@*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[o0*]` + slurSep + `t+(s|z)?\b`),
+		[]sub{
+			{"frog", "frogs"},
+			{"fog", "fogs"},
+			{"thot", "thots"},
+			{"fine gentleman", "fine gentlemen"},
+			{"forklift certified individual", "forklift certified individuals"},
+		},
+	},
+	{
+		regexp.MustCompile(`(?i)\btr` + slurSep + `[a4@*]` + slurSep + `n` + slurSep + `n+` + slurSep + `(y|ie|ies|ys|iez)\b`),
+		[]sub{
+			{"person", "people"},
+			{"nice person", "nice people"},
+			{"epic person", "epic people"},
+			{"transformer", "transformers"},
+			{"trombone player", "trombone players"},
+		},
+	},
+	{
+		regexp.MustCompile(`(?i)\btr` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `n(s|z)?\b`),
+		[]sub{
+			{"person", "people"},
+			{"nice person", "nice people"},
+			{"epic person", "epic people"},
+			{"cartoon", "cartoons"},
+			{"trooper", "troopers"},
+		},
+	},
+}
+
+// redactSlurs replaces every hard slur in content, reporting whether any
+// matched. The replacement is what gets published, so it is built from the
+// member's own message rather than from anything a model returned.
+func redactSlurs(content string) (string, bool) {
+	out, hit := content, false
+	for _, s := range hardSlurs {
+		out = s.pattern.ReplaceAllStringFunc(out, func(m string) string {
+			hit = true
+			r := s.subs[rand.IntN(len(s.subs))]
+			switch m[len(m)-1] {
+			case 's', 'S', 'z', 'Z':
+				return r.many
+			}
+			return r.one
+		})
+	}
+	return out, hit
+}
+
 // hardHit runs rung 1. Returns the first matching pattern's bucket and
-// reason, or an empty bucket for no match.
-func hardHit(content string) (Bucket, string, bool) {
+// reason, or an empty bucket for no match. A non-empty rewrite is the
+// publishable version of the message: only the slur patterns produce one,
+// since a credential or a phishing link has no cleaned-up form.
+func hardHit(content string) (bucket Bucket, reason, rewrite string, hit bool) {
 	for _, h := range hardPatterns {
 		if !h.pattern.MatchString(content) {
 			continue
@@ -348,9 +454,12 @@ func hardHit(content string) (Bucket, string, bool) {
 		if h.notIf != nil && h.notIf.MatchString(content) {
 			continue
 		}
-		return h.bucket, h.reason, true
+		return h.bucket, h.reason, "", true
 	}
-	return "", "", false
+	if clean, ok := redactSlurs(content); ok {
+		return BucketHateSpeech, "hard slur", clean, true
+	}
+	return "", "", "", false
 }
 
 // enforcedBuckets is the set the fast pass is told to look for: everything
