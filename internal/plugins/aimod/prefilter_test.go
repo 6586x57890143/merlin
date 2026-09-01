@@ -304,33 +304,38 @@ func TestHardHit(t *testing.T) {
 		content string
 		want    Bucket
 		hit     bool
+		// rewrite is whether a publishable version of the message comes
+		// back. Only the slur patterns produce one, and which replacement
+		// it picks is random, so the assertions below are about what is
+		// left rather than about the exact words.
+		rewrite bool
 	}{
 		{
 			"ip grabber link",
 			"click here lol https://grabify.link/abc123",
-			BucketMalicious, true,
+			BucketMalicious, true, false,
 		},
 		{
 			"phishing domain",
 			"free nitro at https://discord-gift.ru/claim",
-			BucketMalicious, true,
+			BucketMalicious, true, false,
 		},
 		{
 			"ssn",
 			"his ssn is 123-45-6789 go get him",
-			BucketDoxxing, true,
+			BucketDoxxing, true, false,
 		},
 		{
 			// The ranges the US never issues are what somebody reaches for
 			// when writing a fake one to make a point.
 			"placeholder ssn is not a hit",
 			"an SSN looks like 000-00-0000, never share yours",
-			"", false,
+			"", false, false,
 		},
 		{
 			"ordinary discord link",
 			"come join https://discord.gg/abcdef we are nice",
-			"", false,
+			"", false, false,
 		},
 		{
 			// The single most important negative case in this file. Regex is
@@ -338,23 +343,52 @@ func TestHardHit(t *testing.T) {
 			// rungs, where a wrong answer at least read the sentence.
 			"rude message is not a hard hit",
 			"you are an absolute clown and everyone here knows it",
-			"", false,
+			"", false, false,
 		},
 		{
 			"a date is not an ssn",
 			"the release was 2024-01-15 and the patch 2024-02-20",
-			"", false,
+			"", false, false,
 		},
 		{
 			"phone number is not an ssn",
 			"call the office on 555-0100 during the week",
-			"", false,
+			"", false, false,
+		},
+		{
+			// The word on its own is the whole message, and the rewrite is
+			// still publishable, so this is not silently a removal.
+			"bare slur is rewritten",
+			"nigger",
+			BucketHateSpeech, true, true,
+		},
+		{
+			"slur in a sentence keeps the sentence",
+			"shut up you faggot",
+			BucketHateSpeech, true, true,
+		},
+		{
+			"plurals and digit substitution",
+			"f4ggots and n1gg3rs",
+			BucketHateSpeech, true, true,
+		},
+		{
+			"the other two",
+			"tranny troon",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// Rung 1 is a spam gate. An ordinary insult still belongs to the
+			// model rungs, which at least read the sentence.
+			"ordinary insult is not a hard hit",
+			"you absolute muppet",
+			"", false, false,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			bucket, reason, hit := hardHit(tc.content)
+			bucket, reason, rewrite, hit := hardHit(tc.content)
 			if hit != tc.hit {
 				t.Fatalf("hardHit = %v, want %v (bucket %q, reason %q)", hit, tc.hit, bucket, reason)
 			}
@@ -364,7 +398,43 @@ func TestHardHit(t *testing.T) {
 			if hit && strings.TrimSpace(reason) == "" {
 				t.Error("a hit with no reason, which is what a mod reads in the audit log")
 			}
+			if (rewrite != "") != tc.rewrite {
+				t.Errorf("rewrite = %q, want one? %v", rewrite, tc.rewrite)
+			}
+			if !tc.rewrite {
+				return
+			}
+			// The published text is the whole point: it has to keep the
+			// sentence and it has to not still contain the word.
+			if _, again := redactSlurs(rewrite); again {
+				t.Errorf("rewrite %q still matches a slur pattern", rewrite)
+			}
+			if rewrite == tc.content {
+				t.Errorf("rewrite %q is the message unchanged", rewrite)
+			}
 		})
+	}
+}
+
+// TestRedactSlursKeepsTheSentence pins the two properties every replacement
+// has to hold, across enough draws to see each of them: the words around the
+// slur survive untouched, and nothing daft is inserted anywhere else.
+func TestRedactSlursKeepsTheSentence(t *testing.T) {
+	const in = "shut up you faggot"
+	for i := 0; i < 200; i++ {
+		out, hit := redactSlurs(in)
+		if !hit {
+			t.Fatalf("no hit on %q", in)
+		}
+		if !strings.HasPrefix(out, "shut up you ") {
+			t.Fatalf("rewrite %q lost the rest of the sentence", out)
+		}
+		if strings.TrimPrefix(out, "shut up you ") == "" {
+			t.Fatalf("rewrite %q replaced the word with nothing, which is a removal", out)
+		}
+	}
+	if out, hit := redactSlurs("you absolute muppet"); hit || out != "you absolute muppet" {
+		t.Errorf("ordinary insult was touched: %q, hit %v", out, hit)
 	}
 }
 
