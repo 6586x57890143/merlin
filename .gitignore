@@ -19,3 +19,7 @@ web/contest/public/stickers/
 
 # wrangler local state, regenerated on every dev/deploy.
 web/contest/.wrangler/
+
+# Copied out of node_modules by scripts/build-contest.sh; npm owns the version.
+web/contest/public/vendor/
+node_modules/

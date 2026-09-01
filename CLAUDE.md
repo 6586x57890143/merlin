@@ -694,6 +694,22 @@ from the next. `scripts/check-contest.mjs` drives the real Worker under Node
 with D1 and Discord stubbed, and is deliberately not wired into CI for the
 same reason `check-lab.mjs` is not.
 
+Sprite sheets are kept, and cut by throwaway tooling, exactly as the mood
+sheet is: `internal/core/assets/source/merlin_moods_sheet.png` holds the six
+moods the bot embeds, and `web/contest/art/source/merlin_contest_sheet.png`
+the five contest-only ones. Two rules govern that cut, both of them learned
+by getting it wrong and shipping visibly broken art. **Never chroma key a
+sheet that already carries alpha**: one arrived flattened onto black, keying
+it ate every part of a sprite that was genuinely dark, and the bomb lost its
+body. **Find the gutters by projecting alpha onto each axis** rather than
+slicing into equal cells: the rows are not evenly spaced and the smoke and
+confetti push past where a third would fall, so five of six bounding boxes
+ran to a cell edge, which is a fragment rather than a frame. Names are
+matched against the existing exports by image difference rather than read off
+the grid, since guessing which cell is `notice` and which is `info` is how
+the wrong bird ends up on a jail notice. `scripts/build-contest.sh` stages
+both sets into the gitignored `web/contest/public/stickers/`.
+
 ### Rotation disclosure modes
 
 `settings_rotation_channels.disclosure` (migration 0018, default `full`) is how much a freshly rotated channel is told about its own rotation: `full` (cadence + archival window), `cadence`, `retention`, or `generic` (neither). Per channel rather than per guild, matching `retention_hours` itself. Set via `/rotation configure add|edit`, a fixed four-value `Choices` option rather than autocomplete, since §4a's autocomplete rule is about values that come from bot state and cannot be enumerated at compile time.

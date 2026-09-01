@@ -1,0 +1,8 @@
+{
+  "name": "merlin-web",
+  "private": true,
+  "description": "Not a Node project. The one dependency is the gallery's UI library, staged into web/contest/public/vendor by scripts/build-contest.sh.",
+  "dependencies": {
+    "drawably": "^0.3.10"
+  }
+}
