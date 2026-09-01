@@ -58,6 +58,11 @@ type fakeOps struct {
 	// assert on the embed and its attachments rather than only on the fact
 	// that something was posted.
 	complexSends []*discordgo.MessageSend
+
+	// threads is what GuildThreadsActive returns. Guild-scoped now, so it
+	// deliberately holds threads from more than one parent: the filtering is
+	// the part worth testing.
+	threads []*discordgo.Channel
 }
 
 type recordedEdit struct {
@@ -164,11 +169,13 @@ func (f *fakeOps) GuildChannels(guildID string, _ ...discordgo.RequestOption) ([
 	return out, nil
 }
 
-func (f *fakeOps) ThreadsActive(channelID string, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
-	if err := f.shouldFail("ThreadsActive"); err != nil {
+func (f *fakeOps) GuildThreadsActive(channelID string, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+	if err := f.shouldFail("GuildThreadsActive"); err != nil {
 		return nil, err
 	}
-	return &discordgo.ThreadsList{}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &discordgo.ThreadsList{Threads: f.threads}, nil
 }
 
 func (f *fakeOps) GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {

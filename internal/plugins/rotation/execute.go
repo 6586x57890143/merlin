@@ -301,13 +301,21 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	return nil
 }
 
+// captureThreadNames reads the guild's active threads and keeps the ones
+// hanging off this channel. Guild-scoped because Discord removed the
+// channel-scoped endpoint (see discordguard.GuildOps.GuildThreadsActive), so
+// the ParentID filter below is the only thing keeping one channel's rotation
+// from logging the thread names of every other channel in the server.
 func (p *Plugin) captureThreadNames(guildID, channelID string) []string {
-	list, err := p.ops(guildID).ThreadsActive(channelID)
+	list, err := p.ops(guildID).GuildThreadsActive(guildID)
 	if err != nil || list == nil {
 		return nil
 	}
 	names := make([]string, 0, len(list.Threads))
 	for _, t := range list.Threads {
+		if t.ParentID != channelID {
+			continue
+		}
 		names = append(names, t.Name)
 	}
 	return names

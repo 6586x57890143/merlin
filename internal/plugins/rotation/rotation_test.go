@@ -395,7 +395,7 @@ func TestRotateConcurrentFetchFailurePrioritizesChannelError(t *testing.T) {
 // for the thread-capture reordering in execute.go's rotate: capturing
 // active threads only matters (and only happens) on a fresh run, not when
 // a retry finds the new channel already revealed: re-fetching them again
-// would just be a wasted ThreadsActive call, since the first attempt
+// would just be a wasted GuildThreadsActive call, since the first attempt
 // already captured and logged them.
 func TestRotateSkipsThreadCaptureOnAlreadyRevealedRetry(t *testing.T) {
 	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
@@ -406,15 +406,15 @@ func TestRotateSkipsThreadCaptureOnAlreadyRevealedRetry(t *testing.T) {
 	if err := p.rotate(context.Background(), "g1", rc); err == nil {
 		t.Fatal("expected the first attempt to fail while archiving old")
 	}
-	if got := ops.callCounts["ThreadsActive"]; got != 1 {
-		t.Fatalf("expected ThreadsActive called exactly once on the fresh-run first attempt, got %d", got)
+	if got := ops.callCounts["GuildThreadsActive"]; got != 1 {
+		t.Fatalf("expected GuildThreadsActive called exactly once on the fresh-run first attempt, got %d", got)
 	}
 
 	if err := p.rotate(context.Background(), "g1", rc); err != nil {
 		t.Fatalf("retry rotate: %v", err)
 	}
-	if got := ops.callCounts["ThreadsActive"]; got != 1 {
-		t.Fatalf("expected ThreadsActive still called exactly once after the already-revealed retry (skipped, not re-fetched), got %d", got)
+	if got := ops.callCounts["GuildThreadsActive"]; got != 1 {
+		t.Fatalf("expected GuildThreadsActive still called exactly once after the already-revealed retry (skipped, not re-fetched), got %d", got)
 	}
 }
 
@@ -1048,5 +1048,30 @@ func TestSweepJobRegistrationUnchangedOnArchiveLookupFailure(t *testing.T) {
 
 	if !sched.registered[sweepKey] {
 		t.Fatal("a failed archive lookup must not unregister an existing sweep job")
+	}
+}
+
+// captureThreadNames asks Discord for every active thread in the guild, since
+// the channel-scoped endpoint it used to call was removed in API v10, so the
+// ParentID filter is now the only thing keeping one channel's rotation from
+// logging the thread names of every other channel in the server.
+func TestCaptureThreadNamesKeepsOnlyThisChannelsThreads(t *testing.T) {
+	ops := newFakeOps()
+	ops.threads = []*discordgo.Channel{
+		{ID: "t1", Name: "ours", ParentID: "chan-a"},
+		{ID: "t2", Name: "somebody else's", ParentID: "chan-b"},
+		{ID: "t3", Name: "ours too", ParentID: "chan-a"},
+	}
+	p := &Plugin{ops: func(string) DiscordChannelOps { return ops }}
+
+	got := p.captureThreadNames("g1", "chan-a")
+	want := []string{"ours", "ours too"}
+	if len(got) != len(want) {
+		t.Fatalf("captureThreadNames = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("captureThreadNames = %v, want %v", got, want)
+		}
 	}
 }

@@ -11,7 +11,7 @@ import "github.com/bwmarrin/discordgo"
 type DiscordChannelOps interface {
 	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
-	ThreadsActive(channelID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
+	GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
 	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)

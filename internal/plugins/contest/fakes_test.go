@@ -279,6 +279,11 @@ type fakeOps struct {
 	overwrit []int64 // deny masks passed to ChannelPermissionSet, in order
 	pinned   []string
 
+	// threadsAskedFor records the id GuildThreadsActive was called with, so a
+	// test can tell the guild-scoped endpoint from the channel-scoped one it
+	// replaced. The fake ignores it otherwise.
+	threadsAskedFor string
+
 	dmFails    bool
 	createFail error
 	threadsErr error
@@ -301,9 +306,10 @@ func (f *fakeOps) GuildChannels(string, ...discordgo.RequestOption) ([]*discordg
 	return f.channels, nil
 }
 
-func (f *fakeOps) ThreadsActive(string, ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+func (f *fakeOps) GuildThreadsActive(id string, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.threadsAskedFor = id
 	if f.threadsErr != nil {
 		return nil, f.threadsErr
 	}

@@ -754,3 +754,53 @@ func TestSnapshotCarriesEveryAttachment(t *testing.T) {
 		t.Errorf("url = %q, want the first attachment for older readers", snap.Entries[0].URL)
 	}
 }
+
+// The forum sync asks Discord for the whole guild's active threads, because
+// Discord removed GET /channels/{id}/threads/active in API v10 and it answers
+// 404 well before that. Getting this wrong is invisible from the outside: the
+// gateway handler still records posts made while submissions are open, so the
+// only thing that breaks is the safety net, and the shape of the loss is a
+// post made before the phase opened that is never picked up afterwards.
+func TestSyncAsksTheGuildForThreadsAndKeepsOnlyTheForumsOwn(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	c := liveContest(PhaseSubmit, base)
+	if err := store.CreateContest(context.Background(), c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// A guild-wide listing carries threads from every channel, so the entry
+	// list has to be narrowed back down by parent.
+	ops.threads = []*discordgo.Channel{
+		{ID: "100", ParentID: "forum-1", OwnerID: "u1", Name: "an entry"},
+		{ID: "200", ParentID: "some-other-channel", OwnerID: "u2", Name: "unrelated chatter"},
+	}
+	for _, id := range []string{"100", "200"} {
+		ops.messages[id] = []*discordgo.Message{{
+			ID: id, Content: "here it is",
+			Author: &discordgo.User{ID: "u" + id[:1], Username: "someone"},
+		}}
+	}
+
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+	p.now = func() time.Time { return base }
+	if err := p.syncSubmissions(context.Background(), c); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	if ops.threadsAskedFor != c.GuildID {
+		t.Errorf("asked for threads of %q, want the guild %q: the channel-scoped endpoint is gone",
+			ops.threadsAskedFor, c.GuildID)
+	}
+
+	subs, err := store.Submissions(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("entries = %d, want 1: a thread from another channel was counted", len(subs))
+	}
+	if subs[0].ThreadID != "100" {
+		t.Errorf("kept thread %q, want the one in the contest forum", subs[0].ThreadID)
+	}
+}
