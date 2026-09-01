@@ -94,12 +94,39 @@ function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
+// The dead end at the end of a sign in. It is the same paper and ink as the
+// gallery, and deliberately not the same machinery: no drawably, no module,
+// no fetch. Somebody reaches this page because something already went wrong,
+// and the one thing it owes them is the sentence saying what, rendered
+// before anything else has a chance to fail too.
+//
+// The sticker is the only request it makes, it is decorative, and it fails
+// into whitespace. merlin looking put out is worth one 20KB image on a page
+// that tells you your sign in did not work.
 function html(message, status) {
+  const mood = status >= 500 ? 'error' : 'warn';
   return new Response(
     '<!doctype html><meta charset=utf-8>' +
     '<meta name=viewport content="width=device-width,initial-scale=1">' +
-    '<body style="font:16px/1.5 system-ui;margin:0;display:grid;place-items:center;' +
-    'height:100vh;background:#fdfbf6;color:#17150f"><p>' + message + '</p></body>',
+    '<title>contest</title>' +
+    '<style>' +
+    ':root{color-scheme:light dark;--paper:#fdfbf6;--ink:#17150f;--muted:#6b6459}' +
+    // The same four values index.html uses, copied rather than shared: this
+    // page must render with no stylesheet, no script and no asset, so it
+    // cannot read the gallery's tokens. Keep the two in step by hand.
+    '@media(prefers-color-scheme:dark){:root{--paper:#1b211f;--ink:#eceae0;--muted:#a9b0a8}}' +
+    'body{font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;' +
+    'margin:0;min-height:100vh;display:grid;place-items:center;padding:2rem;' +
+    'background:var(--paper);color:var(--ink);text-align:center}' +
+    'img{width:132px;height:auto;margin:0 auto .5rem;display:block}' +
+    'p{margin:0;max-width:26rem}' +
+    'small{display:block;margin-top:1.25rem;color:var(--muted)}' +
+    '</style>' +
+    '<body><div>' +
+    '<img src="/stickers/merlin_' + mood + '.png" alt="">' +
+    '<p>' + message + '</p>' +
+    '<small>close this tab and go back to discord.</small>' +
+    '</div></body>',
     { status, headers: PAGE_HEADERS });
 }
 

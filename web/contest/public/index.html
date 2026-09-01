@@ -7,16 +7,34 @@
 <meta name="referrer" content="no-referrer">
 <title>contest</title>
 
+<link rel="stylesheet" href="/vendor/drawably/style.css">
+
 <!--
   One page, every contest. The slug comes out of the URL and the content out
   of /api/c/<slug>/view, so there is nothing to template server side and one
   document to cache.
 
-  No framework and no build step, matching web/lab. Everything below is hand
-  written CSS: the wobble is a border-radius trick, the collage is six PNGs
-  merlin already ships as her own mood icons plus a dozen inline SVG doodles,
-  and the headline is spans with a seeded rotation. Nothing is generated,
-  nothing is a gradient, nothing is frosted glass.
+  No framework and no build step, matching web/lab. The collage is six PNGs
+  merlin already ships as her own mood icons plus five drawn for this page
+  and a dozen inline SVG doodles, and the headline is spans with a seeded
+  rotation. Nothing is generated, nothing is a gradient, nothing is frosted
+  glass.
+
+  The outlined containers are drawn by drawably, staged into /vendor by
+  scripts/build-contest.sh. They used to be a border-radius trick, and the
+  trick had one tell: a border-radius is the same on every element that
+  carries it, so twelve cards wore the identical wobble and read as one
+  asset repeated rather than as twelve things somebody drew. Everything else
+  on the page stays exactly as it was. The doodles are already drawings, the
+  rank medal and the picked tag are solid marker blobs rather than outlines,
+  and the wave rules are a mask; none of those is faking a pen line.
+
+  Seeds are derived, never random. This page rebuilds its grid every 30
+  seconds, and a fresh seed per mount would re-scribble the gallery twice a
+  minute in front of somebody reading it. Every sketch is seeded off the
+  thing it is drawn around, so a card looks the same on this reload as the
+  last one and the same on a phone as on a laptop, while still looking
+  nothing like the card beside it.
 
   Theme is three-state: follow the system, or force light or dark. The
   palette is built so that costs almost nothing, because everything is drawn
@@ -97,6 +115,20 @@
   --ink:   #17150f;
   --muted: #6b6459;
   --shadow: rgba(23, 21, 15, .18);
+
+  /* The one wire between this palette and drawably's, and it is deliberately
+     declared once rather than in each of the three theme blocks below: these
+     are var() references, so they re-resolve wherever --ink and --card are
+     redefined. --drawably-ink is the library's own override hook and beats
+     the per-element stroke it sets from options, which is what lets a picked
+     card turn green further down without being re-sketched.
+
+     drawably's stylesheet is linked above this block on purpose. Its
+     .drawably-badge sets a 12px monospace font and its .drawably-button sets
+     `background: none`, both at one class of specificity, so the page's own
+     .chip/.pill/.theme-btn rules only win by coming later in the document. */
+  --drawably-ink: var(--ink);
+  --drawably-paper: var(--card);
   /* The headline cloud needs its own token rather than --blue at low alpha.
      A wash that reads as sky on paper turns into a murky navy bruise on a
      dark ground, so the two themes want genuinely different values. */
@@ -250,8 +282,8 @@ main {
   position: fixed; top: .9rem; right: .9rem; z-index: 10;
   padding: .3rem .85rem; font-size: .9rem; cursor: pointer;
   color: var(--ink); background: var(--card);
-  border: 3px solid var(--ink);
-  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
+  border: 0;
+  border-radius: 6px;
   box-shadow: 3px 3px 0 var(--shadow);
   transform: rotate(-2deg);
   transition: transform .12s ease;
@@ -293,8 +325,8 @@ h1 .sp { width: .3em; }
   display: inline-block; padding: .1rem 1rem .16rem;
   font-family: 'Marker', cursive; font-size: 1.05rem;
   color: #17150f; background: var(--badge);
-  border: 3px solid var(--ink);
-  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
+  border: 0;
+  border-radius: 4px;
   /* Offset like everything else on this page rather than a soft drop
      shadow, which was the one blurred edge in a document drawn entirely in
      hard lines. */
@@ -383,11 +415,29 @@ footer p {
   font-size: .9rem; color: var(--muted);
 }
 
+/* The outline is drawably's, seeded per element. The radius stays because
+   the hard offset shadow follows it, and the style guide's EDGES rule wants
+   that shadow; 12px matches the corner drawably actually draws, so the two
+   sit on top of each other instead of the shadow poking out at the corners.
+   The border is gone: two outlines on one box is one too many. */
 .wobble {
-  border: 3px solid var(--ink);
-  border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
+  border: 0;
+  border-radius: 12px;
   background: var(--card);
 }
+/* If the build step did not stage drawably the page still works, so it needs
+   an outline that is not a sketch. Keyed off the class the library adds, so
+   the two can never both be drawn. */
+.wobble:not(.drawably-card) { border: 3px solid var(--ink); }
+.chip:not(.drawably-badge),
+.pill:not(.drawably-badge),
+.theme-btn:not(.drawably-button) { border: 3px solid var(--ink); }
+/* Picked and won say so through the pen below, which is not there on this
+   path, so they say it through the border instead. Without these two the
+   fallback still showed the picked tag and the rank medal, but a card's own
+   outline carried no state at all. */
+.card[aria-pressed="true"]:not(.drawably-card) { border-color: var(--ok); }
+.card.win:not(.drawably-card) { border-color: var(--badge); }
 
 /* --- entries ----------------------------------------------------------- */
 /* Flex-wrap centred rather than a grid. A grid left-aligns, so a contest
@@ -438,9 +488,16 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 .card .by { color: var(--muted); font-size: .9rem; margin: .1rem 0 0; }
 .card .more { color: var(--muted); font-size: .82rem; margin: .3rem 0 0; }
 
+/* State is the drawing getting louder: the pen goes green and thickens. Both
+   are live custom properties drawably reads on every frame, so a card does
+   not change shape at the moment it is picked, which would read as the page
+   losing its place rather than as a vote landing. The old solid ring shadow
+   is gone with the border it went with; a geometric ring around a wobbly
+   outline was the one clean edge left on the page. */
 .card[aria-pressed="true"] {
-  border-color: var(--ok);
-  box-shadow: 0 0 0 3px var(--ok), 5px 5px 0 var(--shadow);
+  --drawably-ink: var(--ok);
+  --drawably-width: 4;
+  box-shadow: 5px 5px 0 var(--shadow);
 }
 .card[aria-pressed="true"]::after {
   content: "picked";
@@ -469,7 +526,7 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
   border-radius: 48% 52% 55% 45% / 55% 48% 52% 45%;
   transform: rotate(-8deg);
 }
-.card.win { border-color: var(--badge); box-shadow: 0 0 0 4px var(--badge), 5px 5px 0 var(--shadow); }
+.card.win { --drawably-ink: var(--badge); --drawably-width: 5; box-shadow: 5px 5px 0 var(--shadow); }
 .votes {
   font-family: 'Nunito', ui-rounded, ui-sans-serif, system-ui, sans-serif;
   font-weight: 900; font-size: 1.02rem; color: var(--ink);
@@ -485,8 +542,8 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 
 .chip {
   display: inline-block; padding: .32rem .95rem;
-  border: 3px solid var(--ink); background: var(--card);
-  border-radius: 40% 60% 50% 50% / 60% 40% 60% 40%;
+  border: 0; background: var(--card);
+  border-radius: 4px;
   text-decoration: none; color: inherit; font-size: .95rem;
   box-shadow: 2px 2px 0 var(--shadow);
 }
@@ -552,7 +609,7 @@ a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
 <div class="ticker" aria-hidden="true"><div class="run" id="tickerRun"></div></div>
 <div class="rule" aria-hidden="true"></div>
 
-<button class="theme-btn" id="themeBtn" type="button" title="light, dark, or follow your system"></button>
+<button class="theme-btn" id="themeBtn" type="button" title="light, dark, or follow your system"><span id="themeLabel"></span></button>
 
 <div class="stage" id="stage">
 <div class="stickers" id="stickers" aria-hidden="true"></div>
@@ -630,7 +687,11 @@ function readTheme() {
 function applyTheme(t) {
   if (t === "auto") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", t);
-  $("themeBtn").textContent = t;
+  // The label is its own span because drawably hangs the button's sketch off
+  // the button as a child element, and setting textContent on the button
+  // would delete it. The sketched mark stays set, so it never comes back:
+  // one click and the theme control loses its outline for good.
+  $("themeLabel").textContent = t;
   $("themeBtn").setAttribute("aria-label", "theme: " + t + ", click to change");
 }
 applyTheme(readTheme());
@@ -640,13 +701,69 @@ $("themeBtn").addEventListener("click", () => {
   applyTheme(next);
 });
 
+// --- drawably ------------------------------------------------------------
+// Loaded dynamically and its absence is survivable, the same call
+// scripts/build-contest.sh already makes about the sticker art: a build step
+// that did not run costs the drawing and never the contest. Without it every
+// control here is still a real button, still keyboard reachable, still
+// readable, and the :not(.drawably-*) rules in the stylesheet put a plain
+// border back.
+//
+// A dynamic import rather than a module script, so this stays a classic
+// <script> and nothing else on the page changes when it loads late.
+let D = null;
+import("/vendor/drawably/index.js")
+  .then((m) => { D = m; if (snap) sketchAll(); })
+  .catch(() => { /* quiet: a member cannot act on this */ });
+
+// Every drawably call goes through here. It swallows a missing library and a
+// missing element alike, because the attachers throw on both and neither is
+// worth taking a gallery down for. An element is sketched once: render()
+// rebuilds the grid wholesale every 30 seconds, and the elements that come
+// back are new ones without the mark, while the bar and the theme button
+// persist and keep theirs.
+function pen(fn, el, opts) {
+  if (!D || !el || el.dataset.sketched || !D[fn]) return null;
+  try {
+    const sketch = D[fn](el, opts);
+    el.dataset.sketched = "1";
+    return sketch;
+  } catch { return null; }
+}
+
+function sketchAll() {
+  pen("drawablyButton", $("themeBtn"), { seed: hash("theme:" + slug), variant: "outline" });
+  pen("drawablyCard", $("bar"), { seed: hash("bar:" + slug), boil: 0 });
+  for (const el of document.querySelectorAll(".pill, .chip:not(.who)")) {
+    pen("drawablyBadge", el, { seed: hash("tag:" + el.textContent) });
+  }
+  // .chip.who keeps its dashed border. drawably has no dashed variant, and
+  // dashed is what says "a label, not a thing you press" on this page.
+  for (const el of document.querySelectorAll(".prize")) {
+    pen("drawablyCard", el, { seed: hash("prize:" + el.textContent), boil: 0 });
+  }
+  // boil off on the cards. Three frames cycling on a dozen outlines at once,
+  // behind a dozen images and a moving collage, is the page fidgeting rather
+  // than a drawing breathing. The small things keep theirs.
+  for (const el of document.querySelectorAll(".card[data-id]")) {
+    pen("drawablyCard", el, { seed: hash("card:" + el.dataset.id), boil: 0 });
+  }
+}
+
 // --- the collage ---------------------------------------------------------
 // Seeded so a contest is scribbled the same way every time it is opened, and
 // differently from the next one. A fresh tilt on every load reads as a page
-// that cannot sit still.
-function seeded(str) {
+// that cannot sit still. hash is the integer behind it, and is also every
+// sketch seed above, which is what makes a card keep its own outline across
+// the reload that rebuilds it.
+function hash(str) {
+  const s = String(str);
   let h = 2166136261 >>> 0;
-  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function seeded(str) {
+  let h = hash(str);
   return function () {
     h += 0x6D2B79F5; let t = h;
     t = Math.imul(t ^ (t >>> 15), t | 1);
@@ -884,6 +1001,13 @@ function renderMeta() {
   // merlin's own lines arrive in the snapshot from the voice catalog, so
   // this page never authors a word she says.
   runTicker(facts.concat(snap.quips || []));
+
+  // The pill and the chips were just replaced wholesale, so they need
+  // drawing again. renderMeta runs on its own 15 second timer, four times
+  // for every render(), and without this they sat unsketched for up to that
+  // long each time. pen() skips anything already marked, so the elements
+  // this did not touch cost a dataset read.
+  sketchAll();
 }
 
 // The strip has to be at least twice the viewport wide or the loop shows a
@@ -893,6 +1017,20 @@ function renderMeta() {
 function runTicker(items) {
   const run = $("tickerRun");
   const one = items.map((t) => `<span>${esc(t)}</span>`).join("");
+
+  // Rebuild only when the strip would actually come out different. The loop
+  // itself is exact (two identical halves, translated by half the width),
+  // but renderMeta runs every 15 seconds and this used to rebuild on every
+  // one of them. Near a deadline the countdown is minute-granular, so the
+  // text really did change each tick, and each change reset --run-dur and
+  // the width that -50% is half of, both mid-travel. The strip jumped back
+  // every 15 seconds and never once completed a lap, which is exactly when
+  // somebody is watching the clock. Width is in the key because the
+  // repetition count is derived from the viewport.
+  const key = one + "|" + window.innerWidth;
+  if (run.dataset.key === key) return;
+  run.dataset.key = key;
+
   run.innerHTML = one;
   const oneWidth = run.scrollWidth || 1;
   const reps = Math.max(1, Math.ceil(window.innerWidth / oneWidth));
@@ -945,6 +1083,7 @@ function render() {
 
   updateBar();
   drawCollage();
+  sketchAll();
 }
 
 function card(e, r, votable) {
