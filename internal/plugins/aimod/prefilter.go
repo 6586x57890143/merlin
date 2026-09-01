@@ -355,10 +355,24 @@ type sub struct{ one, many string }
 // member who tries again gets the same treatment and no argument, which is
 // a cheaper outcome for a moderator than a removal somebody appeals.
 //
-// Obfuscation tolerance stops at digit-for-letter substitution and doubled
-// letters. Chasing spacing and unicode homoglyphs here would start costing
-// false positives, and anything that gets past this is still read by the
-// model rungs, which is what they are for.
+// The patterns are the hard part, because the whole word is the violation
+// and typing it with a dot in the middle is the obvious next move. Each one
+// therefore reads as a letter sequence with substitutions and slack between
+// the letters rather than as a spelling: n.i.g.g.e.r, f*ggot and
+// "t r a n n y" all land, and the replacement swallows the separators with
+// the word. The slack is bounded and letters-and-digits are never part of
+// it, which is what keeps snigger and niggardly out.
+//
+// It stops at ASCII. Unicode homoglyphs are the next rung of evasion and
+// deliberately not chased here: normalising them is a table that needs
+// maintaining, the win is one round of whack-a-mole, and anything that gets
+// past this is still read by the model rungs, which is what they are for.
+// slurSep is what may sit between two letters of a slur: up to two
+// characters that are neither a letter nor a digit. Excluding both is the
+// whole safety property, since it means the letters have to be adjacent in
+// the word itself.
+const slurSep = `[^\p{L}\p{N}]{0,2}`
+
 var hardSlurs = []struct {
 	pattern *regexp.Regexp
 	// subs is picked from at random per match, so a member spamming one
@@ -368,7 +382,7 @@ var hardSlurs = []struct {
 	subs []sub
 }{
 	{
-		regexp.MustCompile(`(?i)\bn[i1]gg+[e3]r+(s|z)?\b`),
+		regexp.MustCompile(`(?i)\bn` + slurSep + `[i1!|*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[e3*]` + slurSep + `r+(s|z)?\b`),
 		[]sub{
 			{"ninja", "ninjas"},
 			{"ninjago", "ninjagos"},
@@ -378,7 +392,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		regexp.MustCompile(`(?i)\bf[a4]gg+[o0]t+(s|z)?\b`),
+		regexp.MustCompile(`(?i)\bf` + slurSep + `[a4@*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[o0*]` + slurSep + `t+(s|z)?\b`),
 		[]sub{
 			{"frog", "frogs"},
 			{"fog", "fogs"},
@@ -388,7 +402,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		regexp.MustCompile(`(?i)\btr[a4]nn(y|ies|ys)\b`),
+		regexp.MustCompile(`(?i)\btr` + slurSep + `[a4@*]` + slurSep + `n` + slurSep + `n+` + slurSep + `(y|ie|ies|ys|iez)\b`),
 		[]sub{
 			{"person", "people"},
 			{"nice person", "nice people"},
@@ -398,7 +412,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		regexp.MustCompile(`(?i)\btr[o0]{2,}n(s|z)?\b`),
+		regexp.MustCompile(`(?i)\btr` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `n(s|z)?\b`),
 		[]sub{
 			{"person", "people"},
 			{"nice person", "nice people"},

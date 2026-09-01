@@ -468,16 +468,12 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// a guild whose budget is spent.
 	if bucket, reason, rewrite, hit := hardHit(c.Content); hit {
 		action := EffectiveAction(cfg.BucketActions, bucket)
+		// A slur hit is a hate_speech hit and obeys that bucket, off
+		// included. What rung 1 buys is not an exemption from the guild's
+		// policy, it is skipping the model on the words where no reading of
+		// the sentence would change the answer.
 		if action == ActionOff {
-			if rewrite == "" {
-				return
-			}
-			// A hard slur is acted on even where hate_speech is off,
-			// because off is the default nobody chose and these are the
-			// words that get a server terminated with no reading of the
-			// sentence required. A guild that deliberately set flag, remove
-			// or rewrite still gets exactly what it asked for.
-			action = ActionRewrite
+			return
 		}
 		// Never a rewrite with nothing to clean: the patterns above match a
 		// credential or a link, and a "cleaned" version of a phishing

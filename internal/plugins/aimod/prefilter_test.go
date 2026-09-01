@@ -378,6 +378,26 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
+			// The obvious next move once the plain spelling is caught, and
+			// the reason the patterns read as letter sequences with slack
+			// rather than as words.
+			"separators do not get you past it",
+			"n.i.g.g.e.r and t r a n n y",
+			BucketHateSpeech, true, true,
+		},
+		{
+			"censoring bars do not either",
+			"f*ggot",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// The slack between letters is bounded and never spans a letter
+			// or a digit, which is the whole reason these two are safe.
+			"words that merely contain the letters are not hits",
+			"he sniggered at the niggardly tip",
+			"", false, false,
+		},
+		{
 			// Rung 1 is a spam gate. An ordinary insult still belongs to the
 			// model rungs, which at least read the sentence.
 			"ordinary insult is not a hard hit",
