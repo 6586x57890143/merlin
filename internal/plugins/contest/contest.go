@@ -62,6 +62,13 @@ const (
 	// the snapshot stops being small, and a server that genuinely needs more
 	// wants heats rather than a longer page.
 	maxEntries = 200
+
+	// archivedPageSize is Discord's maximum for one page of archived
+	// threads, and maxArchivedPages bounds the walk at more entries than a
+	// contest may hold, so a forum that somehow accumulated thousands of
+	// archived posts costs a bounded number of calls rather than a loop.
+	archivedPageSize = 100
+	maxArchivedPages = 4
 )
 
 // DiscordOps is the narrow slice of Discord this plugin touches.
@@ -72,6 +79,7 @@ type DiscordOps interface {
 	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
 	GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
+	ThreadsArchived(channelID string, before *time.Time, limit int, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
 	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
 	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
@@ -213,7 +221,16 @@ func (p *Plugin) tick(ctx context.Context, guildID string) error {
 		return err
 	}
 
-	if c.Phase == PhaseSubmit || c.Phase == PhaseVote {
+	// While submissions are open the sync runs every tick, so a new entry
+	// shows up within a minute. Once voting starts the entry list is frozen
+	// and the only reason to re-read the forum is that the CDN links go
+	// stale, which costs one REST call per entry: that goes at
+	// refreshInterval, not every minute. The rate limit used to sit on the
+	// push alone, which is the cheap half, leaving a 200-entry contest
+	// making 200 REST calls a minute for a link that needs refreshing twice
+	// a day.
+	refresh := c.Phase == PhaseVote && p.dueForRefresh(c.ID)
+	if c.Phase == PhaseSubmit || refresh {
 		if err := p.syncSubmissions(ctx, c); err != nil {
 			// Not fatal to the tick: a forum read failing must not stop a
 			// deadline from being enforced, or a Discord blip could hold a
@@ -227,10 +244,7 @@ func (p *Plugin) tick(ctx context.Context, guildID string) error {
 		return p.advance(ctx, c)
 	}
 
-	// Nothing changed phase, so the only reason to push is a refreshed set
-	// of CDN links. Rate-limited to refreshInterval because the push itself
-	// is cheap but the REST reads behind it are one per entry.
-	if c.Phase == PhaseVote && p.dueForRefresh(c.ID) {
+	if refresh {
 		if err := p.pushSnapshot(ctx, c); err != nil {
 			p.log.Error("contest: refresh push", "contest", c.ID, "err", err)
 		}
@@ -317,6 +331,10 @@ func (p *Plugin) finish(ctx context.Context, c Contest) error {
 		}
 		c.Phase = PhaseResults
 		p.announceNoEntries(ctx, c)
+		// Push, like every other terminal path. Without it the Worker goes
+		// on serving phase "vote" forever, so the public gallery keeps
+		// inviting votes on a contest that ended.
+		p.pushBestEffort(ctx, c)
 		p.afterFinish(ctx, c)
 		return nil
 	}
@@ -334,7 +352,8 @@ func (p *Plugin) finish(ctx context.Context, c Contest) error {
 	} else {
 		// No Worker means nobody could vote, so every entry is tied at zero
 		// and there is no winner to declare. Say that rather than crowning
-		// whoever posted first.
+		// whoever posted first: the noVotes branch below is what makes that
+		// true, and it used to fall straight through to announceWinners.
 		results = rank(subs, Tally{})
 	}
 
@@ -353,10 +372,32 @@ func (p *Plugin) finish(ctx context.Context, c Contest) error {
 	c.Results = blob
 
 	p.pushBestEffort(ctx, c)
-	p.announceWinners(ctx, c, subs, results)
-	p.awardPrizes(ctx, c, subs, results)
+	if noVotes(results) {
+		// Nobody voted, so there is no winner. results[0] here is whichever
+		// entry sorted first on a random entry ID, and awardPrizes would DM
+		// that person a sealed prize code and then wipe it: the one
+		// irreversible thing this plugin does, decided by a coin flip. This
+		// is the no-Worker case by definition and a real contest that
+		// nobody turned out for in practice.
+		p.announceNoVotes(ctx, c)
+	} else {
+		p.announceWinners(ctx, c, subs, results)
+		p.awardPrizes(ctx, c, subs, results)
+	}
 	p.afterFinish(ctx, c)
 	return nil
+}
+
+// noVotes reports that nothing was voted for at all. rank leaves every entry
+// on zero when the Worker is not configured, and a genuine tally can come
+// back empty too, so this is one check rather than two.
+func noVotes(rs []resultView) bool {
+	for _, r := range rs {
+		if r.Votes > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // afterFinish drops the now-idle tick job. Separate from finish so both the

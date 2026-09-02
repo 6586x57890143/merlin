@@ -169,7 +169,7 @@ func (f *fakeOps) GuildChannels(guildID string, _ ...discordgo.RequestOption) ([
 	return out, nil
 }
 
-func (f *fakeOps) GuildThreadsActive(channelID string, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+func (f *fakeOps) GuildThreadsActive(guildID string, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
 	if err := f.shouldFail("GuildThreadsActive"); err != nil {
 		return nil, err
 	}
