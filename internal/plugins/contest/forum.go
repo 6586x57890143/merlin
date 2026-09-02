@@ -3,6 +3,7 @@ package contest
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -134,37 +135,57 @@ func (p *Plugin) syncSubmissions(ctx context.Context, c Contest) error {
 	if c.ForumChannelID == "" {
 		return nil
 	}
-	ops := p.opsFor(c.GuildID)
-	list, err := ops.GuildThreadsActive(c.GuildID)
+	threads, err := p.forumThreads(c)
 	if err != nil {
-		return fmt.Errorf("contest: list threads: %w", err)
+		return err
 	}
 
-	live := make([]string, 0, len(list.Threads))
-	seen := make(map[string]string, len(list.Threads)) // user -> first thread
-	for _, th := range list.Threads {
-		if th.ParentID != c.ForumChannelID {
-			continue
+	// One live entry per member. The keeper is the earliest post rather than
+	// whichever the list happened to return first: thread IDs are
+	// snowflakes, so comparing them is comparing creation time.
+	keep := make(map[string]string, len(threads)) // user -> thread
+	for _, th := range threads {
+		if prev, dup := keep[th.OwnerID]; !dup || th.ID < prev {
+			keep[th.OwnerID] = th.ID
 		}
-		if len(live) >= maxEntries {
-			break
-		}
-		// One live entry per member. Threads come back newest-first, so the
-		// keeper is decided by created position rather than by whichever
-		// happened to be read first: sort by ID, which is a snowflake and so
-		// is chronological.
-		owner := th.OwnerID
-		if prev, dup := seen[owner]; dup {
-			if th.ID < prev {
-				seen[owner] = th.ID
-			}
-			continue
-		}
-		seen[owner] = th.ID
 	}
 
-	for _, th := range list.Threads {
-		if seen[th.OwnerID] != th.ID {
+	// The cap is the first maxEntries to post, decided over the whole set.
+	// It used to be a break inside the dedupe loop testing a slice that was
+	// only appended to in the loop after it, so it read 0 >= maxEntries on
+	// every pass and bounded nothing at all.
+	live := make([]string, 0, len(keep))
+	for _, id := range keep {
+		live = append(live, id)
+	}
+	slices.Sort(live)
+	if len(live) > maxEntries {
+		live = live[:maxEntries]
+	}
+
+	// Withdraw before upserting, not after, and from what Discord says
+	// exists rather than from what merlin managed to process.
+	//
+	// Both orderings matter. `live` used to be built out of the threads
+	// whose read and write below both succeeded, so a single 429 on one
+	// ChannelMessages call withdrew a perfectly live entry: the "only
+	// untrack on gone, never on failed" rule (spec.MD §4) pointed at the
+	// entry list. And upserting first put the replacement post of a member
+	// who had deleted and reposted straight into
+	// contest_submissions_one_live_idx, against the old row that this call
+	// is about to retire, losing the new entry for a whole tick.
+	if c.Phase == PhaseSubmit {
+		if err := p.store.WithdrawMissing(ctx, c.ID, live, p.now()); err != nil {
+			return err
+		}
+	}
+
+	wanted := make(map[string]bool, len(live))
+	for _, id := range live {
+		wanted[id] = true
+	}
+	for _, th := range threads {
+		if !wanted[th.ID] {
 			continue
 		}
 		sub, err := p.readThread(ctx, c, th)
@@ -176,13 +197,51 @@ func (p *Plugin) syncSubmissions(ctx context.Context, c Contest) error {
 			p.log.Error("contest: record submission", "thread", th.ID, "err", err)
 			continue
 		}
-		live = append(live, th.ID)
+	}
+	return nil
+}
+
+// forumThreads is every post under the contest forum, archived ones
+// included.
+//
+// The active list alone is not the entry list. A forum post archives itself
+// after its parent's inactivity window, which merlin never sets and so takes
+// Discord's default of a few days, and an archived post is still sitting
+// there in the forum looking exactly like an entry to the person who wrote
+// it. Reading only the active list made a quiet entry indistinguishable from
+// a deleted one, so it got withdrawn: dropped from the gallery, the vote and
+// the tally, with nothing said to the member.
+func (p *Plugin) forumThreads(c Contest) ([]*discordgo.Channel, error) {
+	ops := p.opsFor(c.GuildID)
+	active, err := ops.GuildThreadsActive(c.GuildID)
+	if err != nil {
+		return nil, fmt.Errorf("contest: list threads: %w", err)
+	}
+	out := make([]*discordgo.Channel, 0, len(active.Threads))
+	for _, th := range active.Threads {
+		if th.ParentID == c.ForumChannelID {
+			out = append(out, th)
+		}
 	}
 
-	if c.Phase != PhaseSubmit {
-		return nil
+	// Channel-scoped, so no ParentID filter is needed here. Paged from
+	// newest archive time backwards, which is the order Discord returns and
+	// the cursor it takes.
+	var before *time.Time
+	for range maxArchivedPages {
+		list, err := ops.ThreadsArchived(c.ForumChannelID, before, archivedPageSize)
+		if err != nil {
+			return nil, fmt.Errorf("contest: list archived threads: %w", err)
+		}
+		out = append(out, list.Threads...)
+		last := len(list.Threads) - 1
+		if !list.HasMore || last < 0 || list.Threads[last].ThreadMetadata == nil {
+			break
+		}
+		ts := list.Threads[last].ThreadMetadata.ArchiveTimestamp
+		before = &ts
 	}
-	return p.store.WithdrawMissing(ctx, c.ID, live, p.now())
+	return out, nil
 }
 
 // readThread turns one forum post into a submission.

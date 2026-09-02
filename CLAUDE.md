@@ -633,13 +633,41 @@ a Cloudflare Worker serving the gallery and the ballot.
   unreadable post and an empty one look identical over the wire, so
   `ErrNoMessageContent` says so in the thread and in `/contest status` rather
   than dropping somebody's entry.
-- **The entry list is re-derived from `ThreadsActive` every tick, but only
+- **The entry list is re-derived from the forum's threads, but only
   withdrawn while submissions are open.** Deleting your post is how you
   withdraw, which is why there is no `/contest withdraw` to keep in sync.
   Once voting starts the list freezes: people are casting votes against a
   specific set, and letting a deleted post retroactively remove an entry
   would discard every vote already cast for it, so somebody losing could
   delete their post and take their voters' ballots with them.
+- **"The forum's threads" is the active list plus the archived one**
+  (`forumThreads`), and the withdraw list is what Discord said exists, not
+  what merlin managed to read. Both halves were the same bug wearing
+  different clothes: `GuildThreadsActive` omits archived threads and a forum
+  post archives itself after its parent's inactivity window, so a quiet
+  entry read as a deleted one; and building the live list out of the threads
+  whose starter-message read and upsert both succeeded meant one 429
+  withdrew a live entry. Withdrawal is untracking, so it obeys the same
+  "only on gone, never on failed" rule as `rotation.sweepOne` and
+  `roles.releaseJail`. The withdraw runs **before** the upsert loop for a
+  third reason: a member who deletes and reposts between two ticks otherwise
+  has the replacement inserted against their own still-live row, which is
+  `contest_submissions_one_live_idx` rather than the statement's
+  `ON CONFLICT (thread_id)`, so it errors and the new entry is missing for a
+  whole tick. `fakeStore.UpsertSubmission` models that index for exactly
+  that reason.
+- **`refreshInterval` gates the reads, not just the push.** Syncing is one
+  REST call per entry and the push is one call total, so rate-limiting the
+  push alone (which is what it used to do) left a 200-entry contest making
+  200 calls a minute through its whole vote phase for links that need
+  refreshing twice a day. Submissions still sync every tick while they are
+  open, where a new entry appearing within a minute is the point.
+- **A contest nobody voted in crowns nobody** (`noVotes`). Every entry ties
+  at zero when the Worker is unconfigured, and a real tally can come back
+  empty, and `sortResults` tiebreaks on a random entry ID: falling through
+  to `announceWinners` meant `awardPrizes` DMing a sealed prize code to an
+  arbitrary entrant and then wiping the ciphertext, which is the one
+  irreversible thing this plugin does.
 - **Every phase transition claims the move before doing anything visible**
   (`AdvancePhase` is `UPDATE ... WHERE phase = $old`), the same
   claim-before-acting rule as rotation's pre-rotation notices and chosen the
@@ -672,7 +700,11 @@ a Cloudflare Worker serving the gallery and the ballot.
   The ordering is `roles.applyJail`'s: the pairing is recorded, then the DM
   carrying the code is sent, and only a DM that actually landed wipes the
   ciphertext. A failed DM therefore leaves a recoverable state, which is what
-  `/contest claim` finishes, and closed DMs are the common case.
+  `/contest claim` finishes, and closed DMs are the common case. That makes
+  `claim` guild-scoped rather than contest-scoped (`PrizesAwardedTo`):
+  reading only the latest contest gave a winner until the next `/contest new`
+  to collect, after which their prize was unreachable and its ciphertext sat
+  in `contest_prizes` for good.
 - **Cancelling deletes nothing.** The forum, the posts and the pledges all
   stay: calling a contest off is a decision about the contest, not about
   anybody's work, and channel deletion has no undo.

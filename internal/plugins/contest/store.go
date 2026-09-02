@@ -179,6 +179,12 @@ type Store interface {
 
 	AddPrize(ctx context.Context, p Prize) error
 	Prizes(ctx context.Context, contestID string) ([]Prize, error)
+	// PrizesAwardedTo is guild-scoped rather than contest-scoped because
+	// /contest claim is the recovery path for a prize DM that bounced, and a
+	// bounced DM is the common case. Scoped to the latest contest it went
+	// unreachable the moment a mod started the next one, stranding the
+	// ciphertext for good.
+	PrizesAwardedTo(ctx context.Context, guildID, userID string) ([]Prize, error)
 	RemovePrize(ctx context.Context, contestID, prizeID, donorID string) (bool, error)
 	MarkPrizeAwarded(ctx context.Context, prizeID, winnerID string, at time.Time) error
 	// ClearPrizeSecret wipes the ciphertext once it has been delivered. A
@@ -444,6 +450,30 @@ func (s *pgStore) Prizes(ctx context.Context, contestID string) ([]Prize, error)
 		if err := rows.Scan(&p.ID, &p.ContestID, &p.DonorID, &p.DonorName, &p.Title,
 			&p.Details, &p.SecretSealed, &p.AwardedTo, &p.AwardedAt, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("contest store: scan prize: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) PrizesAwardedTo(ctx context.Context, guildID, userID string) ([]Prize, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.id, p.contest_id, p.donor_id, p.donor_name, p.title, p.details,
+			p.secret_sealed, p.awarded_to, p.awarded_at, p.created_at
+		FROM contest_prizes p JOIN contests c ON c.id = p.contest_id
+		WHERE c.guild_id = $1 AND p.awarded_to = $2
+		ORDER BY p.awarded_at DESC
+	`, guildID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("contest store: prizes awarded to: %w", err)
+	}
+	defer rows.Close()
+	var out []Prize
+	for rows.Next() {
+		var p Prize
+		if err := rows.Scan(&p.ID, &p.ContestID, &p.DonorID, &p.DonorName, &p.Title,
+			&p.Details, &p.SecretSealed, &p.AwardedTo, &p.AwardedAt, &p.CreatedAt); err != nil {
+			return nil, fmt.Errorf("contest store: scan awarded prize: %w", err)
 		}
 		out = append(out, p)
 	}

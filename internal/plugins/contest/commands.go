@@ -270,6 +270,15 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 
 	forumID, err := p.createForum(ctx, c, cfg.ForumCategoryID)
 	if err != nil {
+		// The contest row is already committed, so leaving it would hand the
+		// guild a live contest with no forum: /contest new refuses it as
+		// ErrAlreadyLive, syncSubmissions no-ops on the empty channel ID, and
+		// it ticks through every phase collecting nothing. Retiring it here
+		// costs nothing (cancelling a contest deletes nothing, and there is
+		// nothing to delete yet) and leaves the admin able to just try again.
+		if _, cerr := p.store.AdvancePhase(ctx, c.ID, c.Phase, PhaseCancelled); cerr != nil {
+			p.log.Error("contest: cancel after failed forum create", "contest", c.ID, "err", cerr)
+		}
 		followErr(s, i, p, "Couldn't create the contest forum", err)
 		return
 	}
@@ -583,24 +592,19 @@ func (p *Plugin) sendLink(ctx context.Context, s *discordgo.Session, i *discordg
 // the common case for anybody with DMs closed to non-friends. An ephemeral
 // interaction response reaches them where a DM cannot.
 func (p *Plugin) handleClaim(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	c, err := p.store.LatestContest(ctx, i.GuildID)
-	if err != nil {
-		core.RespondWarn(s, i, "Nothing to claim", "No contest here yet.")
-		return
-	}
-	prizes, err := p.store.Prizes(ctx, c.ID)
+	// Every contest this guild has run, not just the newest one. Reading the
+	// latest contest meant a winner whose DM bounced had until the next
+	// /contest new to collect, after which their prize was unreachable and
+	// its ciphertext sat in contest_prizes forever.
+	prizes, err := p.store.PrizesAwardedTo(ctx, i.GuildID, actorID(i))
 	if err != nil {
 		core.RespondErr(s, i, "Couldn't read the prize pool", err)
 		return
 	}
 
-	me := actorID(i)
 	var fields []*discordgo.MessageEmbedField
 	var toWipe []string
 	for _, pr := range prizes {
-		if pr.AwardedTo == nil || *pr.AwardedTo != me {
-			continue
-		}
 		fields = append(fields, &discordgo.MessageEmbedField{
 			Name: core.TruncateEmbedField(pr.Title), Value: prizeClaimBody(p, pr),
 		})
@@ -609,7 +613,7 @@ func (p *Plugin) handleClaim(ctx context.Context, s *discordgo.Session, i *disco
 		}
 	}
 	if len(fields) == 0 {
-		core.RespondWarn(s, i, "Nothing to claim", "Nothing in this contest is waiting for you.")
+		core.RespondWarn(s, i, "Nothing to claim", "Nothing here is waiting for you.")
 		return
 	}
 

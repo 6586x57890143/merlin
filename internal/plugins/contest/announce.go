@@ -153,6 +153,23 @@ func (p *Plugin) announceVotingOpen(ctx context.Context, c Contest) {
 	p.post(ctx, c, core.NewEmbed(core.ColorPrimary, "voting open", body, fields...), components)
 }
 
+// announceNoVotes closes a contest that drew entries but no votes.
+//
+// The body is code-authored rather than a voice line, for the same reason
+// the funding address is: this is the sentence explaining why nobody won and
+// why no prize went out, and voice.Line picks at random and falls back
+// silently, which is right for a greeting and wrong for this.
+func (p *Plugin) announceNoVotes(ctx context.Context, c Contest) {
+	body := "voting on " + c.Title + " closed with no votes cast, so there's no winner to call and no prizes were handed out. every entry is still up."
+	var fields []*discordgo.MessageEmbedField
+	if p.worker.Configured() {
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name: "the entries", Value: p.worker.PageURL(c.Slug),
+		})
+	}
+	p.post(ctx, c, core.NewEmbed(core.ColorWarning, c.Title, body, fields...), nil)
+}
+
 func (p *Plugin) announceNoEntries(ctx context.Context, c Contest) {
 	body := p.speak(ctx, c.GuildID, voice.KeyContestNoEntries,
 		map[string]string{"title": c.Title},

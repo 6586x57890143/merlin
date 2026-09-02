@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -166,9 +167,20 @@ func (f *fakeStore) UpsertSubmission(_ context.Context, s Submission) error {
 	for i := range list {
 		if list[i].ThreadID == s.ThreadID {
 			s.ID, s.CreatedAt = list[i].ID, list[i].CreatedAt
+			s.WithdrawnAt = nil // the real upsert resets withdrawn_at
 			list[i] = s
 			f.subs[s.ContestID] = list
 			return nil
+		}
+	}
+	// contest_submissions_one_live_idx: unique on (contest_id, user_id)
+	// where withdrawn_at is null. Modelled here because the statement's own
+	// ON CONFLICT covers thread_id only, so this collision surfaces as an
+	// error rather than an update, and a fake that only knew about thread_id
+	// made the upsert-before-withdraw ordering bug invisible to the suite.
+	for i := range list {
+		if list[i].UserID == s.UserID && list[i].WithdrawnAt == nil {
+			return fmt.Errorf("fake store: contest_submissions_one_live_idx: %s already has a live entry", s.UserID)
 		}
 	}
 	if s.CreatedAt.IsZero() {
@@ -221,6 +233,27 @@ func (f *fakeStore) Prizes(_ context.Context, contestID string) ([]Prize, error)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]Prize(nil), f.prizes[contestID]...), nil
+}
+
+func (f *fakeStore) PrizesAwardedTo(_ context.Context, guildID, userID string) ([]Prize, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	guilds := map[string]string{} // contest ID -> guild
+	for _, c := range f.contests {
+		guilds[c.ID] = c.GuildID
+	}
+	var out []Prize
+	for cid, list := range f.prizes {
+		if guilds[cid] != guildID {
+			continue
+		}
+		for _, p := range list {
+			if p.AwardedTo != nil && *p.AwardedTo == userID {
+				out = append(out, p)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeStore) RemovePrize(_ context.Context, contestID, prizeID, donorID string) (bool, error) {
@@ -284,9 +317,20 @@ type fakeOps struct {
 	// replaced. The fake ignores it otherwise.
 	threadsAskedFor string
 
-	dmFails    bool
-	createFail error
-	threadsErr error
+	// archived is the other half of the forum: threads Discord returns only
+	// from the channel-scoped archived endpoint, which is where a quiet
+	// forum post ends up on its own.
+	archived         []*discordgo.Channel
+	archivedAskedFor string
+
+	// messageReads counts starter-message fetches, which is the expensive
+	// half of a sync: one REST call per entry, per run.
+	messageReads int
+
+	dmFails     bool
+	createFail  error
+	threadsErr  error
+	archivedErr error
 }
 
 func newFakeOps() *fakeOps {
@@ -316,9 +360,20 @@ func (f *fakeOps) GuildThreadsActive(id string, _ ...discordgo.RequestOption) (*
 	return &discordgo.ThreadsList{Threads: f.threads}, nil
 }
 
+func (f *fakeOps) ThreadsArchived(id string, _ *time.Time, _ int, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.archivedAskedFor = id
+	if f.archivedErr != nil {
+		return nil, f.archivedErr
+	}
+	return &discordgo.ThreadsList{Threads: f.archived}, nil
+}
+
 func (f *fakeOps) ChannelMessages(channelID string, _ int, _, _, _ string, _ ...discordgo.RequestOption) ([]*discordgo.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.messageReads++
 	return f.messages[channelID], nil
 }
 

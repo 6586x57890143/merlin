@@ -42,6 +42,11 @@ func (f *fakeSession) GuildThreadsActive(string, ...discordgo.RequestOption) (*d
 	return &discordgo.ThreadsList{}, nil
 }
 
+func (f *fakeSession) ThreadsArchived(string, *time.Time, int, ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+	f.reads++
+	return &discordgo.ThreadsList{}, nil
+}
+
 func (f *fakeSession) ChannelMessages(string, int, string, string, string, ...discordgo.RequestOption) ([]*discordgo.Message, error) {
 	f.reads++
 	return nil, nil

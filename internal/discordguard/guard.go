@@ -67,6 +67,7 @@ type Session interface {
 	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
 	GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
+	ThreadsArchived(channelID string, before *time.Time, limit int, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
 	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
@@ -209,6 +210,16 @@ func (o *GuildOps) GuildChannels(guildID string, options ...discordgo.RequestOpt
 // so both callers filter the result by ParentID themselves.
 func (o *GuildOps) GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
 	return o.guard.session.GuildThreadsActive(guildID, options...)
+}
+
+// ThreadsArchived is the other half of "every thread under this channel".
+// GuildThreadsActive deliberately omits archived threads, and a forum post
+// archives itself after its parent's inactivity window, so a caller that
+// treats the active list as the whole list will read a quiet post as a
+// deleted one. Channel-scoped, unlike its active counterpart, because
+// Discord kept this endpoint on the channel.
+func (o *GuildOps) ThreadsArchived(channelID string, before *time.Time, limit int, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+	return o.guard.session.ThreadsArchived(channelID, before, limit, options...)
 }
 
 func (o *GuildOps) ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error) {
