@@ -375,6 +375,13 @@ const slurSep = `[^\p{L}\p{N}]{0,2}`
 
 var hardSlurs = []struct {
 	pattern *regexp.Regexp
+	// notIf, when set and matching the message, cancels every replacement
+	// this pattern would make. Same escape hatch as hardPatterns, and it
+	// exists for the one entry here whose spelling is also an ordinary
+	// English word. Cancelling drops the message to the model rungs, which
+	// is the safe direction: rung 1 declines to be certain, it clears
+	// nothing.
+	notIf *regexp.Regexp
 	// subs is picked from at random per match, so a member spamming one
 	// word gets a different daft answer every time and nothing to argue
 	// with. Any of them is publishable, which is what the switch below
@@ -382,8 +389,8 @@ var hardSlurs = []struct {
 	subs []sub
 }{
 	{
-		regexp.MustCompile(`(?i)\bn` + slurSep + `[i1!|*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[e3*]` + slurSep + `r+(s|z)?\b`),
-		[]sub{
+		pattern: regexp.MustCompile(`(?i)\bn` + slurSep + `[i1!|*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[e3*]` + slurSep + `r+(s|z)?\b`),
+		subs: []sub{
 			{"ninja", "ninjas"},
 			{"ninjago", "ninjagos"},
 			{"nice person", "nice people"},
@@ -392,8 +399,8 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		regexp.MustCompile(`(?i)\bf` + slurSep + `[a4@*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[o0*]` + slurSep + `t+(s|z)?\b`),
-		[]sub{
+		pattern: regexp.MustCompile(`(?i)\bf` + slurSep + `[a4@*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[o0*]` + slurSep + `t+(s|z)?\b`),
+		subs: []sub{
 			{"frog", "frogs"},
 			{"fog", "fogs"},
 			{"thot", "thots"},
@@ -402,8 +409,8 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		regexp.MustCompile(`(?i)\btr` + slurSep + `[a4@*]` + slurSep + `n` + slurSep + `n+` + slurSep + `(y|ie|ies|ys|iez)\b`),
-		[]sub{
+		pattern: regexp.MustCompile(`(?i)\btr` + slurSep + `[a4@*]` + slurSep + `n` + slurSep + `n+` + slurSep + `(y|ie|ies|ys|iez)\b`),
+		subs: []sub{
 			{"person", "people"},
 			{"nice person", "nice people"},
 			{"epic person", "epic people"},
@@ -412,13 +419,48 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		regexp.MustCompile(`(?i)\btr` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `n(s|z)?\b`),
-		[]sub{
+		pattern: regexp.MustCompile(`(?i)\btr` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `n(s|z)?\b`),
+		subs: []sub{
 			{"person", "people"},
 			{"nice person", "nice people"},
 			{"epic person", "epic people"},
 			{"cartoon", "cartoons"},
 			{"trooper", "troopers"},
+		},
+	},
+	{
+		pattern: regexp.MustCompile(`(?i)\bg` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `k(s|z)?\b`),
+		subs: []sub{
+			{"goose", "geese"},
+			{"gnome", "gnomes"},
+			{"goofball", "goofballs"},
+			{"guy with a metal detector", "guys with metal detectors"},
+			{"gourmet mayonnaise reviewer", "gourmet mayonnaise reviewers"},
+		},
+	},
+	{
+		pattern: regexp.MustCompile(`(?i)\bc` + slurSep + `h` + slurSep + `[i1!|*]` + slurSep + `n` + slurSep + `k(s|z)?\b`),
+		// The one spelling in this table that is also an ordinary English
+		// word. "a chink in the armour" and "a chink of light" are the forms
+		// people actually write, and rewriting either is the filter firing
+		// on a metaphor.
+		notIf: regexp.MustCompile(`(?i)\bchinks?\s+(in|of|between)\b|\barmou?rs?\b`),
+		subs: []sub{
+			{"chinchilla", "chinchillas"},
+			{"chinstrap penguin", "chinstrap penguins"},
+			{"chimney sweep", "chimney sweeps"},
+			{"chess club treasurer", "chess club treasurers"},
+			{"chap who irons his socks", "chaps who iron their socks"},
+		},
+	},
+	{
+		pattern: regexp.MustCompile(`(?i)\bk` + slurSep + `[i1!|*]` + slurSep + `k` + slurSep + `[e3*](s|z)?\b`),
+		subs: []sub{
+			{"kite", "kites"},
+			{"koala", "koalas"},
+			{"kazoo virtuoso", "kazoo virtuosos"},
+			{"karaoke legend", "karaoke legends"},
+			{"keen amateur beekeeper", "keen amateur beekeepers"},
 		},
 	},
 }
@@ -429,6 +471,9 @@ var hardSlurs = []struct {
 func redactSlurs(content string) (string, bool) {
 	out, hit := content, false
 	for _, s := range hardSlurs {
+		if s.notIf != nil && s.notIf.MatchString(content) {
+			continue
+		}
 		out = s.pattern.ReplaceAllStringFunc(out, func(m string) string {
 			hit = true
 			r := s.subs[rand.IntN(len(s.subs))]
