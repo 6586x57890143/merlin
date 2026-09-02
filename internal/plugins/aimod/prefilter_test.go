@@ -378,6 +378,26 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
+			"the three added later",
+			"gook chink kike",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// The idiom is the reason that entry carries a notIf at all.
+			// Declining leaves the message to the model rungs; it does not
+			// clear it.
+			"a chink in the armour is a metaphor",
+			"there is a chink in the armour of that argument",
+			"", false, false,
+		},
+		{
+			// The \b at the front of every pattern keeps this out, the
+			// same property that spares snigger and niggardly.
+			"gobbledygook is a word",
+			"the whole contract is gobbledygook to me",
+			"", false, false,
+		},
+		{
 			// The obvious next move once the plain spelling is caught, and
 			// the reason the patterns read as letter sequences with slack
 			// rather than as words.
