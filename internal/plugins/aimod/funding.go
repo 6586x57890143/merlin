@@ -476,18 +476,23 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// canSetFunding answers whether userID may point this guild's jar at a
-// wallet: the guild owner, or the bootstrap operator.
+// ownerOrOperator answers whether userID is the guild owner or the bootstrap
+// operator: this package's break-glass identity check.
 //
 // Not a tier. PermSpec cannot express either identity, so TierAdmin is the
-// coarse floor on the command and this is the real gate, exactly as
-// /aimod moderate-user does for its own bootstrap-only rule. A guild with
-// five admins otherwise has five accounts that can silently repoint a payout
-// address, and nothing sent on chain can be recovered.
+// coarse floor on the commands that use this and this is the real gate,
+// exactly as /aimod moderate-user does for its own bootstrap-only rule.
+//
+// Two settings are behind it, and they fail in the same shape. A guild with
+// five admins otherwise has five accounts that can silently repoint the tip
+// jar's payout address, and nothing sent on chain can be recovered; the same
+// five could otherwise switch on the member opt-out and hollow out the
+// server's own moderation one consent at a time. Both are decisions about
+// the server rather than about its configuration.
 //
 // Fails closed: an unresolvable guild refuses the change rather than assuming
 // the actor is the owner, matching core.Permissions.CanModerate's own rule.
-func (p *Plugin) canSetFunding(guildID, userID string) (bool, error) {
+func (p *Plugin) ownerOrOperator(guildID, userID string) (bool, error) {
 	// Every branch below either returns a hard error or compares against a
 	// single identity. There is deliberately no path here that widens on a
 	// missing dependency: a nil privilege checker loses the bootstrap escape
@@ -732,7 +737,7 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 	if i.Member != nil && i.Member.User != nil {
 		userID = i.Member.User.ID
 	}
-	allowed, err := p.canSetFunding(i.GuildID, userID)
+	allowed, err := p.ownerOrOperator(i.GuildID, userID)
 	if err != nil {
 		_ = core.FollowUpErr(s, i, "Could not check who owns this server", err)
 		return

@@ -511,6 +511,17 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 		return
 	}
 
+	// The member's own opt-out, deliberately here rather than in shouldSkip.
+	//
+	// Rung 1 has already run above, which is the point: its patterns are free
+	// and unambiguous, so opting out does not buy exemption from a leaked bot
+	// token or a phishing link. What it buys is not being sent to a model.
+	// scanExempt yields to mustScan for the child-safety bucket, which cannot
+	// be turned off by any route in this package. See optout.go.
+	if scanExempt(cfg, c.AuthorID, c.Content) {
+		return
+	}
+
 	if len(enforcedBuckets(cfg)) == 0 {
 		return
 	}

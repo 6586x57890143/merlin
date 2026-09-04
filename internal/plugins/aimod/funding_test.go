@@ -229,7 +229,7 @@ func TestCanSetFundingIsOwnerOrBootstrapOnly(t *testing.T) {
 		"":      false,
 	}
 	for userID, want := range cases {
-		got, err := p.canSetFunding("g1", userID)
+		got, err := p.ownerOrOperator("g1", userID)
 		if userID == "" {
 			if err == nil {
 				t.Fatal("an unknown actor should be an error, not a quiet false")
@@ -240,7 +240,7 @@ func TestCanSetFundingIsOwnerOrBootstrapOnly(t *testing.T) {
 			t.Fatalf("%q: unexpected error %v", userID, err)
 		}
 		if got != want {
-			t.Fatalf("canSetFunding(%q) = %v, want %v", userID, got, want)
+			t.Fatalf("ownerOrOperator(%q) = %v, want %v", userID, got, want)
 		}
 	}
 }
@@ -253,7 +253,7 @@ func TestCanSetFundingFailsClosedWhenTheGuildCannotBeRead(t *testing.T) {
 	ops.guildErr = errors.New("discord is having a day")
 	p := testPlugin(t, store, nil, ops, &fakeAudit{})
 
-	allowed, err := p.canSetFunding("g1", "owner")
+	allowed, err := p.ownerOrOperator("g1", "owner")
 	if err == nil {
 		t.Fatal("want an error when the guild cannot be read")
 	}
@@ -425,7 +425,7 @@ const attackerWallet = "0x000000000000000000000000000000000000dEaD"
 // The invariant the whole feature turns on: nobody but the guild owner or the
 // bootstrap operator can move where donated money goes.
 //
-// Deliberately driven through the handler rather than through canSetFunding
+// Deliberately driven through the handler rather than through ownerOrOperator
 // alone. The helper being correct is worth nothing if a later edit stops
 // calling it, and the *stored address* is what an attacker actually wants, so
 // that is what this asserts. The fake node returns a balance happily, so if

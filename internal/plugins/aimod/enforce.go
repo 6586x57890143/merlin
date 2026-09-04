@@ -289,6 +289,20 @@ func (p *Plugin) notifyAuthor(ctx context.Context, cfg Config, c candidate, acti
 		})
 	}
 
+	// Where the guild offers an opt-out, the DM is where it gets mentioned.
+	// It is the one moment this bot has somebody's attention on the subject,
+	// and a consent switch nobody is told about is a consent switch that only
+	// the people who read the config commands ever find. Gated on the guild
+	// actually offering it, so a server that does not stays silent rather
+	// than advertising a command that would refuse.
+	if cfg.MemberOptOut {
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name: "Don't want to be moderated by me?",
+			Value: "This server lets you opt out: `/aimod opt-out enabled:true` and I stop sending your messages to " +
+				"a model. The built-in pattern checks and anything reading as child safety still apply to everyone.",
+		})
+	}
+
 	embed := core.NewEmbed(core.ColorWarning, "A message of yours was moderated", line, fields...)
 	dm, err := p.ops(guildID).UserChannelCreate(c.AuthorID)
 	if err != nil {
