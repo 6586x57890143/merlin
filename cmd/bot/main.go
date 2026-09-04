@@ -20,6 +20,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
+	"github.com/6586x57890143/merlin/internal/plugins/activity"
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
@@ -247,6 +248,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
 	registry.Register(aimodPlugin)
 	registry.Register(contestPlugin)
+	// Takes nothing: it reads Discord's history on demand, and the one
+	// identity it cares about comes from Deps.Perms at Init.
+	registry.Register(activity.New())
 	registry.Register(adminconfigPlugin)
 
 	if err := registry.InitAll(); err != nil {
