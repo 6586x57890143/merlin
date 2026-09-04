@@ -41,6 +41,25 @@ const rewriteMarker = "\n-# edited by merlin - `/aimod why` for details"
 // other way, leaving a row for a message that is still there, which reads
 // correctly in /aimod why and is undone by nothing at all.
 func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bucket, action Action, v deepVerdict) {
+	// The published text goes through rung 1 first, whatever produced it.
+	//
+	// A rewrite is the one thing this plugin posts that it did not write:
+	// the deep pass hands back a sentence and the webhook publishes it under
+	// the member's own name and avatar. Nothing was checking it, and a model
+	// asked to swap out "only the violating words" while keeping the
+	// sentence recognisably the same sentence will sometimes hand back the
+	// slur it was supposed to remove, at which point merlin posts it, in
+	// somebody's name, with an "edited by merlin" marker under it saying it
+	// meant to. That is strictly worse than the message it was cleaning up.
+	//
+	// Cheap, idempotent, and first, so the substituted text is what every
+	// decision below sees: the incident row, the audit line, the DM and the
+	// repost all describe the words that were actually posted. It catches no
+	// more than rung 1 catches anywhere else; what it guarantees is that the
+	// filter's own output is held to the same floor as the member's.
+	if action == ActionRewrite {
+		v.Rewrite, _ = redactSlurs(v.Rewrite)
+	}
 	// A rewrite with nothing publishable left is a removal, and has to be
 	// recorded, audited and explained as one.
 	//

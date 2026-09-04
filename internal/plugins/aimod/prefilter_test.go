@@ -391,8 +391,8 @@ func TestHardHit(t *testing.T) {
 			"", false, false,
 		},
 		{
-			// The \b at the front of every pattern keeps this out, the
-			// same property that spares snigger and niggardly.
+			// innocentCompounds keeps this out now, and it is the whole
+			// word that spares it: no anchor is doing the job any more.
 			"gobbledygook is a word",
 			"the whole contract is gobbledygook to me",
 			"", false, false,
@@ -411,8 +411,10 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
-			// The slack between letters is bounded and never spans a letter
-			// or a digit, which is the whole reason these two are safe.
+			// Two different properties hold these: niggardly is not a
+			// spelling of the slur at all (the slack between letters never
+			// spans a letter or a digit), and sniggered is, so it is on the
+			// innocentCompounds veto list.
 			"words that merely contain the letters are not hits",
 			"he sniggered at the niggardly tip",
 			"", false, false,
@@ -503,5 +505,54 @@ func TestEnforcedBuckets(t *testing.T) {
 	}
 	if !has(BucketChildSafety) {
 		t.Error("child safety is missing, and it is the one bucket that cannot be off")
+	}
+}
+
+// A slur with a word stuck to it is the same slur, and the anchors used to
+// miss that in both directions: "niggernation" reached a channel, and
+// "spacenigger" would have too.
+//
+// The rewrite still has to read as a word. Posting "night owlnation" is the
+// substitution announcing itself as a redaction with extra steps, and word
+// count is how that is checked here: a glued match may only draw a
+// single-word replacement.
+func TestCompoundSlursAreRewrittenIntoWords(t *testing.T) {
+	for _, in := range []string{
+		"a lil poem about niggernation",
+		"say hello to the spacenigger",
+		"that whole faggotry thing again",
+		"n1ggerdom is not a word you get to use",
+		"gookish trannyism and some chinkland",
+		"shitniggers",
+	} {
+		bucket, _, rewrite, hit := hardHit(in)
+		if !hit || bucket != BucketHateSpeech {
+			t.Errorf("hardHit(%q) = hit %v bucket %q, want a hate_speech hit", in, hit, bucket)
+			continue
+		}
+		if _, again := redactSlurs(rewrite); again {
+			t.Errorf("rewrite %q still matches a slur pattern", rewrite)
+		}
+		if got, want := len(strings.Fields(rewrite)), len(strings.Fields(in)); got != want {
+			t.Errorf("rewrite %q has %d words, want %d: a glued match took a multi-word sub", rewrite, got, want)
+		}
+	}
+	// What the leading anchor used to do, done by the veto list instead. A
+	// wrong hit here rewrites somebody's ordinary sentence, so these matter
+	// more than the ones above.
+	for _, in := range []string{
+		"he sniggered at the niggardly tip",
+		"the whole contract is gobbledygook to me",
+		"that reads like gobbledegook",
+		"hangook food is the best food",
+	} {
+		if _, _, _, hit := hardHit(in); hit {
+			t.Errorf("hardHit(%q) fired on an ordinary word", in)
+		}
+	}
+	// The veto is anchored to the whole word, so it spares that word and not
+	// whatever somebody glues onto it.
+	if _, _, _, hit := hardHit("sniggernation"); !hit {
+		t.Error("the veto list is being used as an evasion")
 	}
 }

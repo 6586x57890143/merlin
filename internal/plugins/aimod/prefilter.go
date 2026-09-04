@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -363,6 +365,19 @@ type sub struct{ one, many string }
 // the word. The slack is bounded and letters-and-digits are never part of
 // it, which is what keeps snigger and niggardly out.
 //
+// Neither end is anchored, and that is the fix for a message this filter
+// published. Both \b are gone: the trailing one meant the word had to *end*
+// where the slur did, so "niggernation" matched nothing and reached the
+// channel; the leading one meant "spacenigger" did not either. Gluing a word
+// on is the cheapest evasion there is, cheaper than any separator trick, and
+// it costs the reader nothing.
+//
+// What stands where the anchors did is innocentCompounds, which vetoes a
+// match by the whole word it landed in rather than by assuming that any
+// neighbouring letters make it innocent. That is a list to maintain where a
+// \b was free, and it is the right trade: an anchor cannot tell snigger from
+// spacenigger, so it spared both.
+//
 // It stops at ASCII. Unicode homoglyphs are the next rung of evasion and
 // deliberately not chased here: normalising them is a table that needs
 // maintaining, the win is one round of whack-a-mole, and anything that gets
@@ -389,7 +404,7 @@ var hardSlurs = []struct {
 	subs []sub
 }{
 	{
-		pattern: regexp.MustCompile(`(?i)\bn` + slurSep + `[i1!|*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[e3*]` + slurSep + `r+(s|z)?\b`),
+		pattern: regexp.MustCompile(`(?i)n` + slurSep + `[i1!|*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[e3*]` + slurSep + `r+(s|z)?`),
 		subs: []sub{
 			{"ninja", "ninjas"},
 			{"ninjago", "ninjagos"},
@@ -399,7 +414,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)\bf` + slurSep + `[a4@*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[o0*]` + slurSep + `t+(s|z)?\b`),
+		pattern: regexp.MustCompile(`(?i)f` + slurSep + `[a4@*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[o0*]` + slurSep + `t+(s|z)?`),
 		subs: []sub{
 			{"frog", "frogs"},
 			{"fog", "fogs"},
@@ -409,7 +424,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)\btr` + slurSep + `[a4@*]` + slurSep + `n` + slurSep + `n+` + slurSep + `(y|ie|ies|ys|iez)\b`),
+		pattern: regexp.MustCompile(`(?i)tr` + slurSep + `[a4@*]` + slurSep + `n` + slurSep + `n+` + slurSep + `(ies|iez|ys|ie|y)`),
 		subs: []sub{
 			{"person", "people"},
 			{"nice person", "nice people"},
@@ -419,7 +434,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)\btr` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `n(s|z)?\b`),
+		pattern: regexp.MustCompile(`(?i)tr` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `n(s|z)?`),
 		subs: []sub{
 			{"person", "people"},
 			{"nice person", "nice people"},
@@ -429,7 +444,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)\bg` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `k(s|z)?\b`),
+		pattern: regexp.MustCompile(`(?i)g` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `k(s|z)?`),
 		subs: []sub{
 			{"goose", "geese"},
 			{"gnome", "gnomes"},
@@ -439,7 +454,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)\bc` + slurSep + `h` + slurSep + `[i1!|*]` + slurSep + `n` + slurSep + `k(s|z)?\b`),
+		pattern: regexp.MustCompile(`(?i)c` + slurSep + `h` + slurSep + `[i1!|*]` + slurSep + `n` + slurSep + `k(s|z)?`),
 		// The one spelling in this table that is also an ordinary English
 		// word. "a chink in the armour" and "a chink of light" are the forms
 		// people actually write, and rewriting either is the filter firing
@@ -454,7 +469,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)\bk` + slurSep + `[i1!|*]` + slurSep + `k` + slurSep + `[e3*](s|z)?\b`),
+		pattern: regexp.MustCompile(`(?i)k` + slurSep + `[i1!|*]` + slurSep + `k` + slurSep + `[e3*](s|z)?`),
 		subs: []sub{
 			{"kite", "kites"},
 			{"koala", "koalas"},
@@ -465,27 +480,110 @@ var hardSlurs = []struct {
 	},
 }
 
+// innocentCompounds are whole words that carry a slur's letters and are not
+// the slur. This is what stands where the anchors used to, and it is matched
+// against the entire word a hit landed in, so it spares "sniggered" and
+// "gobbledegook" without also sparing "sniggernation".
+//
+// Per match rather than per message, which is the one property notIf does
+// not have: a vetoed word cancels its own replacement and nothing else in
+// the sentence, so dropping "gobbledygook" into a message is not a way to
+// get the rest of it published.
+//
+// Short and closed on purpose. It holds the words people actually write
+// (Hangook included, which turns up wherever Korea does), not everything
+// that could theoretically carry four of these letters in a row: a wrong
+// match here costs a daft substitution rather than a deletion, and anything
+// the list misses is still read by the model rungs.
+var innocentCompounds = regexp.MustCompile(`(?i)^(?:snigger|niggard|gobbledygook|gobbledegook|chinkapin|hangook)(?:s|es|ed|er|ing|ly|liness)?$`)
+
 // redactSlurs replaces every hard slur in content, reporting whether any
 // matched. The replacement is what gets published, so it is built from the
 // member's own message rather than from anything a model returned.
 func redactSlurs(content string) (string, bool) {
 	out, hit := content, false
 	for _, s := range hardSlurs {
-		if s.notIf != nil && s.notIf.MatchString(content) {
+		if s.notIf != nil && s.notIf.MatchString(out) {
 			continue
 		}
-		out = s.pattern.ReplaceAllStringFunc(out, func(m string) string {
-			hit = true
-			r := s.subs[rand.IntN(len(s.subs))]
-			switch m[len(m)-1] {
-			case 's', 'S', 'z', 'Z':
-				return r.many
+		var b strings.Builder
+		last := 0
+		for _, loc := range s.pattern.FindAllStringIndex(out, -1) {
+			start, end := loc[0], loc[1]
+			ws, we := wordBounds(out, start, end)
+			if innocentCompounds.MatchString(out[ws:we]) {
+				continue
 			}
-			return r.one
-		})
+			// Glued means the slur is only part of a longer word, and it
+			// decides both halves of the replacement: which subs may be
+			// used, and that a trailing s belongs to the word rather than
+			// marking a plural ("spaceniggers" is plural, "niggernation" is
+			// not).
+			r := pickSub(s.subs, ws < start || we > end)
+			word := r.one
+			if we == end {
+				switch out[end-1] {
+				case 's', 'S', 'z', 'Z':
+					word = r.many
+				}
+			}
+			b.WriteString(out[last:start])
+			b.WriteString(word)
+			last = end
+			hit = true
+		}
+		b.WriteString(out[last:])
+		out = b.String()
 	}
 	return out, hit
 }
+
+// pickSub chooses one replacement at random, from the single-word ones when
+// the match is glued into a longer word.
+//
+// That restriction is what keeps the result a word: the surrounding letters
+// stay where they are, so "niggernation" has to come back as "ninjanation"
+// rather than "night owlnation", and "spacenigger" as "spaceninja". Every
+// pattern above carries at least one single-word sub for exactly this; the
+// fallback is there so that adding one which does not cannot cost the
+// replacement.
+func pickSub(subs []sub, glued bool) sub {
+	if glued {
+		var solo []sub
+		for _, s := range subs {
+			if !strings.Contains(s.one, " ") && !strings.Contains(s.many, " ") {
+				solo = append(solo, s)
+			}
+		}
+		if len(solo) > 0 {
+			subs = solo
+		}
+	}
+	return subs[rand.IntN(len(subs))]
+}
+
+// wordBounds widens a match to the whole word around it, by the same
+// letters-and-digits rule slurSep uses, so the veto and the glue check agree
+// with the patterns about where a word ends.
+func wordBounds(s string, start, end int) (int, int) {
+	for start > 0 {
+		r, size := utf8.DecodeLastRuneInString(s[:start])
+		if !isWordRune(r) {
+			break
+		}
+		start -= size
+	}
+	for end < len(s) {
+		r, size := utf8.DecodeRuneInString(s[end:])
+		if !isWordRune(r) {
+			break
+		}
+		end += size
+	}
+	return start, end
+}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // hardHit runs rung 1. Returns the first matching pattern's bucket and
 // reason, or an empty bucket for no match. A non-empty rewrite is the
