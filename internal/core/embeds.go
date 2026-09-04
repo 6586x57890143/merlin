@@ -376,10 +376,29 @@ func FollowUpEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *
 	return followUp(s, i, embed)
 }
 
+// FollowUpEmbedWithFiles is FollowUpEmbed for a report that generates its own
+// attachments (/activity's rendered png and its full list).
+//
+// embedFiles is derived from the embed on purpose, and only knows merlin's
+// own compiled-in brand assets, so a generated image has no way in without
+// this. Everything the embed itself references still comes from the embed, so
+// the rule that stops an attachment:// URL pointing at an upload that never
+// happened is untouched; extra is appended to that, never instead of it. A
+// caller that points embed.Image at one of these files is responsible for
+// passing it, which is the one case where the two can still disagree, and it
+// renders as a broken frame rather than anything worse.
+func FollowUpEmbedWithFiles(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, extra ...*discordgo.File) error {
+	return followUpFiles(s, i, embed, append(embedFiles(embed), extra...))
+}
+
 func followUp(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) error {
+	return followUpFiles(s, i, embed, embedFiles(embed))
+}
+
+func followUpFiles(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, files []*discordgo.File) error {
 	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
-		Files:  embedFiles(embed),
+		Files:  files,
 		// Suppressed here rather than at each call site, the same reasoning
 		// as discordguard.GuildOps: a mention inside an embed does not notify
 		// anybody today, so this changes nothing now, and it is what stops
