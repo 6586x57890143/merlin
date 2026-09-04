@@ -147,8 +147,14 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 func totalsLine(rep report) string {
 	line := fmt.Sprintf("%d people, %d messages, %d of %d channels",
 		len(rep.people), rep.messages, rep.busy, rep.looked+rep.skipped)
-	if rep.truncated {
-		line += ", stopped early"
+	if rep.truncated() {
+		// Named, not just flagged. The png is the half that gets saved and
+		// passed around, so it has to carry why its numbers are a floor.
+		if rep.stoppedBy == stopTime {
+			line += ", stopped early: out of time"
+		} else {
+			line += ", stopped early: page ceiling"
+		}
 	}
 	return line
 }

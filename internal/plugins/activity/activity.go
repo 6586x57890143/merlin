@@ -252,7 +252,7 @@ func (p *Plugin) handleActivity(ctx context.Context, s *discordgo.Session, i *di
 	full := markdown(rep, guild, opts.from, opts.to, 0)
 
 	colour := core.ColorInfo
-	if rep.truncated || rep.skipped > 0 {
+	if rep.truncated() || rep.skipped > 0 {
 		colour = core.ColorWarning
 	}
 	embed := core.NewEmbed(colour, "", core.TruncateEmbedDescription(shown))

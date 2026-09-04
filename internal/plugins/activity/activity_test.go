@@ -141,7 +141,7 @@ func TestScanCountsAndExcludes(t *testing.T) {
 	if rep.busy != 3 || rep.looked != 3 || rep.skipped != 1 {
 		t.Fatalf("channel counts: busy %d looked %d skipped %d", rep.busy, rep.looked, rep.skipped)
 	}
-	if rep.truncated {
+	if rep.truncated() {
 		t.Fatal("a scan that finished must not report itself as stopped early")
 	}
 	if len(rep.people) != 2 {
@@ -208,9 +208,15 @@ func TestScanReportsAnUnreadableGuild(t *testing.T) {
 	}
 }
 
-// TestScanStopsOnACancelledContext: a cancelled scan reports itself as
-// truncated rather than presenting what it managed as the whole picture.
-func TestScanStopsOnACancelledContext(t *testing.T) {
+// TestScanIgnoresTheHandlerDeadline is the regression test for a report that
+// came back "stopped early" on an ordinary window.
+//
+// core.CommandRouter gives every handler a 30 second context, which is right
+// for a command making a REST call or two and far too short for one walking a
+// guild's history, and the scan inherited it. Every scan longer than half a
+// minute therefore announced itself as a floor. The scan runs detached with
+// its own deadline now, so a parent that is already dead changes nothing.
+func TestScanIgnoresTheHandlerDeadline(t *testing.T) {
 	inside := windowStart.Add(time.Hour)
 	src := &fakeSource{
 		channels: []*discordgo.Channel{textChannel("c1", "general")},
@@ -222,8 +228,56 @@ func TestScanStopsOnACancelledContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rep.truncated {
-		t.Fatal("a scan cut short has to say so")
+	if rep.truncated() {
+		t.Fatal("the handler's own deadline must not cut the scan short")
+	}
+	if rep.messages != 1 {
+		t.Fatalf("want the one message, got %d", rep.messages)
+	}
+}
+
+// TestScanNamesTheBoundThatStoppedIt: "stopped early" on its own leaves the
+// reader choosing between narrowing the window and simply running it again,
+// which are opposite reactions, so each bound has to name itself.
+func TestScanNamesTheBoundThatStoppedIt(t *testing.T) {
+	inside := windowStart.Add(time.Hour)
+	var msgs []*discordgo.Message
+	for n := range 250 {
+		msgs = append(msgs, msgAt(inside, 250-n, "u1", "zoe"))
+	}
+	src := func() *fakeSource {
+		return &fakeSource{
+			channels: []*discordgo.Channel{textChannel("c1", "general")},
+			msgs:     map[string][]*discordgo.Message{"c1": msgs},
+		}
+	}
+
+	pageCeiling, budget := maxPages, scanBudget
+	t.Cleanup(func() { maxPages, scanBudget = pageCeiling, budget })
+
+	maxPages = 1
+	rep, err := scan(context.Background(), src(), "g1", "", windowStart, windowStart.Add(4*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.stoppedBy != stopPages {
+		t.Fatalf("want the page ceiling reported, got %v", rep.stoppedBy)
+	}
+	if md := markdown(rep, "birdland", windowStart, windowStart.Add(time.Hour), 0); !strings.Contains(md, "ceiling of 1 pages") {
+		t.Fatalf("the ceiling has to name itself:\n%s", md)
+	}
+
+	// Negative rather than tiny: a deadline already in the past cancels at
+	// construction, where a nanosecond races the timer goroutine.
+	maxPages, scanBudget = pageCeiling, -time.Second
+	if rep, err = scan(context.Background(), src(), "g1", "", windowStart, windowStart.Add(4*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if rep.stoppedBy != stopTime {
+		t.Fatalf("want the clock reported, got %v", rep.stoppedBy)
+	}
+	if md := markdown(rep, "birdland", windowStart, windowStart.Add(time.Hour), 0); !strings.Contains(md, "ran out of time") {
+		t.Fatalf("the clock has to name itself:\n%s", md)
 	}
 }
 
@@ -347,11 +401,11 @@ func TestMarkdownShape(t *testing.T) {
 }
 
 func TestMarkdownEmptyAndTruncated(t *testing.T) {
-	md := markdown(report{looked: 3, truncated: true}, "birdland", windowStart, windowStart.Add(time.Hour), 0)
+	md := markdown(report{looked: 3, stoppedBy: stopPages}, "birdland", windowStart, windowStart.Add(time.Hour), 0)
 	if !strings.Contains(md, "nobody chatted in that window.") {
 		t.Fatalf("empty report should say so:\n%s", md)
 	}
-	if !strings.Contains(md, "stopped early") {
+	if !strings.Contains(md, "hit its ceiling") {
 		t.Fatalf("a truncated scan has to admit it:\n%s", md)
 	}
 }

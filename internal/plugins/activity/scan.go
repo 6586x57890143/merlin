@@ -23,14 +23,6 @@ const discordEpoch = 1420070400000
 const (
 	// pageSize is Discord's own maximum for one ChannelMessages call.
 	pageSize = 100
-	// maxPages bounds the whole scan. A wide window over a busy guild would
-	// otherwise walk for longer than the 15 minutes an interaction token
-	// lives, and a report that never lands is worse than a partial one that
-	// says it is partial.
-	maxPages = 600
-	// scanBudget is the wall-clock half of the same bound, for the case
-	// where the pages are few but slow (rate limits, a struggling API).
-	scanBudget = 3 * time.Minute
 	// scanWorkers is how many channels are walked at once.
 	//
 	// Concurrency here is safe rather than cheeky: Discord buckets
@@ -54,6 +46,39 @@ type messageSource interface {
 	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
 }
 
+// The two bounds on a scan. Vars rather than consts only so a test can make
+// each one bite without a fixture the size of a real server.
+//
+// scanBudget is deliberately NOT derived from the context the handler is
+// given. core.CommandRouter hands every handler 30 seconds
+// (dispatchCommand's context.WithTimeout), which is a sane default for a
+// command that makes a REST call or two and far too short for one that walks
+// a guild's history: inheriting it capped every scan at 30 seconds and made a
+// perfectly ordinary window report itself as "stopped early". The scan runs on
+// context.WithoutCancel of that context with this deadline instead, which is
+// the same detach the Scheduler makes for its post-run bookkeeping and for the
+// same reason: the parent's deadline is about the wrong piece of work. Four
+// minutes keeps a comfortable margin under the 15 that an interaction token
+// lives, which is the real ceiling and the one that cannot be argued with.
+//
+// maxPages is the other half, for a window wide enough that the clock is not
+// what stops it. 3000 pages is 300k messages.
+var (
+	scanBudget = 4 * time.Minute
+	maxPages   = int64(3000)
+)
+
+// stopReason says which bound ended a scan, so a partial report can name it.
+// A report that says only "stopped early" leaves the reader guessing between
+// "narrow the window" and "the API was slow, run it again".
+type stopReason int
+
+const (
+	stopNone stopReason = iota
+	stopTime
+	stopPages
+)
+
 // person is one member's tally over the window.
 type person struct {
 	id       string
@@ -70,11 +95,13 @@ type person struct {
 type report struct {
 	people    []*person
 	messages  int
-	busy      int  // channels that carried at least one message
-	looked    int  // channels the scan could read
-	skipped   int  // channels the bot could not read
-	truncated bool // the page ceiling or the deadline stopped the walk
+	busy      int        // channels that carried at least one message
+	looked    int        // channels the scan could read
+	skipped   int        // channels the bot could not read
+	stoppedBy stopReason // stopNone unless a bound cut the walk short
 }
+
+func (r report) truncated() bool { return r.stoppedBy != stopNone }
 
 // snowflake is the smallest id Discord could have minted at t.
 func snowflake(t time.Time) int64 {
@@ -108,7 +135,8 @@ func scan(ctx context.Context, src messageSource, guildID, onlyChannel string, s
 		channels = append(channels, threads.Threads...)
 	}
 
-	deadline, cancel := context.WithTimeout(ctx, scanBudget)
+	// Detached from the caller's deadline on purpose; see scanBudget.
+	deadline, cancel := context.WithTimeout(context.WithoutCancel(ctx), scanBudget)
 	defer cancel()
 
 	after, before := snowflake(start), strconv.FormatInt(snowflake(end), 10)
@@ -134,12 +162,14 @@ func scan(ctx context.Context, src messageSource, guildID, onlyChannel string, s
 			defer wg.Done()
 			local := map[string]*person{}
 			var seen, busy, looked, skipped int
-			stopped := false
+			stopped := stopNone
 			for ch := range work {
 				n, err := scanChannel(deadline, src, ch, before, after, local, &pages)
 				switch {
-				case errors.Is(err, errScanStopped):
-					stopped = true
+				case errors.Is(err, errOutOfTime):
+					stopped = stopTime
+				case errors.Is(err, errOutOfPages):
+					stopped = stopPages
 				case err != nil:
 					// A channel the bot cannot see is the ordinary case in
 					// a real guild, not a reason to abandon the report. It
@@ -161,7 +191,11 @@ func scan(ctx context.Context, src messageSource, guildID, onlyChannel string, s
 			rep.busy += busy
 			rep.looked += looked
 			rep.skipped += skipped
-			rep.truncated = rep.truncated || stopped
+			// The clock wins the tie: it is the bound a person can do
+			// something about by narrowing the window.
+			if stopped != stopNone && (rep.stoppedBy == stopNone || stopped == stopTime) {
+				rep.stoppedBy = stopped
+			}
 		}()
 	}
 	for _, ch := range wanted {
@@ -206,10 +240,14 @@ func readable(ch *discordgo.Channel) bool {
 	return false
 }
 
-// errScanStopped is the page ceiling or the deadline, as distinct from a
-// channel that could not be read. One means the report is a floor and has to
-// say so; the other means one room is missing from an otherwise whole answer.
-var errScanStopped = errors.New("scan stopped early")
+// errOutOfTime and errOutOfPages are the two bounds, kept apart from a
+// channel that could not be read and from each other. A bound means the report
+// is a floor and has to say which bound; an unreadable channel means one room
+// is missing from an otherwise whole answer.
+var (
+	errOutOfTime  = errors.New("scan ran out of time")
+	errOutOfPages = errors.New("scan hit its page ceiling")
+)
 
 // scanChannel pages one channel backwards from before, stopping at the first
 // message older than after. Only before is passed to Discord: the docs say to
@@ -219,8 +257,11 @@ var errScanStopped = errors.New("scan stopped early")
 func scanChannel(ctx context.Context, src messageSource, ch *discordgo.Channel, before string, after int64, people map[string]*person, pages *atomic.Int64) (int, error) {
 	seen := 0
 	for {
-		if ctx.Err() != nil || pages.Add(1) > maxPages {
-			return seen, errScanStopped
+		if ctx.Err() != nil {
+			return seen, errOutOfTime
+		}
+		if pages.Add(1) > maxPages {
+			return seen, errOutOfPages
 		}
 		msgs, err := src.ChannelMessages(ch.ID, pageSize, before, "", "")
 		if err != nil {
@@ -296,8 +337,8 @@ func markdown(rep report, guild string, start, end time.Time, limit int) string 
 		}
 		fmt.Fprintf(&b, "-# `%d` %s could not be read, so nothing said in %s is counted\n", rep.skipped, noun, them)
 	}
-	if rep.truncated {
-		b.WriteString("-# the scan hit its ceiling and stopped early, so this is a floor and not the whole window\n")
+	if line := stoppedLine(rep.stoppedBy); line != "" {
+		b.WriteString("-# " + line + "\n")
 	}
 	b.WriteString("\n")
 
@@ -317,6 +358,24 @@ func markdown(rep report, guild string, start, end time.Time, limit int) string 
 		fmt.Fprintf(&b, "\nshowing the top `%d` of `%d`, the rest is in %s\n", len(shown), len(rep.people), listAttachmentName)
 	}
 	return b.String()
+}
+
+// stoppedLine says which bound cut the scan short, and what to do about it.
+//
+// "stopped early" on its own leaves the reader choosing between "ask for less"
+// and "the API was slow, run it again", which are opposite reactions, and the
+// numbers above it look complete either way.
+func stoppedLine(reason stopReason) string {
+	switch reason {
+	case stopTime:
+		return fmt.Sprintf("the scan ran out of time after %s, so these numbers are a floor and not the whole window. "+
+			"a shorter window or a single channel will finish", humanSpan(scanBudget))
+	case stopPages:
+		return fmt.Sprintf("the scan hit its ceiling of %d pages of history, so these numbers are a floor and not "+
+			"the whole window. a shorter window or a single channel will finish", maxPages)
+	default:
+		return ""
+	}
 }
 
 // channelList names up to three channels so a row stays one line.

@@ -179,8 +179,8 @@ func TestDefaultAvatarIndex(t *testing.T) {
 }
 
 func TestTotalsLine(t *testing.T) {
-	got := totalsLine(report{people: samplePeople(), messages: 69, busy: 4, looked: 9, skipped: 1, truncated: true})
-	if got != "4 people, 69 messages, 4 of 10 channels, stopped early" {
+	got := totalsLine(report{people: samplePeople(), messages: 69, busy: 4, looked: 9, skipped: 1, stoppedBy: stopTime})
+	if got != "4 people, 69 messages, 4 of 10 channels, stopped early: out of time" {
 		t.Fatalf("totals line: %q", got)
 	}
 }
