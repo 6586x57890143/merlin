@@ -91,6 +91,12 @@ var actions = map[string]meta{
 	"aimod.exempt_channel":          {title: "AI moderation: channel exemption changed", color: core.ColorSuccess},
 	"aimod.exempt_role":             {title: "AI moderation: role exemption changed", color: core.ColorSuccess},
 	"aimod.optin_changed":           {title: "AI moderation: sanction opt-in changed", color: core.ColorWarning},
+	// The member opt-out. Both are warnings rather than successes and neither
+	// is a mistake: one member choosing to be unread is a hole in the filter
+	// worth a moderator noticing, and the guild switch that makes it possible
+	// is the more consequential of the two.
+	"aimod.optout_changed":     {title: "AI moderation: member opt-out changed", color: core.ColorWarning},
+	"aimod.member_opt_out_set": {title: "AI moderation: member opt-out setting changed", color: core.ColorWarning},
 	// The weekly self-review. Proposing is information; applying changes what
 	// the filter does to real messages and is coloured like every other
 	// policy change on this list.

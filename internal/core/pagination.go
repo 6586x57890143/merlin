@@ -100,6 +100,44 @@ func RespondEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCr
 	})
 }
 
+// FollowUpEmbedWithComponents is FollowUpEmbed for a deferred answer that
+// also carries controls, which is what a paginated report needs: a command
+// doing real work has to DeferResponse inside 3 seconds, and the buttons have
+// to arrive with the answer rather than in a second message under it.
+//
+// Attachments is set empty rather than omitted, the same reason
+// updateEmbed does it: omitting retains what is already on the message and
+// appends, so a view edited repeatedly accumulates a duplicate avatar per
+// click until the embed's attachment:// references stop resolving.
+func FollowUpEmbedWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) error {
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Embeds:          &[]*discordgo.MessageEmbed{embed},
+		Components:      &components,
+		Files:           embedFiles(embed),
+		Attachments:     &[]*discordgo.MessageAttachment{},
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	})
+	return err
+}
+
+// DeferUpdate acknowledges a component interaction without changing anything
+// yet, for a Prev/Next click whose re-render does real work.
+//
+// The counterpart to DeferResponse on the component side, and needed for the
+// same reason: Discord gives a handler 3 seconds to respond at all, and a
+// paginated view whose page has to reach a third-party API (an account
+// balance, say) does not reliably fit. Without it a click on a page that was
+// merely slow reads to the user as "this interaction failed" even though the
+// work succeeded.
+//
+// Follow it with FollowUpEmbedWithComponents, which edits the message the
+// component arrived on rather than posting a new one.
+func DeferUpdate(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredMessageUpdate,
+	})
+}
+
 // UpdateEmbedWithComponents edits the message a component interaction (a
 // Prev/Next click, a select-menu choice) arrived on in place, rather than
 // sending a new one, the correct response type for any ComponentHandler

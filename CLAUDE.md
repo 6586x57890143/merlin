@@ -245,6 +245,41 @@ status` rather than appearing to work.
   additive**: nothing reads it to decide whether to protect anyone, anybody can
   add themselves, and only the bootstrap operator can add somebody else. The
   bootstrap identity is never sanctionable, listed or not.
+- **The member opt-out (`optout.go`) is optin.go's mirror image and the one
+  setting here that makes the filter cover *less*.** Three limits hold it in
+  place, none redundant: the guild switch (`Config.MemberOptOut`, migration
+  0031) is **off by default**, so this changed the behaviour of zero existing
+  deployments; only the guild owner or the bootstrap operator may flip it
+  (`ownerOrOperator`, the same gate the tip jar's address uses, and TierAdmin
+  is only the coarse floor on the leaf); and **nobody opts anybody else out**,
+  the exact opposite of `moderate-user`'s rule and from the same principle,
+  since an admin who could opt a member out could exempt an account they
+  control. `scanExempt` is checked **after rung 1**, not in `shouldSkip`: the
+  free pattern table still runs, because opting out of a judgement is
+  reasonable and opting out of a leaked token being deleted is not. And it
+  **yields to `mustScan`**, so the child-safety vocabulary is scanned exactly
+  as it would have been. That carve-out is the reason the guard is where it
+  is: `EffectiveAction` refuses to let `/aimod policy set` turn `child_safety`
+  off and `validateCalibration` refuses to let the weekly review stand it
+  down, so a per-member opt-out that suppressed it would be turning the bucket
+  off by a third route, one command at a time, for whoever wanted it off most.
+  Turning the switch off keeps the list rather than clearing it (turning it
+  back on restores what people chose instead of re-enrolling everybody), which
+  is why `/aimod status` labels a kept list "not in effect". The moderation DM
+  mentions the opt-out **only where the guild offers it**: that DM is the one
+  moment this bot has somebody's attention on the subject, and advertising a
+  command that would refuse is worse than saying nothing.
+- **`/aimod status` is paginated** (`status.go`), rebuilt from live data on
+  every click with no session to expire, the same stateless choice
+  `/config setup` makes. It was one embed and had outgrown both the format and
+  Discord's own 25-field/6000-byte caps, and the opt-out list is unbounded, so
+  the split is by who is asking: is it working (overview), what does it act on
+  (policy), what is it costing and through whom (provider), and who is not
+  covered (opt-outs, `core.PageSize` per page). Every page wears the **whole
+  report's** severity rather than its own, because paging away from a problem
+  fixes nothing. The click path defers first (`core.DeferUpdate`, new): the
+  provider page reaches the gateway, bounded by `httpTimeout`, comfortably
+  past Discord's 3 seconds to acknowledge an interaction.
 - **Rewrite is delete-and-repost through a channel webhook** wearing the
   author's name and avatar, because a bot cannot edit another user's message.
   The webhook is resolved *before* the delete, so a webhook failure does not

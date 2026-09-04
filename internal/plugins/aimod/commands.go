@@ -87,6 +87,17 @@ func (p *Plugin) registerCommands() {
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "opt-out",
+				Description: "Ask not to have your messages read by the AI filter (if this server allows it)",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled",
+						Description: "True to opt out, false to be covered again", Required: true,
+					},
+				},
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "moderate-user",
 				Description: "Operator only: put somebody else on the automatic-sanction list",
 				Options: []*discordgo.ApplicationCommandOption{
@@ -318,6 +329,17 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "member-opt-out",
+						Description: "Server owner only: let members opt out of being read by the AI filter",
+						Options: []*discordgo.ApplicationCommandOption{
+							{
+								Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled",
+								Description: "True to offer the opt-out, false to cover everyone", Required: true,
+							},
+						},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "show",
 						Description: "Everything configured here, with the key masked",
 					},
@@ -402,6 +424,11 @@ func (p *Plugin) registerCommands() {
 	p.commands.RegisterCommand(p.Name(), cmd)
 
 	p.commands.Handle("aimod", "status", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatus)
+	// Same spec as the command it pages: a component interaction is its own
+	// fresh interaction and gets no exemption from authorization just because
+	// the message carrying the button was rendered for somebody allowed to
+	// see it. Same rule adminconfig's wizard follows.
+	p.commands.HandleComponent(p.Name(), statusPagePrefix, core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatusPage)
 	p.commands.Handle("aimod", "why", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleWhy)
 	p.commands.Handle("aimod", "undo", core.PermSpec{Tier: core.TierMod, Action: actionUndo}, p.handleUndo)
 
@@ -413,6 +440,12 @@ func (p *Plugin) registerCommands() {
 	// TierMod is the coarse gate; the real one is the operator check inside
 	// the handler, because no tier expresses "one named identity".
 	p.commands.Handle("aimod", "moderate-user", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModerateUser)
+
+	// TierPublic for the same reason as moderate-me, and the mirror image of
+	// it: withholding consent is not a privilege either. The gate that
+	// matters is the guild's own switch, checked inside the handler, and the
+	// rule that a member sets only themselves. See optout.go.
+	p.commands.Handle("aimod", "opt-out", core.PermSpec{Tier: core.TierPublic}, p.handleOptOut)
 
 	p.commands.Handle("aimod", "policy/list", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handlePolicyList)
 	p.commands.Handle("aimod", "policy/explain", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handlePolicyExplain)
@@ -442,6 +475,12 @@ func (p *Plugin) registerCommands() {
 	// policy decision rather than a plumbing one, and a guild can lower the
 	// tier on it separately with /config permissions set-tier.
 	p.commands.Handle("aimod", "configure/triage", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleSetTriage)
+	// actionPolicy rather than actionConfigure, matching triage and sanctions:
+	// this decides how much of the server gets looked at. TierAdmin is only
+	// the coarse floor; the real gate is ownerOrOperator inside the handler,
+	// because no tier expresses "the guild owner", and this is the one
+	// setting here that makes the filter cover *less*.
+	p.commands.Handle("aimod", "configure/member-opt-out", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleSetMemberOptOut)
 	p.commands.Handle("aimod", "configure/show", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleConfigureShow)
 
 	// Reading the calibration is a moderator's business: it explains why a
@@ -459,7 +498,7 @@ func (p *Plugin) registerCommands() {
 	// it is needed. It shows two balances and a runway, and nothing about
 	// what is being moderated or whom.
 	p.commands.Handle("aimod", "funding/show", core.PermSpec{Tier: core.TierPublic}, p.handleFundingShow)
-	// TierAdmin is the coarse floor; the real gate is canSetFunding inside
+	// TierAdmin is the coarse floor; the real gate is ownerOrOperator inside
 	// the handler, because no tier expresses "the guild owner". This is where
 	// donated money goes, and a guild with five admins would otherwise have
 	// five accounts that can silently repoint it.

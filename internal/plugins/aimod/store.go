@@ -63,7 +63,13 @@ type Config struct {
 	// SanctionOptInUserIDs only ever widens who can be sanctioned; see
 	// optin.go for why that invariant is what makes it safe.
 	SanctionOptInUserIDs []string
-	BucketActions        map[Bucket]Action
+	// MemberOptOut is the guild's switch for the opposite list below, and it
+	// is false unless a guild owner deliberately turned it on. While it is
+	// false OptOutUserIDs is read by nothing on the message path. See
+	// optout.go.
+	MemberOptOut  bool
+	OptOutUserIDs []string
+	BucketActions map[Bucket]Action
 
 	// Calibration is the active learned example set, rendered into both
 	// classifier prompts. CalibrationPending is a proposal awaiting
@@ -204,6 +210,10 @@ type Store interface {
 	SetExemptRoles(ctx context.Context, guildID string, ids []string) error
 	SetSanctionAction(ctx context.Context, guildID string, action SanctionAction) error
 	SetSanctionOptIn(ctx context.Context, guildID string, userIDs []string) error
+	// The member opt-out, whose two halves are a guild switch and the list
+	// it gates. See optout.go for why they are separate.
+	SetMemberOptOut(ctx context.Context, guildID string, on bool) error
+	SetOptOut(ctx context.Context, guildID string, userIDs []string) error
 	// SetCalibration writes both sets at once, because every path that
 	// changes one changes the other: a review in suggest mode fills pending
 	// and leaves active, apply moves pending into active and empties
@@ -305,11 +315,11 @@ func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 		SELECT api_key_sealed, orca_key_sealed, mode, daily_budget_usd, evidence_hours,
 		       fast_models, deep_models, exempt_channel_ids, exempt_role_ids, sanction_action, sanction_optin_user_ids, bucket_actions,
 		       calibration, calibration_pending, calibration_mode, calibration_ran_at,
-		       triage_mode
+		       triage_mode, member_opt_out, opt_out_user_ids
 		FROM aimod_config WHERE guild_id = $1
 	`, guildID).Scan(&cfg.APIKeySealed, &cfg.OrcaKeySealed, &cfg.Mode, &cfg.DailyBudgetUSD, &cfg.EvidenceHours,
 		&cfg.FastModels, &cfg.DeepModels, &cfg.ExemptChannelIDs, &cfg.ExemptRoleIDs, &cfg.SanctionAction, &cfg.SanctionOptInUserIDs, &actionsJSON,
-		&calJSON, &calPendingJSON, &cfg.CalibrationMode, &ranAt, &cfg.TriageMode)
+		&calJSON, &calPendingJSON, &cfg.CalibrationMode, &ranAt, &cfg.TriageMode, &cfg.MemberOptOut, &cfg.OptOutUserIDs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return cfg, nil
@@ -413,6 +423,17 @@ func (s *pgStore) SetSanctionAction(ctx context.Context, guildID string, action 
 
 func (s *pgStore) SetSanctionOptIn(ctx context.Context, guildID string, userIDs []string) error {
 	return s.upsert(ctx, guildID, "sanction_optin_user_ids", userIDs)
+}
+
+// SetMemberOptOut flips the guild's switch. The list itself is deliberately
+// left alone: turning the feature off should stop it applying, not discard
+// what members chose, or re-enabling it would silently re-enrol everybody.
+func (s *pgStore) SetMemberOptOut(ctx context.Context, guildID string, on bool) error {
+	return s.upsert(ctx, guildID, "member_opt_out", on)
+}
+
+func (s *pgStore) SetOptOut(ctx context.Context, guildID string, userIDs []string) error {
+	return s.upsert(ctx, guildID, "opt_out_user_ids", userIDs)
 }
 
 func (s *pgStore) SetModels(ctx context.Context, guildID string, fast, deep []string) error {

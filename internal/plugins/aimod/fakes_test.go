@@ -128,6 +128,14 @@ func (f *fakeStore) SetSanctionOptIn(_ context.Context, g string, ids []string) 
 	return f.mutate(g, func(c *Config) { c.SanctionOptInUserIDs = ids })
 }
 
+func (f *fakeStore) SetMemberOptOut(_ context.Context, g string, on bool) error {
+	return f.mutate(g, func(c *Config) { c.MemberOptOut = on })
+}
+
+func (f *fakeStore) SetOptOut(_ context.Context, g string, ids []string) error {
+	return f.mutate(g, func(c *Config) { c.OptOutUserIDs = ids })
+}
+
 func (f *fakeStore) SetCalibration(_ context.Context, g string, active, pending []CalibrationExample, ranAt time.Time) error {
 	return f.mutate(g, func(c *Config) {
 		c.Calibration, c.CalibrationPending = active, pending
