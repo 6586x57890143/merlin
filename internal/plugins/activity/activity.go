@@ -76,10 +76,41 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.source = deps.Session
 	p.privilege = deps.Perms
 
+	deps.Commands.RegisterCommand(p.Name(), command())
+	// TierAdmin is the floor, not the gate: handleActivity refuses anybody
+	// but the bootstrap operator. Both are needed, since a guild can lower a
+	// tier with /config permissions set-tier but cannot widen this.
+	deps.Commands.Handle("activity", "", core.PermSpec{Tier: core.TierAdmin, Action: "activity.report"}, p.handleActivity)
+	return nil
+}
+
+// command is the /activity definition, kept out of Init so the permission
+// decision in it can be pinned by a test.
+func command() *discordgo.ApplicationCommand {
 	minTop := 1.0
-	deps.Commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
-		Name:        "activity",
-		Description: "Who was talking in a window of time",
+	// Discord's own default_member_permissions is left unset everywhere else
+	// in this bot (spec.MD §4a), so the internal checks are the sole gate and
+	// cannot be bypassed by a mismatched permission bit. That reasoning is
+	// about a command being *reachable*; this one is about it being *listed*.
+	//
+	// Every registered command shows in every member's picker regardless of
+	// who may run it, so without this the whole server sees that somebody can
+	// ask merlin who was talking and when. That is a fact about the server's
+	// surveillance surface, published to the people it is about, for a command
+	// none of them can run. Zero means nobody but a holder of Discord's
+	// Administrator bit, which is a floor under the operator check rather than
+	// a replacement for it: handleActivity still refuses everybody but the
+	// bootstrap identity, so this cannot widen anything.
+	//
+	// It can narrow, though, and that is the trade. An operator who is not an
+	// administrator of the guild loses the command from their own picker; the
+	// way back is the guild's Integrations settings, where an owner can grant
+	// an explicit overwrite, which is exactly what a zero here leaves room for.
+	adminOnly := int64(0)
+	return &discordgo.ApplicationCommand{
+		Name:                     "activity",
+		Description:              "Who was talking in a window of time",
+		DefaultMemberPermissions: &adminOnly,
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Type:        discordgo.ApplicationCommandOptionString,
@@ -118,12 +149,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 				Description: "Post the report in this channel instead of answering only you",
 			},
 		},
-	})
-	// TierAdmin is the floor, not the gate: handleActivity refuses anybody
-	// but the bootstrap operator. Both are needed, since a guild can lower a
-	// tier with /config permissions set-tier but cannot widen this.
-	deps.Commands.Handle("activity", "", core.PermSpec{Tier: core.TierAdmin, Action: "activity.report"}, p.handleActivity)
-	return nil
+	}
 }
 
 func (p *Plugin) Start(context.Context) error    { return nil }

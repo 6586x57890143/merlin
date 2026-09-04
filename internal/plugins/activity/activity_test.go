@@ -387,6 +387,33 @@ func TestOperatorOnly(t *testing.T) {
 	}
 }
 
+// TestCommandIsNotListedToTheServer pins the one place this bot sets
+// default_member_permissions at all.
+//
+// Every registered command appears in every member's picker regardless of who
+// may run it, so leaving this unset publishes the fact that somebody can ask
+// merlin who was talking and when, to the people it is about, for a command
+// none of them can run. Zero is "nobody without Discord's Administrator bit",
+// which sits under the operator check rather than replacing it, so removing
+// this line widens nothing and changes only who sees the command exists. It is
+// asserted here because that is exactly the kind of line a later reader
+// deletes for matching the §4a rule rather than the reasoning behind it.
+func TestCommandIsNotListedToTheServer(t *testing.T) {
+	cmd := command()
+	if cmd.DefaultMemberPermissions == nil {
+		t.Fatal("/activity must not be listed to every member of the server")
+	}
+	if *cmd.DefaultMemberPermissions != 0 {
+		t.Fatalf("want 0 (administrators only), got %d", *cmd.DefaultMemberPermissions)
+	}
+	// The picker is cosmetic; the gate is not. If this ever stops being
+	// TierAdmin-floored and operator-checked, the line above is not what
+	// should have been relied on.
+	if cmd.Name != "activity" || len(cmd.Options) != 5 {
+		t.Fatalf("command shape changed: %s with %d options", cmd.Name, len(cmd.Options))
+	}
+}
+
 func TestParseOptions(t *testing.T) {
 	now := windowStart.Add(24 * time.Hour)
 	str := func(name, v string) *discordgo.ApplicationCommandInteractionDataOption {
