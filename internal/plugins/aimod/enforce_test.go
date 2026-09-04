@@ -455,3 +455,31 @@ func TestNonEmptyRewriteStaysARewrite(t *testing.T) {
 		t.Errorf("posted %d webhook messages, want 1", len(posted))
 	}
 }
+
+// The model's rewrite is published under the member's name, so it is held to
+// the same floor as what the member wrote. A deep pass told to swap out the
+// violating words and keep the sentence will sometimes hand the slur back,
+// and posting that with an "edited by merlin" marker under it is worse than
+// the message being cleaned up.
+func TestAModelRewriteIsRedactedBeforeItIsPublished(t *testing.T) {
+	ops := newFakeOps()
+	ops.members["u1"] = &discordgo.Member{User: &discordgo.User{ID: "u1", Username: "someguy"}}
+	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
+
+	v := confirmed("hate speech")
+	v.Rewrite = "welcome to niggernation friends"
+	p.enforce(context.Background(), enforcingConfig(),
+		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "welcome to niggernation friends"},
+		BucketHateSpeech, ActionRewrite, v)
+
+	_, posted := ops.snapshot()
+	if len(posted) != 1 {
+		t.Fatalf("posted %d webhook messages, want 1", len(posted))
+	}
+	if _, again := redactSlurs(posted[0].Content); again {
+		t.Errorf("merlin published a slur of its own: %q", posted[0].Content)
+	}
+	if !strings.Contains(posted[0].Content, "friends") {
+		t.Errorf("the rest of the rewrite was lost: %q", posted[0].Content)
+	}
+}
