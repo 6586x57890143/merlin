@@ -469,6 +469,25 @@ var hardSlurs = []struct {
 		},
 	},
 	{
+		// cunny and the spellings it wears when somebody is dodging a
+		// filter: cunni, cunnie, cunnies, cnny. The doubled n is required
+		// and the u is not, which is what draws the line: "cny" and "cuny"
+		// are Chinese New Year, the yuan and a New York university far more
+		// often than they are this, and a hard hit has to be a word nobody
+		// posts innocently. Anything spelled that thin is still read by the
+		// model rungs.
+		pattern: regexp.MustCompile(`(?i)c` + slurSep + `(?:[u*]` + slurSep + `)?n` + slurSep + `n+` + slurSep + `(ies|iez|ys|ie|y|i)`),
+		subs: []sub{
+			{"cumin", "cumins"},
+			{"coriander", "corianders"},
+			{"cinnamon", "cinnamons"},
+			{"cannoli", "cannoli"},
+			{"crouton", "croutons"},
+			{"cheeky nutmeg", "cheeky nutmegs"},
+			{"curry leaf swiped from a shared jar", "curry leaves swiped from a shared jar"},
+		},
+	},
+	{
 		pattern: regexp.MustCompile(`(?i)k` + slurSep + `[i1!|*]` + slurSep + `k` + slurSep + `[e3*](s|z)?`),
 		subs: []sub{
 			{"kite", "kites"},
@@ -495,7 +514,7 @@ var hardSlurs = []struct {
 // that could theoretically carry four of these letters in a row: a wrong
 // match here costs a daft substitution rather than a deletion, and anything
 // the list misses is still read by the model rungs.
-var innocentCompounds = regexp.MustCompile(`(?i)^(?:snigger|niggard|gobbledygook|gobbledegook|chinkapin|hangook)(?:s|es|ed|er|ing|ly|liness)?$`)
+var innocentCompounds = regexp.MustCompile(`(?i)^(?:snigger|niggard|gobbledygook|gobbledegook|chinkapin|hangook|cunning|cunningham|cunnilingus)(?:s|es|ed|er|ing|ly|liness)?$`)
 
 // redactSlurs replaces every hard slur in content, reporting whether any
 // matched. The replacement is what gets published, so it is built from the

@@ -383,6 +383,25 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
+			"the loli one and its dodges",
+			"cunny cnny cunnies",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// The doubled n is required precisely so these three survive:
+			// Chinese New Year, the yuan and a New York university.
+			"cny and cuny are not it",
+			"the cny rate before CUNY term starts",
+			"", false, false,
+		},
+		{
+			// innocentCompounds again: cunning is a word, and the pattern
+			// is not anchored at either end.
+			"cunning is a word",
+			"that was a cunning plan by Cunningham",
+			"", false, false,
+		},
+		{
 			// The idiom is the reason that entry carries a notIf at all.
 			// Declining leaves the message to the model rungs; it does not
 			// clear it.
