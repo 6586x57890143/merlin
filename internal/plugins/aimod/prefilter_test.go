@@ -402,6 +402,19 @@ func TestHardHit(t *testing.T) {
 			"", false, false,
 		},
 		{
+			"the euphemism, joined up and with the vowels knocked out",
+			"cute and funny cuteandfunny cutendfnny ctndfnny kutendfunny",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// The letters still have to be adjacent in the word: slurSep
+			// never spans one, so a sentence that merely contains these
+			// words in order is not a hit.
+			"an ordinary sentence is not the euphemism",
+			"the cat used to be fine but now it is dull",
+			"", false, false,
+		},
+		{
 			// The idiom is the reason that entry carries a notIf at all.
 			// Declining leaves the message to the model rungs; it does not
 			// clear it.
