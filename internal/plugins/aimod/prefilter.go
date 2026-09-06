@@ -388,6 +388,65 @@ type sub struct{ one, many string }
 // the word itself.
 const slurSep = `[^\p{L}\p{N}]{0,2}`
 
+// slurLetters is what people type when they mean a letter. Only the vowels
+// earn an entry: they are what a digit or a bar of censoring is swapped in
+// for, and a consonant class would widen every pattern here for nothing.
+var slurLetters = map[byte]string{
+	'a': `[a4@*]`,
+	'e': `[e3*]`,
+	'i': `[i1!|*]`,
+	'o': `[o0*]`,
+	'u': `[u*]`,
+}
+
+// slurRe compiles a spelling into the pattern rung 1 matches, which is the
+// spelling with slurSep between every letter and each letter widened to the
+// characters people substitute for it. That is what makes n.i.g.g.e.r and
+// f*ggot land without anybody writing the alternation out by hand, and it
+// is the only thing a new entry in the table below should need.
+//
+// The spec is the word plus three borrowings from regexp's own syntax:
+// `+` after a letter for a run of it, `?` for one that may be missing (a
+// dropped vowel is the whole "ctndfnny" family of evasions), and a
+// bracketed class or parenthesised group passed through verbatim, which is
+// what the plural endings and the c/k swaps are written as.
+//
+// It panics on a malformed spec, which is to say at startup: the table is a
+// compile-time constant and a pattern that does not compile is not a thing
+// this bot should be running without.
+func slurRe(spec string) *regexp.Regexp {
+	var atoms []string
+	for i := 0; i < len(spec); i++ {
+		var atom string
+		switch spec[i] {
+		case '[', '(':
+			closer := byte(']')
+			if spec[i] == '(' {
+				closer = ')'
+			}
+			j := strings.IndexByte(spec[i:], closer)
+			if j < 0 {
+				panic("slurRe: unclosed group in " + spec)
+			}
+			atom, i = spec[i:i+j+1], i+j
+		default:
+			if class, ok := slurLetters[spec[i]]; ok {
+				atom = class
+			} else {
+				atom = regexp.QuoteMeta(spec[i : i+1])
+			}
+		}
+		// A trailing ? or + belongs to the atom it follows, never to the
+		// separator that would otherwise be joined in after it.
+		for i+1 < len(spec) && (spec[i+1] == '?' || spec[i+1] == '+') {
+			atom += spec[i+1 : i+2]
+			i++
+		}
+		atoms = append(atoms, atom)
+	}
+	return regexp.MustCompile(`(?i)` + strings.Join(atoms, slurSep))
+}
+
 var hardSlurs = []struct {
 	pattern *regexp.Regexp
 	// notIf, when set and matching the message, cancels every replacement
@@ -404,7 +463,7 @@ var hardSlurs = []struct {
 	subs []sub
 }{
 	{
-		pattern: regexp.MustCompile(`(?i)n` + slurSep + `[i1!|*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[e3*]` + slurSep + `r+(s|z)?`),
+		pattern: slurRe(`nigg+er+(s|z)?`),
 		subs: []sub{
 			{"ninja", "ninjas"},
 			{"ninjago", "ninjagos"},
@@ -414,7 +473,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)f` + slurSep + `[a4@*]` + slurSep + `g` + slurSep + `g+` + slurSep + `[o0*]` + slurSep + `t+(s|z)?`),
+		pattern: slurRe(`fagg+ot+(s|z)?`),
 		subs: []sub{
 			{"frog", "frogs"},
 			{"fog", "fogs"},
@@ -424,7 +483,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)tr` + slurSep + `[a4@*]` + slurSep + `n` + slurSep + `n+` + slurSep + `(ies|iez|ys|ie|y)`),
+		pattern: slurRe(`trann+(ies|iez|ys|ie|y)`),
 		subs: []sub{
 			{"person", "people"},
 			{"nice person", "nice people"},
@@ -434,7 +493,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)tr` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `n(s|z)?`),
+		pattern: slurRe(`troo+n(s|z)?`),
 		subs: []sub{
 			{"person", "people"},
 			{"nice person", "nice people"},
@@ -444,7 +503,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)g` + slurSep + `[o0*]` + slurSep + `[o0*]+` + slurSep + `k(s|z)?`),
+		pattern: slurRe(`goo+k(s|z)?`),
 		subs: []sub{
 			{"goose", "geese"},
 			{"gnome", "gnomes"},
@@ -454,7 +513,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)c` + slurSep + `h` + slurSep + `[i1!|*]` + slurSep + `n` + slurSep + `k(s|z)?`),
+		pattern: slurRe(`chink(s|z)?`),
 		// The one spelling in this table that is also an ordinary English
 		// word. "a chink in the armour" and "a chink of light" are the forms
 		// people actually write, and rewriting either is the filter firing
@@ -469,6 +528,30 @@ var hardSlurs = []struct {
 		},
 	},
 	{
+		// "cute and funny" is coded language for the entry above, and it is
+		// written every way a filter-dodger can think of: joined up, vowels
+		// dropped, the "and" worn down to an n, a k for the c. The spec
+		// makes every vowel optional, which is the whole "ctndfnny" family
+		// in one character each.
+		//
+		// This is the loosest entry in the table on purpose and it is the
+		// one that will occasionally catch somebody talking about a cat.
+		// That costs a daft substitution on a guild that has hate_speech
+		// set to rewrite, which is the cheap direction, and the phrase is
+		// not one this table can afford to leave to a model that has never
+		// heard the euphemism.
+		pattern: slurRe(`[ck]u?te?a?nd?fu?n+y`),
+		subs: []sub{
+			{"beige", "beige"},
+			{"tall and boring", "tall and boring"},
+			{"damp and mildly inconvenient", "damp and mildly inconvenient"},
+			{"crunchy and well ventilated", "crunchy and well ventilated"},
+			{"beige and structurally sound", "beige and structurally sound"},
+			{"tepid and vaguely municipal", "tepid and vaguely municipal"},
+			{"sturdy and tax compliant", "sturdy and tax compliant"},
+		},
+	},
+	{
 		// cunny and the spellings it wears when somebody is dodging a
 		// filter: cunni, cunnie, cunnies, cnny. The doubled n is required
 		// and the u is not, which is what draws the line: "cny" and "cuny"
@@ -476,7 +559,7 @@ var hardSlurs = []struct {
 		// often than they are this, and a hard hit has to be a word nobody
 		// posts innocently. Anything spelled that thin is still read by the
 		// model rungs.
-		pattern: regexp.MustCompile(`(?i)c` + slurSep + `(?:[u*]` + slurSep + `)?n` + slurSep + `n+` + slurSep + `(ies|iez|ys|ie|y|i)`),
+		pattern: slurRe(`[ck]u?nn+(ies|iez|ys|ie|y|i)`),
 		subs: []sub{
 			{"cumin", "cumins"},
 			{"coriander", "corianders"},
@@ -488,7 +571,7 @@ var hardSlurs = []struct {
 		},
 	},
 	{
-		pattern: regexp.MustCompile(`(?i)k` + slurSep + `[i1!|*]` + slurSep + `k` + slurSep + `[e3*](s|z)?`),
+		pattern: slurRe(`kike(s|z)?`),
 		subs: []sub{
 			{"kite", "kites"},
 			{"koala", "koalas"},
@@ -529,6 +612,19 @@ func redactSlurs(content string) (string, bool) {
 		last := 0
 		for _, loc := range s.pattern.FindAllStringIndex(out, -1) {
 			start, end := loc[0], loc[1]
+			// A pattern ending in an optional group ("nigger" plus an
+			// optional plural) can match the separator in front of a group
+			// that then matched nothing, so the hit runs one space past the
+			// word. Left alone that swallows the space into the replacement
+			// and, worse, widens the word the innocentCompounds veto is
+			// tested against, which is how "gobbledygook to me" got past it.
+			for end > start {
+				r, size := utf8.DecodeLastRuneInString(out[start:end])
+				if isWordRune(r) {
+					break
+				}
+				end -= size
+			}
 			ws, we := wordBounds(out, start, end)
 			if innocentCompounds.MatchString(out[ws:we]) {
 				continue
