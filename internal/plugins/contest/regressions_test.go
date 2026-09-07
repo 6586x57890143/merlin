@@ -485,3 +485,77 @@ func TestArchivedThreadsArePagedPastTheFirst(t *testing.T) {
 		t.Errorf("archived pages fetched = %d, want at least 2", ops.archivedPages)
 	}
 }
+
+// Every finished contest this bot has run is a page of broken images.
+//
+// A Discord attachment URL is signed and lasts about a day; the snapshot
+// stores it verbatim; and afterFinish unregistered the tick, so nothing ever
+// re-derived it again. The results gallery -- the one artifact anybody comes
+// back to -- went dead a day after the contest ended. Confirmed against the
+// live deployment: contest "testing" closed at 14:42 with a link that expired
+// at 01:43 the next morning.
+func TestAFinishedGalleryKeepsItsArtAlive(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	closed := base
+	c := liveContest(PhaseResults, base)
+	c.ClosedAt = &closed
+	if err := store.CreateContest(context.Background(), c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ops.threads = append(ops.threads, entryThread(ops, "t1", "u1"))
+
+	now := base
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+	p.now = func() time.Time { return now }
+
+	// The job survives the contest finishing, because the gallery it left
+	// behind still has links that expire.
+	p.SyncGuild(context.Background(), "g1")
+	if !sched.has("g1:contest-tick") {
+		t.Fatal("the tick job was dropped, so nothing will ever refresh the gallery again")
+	}
+
+	now = base.Add(time.Minute)
+	if err := p.tick(context.Background(), "g1"); err != nil {
+		t.Fatalf("tick inside the window: %v", err)
+	}
+	if ops.messageReads == 0 {
+		t.Error("a finished contest inside the refresh window did not re-read its entries")
+	}
+
+	// And it stops, rather than costing a REST call per entry forever for a
+	// page nobody is looking at. Past here the page links the forum post.
+	now = base.Add(artRefreshWindow + time.Minute)
+	before := ops.messageReads
+	if err := p.tick(context.Background(), "g1"); err != nil {
+		t.Fatalf("tick past the window: %v", err)
+	}
+	if ops.messageReads != before {
+		t.Error("a contest past the refresh window is still costing REST calls")
+	}
+	p.SyncGuild(context.Background(), "g1")
+	if sched.has("g1:contest-tick") {
+		t.Error("the tick job outlived the refresh window")
+	}
+}
+
+// A cancelled contest has no gallery anybody was pointed at, so it must not
+// keep a job alive re-reading a forum for a page nobody will open.
+func TestACancelledContestRefreshesNothing(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	closed := base
+	c := liveContest(PhaseCancelled, base)
+	c.ClosedAt = &closed
+	if err := store.CreateContest(context.Background(), c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+	p.now = func() time.Time { return base.Add(time.Minute) }
+
+	p.SyncGuild(context.Background(), "g1")
+	if sched.has("g1:contest-tick") {
+		t.Error("a cancelled contest kept the tick job alive")
+	}
+}

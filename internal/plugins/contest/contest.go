@@ -29,6 +29,22 @@ const (
 	// one refresh of headroom and costs one REST call per entry.
 	refreshInterval = 12 * time.Hour
 
+	// artRefreshWindow is how long after a contest closes merlin keeps
+	// re-deriving its entries' CDN links.
+	//
+	// A Discord attachment URL is signed and lasts about 24 hours, and the
+	// snapshot stores it verbatim, so the results gallery -- the one artifact
+	// people come back to -- went permanently broken a day after the last
+	// refresh. Every finished contest this bot has ever run is currently a
+	// page of broken images.
+	//
+	// A week rather than forever, because the cost is one REST call per entry
+	// per refreshInterval and it buys nothing once nobody is looking; past
+	// this the page falls back to linking the Discord thread the art still
+	// lives in, which is honest and free. The bound is the whole reason this
+	// is affordable at all.
+	artRefreshWindow = 7 * 24 * time.Hour
+
 	// minPhase is the shortest a phase may be. Two minutes rather than
 	// something rounder because that is what makes an end-to-end test of all
 	// four phases take four minutes instead of an afternoon, and there is no
@@ -173,6 +189,13 @@ func (p *Plugin) ForgetGuild(guildID string) {
 func (p *Plugin) reconcileTickJob(ctx context.Context, guildID string) {
 	_, err := p.store.LiveContest(ctx, guildID)
 	live := err == nil
+	if err == ErrNoLiveContest {
+		// A contest that has finished is not live, but its gallery still has
+		// links that expire, so the job stays until the refresh window is up.
+		if _, ok := p.closedNeedingArt(ctx, guildID); ok {
+			live = true
+		}
+	}
 	if err != nil && err != ErrNoLiveContest {
 		// A failed lookup leaves the current registration untouched rather
 		// than guessing in either direction: unregistering on a transient
@@ -212,6 +235,9 @@ func (p *Plugin) reconcileTickJob(ctx context.Context, guildID string) {
 func (p *Plugin) tick(ctx context.Context, guildID string) error {
 	c, err := p.store.LiveContest(ctx, guildID)
 	if err == ErrNoLiveContest {
+		if done, ok := p.closedNeedingArt(ctx, guildID); ok {
+			return p.refreshArt(ctx, done)
+		}
 		p.mu.Lock()
 		p.reconcileTickJob(ctx, guildID)
 		p.mu.Unlock()
@@ -398,6 +424,50 @@ func noVotes(rs []resultView) bool {
 		}
 	}
 	return true
+}
+
+// closedNeedingArt is the guild's most recent contest when it has finished
+// but its gallery art has not yet been left to expire.
+//
+// Cancelled contests are excluded: nothing points at their gallery and
+// nobody is coming back to it. A contest with no ClosedAt has not been
+// through SetResults, so there is no window to measure from.
+func (p *Plugin) closedNeedingArt(ctx context.Context, guildID string) (Contest, bool) {
+	c, err := p.store.LatestContest(ctx, guildID)
+	if err != nil {
+		// A failed lookup is not a reason to decide the window is over: that
+		// direction abandons a gallery for good, and the other costs one
+		// tick. Same "only untrack on gone, never on failed" rule the sweeps
+		// follow.
+		if err != ErrNoLiveContest {
+			p.log.Error("contest: look for a gallery to refresh", "guild", guildID, "err", err)
+		}
+		return Contest{}, false
+	}
+	if c.Phase != PhaseResults || c.ClosedAt == nil {
+		return Contest{}, false
+	}
+	if p.now().Sub(*c.ClosedAt) >= artRefreshWindow {
+		return Contest{}, false
+	}
+	return c, true
+}
+
+// refreshArt re-derives a finished contest's CDN links and pushes them.
+//
+// The entry list is frozen at this point, so this only ever updates the URL
+// on entries that already exist; syncSubmissions skips its withdraw pass
+// outside PhaseSubmit for exactly that reason.
+func (p *Plugin) refreshArt(ctx context.Context, c Contest) error {
+	if !p.dueForRefresh(c.ID) {
+		return nil
+	}
+	if err := p.syncSubmissions(ctx, c); err != nil {
+		p.log.Error("contest: refresh finished gallery", "contest", c.ID, "err", err)
+		return nil
+	}
+	p.pushBestEffort(ctx, c)
+	return nil
 }
 
 // afterFinish drops the now-idle tick job. Separate from finish so both the

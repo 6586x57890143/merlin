@@ -477,6 +477,30 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 }
 .card figure.multi img.art { max-height: 11rem; object-fit: cover; }
 .card audio { width: 100%; margin: .4rem 0; }
+
+/* A Discord attachment link is signed and lasts about a day. merlin re-derives
+   them while a contest is running and for a week after it closes, and then
+   stops, because the cost is a REST call per entry and nobody is looking by
+   then. So an old gallery WILL have dead links, by design, and the browser's
+   answer to one is a broken-image glyph and the alt string in a font this page
+   never chose -- the one surface on the page that was not drawn.
+
+   This is the drawn answer instead: the art is still in the forum post, so say
+   that and link it. It replaces the image in place, so a card keeps its shape
+   and the page does not reflow around a gap. */
+.card .gone {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .3rem; padding: 1.6rem .8rem; text-align: center;
+  border: 3px dashed var(--ink); border-radius: 10px;
+  background: var(--paper); color: var(--muted);
+  font-size: .82rem; line-height: 1.35;
+}
+.card .gone img { width: 46px; height: 46px; opacity: .75; }
+.card .gone b { font-family: 'Marker', 'Nunito', cursive; font-weight: 400; font-size: .95rem; color: var(--ink); }
+/* Inside a card that is itself a <button> during voting, this must not look
+   or behave like a second button: the whole card is the vote target. */
+button.card .gone .go-thread { text-decoration: underline; }
+.card .gone .go-thread { color: var(--muted); }
 /* Text sits with the art now instead of instead of it. An entry that was a
    drawing plus a caption used to lose the caption entirely. */
 .card .body {
@@ -1132,16 +1156,20 @@ function card(e, r, votable) {
   const media = (Array.isArray(e.urls) && e.urls.length ? e.urls : [e.url])
     .map(safeURL).filter(Boolean);
 
+  // Every media element carries the thread link, because the one thing that
+  // is certain to still work when a signed CDN URL has expired is the forum
+  // post the file was posted in.
+  const thread = safeURL(e.thread);
   let art = "";
   if (media.length && (e.kind === "image" || e.kind === "other")) {
     const cls = media.length > 1 ? "multi" : "";
     art = `<figure class="${cls}">` + media.map((u, i) =>
-      `<img class="art" src="${esc(u)}" alt="${esc(e.title || "entry")} by ${esc(e.by)}${media.length > 1 ? ", " + (i + 1) + " of " + media.length : ""}" loading="lazy" decoding="async">`
+      `<img class="art" src="${esc(u)}" data-thread="${esc(thread)}" alt="${esc(e.title || "entry")} by ${esc(e.by)}${media.length > 1 ? ", " + (i + 1) + " of " + media.length : ""}" loading="lazy" decoding="async">`
     ).join("") + `</figure>`;
   } else if (media.length && e.kind === "video") {
-    art = `<figure><video src="${esc(media[0])}" controls preload="none"></video></figure>`;
+    art = `<figure><video src="${esc(media[0])}" data-thread="${esc(thread)}" controls preload="none"></video></figure>`;
   } else if (media.length && e.kind === "audio") {
-    art = `<figure><audio src="${esc(media[0])}" controls preload="none"></audio></figure>`;
+    art = `<figure><audio src="${esc(media[0])}" data-thread="${esc(thread)}" controls preload="none"></audio></figure>`;
   }
 
   // Text now sits with the art rather than instead of it. A drawing with a
@@ -1247,6 +1275,38 @@ async function load() {
   }
   render();
 }
+
+// A signed Discord attachment link that has expired fails with an `error`
+// event. That event does not bubble, but it does capture, so one listener on
+// the grid covers every image the 30 second rebuild puts inside it, including
+// ones that have not been created yet.
+//
+// The replacement goes in place of the element rather than the whole figure,
+// so one dead link in a four-image entry does not take the other three with
+// it.
+$("grid").addEventListener("error", (ev) => {
+  const el = ev.target;
+  if (!el || !el.tagName) return;
+  if (el.tagName !== "IMG" && el.tagName !== "VIDEO" && el.tagName !== "AUDIO") return;
+  if (!el.closest || !el.closest(".grid")) return;
+
+  const thread = el.dataset ? el.dataset.thread || "" : "";
+  // During voting the whole card is a <button>, and a link inside one is
+  // invalid and unclickable, so say where the art is without offering a
+  // second target. The header's forum chip is the way there in that phase.
+  const inButton = !!el.closest("button.card");
+
+  const box = document.createElement("div");
+  box.className = "gone";
+  box.innerHTML =
+    '<img src="/stickers/merlin_info.png" alt="" loading="lazy">' +
+    "<b>still in the forum</b>" +
+    "<span>discord's links expire after a day or so. the post has it.</span>" +
+    (thread && !inButton
+      ? `<a class="go-thread" href="${esc(thread)}">open the post</a>`
+      : "");
+  el.replaceWith(box);
+}, true);
 
 load();
 
