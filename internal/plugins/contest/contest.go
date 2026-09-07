@@ -6,6 +6,8 @@ import (
 	"encoding/base32"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,10 +26,32 @@ const (
 	// opens up to an hour late reads as broken.
 	tickInterval = time.Minute
 
-	// refreshInterval is how often a submission's Discord CDN link is
-	// re-derived. Signed attachment URLs last about a day, so half a day is
-	// one refresh of headroom and costs one REST call per entry.
-	refreshInterval = 12 * time.Hour
+	// refreshMargin is how long before a Discord CDN link expires merlin
+	// goes and gets a fresh one.
+	//
+	// The expiry is not guessed: a signed attachment URL carries ?ex=<hex
+	// unix seconds>, so every entry says exactly when it dies and the refresh
+	// is driven by that rather than by a timer set to half of whatever the
+	// lifetime was assumed to be. That matters in both directions. A fixed
+	// interval refreshes entries that had eighteen hours left, and it goes on
+	// doing so at the same cadence on the day Discord shortens the lifetime,
+	// at which point the gallery breaks and nothing in this file is wrong.
+	//
+	// Six hours of headroom absorbs a failed tick, a restart, and a contest
+	// that was paused or rate limited, without being so wide that it refreshes
+	// most of a link's life away.
+	refreshMargin = 6 * time.Hour
+
+	// refreshFallback is the cadence for a URL whose expiry cannot be read:
+	// something that is not a signed Discord attachment, or a signature
+	// format that has changed. Half a day, which is what the whole refresh
+	// used to run on.
+	refreshFallback = 12 * time.Hour
+
+	// refreshFloor stops a contest whose links are somehow always nearly
+	// expired from re-reading its forum every single tick. A refresh costs
+	// one REST call per entry, and the tick runs every minute.
+	refreshFloor = 30 * time.Minute
 
 	// artRefreshWindow is how long after a contest closes merlin keeps
 	// re-deriving its entries' CDN links.
@@ -38,12 +62,13 @@ const (
 	// refresh. Every finished contest this bot has ever run is currently a
 	// page of broken images.
 	//
-	// A week rather than forever, because the cost is one REST call per entry
-	// per refreshInterval and it buys nothing once nobody is looking; past
-	// this the page falls back to linking the Discord thread the art still
-	// lives in, which is honest and free. The bound is the whole reason this
-	// is affordable at all.
-	artRefreshWindow = 7 * 24 * time.Hour
+	// Thirty days rather than forever. The cost is one REST call per entry
+	// per refresh, and refreshes are need-driven, so a finished contest costs
+	// roughly one pass a day; past this nobody is looking and the page falls
+	// back to linking the Discord thread the art still lives in, which is
+	// honest and free. The bound is the whole reason this is affordable, and
+	// it accumulates across every contest a guild has ever run.
+	artRefreshWindow = 30 * 24 * time.Hour
 
 	// minPhase is the shortest a phase may be. Two minutes rather than
 	// something rounder because that is what makes an end-to-end test of all
@@ -255,11 +280,11 @@ func (p *Plugin) tick(ctx context.Context, guildID string) error {
 	// shows up within a minute. Once voting starts the entry list is frozen
 	// and the only reason to re-read the forum is that the CDN links go
 	// stale, which costs one REST call per entry: that goes at
-	// refreshInterval, not every minute. The rate limit used to sit on the
+	// need, not every minute. The rate limit used to sit on the
 	// push alone, which is the cheap half, leaving a 200-entry contest
 	// making 200 REST calls a minute for a link that needs refreshing twice
 	// a day.
-	refresh := c.Phase == PhaseVote && p.dueForRefresh(c.ID)
+	refresh := c.Phase == PhaseVote && p.dueForRefresh(ctx, c)
 	if c.Phase == PhaseSubmit || refresh {
 		if err := p.syncSubmissions(ctx, c); err != nil {
 			// Not fatal to the tick: a forum read failing must not stop a
@@ -282,15 +307,100 @@ func (p *Plugin) tick(ctx context.Context, guildID string) error {
 	return nil
 }
 
-func (p *Plugin) dueForRefresh(contestID string) bool {
+// dueForRefresh reports whether this contest's art is close enough to
+// expiring to be worth re-deriving.
+//
+// It asks the URLs rather than the clock. Every signed Discord attachment
+// link carries its own expiry, so the soonest one across the whole contest is
+// the only deadline that matters, and refreshing is what happens when it
+// comes within refreshMargin. A link with no readable expiry falls back to a
+// fixed cadence, which is what this used to do for every link.
+func (p *Plugin) dueForRefresh(ctx context.Context, c Contest) bool {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	last := p.lastRefresh[contestID]
-	if p.now().Sub(last) < refreshInterval {
+	last := p.lastRefresh[c.ID]
+	p.mu.Unlock()
+
+	now := p.now()
+	// However urgent the URLs look, never more than twice an hour: a refresh
+	// is one REST call per entry and the tick runs every minute.
+	if !last.IsZero() && now.Sub(last) < refreshFloor {
 		return false
 	}
-	p.lastRefresh[contestID] = p.now()
+
+	subs, err := p.store.Submissions(ctx, c.ID)
+	if err != nil {
+		// Fail toward refreshing, on the fallback cadence. The cost of being
+		// wrong here is one extra pass over the forum; the cost the other way
+		// is a gallery of broken images.
+		p.log.Error("contest: read entries to check link expiry", "contest", c.ID, "err", err)
+		return p.claimRefresh(c.ID, now, last, refreshFallback)
+	}
+
+	deadline, ok := soonestExpiry(subs)
+	if !ok {
+		return p.claimRefresh(c.ID, now, last, refreshFallback)
+	}
+	if now.Add(refreshMargin).Before(deadline) {
+		return false
+	}
+	return p.claimRefresh(c.ID, now, last, 0)
+}
+
+// claimRefresh records that a refresh is happening now, or declines when the
+// fallback cadence has not elapsed. Separate from the decision above so both
+// paths mark the attempt exactly once.
+func (p *Plugin) claimRefresh(contestID string, now, last time.Time, every time.Duration) bool {
+	if every > 0 && !last.IsZero() && now.Sub(last) < every {
+		return false
+	}
+	p.mu.Lock()
+	p.lastRefresh[contestID] = now
+	p.mu.Unlock()
 	return true
+}
+
+// soonestExpiry is the earliest moment any of this contest's art stops
+// resolving, and whether any of it said so at all.
+func soonestExpiry(subs []Submission) (time.Time, bool) {
+	var soonest time.Time
+	for _, s := range subs {
+		for _, u := range s.MediaURLs {
+			at, ok := urlExpiry(u)
+			if !ok {
+				continue
+			}
+			if soonest.IsZero() || at.Before(soonest) {
+				soonest = at
+			}
+		}
+	}
+	return soonest, !soonest.IsZero()
+}
+
+// urlExpiry reads the expiry Discord signs into an attachment URL.
+//
+// The ex parameter is hex unix seconds and is documented as "hex timestamp
+// indicating when an attachment CDN URL will expire". Reading it is what lets
+// this bot refresh before a link dies rather than on a guess about how long
+// they last, and it keeps working if that lifetime ever changes.
+//
+// Anything unparseable is reported as "no expiry" rather than as expired: a
+// URL merlin cannot read is not necessarily one that has died, and treating
+// it as dead would re-read the forum on every tick forever.
+func urlExpiry(raw string) (time.Time, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	ex := u.Query().Get("ex")
+	if ex == "" {
+		return time.Time{}, false
+	}
+	secs, err := strconv.ParseInt(ex, 16, 64)
+	if err != nil || secs <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(secs, 0).UTC(), true
 }
 
 // advance moves a contest to its next phase. Every transition claims the
@@ -463,7 +573,7 @@ func (p *Plugin) closedNeedingArt(ctx context.Context, guildID string) (Contest,
 // on entries that already exist; syncSubmissions skips its withdraw pass
 // outside PhaseSubmit for exactly that reason.
 func (p *Plugin) refreshArt(ctx context.Context, c Contest) error {
-	if !p.dueForRefresh(c.ID) {
+	if !p.dueForRefresh(ctx, c) {
 		return nil
 	}
 	if err := p.syncSubmissions(ctx, c); err != nil {

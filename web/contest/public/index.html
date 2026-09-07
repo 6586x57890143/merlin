@@ -533,9 +533,10 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 }
 
 /* A Discord attachment link is signed and lasts about a day. merlin re-derives
-   them while a contest is running and for a week after it closes, and then
-   stops, because the cost is a REST call per entry and nobody is looking by
-   then. So an old gallery WILL have dead links, by design, and the browser's
+   them before they expire while a contest is running and for a month after
+   it closes, and then stops, because the cost is a REST call per entry and
+   nobody is looking by then. So an old gallery WILL have dead links, by
+   design, and the browser's
    answer to one is a broken-image glyph and the alt string in a font this page
    never chose -- the one surface on the page that was not drawn.
 

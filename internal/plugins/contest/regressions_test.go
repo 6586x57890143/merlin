@@ -237,8 +237,9 @@ func TestVotingDoesNotReReadEveryEntryEveryTick(t *testing.T) {
 			ops.messageReads, len(ops.threads))
 	}
 
-	// Past refreshInterval it does run again, or the CDN links go stale.
-	now = now.Add(refreshInterval)
+	// These entries carry no signed URL, so there is no expiry to read and the
+	// fallback cadence is what governs. Past it, it runs again.
+	now = now.Add(refreshFallback)
 	if err := p.tick(context.Background(), "g1"); err != nil {
 		t.Fatalf("tick after the refresh window: %v", err)
 	}
