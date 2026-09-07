@@ -104,6 +104,12 @@
   /* State. Never rotates with the decorative set. */
   --ok:    #37b24d;
   --bad:   #f03e3e;
+  /* Text sitting ON a state fill, rather than the fill itself. White on
+     --ok is 2.75:1 and on --bad is 3.84:1, both under AA, and the two
+     places it lands are the sign-in button and the "picked" tag: the
+     affordance and the confirmation of the only action on the page. Near
+     black on the same fills clears AA without touching a hue. */
+  --on-state: #17150f;
   --focus: #1c7ed6;
   --on-pen: #fff;
   /* The bands at the top and bottom: the same paper one step warmer, so the
@@ -174,7 +180,7 @@
     --ok:    #8ce99a;
     --bad:   #ffa8a8;
     --focus: #74c0fc;
-    --on-pen: #1b211f;
+    --on-pen: #1b211f; --on-state: #1b211f;
     --band: #222a27;
   }
 }
@@ -199,7 +205,7 @@
   --ok:    #8ce99a;
   --bad:   #ffa8a8;
   --focus: #74c0fc;
-  --on-pen: #1b211f;
+  --on-pen: #1b211f; --on-state: #1b211f;
   --band: #222a27;
 }
 
@@ -309,7 +315,7 @@ h1 .sp { width: .3em; }
 .brief { margin: 1.4rem 0 0; }
 .brief .ul {
   position: relative; display: inline-block; max-width: 32rem;
-  font-family: 'Marker', cursive; font-size: 1.25rem; line-height: 1.3;
+  font-family: 'Marker', 'Nunito', cursive; font-size: 1.25rem; line-height: 1.3;
   color: var(--ink); padding: 0 .35rem .4rem;
 }
 .brief svg {
@@ -323,7 +329,7 @@ h1 .sp { width: .3em; }
 .phase { margin: 2rem 0 0; }
 .pill {
   display: inline-block; padding: .1rem 1rem .16rem;
-  font-family: 'Marker', cursive; font-size: 1.05rem;
+  font-family: 'Marker', 'Nunito', cursive; font-size: 1.05rem;
   color: #17150f; background: var(--badge);
   border: 0;
   border-radius: 4px;
@@ -333,12 +339,16 @@ h1 .sp { width: .3em; }
   box-shadow: 3px 3px 0 var(--shadow);
   transform: rotate(-1.5deg);
   letter-spacing: .02em;
+  /* .drawably-badge sets a `font:` shorthand, which carries weight 500 and
+     line-height 1.4 along with it. Marker ships weight 400 only, so 500 is
+     synthesised or dropped. Stated here so the sketch cannot bring them. */
+  font-weight: 400; line-height: 1.4;
 }
 .pill.announce { background: var(--pen-6); color: var(--on-pen); }
-.pill.submit   { background: var(--ok); color: var(--on-pen); }
+.pill.submit   { background: var(--ok); color: var(--on-state); }
 .pill.vote     { background: var(--badge); color: #17150f; }
 .pill.results  { background: var(--pen-3); color: var(--on-pen); }
-.pill.cancelled { background: var(--bad); color: var(--on-pen); }
+.pill.cancelled { background: var(--bad); color: var(--on-state); }
 
 /* The countdown and the links used to share one row, which put a marker
    display face, a bold sans and two outlined bubbles on the same line at
@@ -346,7 +356,7 @@ h1 .sp { width: .3em; }
    their own lines. */
 .clock {
   margin: .8rem 0 0; text-align: center;
-  font-family: 'Marker', cursive; font-size: 1.55rem; line-height: 1.15;
+  font-family: 'Marker', 'Nunito', cursive; font-size: 1.55rem; line-height: 1.15;
 }
 .clock b {
   font-weight: 400; position: relative; padding: 0 .12em;
@@ -359,7 +369,7 @@ h1 .sp { width: .3em; }
 }
 
 h2 {
-  font-family: 'Marker', cursive; font-weight: 400;
+  font-family: 'Marker', 'Nunito', cursive; font-weight: 400;
   font-size: 1.4rem; margin: 3rem 0 1.3rem; text-align: center;
   color: var(--ink);
 }
@@ -396,7 +406,7 @@ h2 {
   animation: run var(--run-dur, 42s) linear infinite;
 }
 .ticker span {
-  font-family: 'Marker', cursive; font-size: 1rem;
+  font-family: 'Marker', 'Nunito', cursive; font-size: 1rem;
   color: var(--muted); padding: 0 1.1rem;
 }
 .ticker span::after { content: "\2022"; margin-left: 1.1rem; color: var(--badge); }
@@ -411,7 +421,7 @@ footer {
         linear-gradient(#000 0 0) left bottom / 100% calc(100% - 13px) no-repeat;
 }
 footer p {
-  margin: .15rem 0 0; font-family: 'Marker', cursive;
+  margin: .15rem 0 0; font-family: 'Marker', 'Nunito', cursive;
   font-size: .9rem; color: var(--muted);
 }
 
@@ -463,6 +473,17 @@ button.card { cursor: pointer; }
 button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-2px); box-shadow: 6px 6px 0 var(--shadow); }
 .card:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 
+/* Everything a member wrote or is called. `body{overflow-x:hidden}` means an
+   unbreakable token does not scroll the page, it gets silently clipped, so
+   the text is simply gone rather than reachable. .card is a flex item whose
+   default min-width:auto lets one long token push the whole grid out too.
+   A URL, a 40-character display name and a german compound noun are all the
+   ordinary case here, not the edge one. */
+.card .name, .card .by, .card .body, .prize b, .prize small, .chip.who, .gone {
+  overflow-wrap: anywhere;
+}
+.card { min-width: 0; }
+
 .card figure { margin: 0; display: grid; gap: .35rem; }
 /* Two across once there is more than one image, so four attachments read as
    a small contact sheet rather than a column you have to scroll. */
@@ -477,6 +498,18 @@ button.card:hover, button.card:focus-visible { transform: rotate(0) translateY(-
 }
 .card figure.multi img.art { max-height: 11rem; object-fit: cover; }
 .card audio { width: 100%; margin: .4rem 0; }
+/* A video with preload="none" has no intrinsic ratio, so `height:auto`
+   collapses it to the UA default 300x150 and it jumps the moment somebody
+   presses play. 16/9 is a guess, but a stable guess beats a box that resizes
+   under the reader's cursor. */
+.card video { aspect-ratio: 16 / 9; background: var(--ink); }
+/* Native controls are the only chrome on this page merlin did not draw, and
+   in dark mode Chrome renders the audio player as a light grey pill on the
+   blackboard. This does not restyle them -- that needs a custom player -- it
+   just stops them sitting on the paper without an edge. */
+.card audio, .card video {
+  border-radius: 10px; border: 3px solid var(--ink);
+}
 
 /* A Discord attachment link is signed and lasts about a day. merlin re-derives
    them while a contest is running and for a week after it closes, and then
@@ -508,6 +541,11 @@ button.card .gone .go-thread { text-decoration: underline; }
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7; line-clamp: 7;
 }
 .card .body.only { margin-top: 0; -webkit-line-clamp: 12; line-clamp: 12; }
+/* The one link inside a card, on an entry whose whole content is a URL. It
+   is only ever emitted where the card is not a <button>, since an anchor
+   inside one is invalid and unclickable. */
+.card .entry-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.card .entry-link:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .card .name { font-weight: 800; margin: .55rem 0 0; }
 .card .by { color: var(--muted); font-size: .9rem; margin: .1rem 0 0; }
 .card .more { color: var(--muted); font-size: .82rem; margin: .3rem 0 0; }
@@ -526,8 +564,8 @@ button.card .gone .go-thread { text-decoration: underline; }
 .card[aria-pressed="true"]::after {
   content: "picked";
   position: absolute; top: -.7rem; right: -.5rem;
-  background: var(--ok); color: var(--on-pen);
-  font-family: 'Marker', cursive; font-size: .95rem;
+  background: var(--ok); color: var(--on-state);
+  font-family: 'Marker', 'Nunito', cursive; font-size: .95rem;
   padding: .05rem .6rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
   transform: rotate(6deg);
 }
@@ -536,7 +574,7 @@ button.card .gone .go-thread { text-decoration: underline; }
   position: absolute; top: -.7rem; right: -.5rem;
   background: var(--card); color: var(--muted);
   border: 3px solid var(--ink);
-  font-family: 'Marker', cursive; font-size: .9rem;
+  font-family: 'Marker', 'Nunito', cursive; font-size: .9rem;
   padding: 0 .55rem; border-radius: 40% 60% 45% 55% / 55% 45% 60% 40%;
   transform: rotate(4deg);
 }
@@ -545,7 +583,7 @@ button.card .gone .go-thread { text-decoration: underline; }
   position: absolute; top: -1rem; left: -.8rem;
   width: 2.3rem; height: 2.3rem; display: grid; place-items: center;
   background: var(--badge); color: #17150f;
-  font-family: 'Marker', cursive; font-size: 1.2rem;
+  font-family: 'Marker', 'Nunito', cursive; font-size: 1.2rem;
   border: 3px solid var(--ink);
   border-radius: 48% 52% 55% 45% / 55% 48% 52% 45%;
   transform: rotate(-8deg);
@@ -565,7 +603,11 @@ button.card .gone .go-thread { text-decoration: underline; }
 .prize small { color: var(--muted); }
 
 .chip {
-  display: inline-block; padding: .32rem .95rem;
+  /* 44px is the WCAG 2.5.5 target and this is the only thing on the page a
+     voter has to hit before they can do anything at all. The padding alone
+     gave about 33px. */
+  display: inline-flex; align-items: center; min-height: 44px;
+  padding: .32rem .95rem;
   border: 0; background: var(--card);
   border-radius: 4px;
   text-decoration: none; color: inherit; font-size: .95rem;
@@ -576,12 +618,17 @@ button.card .gone .go-thread { text-decoration: underline; }
    drawn on purpose, clearly not a thing you press. */
 .chip.who {
   border-style: dashed; box-shadow: none; background: none;
-  font-family: 'Marker', cursive; font-weight: 400; font-size: 1rem;
+  font-family: 'Marker', 'Nunito', cursive; font-weight: 400; font-size: 1rem;
   color: var(--muted);
 }
 a.chip:hover { background: var(--badge); color: #17150f; }
-.chip.go { background: var(--ok); color: var(--on-pen); }
-a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
+/* :focus-visible existed on the theme button and the cards but not on the
+   chips, so the one link that matters -- "sign in to vote" -- fell back to
+   the UA ring, and a keyboard user got a strictly weaker affordance than a
+   mouse user. */
+a.chip:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.chip.go { background: var(--ok); color: var(--on-state); font-weight: 700; }
+a.chip.go:hover { background: var(--ok); color: var(--on-state); }
 
 /* --- the picks bar ----------------------------------------------------- */
 .bar {
@@ -591,6 +638,10 @@ a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
   max-width: calc(100vw - 1.5rem); font-size: .95rem;
 }
 .bar.on { display: flex; }
+/* Once drawably sketches it, .bar gains .drawably-host, whose font-family
+   then beats the inherited body stack. Same for .prize. .card only escapes
+   this because it declares `font: inherit` explicitly. */
+.bar, .bar span, .prize, .prize b, .prize small { font-family: inherit; }
 .bar .dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--ok); flex: none; }
 .bar .dot.busy { background: var(--badge); }
 .bar .dot.bad  { background: var(--bad); }
@@ -615,7 +666,7 @@ a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
 .empty img { display: block; width: 118px; height: auto; margin: 0 auto .5rem; }
 .empty p {
   margin: 0; color: var(--muted);
-  font-family: 'Marker', cursive; font-size: 1.25rem; line-height: 1.3;
+  font-family: 'Marker', 'Nunito', cursive; font-size: 1.25rem; line-height: 1.3;
 }
 
 /* --- narrow ------------------------------------------------------------ */
@@ -639,8 +690,13 @@ a.chip.go:hover { background: var(--ok); color: var(--on-pen); }
   .theme-btn { top: .6rem; right: .6rem; }
 }
 
+@media (max-width: 420px) {
+  .rank { top: -.7rem; left: -.2rem; }
+  .card[aria-pressed="true"]::after, .card.mine::after { right: -.1rem; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .ticker .run, .stickers .gut > * { animation: none; }
+  .ticker .run, .stickers > * { animation: none; }
   .grid.first .card { animation: none; }
   .empty,
   .card, .prize, .rank, .theme-btn,
@@ -741,6 +797,12 @@ function applyTheme(t) {
   // would delete it. The sketched mark stays set, so it never comes back:
   // one click and the theme control loses its outline for good.
   $("themeLabel").textContent = t;
+  // Without this, forcing dark on a light machine gives a dark page with
+  // light scrollbars, a white canvas flash and light native media controls,
+  // and forcing light on a dark machine gives the inverse. The tokens flip;
+  // the browser's own chrome only follows color-scheme.
+  document.documentElement.style.colorScheme =
+    t === "auto" ? "light dark" : t;
   $("themeBtn").setAttribute("aria-label", "theme: " + t + ", click to change");
 }
 applyTheme(readTheme());
@@ -1095,7 +1157,7 @@ function runTicker(items) {
 }
 
 function render() {
-  document.title = snap.title + " · contest";
+  document.title = (snap.title || "contest") + " · contest";
   drawTitle(snap.title || "contest");
   if (snap.theme) { $("briefText").textContent = snap.theme; $("brief").hidden = false; }
   renderMeta();
@@ -1132,9 +1194,15 @@ function render() {
     }
   }
 
-  const nothing = order.length === 0
-    ? (snap.phase === "announce" ? "nothing yet, it has not opened" : "nobody has posted yet")
-    : "";
+  let nothing = "";
+  if (order.length === 0) {
+    // A cancelled contest with no entries used to say "nobody has posted
+    // yet", which reads as a contest still waiting for people.
+    if (snap.phase === "announce") nothing = "nothing yet, it has not opened";
+    else if (snap.phase === "cancelled") nothing = "this one was called off";
+    else if (snap.phase === "results") nothing = "nobody entered this one";
+    else nothing = "nobody has posted yet";
+  }
   $("empty").hidden = !nothing;
   if (nothing) $("emptyText").textContent = nothing;
 
@@ -1174,9 +1242,17 @@ function card(e, r, votable) {
 
   // Text now sits with the art rather than instead of it. A drawing with a
   // caption used to lose the caption entirely.
+  // An entry that is only a link rendered the whole URL as plain text: not a
+  // link, no wrapping, and the one entry type whose entire content is a URL.
+  // Inside a card that is a <button> during voting an anchor would be invalid
+  // and unclickable, so there it stays text and the card still votes.
   let words = "";
   if (e.body) words = `<p class="body${art ? "" : " only"}">${esc(e.body)}</p>`;
-  else if (link && !art) words = `<p class="body only">${esc(link)}</p>`;
+  else if (link && !art) {
+    words = votable && !mine
+      ? `<p class="body only">${esc(link)}</p>`
+      : `<p class="body only"><a class="entry-link" href="${esc(link)}">${esc(link)}</a></p>`;
+  }
 
   const extra = media.length > 1
     ? `<p class="more">${media.length} images</p>` : "";
@@ -1227,7 +1303,11 @@ async function save() {
     }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      return setBar("bad", body.error || "that did not save");
+      // body.error is the Worker's own prose, but it is still a value off the
+      // wire: a non-string renders as [object Object], and the bar is one
+      // fixed line that grows upward over the entries when it wraps.
+      const why = typeof body.error === "string" ? body.error.slice(0, 120) : "";
+      return setBar("bad", why || "that did not save");
     }
     updateBar();
   } catch {
@@ -1236,6 +1316,10 @@ async function save() {
 }
 
 function setBar(state, text) {
+  // role="status" is polite, so a refusal could go unannounced until after
+  // the reader had tried again. A refusal is the one thing here that has to
+  // interrupt.
+  $("bar").setAttribute("role", state === "bad" ? "alert" : "status");
   $("bar").classList.add("on");
   $("dot").className = "dot" + (state ? " " + state : "");
   $("barText").textContent = text;
@@ -1251,18 +1335,53 @@ function updateBar(state) {
     : n + " of " + max + " picked" + (n ? ", saved" : ""));
 }
 
+// dead() is the whole-page failure state. It is a state rather than a line of
+// text because the alternative -- writing a sentence into the countdown slot
+// and leaving the rest of the header half-rendered -- read as a page that had
+// half loaded rather than one that had something to say.
+function dead(line) {
+  drawTitle("not here");
+  $("phase").innerHTML = "";
+  $("clock").textContent = "";
+  $("links").innerHTML = "";
+  $("brief").hidden = true;
+  $("prizesWrap").hidden = true;
+  $("entriesWrap").hidden = true;
+  $("empty").hidden = false;
+  $("emptyText").textContent = line;
+  document.title = "not here \u00b7 contest";
+  updateBar();
+}
+
 async function load() {
   // Both in one go: what the contest is, and who the viewer is. The picks
   // come back from the server rather than from anything stored here, so
   // opening the page on a phone shows the same ballot as on a laptop.
-  const [viewRes, meRes] = await Promise.all([
-    fetch(`/api/c/${slug}/view`),
-    fetch(`/api/c/${slug}/me`, { credentials: "same-origin" }),
-  ]);
+  let viewRes, meRes;
+  try {
+    [viewRes, meRes] = await Promise.all([
+      fetch(`/api/c/${slug}/view`),
+      fetch(`/api/c/${slug}/me`, { credentials: "same-origin" }),
+    ]);
+  } catch {
+    // A rejected fetch -- offline, DNS, a dropped tunnel -- used to leave
+    // this promise unhandled and the page permanently blank: no title, no
+    // message, nothing. It also runs on a 30 second timer, so a blip mid
+    // contest did the same to a page that had been working.
+    if (!snap) dead("cannot reach the gallery. check your connection.");
+    return;
+  }
+
   if (!viewRes.ok) {
-    drawTitle("not here");
-    $("phase").innerHTML = "";
-    $("clock").textContent = "that link does not go anywhere any more";
+    // 404 is a real answer: this contest is gone. A 5xx is the server having
+    // a moment, and wiping a page that is already showing a live contest to
+    // say "that link does not go anywhere any more" is both wrong and
+    // alarming. Once something is on screen, a failed refresh changes
+    // nothing and the next one in 30 seconds tries again.
+    if (snap) return;
+    dead(viewRes.status === 404
+      ? "that link does not go anywhere. check it against the one in discord."
+      : "the gallery is having a moment. this page will keep trying.");
     return;
   }
   snap = await viewRes.json();
