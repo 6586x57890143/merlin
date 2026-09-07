@@ -656,7 +656,8 @@ a Cloudflare Worker serving the gallery and the ballot.
   validation, and no bytes on the VPS. The signed CDN links expire in about a
   day, and re-reading the thread's starter message returns a fresh one, so
   `media_url` is a cache with a known refresh path rather than a record and
-  the tick refreshes it every `refreshInterval` during voting.
+  the tick refreshes it before it expires, during voting and for
+  `artRefreshWindow` after the contest closes.
 - **Reading a post needs no gateway intent.** `ThreadCreate` carries the
   thread's id, name and owner, none of which are message-content fields, so
   it arrives unprivileged; the plugin then fetches exactly that one starter
@@ -691,12 +692,38 @@ a Cloudflare Worker serving the gallery and the ballot.
   `ON CONFLICT (thread_id)`, so it errors and the new entry is missing for a
   whole tick. `fakeStore.UpsertSubmission` models that index for exactly
   that reason.
-- **`refreshInterval` gates the reads, not just the push.** Syncing is one
-  REST call per entry and the push is one call total, so rate-limiting the
-  push alone (which is what it used to do) left a 200-entry contest making
-  200 calls a minute through its whole vote phase for links that need
-  refreshing twice a day. Submissions still sync every tick while they are
-  open, where a new entry appearing within a minute is the point.
+- **The refresh is driven by the links, not by a clock, and it outlives the
+  contest.** A signed Discord attachment URL carries `?ex=<hex unix seconds>`,
+  so every entry states exactly when it dies; `soonestExpiry` takes the
+  earliest across the contest and `dueForRefresh` goes when that is within
+  `refreshMargin`. A fixed interval was wrong in both directions: it refreshed
+  links with eighteen hours left, and it would have gone on refreshing at the
+  same cadence on the day Discord shortened the lifetime, at which point the
+  gallery breaks and nothing in the file is wrong. A URL with no readable
+  expiry falls back to `refreshFallback`, and `refreshFloor` stops a contest
+  whose links always look urgent from re-reading its forum every tick.
+  Anything unparseable is "no expiry", never "expired", for the same reason.
+
+  It also has to survive the contest, which is what `artRefreshWindow` (30
+  days) is for. `afterFinish` used to unregister the tick at close, so a
+  results gallery went permanently dead within a day of its last refresh:
+  every finished contest this bot had run was a page of broken images, which
+  is what the live one was found to be. Cancelled contests are excluded, since
+  nothing points at their gallery. Past the window the page falls back to
+  linking the Discord thread the art still lives in, which is what makes
+  stopping honest rather than merely cheap.
+
+  The rate limit sits on the reads, not just the push: syncing is one REST
+  call per entry and the push is one call total, so rate-limiting the push
+  alone (which is what it used to do) left a 200-entry contest making 200
+  calls a minute through its whole vote phase. Submissions still sync every
+  tick while they are open, where a new entry appearing within a minute is
+  the point.
+
+  Discord's undocumented `POST /attachments/refresh-urls` would turn N calls
+  into one and is deliberately not used: re-reading the thread is the
+  documented path and already works, and an undocumented endpoint is not
+  something to put a gallery's whole art pipeline on.
 - **A contest nobody voted in crowns nobody** (`noVotes`). Every entry ties
   at zero when the Worker is unconfigured, and a real tally can come back
   empty, and `sortResults` tiebreaks on a random entry ID: falling through

@@ -51,6 +51,17 @@ Everyone signs in with Discord there, so it is one vote per member of your
 server and no one else, and the page is an unguessable link no search engine
 indexes.
 
+Before the first contest, tell merlin who contests are for:
+`/contest configure set gate-like:#members-only`. She copies that channel's
+view permissions onto every contest forum she makes, so a server where only a
+gated role sees the chat gets a contest only that role can see, and a server
+where everyone sees everything gets one everyone can enter. It is read live
+each time, so renaming or replacing the role needs no change here. If no
+channel suits, `/contest configure access-role add @role` names them outright,
+and `media` on that same command hands attachment rights to a separate role.
+`/contest new` refuses until one of the two is set, because the wrong guess
+publishes members' work to accounts you deliberately have not let in.
+
 **Prizes.** `/contest prize` opens a form. Steam key, Nitro gift link, crypto,
 anything. If it has a code, merlin keeps it encrypted and DMs it to the winner
 the moment the contest ends, then wipes it. If it does not, she introduces the

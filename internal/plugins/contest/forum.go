@@ -34,8 +34,18 @@ var ErrNoMessageContent = fmt.Errorf("contest: merlin cannot read message conten
 // createForum makes the contest's forum channel. Posting starts denied,
 // because a contest in its announce phase is a thing people are being told
 // about, not a thing they can enter yet.
-func (p *Plugin) createForum(ctx context.Context, c Contest, categoryID string) (string, error) {
+//
+// The gate goes on at creation, in the same call, rather than being patched
+// on afterwards: a forum that exists ungated for even a moment is a forum
+// every account on the server can see, and the patch that fixes it is exactly
+// the call that might fail.
+func (p *Plugin) createForum(cfg Config, c Contest, open bool) (string, error) {
 	ops := p.opsFor(c.GuildID)
+
+	overwrites, err := p.forumOverwritesFor(cfg, c.GuildID, nil, open)
+	if err != nil {
+		return "", err
+	}
 
 	// Self-throttle well clear of Discord's guild channel cap, the same rule
 	// rotation applies before creating a replacement channel. The bot must
@@ -49,15 +59,11 @@ func (p *Plugin) createForum(ctx context.Context, c Contest, categoryID string) 
 	}
 
 	ch, err := ops.GuildChannelCreateComplex(c.GuildID, discordgo.GuildChannelCreateData{
-		Name:     forumName(c.Title),
-		Type:     discordgo.ChannelTypeGuildForum,
-		Topic:    truncate(strings.TrimSuffix(c.Title+". "+c.Theme, ". "), 1000),
-		ParentID: categoryID,
-		PermissionOverwrites: []*discordgo.PermissionOverwrite{{
-			ID:   c.GuildID, // @everyone's role id is the guild id
-			Type: discordgo.PermissionOverwriteTypeRole,
-			Deny: postingPerms,
-		}},
+		Name:                 forumName(c.Title),
+		Type:                 discordgo.ChannelTypeGuildForum,
+		Topic:                truncate(strings.TrimSuffix(c.Title+". "+c.Theme, ". "), 1000),
+		ParentID:             cfg.ForumCategoryID,
+		PermissionOverwrites: overwrites,
 	})
 	if err != nil {
 		return "", fmt.Errorf("contest: create forum: %w", err)
@@ -66,16 +72,97 @@ func (p *Plugin) createForum(ctx context.Context, c Contest, categoryID string) 
 }
 
 // setForumOpen flips whether members may start new posts.
-func (p *Plugin) setForumOpen(ctx context.Context, c Contest, open bool) error {
+//
+// It reads the forum's current @everyone entry and changes one bit inside it,
+// rather than writing a fresh (allow, deny) pair. ChannelPermissionSet
+// replaces the whole mask for its target, so the obvious version -- write
+// (0, postingPerms) to close and (0, 0) to open -- silently erases every
+// other bit anybody has set on @everyone for this channel. Today that is only
+// theoretical; the moment a ViewChannel deny is what keeps ungated members out
+// of the forum, opening submissions would hand the contest to the whole
+// server. A phase change is not allowed to be a permission change.
+//
+// Opening clears the deny rather than granting an allow, which is deliberate:
+// who may post is then whatever the guild's own permissions say, which is the
+// question the gate answers and this function should not second-guess.
+func (p *Plugin) setForumOpen(c Contest, open bool) error {
 	if c.ForumChannelID == "" {
 		return nil
 	}
-	var deny int64
-	if !open {
-		deny = postingPerms
+	ops := p.opsFor(c.GuildID)
+	ch, err := ops.Channel(c.ForumChannelID)
+	if err != nil {
+		return fmt.Errorf("contest: read forum: %w", err)
 	}
-	return p.opsFor(c.GuildID).ChannelPermissionSet(
-		c.ForumChannelID, c.GuildID, discordgo.PermissionOverwriteTypeRole, 0, deny)
+
+	var allow, deny int64
+	if ow := findOverwrite(ch, c.GuildID, discordgo.PermissionOverwriteTypeRole); ow != nil {
+		allow, deny = ow.Allow, ow.Deny
+	}
+	want := deny | postingPerms
+	if open {
+		want = deny &^ postingPerms
+	}
+	// Every permission write lands in the guild's own Discord audit log, so a
+	// call that changes nothing is a line a moderator has to read past. Same
+	// no-op suppression roles.syncJailChannelOverwrite applies, for the same
+	// reason.
+	if want == deny {
+		return nil
+	}
+	return ops.ChannelPermissionSet(
+		c.ForumChannelID, c.GuildID, discordgo.PermissionOverwriteTypeRole, allow, want)
+}
+
+// findOverwrite returns a channel's entry for one target, or nil.
+func findOverwrite(ch *discordgo.Channel, targetID string, kind discordgo.PermissionOverwriteType) *discordgo.PermissionOverwrite {
+	for _, ow := range ch.PermissionOverwrites {
+		if ow.ID == targetID && ow.Type == kind {
+			return ow
+		}
+	}
+	return nil
+}
+
+// syncForum reapplies the gate to a contest's existing forum.
+//
+// This exists because configuring the gate while a contest is running would
+// otherwise change nothing: the overwrites are written at creation, so a guild
+// that discovers its forum is open has no way to shut it without cancelling
+// the contest. Same mod-triggered shape as /roles configure sync-channels, and
+// deliberately not a gateway listener, for the same reason.
+//
+// It reports whether anything actually changed, so the caller can say so and
+// so a resync that changes nothing writes nothing.
+func (p *Plugin) syncForum(cfg Config, c Contest) (bool, error) {
+	if c.ForumChannelID == "" {
+		return false, nil
+	}
+	ops := p.opsFor(c.GuildID)
+	ch, err := ops.Channel(c.ForumChannelID)
+	if err != nil {
+		return false, fmt.Errorf("contest: read forum: %w", err)
+	}
+
+	// Submissions are open exactly while the contest is in its submit phase,
+	// so the resync must not quietly open or close the forum as a side effect
+	// of somebody fixing who can see it.
+	want, err := p.forumOverwritesFor(cfg, c.GuildID, ch.PermissionOverwrites, c.Phase == PhaseSubmit)
+	if err != nil {
+		return false, err
+	}
+	if overwritesEqual(ch.PermissionOverwrites, want) {
+		return false, nil
+	}
+	// A whole-list edit rather than per-target sets, because removing a stray
+	// allow is not expressible as a set -- the same reason
+	// reconcileArchiveCategory patches the channel.
+	if _, err := ops.ChannelEditComplex(c.ForumChannelID, &discordgo.ChannelEdit{
+		PermissionOverwrites: want,
+	}); err != nil {
+		return false, fmt.Errorf("contest: apply forum permissions: %w", err)
+	}
+	return true, nil
 }
 
 // truncate caps a string at n runes. Discord rejects an over-long channel

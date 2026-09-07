@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -146,7 +147,29 @@ func (p *Plugin) registerCommands() {
 							{Type: discordgo.ApplicationCommandOptionChannel, Name: "forum-category", Description: "Category new contest forums are created in.",
 								ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildCategory}},
 							{Type: discordgo.ApplicationCommandOptionInteger, Name: "picks", Description: "Default number of votes each member gets.", MinValue: ptr(1.0), MaxValue: maxPicks},
+							// A channel rather than a role list, because a
+							// role list is a second copy of a fact the server
+							// already states, and a second copy goes stale.
+							{Type: discordgo.ApplicationCommandOptionChannel, Name: "gate-like",
+								Description: "Copy this channel's view permissions onto contest forums.",
+								ChannelTypes: []discordgo.ChannelType{
+									discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildForum,
+									discordgo.ChannelTypeGuildNews, discordgo.ChannelTypeGuildCategory,
+								}},
 						},
+					},
+					{
+						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "access-role",
+						Description: "Let a role into contest forums, instead of copying a channel.",
+						Options: []*discordgo.ApplicationCommandOption{
+							{Type: discordgo.ApplicationCommandOptionRole, Name: "role", Description: "The role that may see and enter contests.", Required: true},
+							{Type: discordgo.ApplicationCommandOptionBoolean, Name: "remove", Description: "Take this role back off the list."},
+							{Type: discordgo.ApplicationCommandOptionBoolean, Name: "media", Description: "Attachment rights instead of access, for a server that keeps those apart."},
+						},
+					},
+					{
+						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "sync-forum",
+						Description: "Reapply the gate to the running contest's forum.",
 					},
 				},
 			},
@@ -170,6 +193,8 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("contest", "cancel", mod, p.handleCancel)
 	p.commands.Handle("contest", "configure/show", admin, p.handleConfigureShow)
 	p.commands.Handle("contest", "configure/set", admin, p.handleConfigureSet)
+	p.commands.Handle("contest", "configure/access-role", admin, p.handleConfigureAccessRole)
+	p.commands.Handle("contest", "configure/sync-forum", admin, p.handleSyncForum)
 
 	p.commands.HandleComponent(p.Name(), linkButtonPrefix, public, p.handleLinkButton)
 	p.commands.HandleModal(p.Name(), prizeModalPrefix, public, p.handlePrizeModal)
@@ -198,6 +223,18 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 	cfg, err := p.store.GetConfig(ctx, i.GuildID)
 	if err != nil {
 		followErr(s, i, p, "Couldn't read the contest setup", err)
+		return
+	}
+
+	// Refuse rather than guess. merlin does not know this server's layout,
+	// and the guess that is wrong publishes members' work to accounts the
+	// server has deliberately not let in -- which is not something an
+	// admin finds out about until it has already happened. A genuinely open
+	// server answers this in one command too, by pointing gate-like at a
+	// channel @everyone can see, and the config then records a decision
+	// somebody made rather than a default nobody chose.
+	if !cfg.Gated() {
+		followErr(s, i, p, "Nothing is gating the contest forum", ErrUngated)
 		return
 	}
 
@@ -268,7 +305,7 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 		return
 	}
 
-	forumID, err := p.createForum(ctx, c, cfg.ForumCategoryID)
+	forumID, err := p.createForum(cfg, c, c.Phase == PhaseSubmit)
 	if err != nil {
 		// The contest row is already committed, so leaving it would hand the
 		// guild a live contest with no forum: /contest new refuses it as
@@ -284,15 +321,20 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 	}
 	c.ForumChannelID = forumID
 	if err := p.store.SetForumChannel(ctx, c.ID, forumID); err != nil {
+		// Same retirement the failed-create path above does, and for a worse
+		// version of the same reason: the forum exists but nothing records
+		// which one it is, so syncSubmissions no-ops on the empty channel ID
+		// and the contest ticks through every phase collecting nothing while
+		// /contest new refuses to start another as ErrAlreadyLive. Retiring it
+		// costs nothing and leaves the admin able to try again. The channel is
+		// left where it is: deleting one has no undo, and cancelling a contest
+		// deliberately deletes nothing.
+		if _, cerr := p.store.AdvancePhase(ctx, c.ID, c.Phase, PhaseCancelled); cerr != nil {
+			p.log.Error("contest: cancel after unrecorded forum", "contest", c.ID, "err", cerr)
+		}
 		followErr(s, i, p, "Couldn't record the contest forum", err)
 		return
 	}
-	if c.Phase == PhaseSubmit {
-		if err := p.setForumOpen(ctx, c, true); err != nil {
-			p.log.Error("contest: open forum at create", "contest", c.ID, "err", err)
-		}
-	}
-
 	p.announceCreated(ctx, c)
 	if c.Phase == PhaseSubmit {
 		p.announceSubmissionsOpen(ctx, c)
@@ -664,6 +706,7 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 
 	subs, subErr := p.store.Submissions(ctx, c.ID)
 	prizes, prizeErr := p.store.Prizes(ctx, c.ID)
+	cfg, cfgErr := p.store.GetConfig(ctx, i.GuildID)
 
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "phase", Value: string(c.Phase), Inline: true},
@@ -681,6 +724,36 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	// the finished text for warning glyphs: that reads a control signal out
 	// of prose merlin does not author, which is the bug /config status had.
 	colour := core.ColorInfo
+
+	// Who can see the contest is reported next to what phase it is in,
+	// because it is the question a mod is asked after the fact and the one
+	// nothing else on this screen answers. A forum made before the gate
+	// existed, or before the guild configured one, keeps the permissions it
+	// was created with until sync-forum, so saying "gated" here without
+	// saying "and this contest predates it" would be the wrong kind of
+	// reassuring.
+	switch {
+	case cfgErr != nil:
+		colour = core.ColorWarning
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name: "who can see it", Value: core.TruncateEmbedField("couldn't read the setup: " + cfgErr.Error()),
+		})
+	case len(cfg.AccessRoleIDs) > 0:
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name: "who can see it", Value: core.TruncateEmbedField(roleList(cfg.AccessRoleIDs)),
+		})
+	case cfg.GateChannelID != "":
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name: "who can see it", Value: "whoever can see " + core.MentionChannel(cfg.GateChannelID),
+		})
+	default:
+		colour = core.ColorWarning
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:  "who can see it",
+			Value: "nobody has said, so this forum inherited its category. `/contest configure set gate-like:#channel`, then `/contest configure sync-forum`.",
+		})
+	}
+
 	if p.worker.Configured() {
 		voters, votes, err := p.worker.Stats(ctx, c.Slug)
 		if err != nil {
@@ -774,7 +847,7 @@ func (p *Plugin) handleCancel(ctx context.Context, s *discordgo.Session, i *disc
 	}
 
 	c.Phase = PhaseCancelled
-	if err := p.setForumOpen(ctx, c, false); err != nil {
+	if err := p.setForumOpen(c, false); err != nil {
 		p.log.Error("contest: lock forum on cancel", "contest", c.ID, "err", err)
 	}
 	p.post(ctx, c, core.NewEmbed(core.ColorWarning, c.Title+" is off",
@@ -795,13 +868,162 @@ func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, 
 		core.RespondErr(s, i, "Couldn't read the setup", err)
 		return
 	}
-	embed := core.NewEmbed(core.ColorInfo, "Contest setup", "How contests are set up here.",
-		&discordgo.MessageEmbedField{Name: "announce channel", Value: orNone(core.MentionChannel(cfg.AnnounceChannelID), "wherever /contest new is run"), Inline: true},
-		&discordgo.MessageEmbedField{Name: "forum category", Value: orNone(core.MentionChannel(cfg.ForumCategoryID), "no category"), Inline: true},
-		&discordgo.MessageEmbedField{Name: "picks per member", Value: strconv.Itoa(cfg.DefaultMaxVotes), Inline: true},
-	)
+	// The gate leads, and an ungated guild reads as a warning rather than a
+	// blank, because it is the one setting here that stops /contest new.
+	colour, gate := core.ColorInfo, "nobody, so /contest new will refuse"
+	switch {
+	case len(cfg.AccessRoleIDs) > 0:
+		gate = "these roles: " + roleList(cfg.AccessRoleIDs)
+	case cfg.GateChannelID != "":
+		gate = "whoever can see " + core.MentionChannel(cfg.GateChannelID)
+	default:
+		colour = core.ColorWarning
+	}
+
+	fields := []*discordgo.MessageEmbedField{
+		{Name: "who contests are for", Value: core.TruncateEmbedField(gate)},
+		{Name: "announce channel", Value: orNone(core.MentionChannel(cfg.AnnounceChannelID), "wherever /contest new is run"), Inline: true},
+		{Name: "forum category", Value: orNone(core.MentionChannel(cfg.ForumCategoryID), "no category"), Inline: true},
+		{Name: "picks per member", Value: strconv.Itoa(cfg.DefaultMaxVotes), Inline: true},
+	}
+	if len(cfg.MediaRoleIDs) > 0 {
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name: "may attach files", Value: core.TruncateEmbedField(roleList(cfg.MediaRoleIDs)),
+		})
+	}
+
+	embed := core.NewEmbed(colour, "Contest setup", "How contests are set up here.", fields...)
 	if err := core.RespondEmbed(s, i, embed); err != nil {
 		p.log.Error("contest: respond configure show", "err", err)
+	}
+}
+
+// roleList names roles rather than counting them, matching the channel lines
+// beside it and the rule /config status already follows.
+func roleList(ids []string) string {
+	if len(ids) == 0 {
+		return "none"
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, core.MentionRole(id))
+	}
+	return strings.Join(out, " ")
+}
+
+// handleConfigureAccessRole is the escape hatch for a guild with no channel
+// worth mirroring, plus the separate list for attachment rights.
+//
+// One leaf with two flags rather than four leaves: add/remove crossed with
+// access/media is two booleans over one role, and Discord requires required
+// options before optional ones, so four leaves would put the role picker
+// behind a menu on every one of them.
+func (p *Plugin) handleConfigureAccessRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	cfg, err := p.store.GetConfig(ctx, i.GuildID)
+	if err != nil {
+		core.RespondErr(s, i, "Couldn't read the setup", err)
+		return
+	}
+	args := core.LeafArgs(i)
+	role := args["role"].RoleValue(nil, "")
+	if role == nil || role.ID == "" {
+		core.RespondErr(s, i, "That role didn't resolve", errors.New("contest: empty role"))
+		return
+	}
+	remove := args["remove"] != nil && args["remove"].BoolValue()
+	media := args["media"] != nil && args["media"].BoolValue()
+
+	// @everyone is not an access role. Whether everybody sees contests is
+	// what gate-like answers, and taking it here would be a second way to say
+	// it that the mirror would then disagree with.
+	if role.ID == i.GuildID {
+		core.RespondErr(s, i, "@everyone isn't an access role", errors.New(
+			"contest: whether everybody sees contests is what gate-like decides, "+
+				"so point it at a channel everybody can see"))
+		return
+	}
+
+	list, what := &cfg.AccessRoleIDs, "access"
+	if media {
+		list, what = &cfg.MediaRoleIDs, "attachment"
+	}
+	was := roleList(*list)
+	if remove {
+		*list = slices.DeleteFunc(*list, func(id string) bool { return id == role.ID })
+	} else if !slices.Contains(*list, role.ID) {
+		*list = append(*list, role.ID)
+	}
+
+	if err := p.store.SetConfig(ctx, cfg); err != nil {
+		core.RespondErr(s, i, "Couldn't save the setup", err)
+		return
+	}
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "contest.configured",
+		what+" roles: "+was, what+" roles: "+roleList(*list)); err != nil {
+		p.log.Error("contest: audit access role", "guild", i.GuildID, "err", err)
+	}
+
+	var body string
+	switch {
+	case media:
+		body = roleList(cfg.MediaRoleIDs) + " may attach files in contest forums."
+	case len(cfg.AccessRoleIDs) > 0:
+		body = "Contests are for " + roleList(cfg.AccessRoleIDs) + " now."
+	case cfg.GateChannelID != "":
+		body = "No access roles left, so contests fall back to whoever can see " +
+			core.MentionChannel(cfg.GateChannelID) + "."
+	default:
+		body = "No access roles left and no channel to copy, so `/contest new` will refuse."
+	}
+	core.RespondOK(s, i, "Saved", body+
+		"\nA contest already running keeps the permissions it was made with until `/contest configure sync-forum`.")
+}
+
+// handleSyncForum reapplies the gate to a running contest's forum.
+//
+// Without it, configuring the gate while a contest is live changes nothing:
+// overwrites are written when the forum is created, so a guild that notices
+// its forum is open would have to cancel the contest to shut it.
+func (p *Plugin) handleSyncForum(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Reads a channel, resolves every role, and may write a whole overwrite
+	// list. None of that fits in Discord's three seconds.
+	if err := core.DeferResponse(s, i); err != nil {
+		p.log.Error("contest: defer sync-forum", "err", err)
+		return
+	}
+	cfg, err := p.store.GetConfig(ctx, i.GuildID)
+	if err != nil {
+		followErr(s, i, p, "Couldn't read the setup", err)
+		return
+	}
+	if !cfg.Gated() {
+		followErr(s, i, p, "Nothing is gating the contest forum", ErrUngated)
+		return
+	}
+	c, err := p.store.LiveContest(ctx, i.GuildID)
+	if err != nil {
+		followErr(s, i, p, "Nothing to sync", err)
+		return
+	}
+
+	changed, err := p.syncForum(cfg, c)
+	if err != nil {
+		followErr(s, i, p, "Couldn't apply the permissions", err)
+		return
+	}
+	if !changed {
+		if ferr := core.FollowUpOK(s, i, "Already right", core.MentionChannel(c.ForumChannelID)+
+			" already matches the gate, so nothing was written."); ferr != nil {
+			p.log.Error("contest: follow up sync-forum", "err", ferr)
+		}
+		return
+	}
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "contest.forum_synced", c.Title, ""); err != nil {
+		p.log.Error("contest: audit sync-forum", "guild", i.GuildID, "err", err)
+	}
+	if ferr := core.FollowUpOK(s, i, "Synced",
+		core.MentionChannel(c.ForumChannelID)+" now matches the gate."); ferr != nil {
+		p.log.Error("contest: follow up sync-forum", "err", ferr)
 	}
 }
 
@@ -812,8 +1034,8 @@ func (p *Plugin) handleConfigureSet(ctx context.Context, s *discordgo.Session, i
 		return
 	}
 	args := core.LeafArgs(i)
-	old := fmt.Sprintf("announce=%s category=%s picks=%d",
-		cfg.AnnounceChannelID, cfg.ForumCategoryID, cfg.DefaultMaxVotes)
+	old := fmt.Sprintf("announce=%s category=%s picks=%d gate=%s",
+		cfg.AnnounceChannelID, cfg.ForumCategoryID, cfg.DefaultMaxVotes, cfg.GateChannelID)
 
 	if opt, ok := args["announce-channel"]; ok {
 		cfg.AnnounceChannelID = opt.ChannelValue(nil).ID
@@ -824,12 +1046,16 @@ func (p *Plugin) handleConfigureSet(ctx context.Context, s *discordgo.Session, i
 	if opt, ok := args["picks"]; ok {
 		cfg.DefaultMaxVotes = int(opt.IntValue())
 	}
+	if opt, ok := args["gate-like"]; ok {
+		cfg.GateChannelID = opt.ChannelValue(nil).ID
+	}
 	if err := p.store.SetConfig(ctx, cfg); err != nil {
 		core.RespondErr(s, i, "Couldn't save the setup", err)
 		return
 	}
-	newVal := fmt.Sprintf("announce=%s category=%s picks=%d",
-		core.MentionChannel(cfg.AnnounceChannelID), core.MentionChannel(cfg.ForumCategoryID), cfg.DefaultMaxVotes)
+	newVal := fmt.Sprintf("announce=%s category=%s picks=%d gate=%s",
+		core.MentionChannel(cfg.AnnounceChannelID), core.MentionChannel(cfg.ForumCategoryID),
+		cfg.DefaultMaxVotes, core.MentionChannel(cfg.GateChannelID))
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "contest.configured", old, newVal); err != nil {
 		p.log.Error("contest: audit configure", "guild", i.GuildID, "err", err)
 	}

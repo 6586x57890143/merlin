@@ -142,6 +142,7 @@ func modalSubmit(customID string, fields map[string]string) *discordgo.Interacti
 func TestNewCreatesAForumAndAnnouncesIt(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	seedGate(store, ops)
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
 	s, _ := stubSession()
@@ -175,10 +176,20 @@ func TestNewCreatesAForumAndAnnouncesIt(t *testing.T) {
 		t.Errorf("forum name = %q", ops.created[0].Name)
 	}
 	// Posting starts denied: a contest in its announce phase is a thing
-	// people are being told about, not a thing they can enter yet.
-	if len(ops.created[0].PermissionOverwrites) != 1 ||
-		ops.created[0].PermissionOverwrites[0].Deny != postingPerms {
-		t.Errorf("forum did not start closed to posting: %+v", ops.created[0].PermissionOverwrites)
+	// people are being told about, not a thing they can enter yet. And the
+	// gate is on from the first instant the channel exists, because a forum
+	// that is ungated for even a moment is one every account can see.
+	ow := ops.created[0].PermissionOverwrites
+	everyone := findIn(ow, "g1", discordgo.PermissionOverwriteTypeRole)
+	if everyone == nil || everyone.Deny&postingPerms == 0 {
+		t.Errorf("forum did not start closed to posting: %+v", ow)
+	}
+	if everyone == nil || everyone.Deny&discordgo.PermissionViewChannel == 0 {
+		t.Errorf("forum was created visible to @everyone: %+v", ow)
+	}
+	if melted := findIn(ow, "melted", discordgo.PermissionOverwriteTypeRole); melted == nil ||
+		melted.Allow&discordgo.PermissionViewChannel == 0 {
+		t.Errorf("the gated role cannot see the contest: %+v", ow)
 	}
 
 	// The tick job has to exist now, or nothing ever moves the phase on.
@@ -194,6 +205,7 @@ func TestNewCreatesAForumAndAnnouncesIt(t *testing.T) {
 // message telling people to post in it.
 func TestNewWithNoAnnounceWindowOpensSubmissionsImmediately(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	seedGate(store, ops)
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	s, _ := stubSession()
 
@@ -207,8 +219,15 @@ func TestNewWithNoAnnounceWindowOpensSubmissionsImmediately(t *testing.T) {
 	if c.Phase != PhaseSubmit {
 		t.Fatalf("phase = %s, want submit", c.Phase)
 	}
-	if len(ops.overwrit) != 1 || ops.overwrit[0] != 0 {
-		t.Errorf("forum was not opened: %v", ops.overwrit)
+	// Open from creation rather than created-then-patched: the second call
+	// is one that can fail, and the failure leaves a contest telling people
+	// to post somewhere they cannot.
+	if len(ops.overwrit) != 0 {
+		t.Errorf("the forum was patched open after being made: %v", ops.overwrit)
+	}
+	everyone := findIn(ops.created[0].PermissionOverwrites, "g1", discordgo.PermissionOverwriteTypeRole)
+	if everyone != nil && everyone.Deny&postingPerms != 0 {
+		t.Error("a contest that starts in submit was created closed to posting")
 	}
 	if len(ops.sentTo("chan-1")) != 2 {
 		t.Errorf("announcements = %d, want the opening card and the submissions-open one",

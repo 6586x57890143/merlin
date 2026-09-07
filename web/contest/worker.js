@@ -78,14 +78,28 @@ export default {
       m = path.match(/^\/c\/([a-z2-7]{16,32})\/?$/);
       if (m && request.method === "GET") return await page(env);
 
-      if (path === "/") return new Response("merlin contests", { status: 200 });
-      return json({ error: "not found" }, 404);
+      // Everything below here is somebody in a browser: the root, a slug
+      // typed one character short, a link that lost its tail in a copy. All
+      // of it used to answer with bare JSON or bare text and no content type.
+      if (path === "/") {
+        return html("this is where merlin keeps contests. you want the link from your server.", 404);
+      }
+      if (path.startsWith("/api/")) return json({ error: "not found" }, 404);
+      return html("that link does not go anywhere. check it against the one in discord.", 404);
     } catch (err) {
       // Never leak an internal message to a browser. merlin's own calls get
       // the detail because it puts them in an audit trail an operator reads;
       // a voter gets a status code.
+      //
+      // A voter also gets a page rather than JSON, because the throwing paths
+      // include the OAuth callback and the page itself, both of which are
+      // navigations. The API split is on the request, not on the failure: an
+      // XHR wants a body it can parse either way.
       const bot = isBot(request, env);
-      return json({ error: bot ? String((err && err.message) || err) : "something broke" }, 500);
+      if (bot || new URL(request.url).pathname.startsWith("/api/")) {
+        return json({ error: bot ? String((err && err.message) || err) : "something broke" }, 500);
+      }
+      return html("something broke on our side. try that again in a minute.", 500);
     }
   },
 };
@@ -103,10 +117,19 @@ function json(body, status = 200) {
 // The sticker is the only request it makes, it is decorative, and it fails
 // into whitespace. merlin looking put out is worth one 20KB image on a page
 // that tells you your sign in did not work.
-function html(message, status) {
+// escapeHTML exists because message is concatenated into the document below.
+// Every call site passes a literal today, which is exactly the state in which
+// somebody adds the one that does not.
+function escapeHTML(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function html(message, status, backTo) {
   const mood = status >= 500 ? 'error' : 'warn';
   return new Response(
-    '<!doctype html><meta charset=utf-8>' +
+    '<!doctype html><html lang=en><meta charset=utf-8>' +
     '<meta name=viewport content="width=device-width,initial-scale=1">' +
     '<title>contest</title>' +
     '<style>' +
@@ -121,12 +144,19 @@ function html(message, status) {
     'img{width:132px;height:auto;margin:0 auto .5rem;display:block}' +
     'p{margin:0;max-width:26rem}' +
     'small{display:block;margin-top:1.25rem;color:var(--muted)}' +
+    // The one interactive thing on this page, so it gets the focus ring the
+    // gallery gives its own. A dead end with no way out and no visible focus
+    // is the worst version of an error page.
+    'a{display:inline-block;margin-top:1.25rem;color:inherit;font-weight:600}' +
+    'a:focus-visible{outline:3px solid #1c7ed6;outline-offset:3px;border-radius:4px}' +
     '</style>' +
     '<body><div>' +
     '<img src="/stickers/merlin_' + mood + '.png" alt="">' +
-    '<p>' + message + '</p>' +
-    '<small>close this tab and go back to discord.</small>' +
-    '</div></body>',
+    '<p>' + escapeHTML(message) + '</p>' +
+    (backTo
+      ? '<a href="' + escapeHTML(backTo) + '">try that again</a>'
+      : '<small>close this tab and go back to discord.</small>') +
+    '</div></body></html>',
     { status, headers: PAGE_HEADERS });
 }
 
@@ -253,7 +283,10 @@ async function session(request, env, slug) {
 async function login(slug, url, env) {
   const row = await env.DB.prepare(
     `SELECT snapshot FROM contests WHERE slug = ?1`).bind(slug).first();
-  if (!row) return json({ error: "not found" }, 404);
+  // A browser navigation, not an API call: this is where the "sign in to
+  // vote" chip goes. Every other failure in this flow already renders; this
+  // one served the voter a literal {"error":"not found"} in a blank tab.
+  if (!row) return html("that contest is not here any more.", 404);
 
   const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
   const exp = Math.floor(Date.now() / 1000) + STATE_TTL;
@@ -323,7 +356,7 @@ async function callback(request, url, env) {
 
   const member = await memberRes.json();
   const userID = member.user && member.user.id;
-  if (!userID) return html("discord did not say who you are.", 502);
+  if (!userID) return html("discord did not say who you are.", 502, `/c/${slug}/login`);
 
   // Hashed here and never stored raw. From this point on the Worker knows an
   // opaque string and nothing else about the person voting.
@@ -360,10 +393,22 @@ async function whoami(slug, request, env) {
 
   return json({
     signed_in: true,
-    name: decodeURIComponent(cookies(request).nm || ""),
+    // decodeURIComponent throws on a malformed percent sequence, which 500s
+    // this endpoint; the page reads a failed /me as signed out, so one bad
+    // cookie logged somebody out permanently with nothing said and no way
+    // back but clearing site data.
+    name: safeName(cookies(request).nm),
     picks: (rows.results || []).map((r) => r.entry_id),
     mine,
   });
+}
+
+function safeName(raw) {
+  try {
+    return decodeURIComponent(raw || "");
+  } catch {
+    return "";
+  }
 }
 
 // --- the bot's three calls ------------------------------------------------
@@ -491,7 +536,31 @@ async function castVote(slug, request, env) {
 // page serves the single static asset. Every contest renders from the same
 // document; the slug comes out of the URL client side and the content from
 // /api/c/<slug>/view, so there is one page to cache and no templating.
+// The served page, memoised per isolate.
+//
+// It has to be read as text rather than streamed so the build commit can be
+// substituted in, which is the whole reason for the cache: the document is
+// ~57KB and this would otherwise re-read and re-scan it on every request. The
+// commit cannot change without a redeploy, and a redeploy is a new isolate.
+let cachedPage = null;
+
 async function page(env) {
+  if (cachedPage !== null) {
+    return new Response(cachedPage, { status: 200, headers: PAGE_HEADERS });
+  }
   const res = await env.ASSETS.fetch(new Request("https://assets.local/index.html"));
-  return new Response(res.body, { status: 200, headers: PAGE_HEADERS });
+  // A deploy that lost index.html would otherwise serve the asset handler's
+  // own 404 body as a 200 text/html page, which renders as the word "not
+  // found" where the gallery should be and looks like a broken contest
+  // rather than a broken deploy.
+  if (!res.ok) return html("the gallery is not built. tell whoever deploys this.", 500);
+
+  // COMMIT is a plain var passed at deploy time rather than a secret or a
+  // binding, and an unset one leaves the placeholder in place, which the page
+  // tests for and hides. Deliberately not Cloudflare's version_metadata: that
+  // gives a Cloudflare UUID, and the question being answered is which commit,
+  // in a repository somebody can go and read.
+  const commit = /^[0-9a-f]{7,40}$/.test(env.COMMIT || "") ? env.COMMIT : "";
+  cachedPage = (await res.text()).replace("{{COMMIT}}", commit);
+  return new Response(cachedPage, { status: 200, headers: PAGE_HEADERS });
 }

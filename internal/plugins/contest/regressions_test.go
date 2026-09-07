@@ -3,6 +3,7 @@ package contest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -236,8 +237,9 @@ func TestVotingDoesNotReReadEveryEntryEveryTick(t *testing.T) {
 			ops.messageReads, len(ops.threads))
 	}
 
-	// Past refreshInterval it does run again, or the CDN links go stale.
-	now = now.Add(refreshInterval)
+	// These entries carry no signed URL, so there is no expiry to read and the
+	// fallback cadence is what governs. Past it, it runs again.
+	now = now.Add(refreshFallback)
 	if err := p.tick(context.Background(), "g1"); err != nil {
 		t.Fatalf("tick after the refresh window: %v", err)
 	}
@@ -354,7 +356,7 @@ func TestAFailedForumCreateLeavesTheGuildAbleToTryAgain(t *testing.T) {
 	// Stand in for the handler's own failure path: the row is committed and
 	// the forum create then fails.
 	ops.createFail = ErrForumFull
-	if _, err := p.createForum(context.Background(), c, ""); err == nil {
+	if _, err := p.createForum(gatedConfig(), c, false); err == nil {
 		t.Fatal("forum create was supposed to fail")
 	}
 	if _, err := store.AdvancePhase(context.Background(), c.ID, c.Phase, PhaseCancelled); err != nil {
@@ -406,5 +408,155 @@ func TestAPrizeStaysClaimableAfterTheNextContestStarts(t *testing.T) {
 	}
 	if len(other) != 0 {
 		t.Errorf("prizes leaked across guilds: %+v", other)
+	}
+}
+
+// The self-throttle that keeps merlin clear of Discord's 500-channel guild
+// cap (spec.MD §4: the bot must never be the thing that walks a guild into a
+// hard platform limit) had no test, so nothing said whether it counted the
+// right side of the comparison.
+func TestForumCreateRefusesNearTheChannelCap(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	c := seedLive(t, store, PhaseAnnounce, base)
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+
+	for i := range 500 - channelCapHeadroom - 1 {
+		ops.channels = append(ops.channels, &discordgo.Channel{ID: "c" + strconv.Itoa(i)})
+	}
+	if _, err := p.createForum(gatedConfig(), c, false); err != nil {
+		t.Fatalf("one under the headroom should still create: %v", err)
+	}
+
+	ops.channels = append(ops.channels, &discordgo.Channel{ID: "one-more"})
+	if _, err := p.createForum(gatedConfig(), c, false); !errors.Is(err, ErrForumFull) {
+		t.Fatalf("at the headroom, create error = %v, want ErrForumFull", err)
+	}
+}
+
+// A forum that exists and is not written down is worse than one that was
+// never created: syncSubmissions no-ops on the empty channel ID, so the
+// contest ticks through every phase collecting nothing, while /contest new
+// refuses to start another one because this is still live.
+func TestAnUnrecordedForumRetiresTheContest(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+	p.now = func() time.Time { return base }
+	store.setForumFail = errors.New("database went away")
+
+	sess, _ := stubSession()
+	p.handleNew(context.Background(), sess, interaction("new", strOpt("title", "neon cats")))
+
+	if _, err := store.LiveContest(context.Background(), "g1"); err != ErrNoLiveContest {
+		t.Fatal("a contest whose forum was never recorded is still live, so it blocks " +
+			"/contest new forever and collects nothing")
+	}
+}
+
+// forumThreads walks the archived list with a cursor, and a forum post
+// archives itself after its parent's inactivity window, so for a quiet
+// contest the archived list IS the entry list. Only the first page was ever
+// covered, which is the page the cursor arithmetic is not used on.
+func TestArchivedThreadsArePagedPastTheFirst(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	c := seedLive(t, store, PhaseSubmit, base)
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+
+	// One and a half pages, oldest last, as Discord returns them.
+	const n = archivedPageSize + 20
+	for i := range n {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		ops.archived = append(ops.archived, &discordgo.Channel{
+			ID: "t" + strconv.Itoa(i), OwnerID: "u" + strconv.Itoa(i), ParentID: c.ForumChannelID,
+			ThreadMetadata: &discordgo.ThreadMetadata{ArchiveTimestamp: ts},
+		})
+	}
+
+	got, err := p.forumThreads(c)
+	if err != nil {
+		t.Fatalf("forumThreads: %v", err)
+	}
+	if len(got) != n {
+		t.Errorf("threads found = %d, want %d: an entry past the first page was dropped, "+
+			"which withdraws a live entry with nothing said to the member", len(got), n)
+	}
+	if ops.archivedPages < 2 {
+		t.Errorf("archived pages fetched = %d, want at least 2", ops.archivedPages)
+	}
+}
+
+// Every finished contest this bot has run is a page of broken images.
+//
+// A Discord attachment URL is signed and lasts about a day; the snapshot
+// stores it verbatim; and afterFinish unregistered the tick, so nothing ever
+// re-derived it again. The results gallery -- the one artifact anybody comes
+// back to -- went dead a day after the contest ended. Confirmed against the
+// live deployment: contest "testing" closed at 14:42 with a link that expired
+// at 01:43 the next morning.
+func TestAFinishedGalleryKeepsItsArtAlive(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	closed := base
+	c := liveContest(PhaseResults, base)
+	c.ClosedAt = &closed
+	if err := store.CreateContest(context.Background(), c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ops.threads = append(ops.threads, entryThread(ops, "t1", "u1"))
+
+	now := base
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+	p.now = func() time.Time { return now }
+
+	// The job survives the contest finishing, because the gallery it left
+	// behind still has links that expire.
+	p.SyncGuild(context.Background(), "g1")
+	if !sched.has("g1:contest-tick") {
+		t.Fatal("the tick job was dropped, so nothing will ever refresh the gallery again")
+	}
+
+	now = base.Add(time.Minute)
+	if err := p.tick(context.Background(), "g1"); err != nil {
+		t.Fatalf("tick inside the window: %v", err)
+	}
+	if ops.messageReads == 0 {
+		t.Error("a finished contest inside the refresh window did not re-read its entries")
+	}
+
+	// And it stops, rather than costing a REST call per entry forever for a
+	// page nobody is looking at. Past here the page links the forum post.
+	now = base.Add(artRefreshWindow + time.Minute)
+	before := ops.messageReads
+	if err := p.tick(context.Background(), "g1"); err != nil {
+		t.Fatalf("tick past the window: %v", err)
+	}
+	if ops.messageReads != before {
+		t.Error("a contest past the refresh window is still costing REST calls")
+	}
+	p.SyncGuild(context.Background(), "g1")
+	if sched.has("g1:contest-tick") {
+		t.Error("the tick job outlived the refresh window")
+	}
+}
+
+// A cancelled contest has no gallery anybody was pointed at, so it must not
+// keep a job alive re-reading a forum for a page nobody will open.
+func TestACancelledContestRefreshesNothing(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	closed := base
+	c := liveContest(PhaseCancelled, base)
+	c.ClosedAt = &closed
+	if err := store.CreateContest(context.Background(), c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+	p.now = func() time.Time { return base.Add(time.Minute) }
+
+	p.SyncGuild(context.Background(), "g1")
+	if sched.has("g1:contest-tick") {
+		t.Error("a cancelled contest kept the tick job alive")
 	}
 }

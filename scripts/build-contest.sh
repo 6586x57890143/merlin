@@ -27,7 +27,17 @@ done
 cp web/contest/art/*.png "$out/"
 
 echo "staged $(ls -1 "$out" | wc -l | tr -d ' ') stickers into $out"
-echo "deploy with:  cd web/contest && wrangler deploy"
+
+# The commit rides in as a plain var rather than being written into a file,
+# so nothing here dirties the tree and the page can say which build it is.
+# The gallery deploys by hand and separately from the bot, which is how the
+# live one sat a commit behind for six days with nothing able to say so.
+commit=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+dirty=""
+if ! git diff --quiet HEAD -- web/contest 2>/dev/null; then
+  dirty="  # NOTE: web/contest has uncommitted changes, so this commit is a lie"
+fi
+echo "deploy with:  cd web/contest && wrangler deploy --var COMMIT:$commit$dirty"
 
 # drawably ships as native ESM with relative imports, so the gallery loads it
 # straight from /vendor with no bundler, matching the no-build-step rule the
