@@ -536,12 +536,31 @@ async function castVote(slug, request, env) {
 // page serves the single static asset. Every contest renders from the same
 // document; the slug comes out of the URL client side and the content from
 // /api/c/<slug>/view, so there is one page to cache and no templating.
+// The served page, memoised per isolate.
+//
+// It has to be read as text rather than streamed so the build commit can be
+// substituted in, which is the whole reason for the cache: the document is
+// ~57KB and this would otherwise re-read and re-scan it on every request. The
+// commit cannot change without a redeploy, and a redeploy is a new isolate.
+let cachedPage = null;
+
 async function page(env) {
+  if (cachedPage !== null) {
+    return new Response(cachedPage, { status: 200, headers: PAGE_HEADERS });
+  }
   const res = await env.ASSETS.fetch(new Request("https://assets.local/index.html"));
   // A deploy that lost index.html would otherwise serve the asset handler's
   // own 404 body as a 200 text/html page, which renders as the word "not
   // found" where the gallery should be and looks like a broken contest
   // rather than a broken deploy.
   if (!res.ok) return html("the gallery is not built. tell whoever deploys this.", 500);
-  return new Response(res.body, { status: 200, headers: PAGE_HEADERS });
+
+  // COMMIT is a plain var passed at deploy time rather than a secret or a
+  // binding, and an unset one leaves the placeholder in place, which the page
+  // tests for and hides. Deliberately not Cloudflare's version_metadata: that
+  // gives a Cloudflare UUID, and the question being answered is which commit,
+  // in a repository somebody can go and read.
+  const commit = /^[0-9a-f]{7,40}$/.test(env.COMMIT || "") ? env.COMMIT : "";
+  cachedPage = (await res.text()).replace("{{COMMIT}}", commit);
+  return new Response(cachedPage, { status: 200, headers: PAGE_HEADERS });
 }
