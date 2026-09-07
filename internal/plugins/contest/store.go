@@ -163,7 +163,6 @@ type Store interface {
 	CreateContest(ctx context.Context, c Contest) error
 	LiveContest(ctx context.Context, guildID string) (Contest, error)
 	LatestContest(ctx context.Context, guildID string) (Contest, error)
-	GuildsWithLiveContests(ctx context.Context) ([]string, error)
 	// AdvancePhase is conditional on the contest still being in `from`, so
 	// two overlapping ticks cannot both announce the same transition. It
 	// reports whether this caller is the one that won.
@@ -287,25 +286,6 @@ func (s *pgStore) LatestContest(ctx context.Context, guildID string) (Contest, e
 		return Contest{}, fmt.Errorf("contest store: latest contest: %w", err)
 	}
 	return c, nil
-}
-
-func (s *pgStore) GuildsWithLiveContests(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT guild_id FROM contests WHERE phase IN ('announce','submit','vote')
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("contest store: guilds with live contests: %w", err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var g string
-		if err := rows.Scan(&g); err != nil {
-			return nil, fmt.Errorf("contest store: scan guild: %w", err)
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
 }
 
 func (s *pgStore) AdvancePhase(ctx context.Context, contestID string, from, to Phase) (bool, error) {

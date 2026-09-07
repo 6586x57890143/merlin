@@ -268,7 +268,7 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 		return
 	}
 
-	forumID, err := p.createForum(ctx, c, cfg.ForumCategoryID)
+	forumID, err := p.createForum(c, cfg.ForumCategoryID)
 	if err != nil {
 		// The contest row is already committed, so leaving it would hand the
 		// guild a live contest with no forum: /contest new refuses it as
@@ -284,11 +284,22 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 	}
 	c.ForumChannelID = forumID
 	if err := p.store.SetForumChannel(ctx, c.ID, forumID); err != nil {
+		// Same retirement the failed-create path above does, and for a worse
+		// version of the same reason: the forum exists but nothing records
+		// which one it is, so syncSubmissions no-ops on the empty channel ID
+		// and the contest ticks through every phase collecting nothing while
+		// /contest new refuses to start another as ErrAlreadyLive. Retiring it
+		// costs nothing and leaves the admin able to try again. The channel is
+		// left where it is: deleting one has no undo, and cancelling a contest
+		// deliberately deletes nothing.
+		if _, cerr := p.store.AdvancePhase(ctx, c.ID, c.Phase, PhaseCancelled); cerr != nil {
+			p.log.Error("contest: cancel after unrecorded forum", "contest", c.ID, "err", cerr)
+		}
 		followErr(s, i, p, "Couldn't record the contest forum", err)
 		return
 	}
 	if c.Phase == PhaseSubmit {
-		if err := p.setForumOpen(ctx, c, true); err != nil {
+		if err := p.setForumOpen(c, true); err != nil {
 			p.log.Error("contest: open forum at create", "contest", c.ID, "err", err)
 		}
 	}
@@ -774,7 +785,7 @@ func (p *Plugin) handleCancel(ctx context.Context, s *discordgo.Session, i *disc
 	}
 
 	c.Phase = PhaseCancelled
-	if err := p.setForumOpen(ctx, c, false); err != nil {
+	if err := p.setForumOpen(c, false); err != nil {
 		p.log.Error("contest: lock forum on cancel", "contest", c.ID, "err", err)
 	}
 	p.post(ctx, c, core.NewEmbed(core.ColorWarning, c.Title+" is off",

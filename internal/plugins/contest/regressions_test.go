@@ -3,6 +3,7 @@ package contest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -354,7 +355,7 @@ func TestAFailedForumCreateLeavesTheGuildAbleToTryAgain(t *testing.T) {
 	// Stand in for the handler's own failure path: the row is committed and
 	// the forum create then fails.
 	ops.createFail = ErrForumFull
-	if _, err := p.createForum(context.Background(), c, ""); err == nil {
+	if _, err := p.createForum(c, ""); err == nil {
 		t.Fatal("forum create was supposed to fail")
 	}
 	if _, err := store.AdvancePhase(context.Background(), c.ID, c.Phase, PhaseCancelled); err != nil {
@@ -406,5 +407,81 @@ func TestAPrizeStaysClaimableAfterTheNextContestStarts(t *testing.T) {
 	}
 	if len(other) != 0 {
 		t.Errorf("prizes leaked across guilds: %+v", other)
+	}
+}
+
+// The self-throttle that keeps merlin clear of Discord's 500-channel guild
+// cap (spec.MD §4: the bot must never be the thing that walks a guild into a
+// hard platform limit) had no test, so nothing said whether it counted the
+// right side of the comparison.
+func TestForumCreateRefusesNearTheChannelCap(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	c := seedLive(t, store, PhaseAnnounce, base)
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+
+	for i := range 500 - channelCapHeadroom - 1 {
+		ops.channels = append(ops.channels, &discordgo.Channel{ID: "c" + strconv.Itoa(i)})
+	}
+	if _, err := p.createForum(c, ""); err != nil {
+		t.Fatalf("one under the headroom should still create: %v", err)
+	}
+
+	ops.channels = append(ops.channels, &discordgo.Channel{ID: "one-more"})
+	if _, err := p.createForum(c, ""); !errors.Is(err, ErrForumFull) {
+		t.Fatalf("at the headroom, create error = %v, want ErrForumFull", err)
+	}
+}
+
+// A forum that exists and is not written down is worse than one that was
+// never created: syncSubmissions no-ops on the empty channel ID, so the
+// contest ticks through every phase collecting nothing, while /contest new
+// refuses to start another one because this is still live.
+func TestAnUnrecordedForumRetiresTheContest(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+	p.now = func() time.Time { return base }
+	store.setForumFail = errors.New("database went away")
+
+	sess, _ := stubSession()
+	p.handleNew(context.Background(), sess, interaction("new", strOpt("title", "neon cats")))
+
+	if _, err := store.LiveContest(context.Background(), "g1"); err != ErrNoLiveContest {
+		t.Fatal("a contest whose forum was never recorded is still live, so it blocks " +
+			"/contest new forever and collects nothing")
+	}
+}
+
+// forumThreads walks the archived list with a cursor, and a forum post
+// archives itself after its parent's inactivity window, so for a quiet
+// contest the archived list IS the entry list. Only the first page was ever
+// covered, which is the page the cursor arithmetic is not used on.
+func TestArchivedThreadsArePagedPastTheFirst(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	c := seedLive(t, store, PhaseSubmit, base)
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+
+	// One and a half pages, oldest last, as Discord returns them.
+	const n = archivedPageSize + 20
+	for i := range n {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		ops.archived = append(ops.archived, &discordgo.Channel{
+			ID: "t" + strconv.Itoa(i), OwnerID: "u" + strconv.Itoa(i), ParentID: c.ForumChannelID,
+			ThreadMetadata: &discordgo.ThreadMetadata{ArchiveTimestamp: ts},
+		})
+	}
+
+	got, err := p.forumThreads(c)
+	if err != nil {
+		t.Fatalf("forumThreads: %v", err)
+	}
+	if len(got) != n {
+		t.Errorf("threads found = %d, want %d: an entry past the first page was dropped, "+
+			"which withdraws a live entry with nothing said to the member", len(got), n)
+	}
+	if ops.archivedPages < 2 {
+		t.Errorf("archived pages fetched = %d, want at least 2", ops.archivedPages)
 	}
 }

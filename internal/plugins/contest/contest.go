@@ -278,7 +278,7 @@ func (p *Plugin) advance(ctx context.Context, c Contest) error {
 			return err
 		}
 		c.Phase = PhaseSubmit
-		if err := p.setForumOpen(ctx, c, true); err != nil {
+		if err := p.setForumOpen(c, true); err != nil {
 			p.log.Error("contest: open forum", "contest", c.ID, "err", err)
 		}
 		p.announceSubmissionsOpen(ctx, c)
@@ -291,7 +291,7 @@ func (p *Plugin) advance(ctx context.Context, c Contest) error {
 			return err
 		}
 		c.Phase = PhaseVote
-		if err := p.setForumOpen(ctx, c, false); err != nil {
+		if err := p.setForumOpen(c, false); err != nil {
 			p.log.Error("contest: lock forum", "contest", c.ID, "err", err)
 		}
 		// Push before announcing: the announcement carries a link to a page

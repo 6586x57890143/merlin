@@ -84,20 +84,6 @@ func TestPostgresContestRoundTrips(t *testing.T) {
 	if got.ForumChannelID != "forum-1" || got.AnnounceMessageID != "msg-1" {
 		t.Errorf("forum/announce not recorded: %+v", got)
 	}
-
-	guilds, err := s.GuildsWithLiveContests(ctx)
-	if err != nil {
-		t.Fatalf("GuildsWithLiveContests: %v", err)
-	}
-	var found bool
-	for _, g := range guilds {
-		if g == guildID {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("a live contest's guild was not listed")
-	}
 }
 
 func TestPostgresNoContestIsNotAnError(t *testing.T) {

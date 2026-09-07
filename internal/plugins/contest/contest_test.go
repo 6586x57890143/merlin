@@ -30,6 +30,22 @@ func liveContest(phase Phase, base time.Time) Contest {
 	}
 }
 
+// seedForum puts the contest's forum in the fake in the state createForum
+// leaves it: existing, with @everyone denied the posting bit. Tests that
+// exercise the open/close flip need it, because setForumOpen now reads the
+// channel back and changes one bit rather than overwriting the pair, so a
+// forum the fake has never heard of correctly has nothing to change.
+func seedForum(ops *fakeOps, c Contest, extraDeny int64) {
+	ops.channels = append(ops.channels, &discordgo.Channel{
+		ID: c.ForumChannelID, GuildID: c.GuildID, Type: discordgo.ChannelTypeGuildForum,
+		PermissionOverwrites: []*discordgo.PermissionOverwrite{{
+			ID:   c.GuildID,
+			Type: discordgo.PermissionOverwriteTypeRole,
+			Deny: postingPerms | extraDeny,
+		}},
+	})
+}
+
 // --- the phase machine ----------------------------------------------------
 
 func TestPhasesAdvanceInOrderAndAnnounceOnce(t *testing.T) {
@@ -81,6 +97,7 @@ func TestSubmissionsOpenAndCloseFlipsThePostingOverwrite(t *testing.T) {
 	if err := store.CreateContest(context.Background(), liveContest(PhaseAnnounce, base)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	seedForum(ops, liveContest(PhaseAnnounce, base), 0)
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	now := base.Add(time.Hour + time.Second)
 	p.now = func() time.Time { return now }
@@ -101,6 +118,56 @@ func TestSubmissionsOpenAndCloseFlipsThePostingOverwrite(t *testing.T) {
 	}
 	if ops.overwrit[1] != postingPerms {
 		t.Errorf("closing submissions denied %d, want %d", ops.overwrit[1], postingPerms)
+	}
+}
+
+// A phase change is not allowed to be a permission change. setForumOpen used
+// to write a whole fresh (allow, deny) pair for @everyone, which erases every
+// other bit on that entry: the moment a ViewChannel deny is what keeps
+// ungated members out of a contest forum, opening submissions handed the
+// contest to the entire server.
+func TestOpeningSubmissionsKeepsTheGateShut(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	c := liveContest(PhaseAnnounce, base)
+	if err := store.CreateContest(context.Background(), c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	seedForum(ops, c, discordgo.PermissionViewChannel)
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+	p.now = func() time.Time { return base.Add(time.Hour + time.Second) }
+
+	if err := p.tick(context.Background(), "g1"); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	_, deny := ops.everyoneOn(c.ForumChannelID, c.GuildID)
+	if deny&discordgo.PermissionViewChannel == 0 {
+		t.Error("opening submissions cleared the @everyone view deny: the forum is now public")
+	}
+	if deny&postingPerms != 0 {
+		t.Error("opening submissions left the posting bit denied")
+	}
+}
+
+// The inverse: a call that would change nothing does not write. Every
+// permission write lands in the guild's own Discord audit log, so a resync
+// that changed nothing buries the entries a moderator is looking for.
+func TestClosingAnAlreadyClosedForumWritesNothing(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	c := liveContest(PhaseVote, base)
+	if err := store.CreateContest(context.Background(), c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	seedForum(ops, c, 0) // already carries the posting deny
+	p := newTestPlugin(t, store, ops, sched, audit, "")
+
+	if err := p.setForumOpen(c, false); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if len(ops.overwrit) != 0 {
+		t.Errorf("permission writes = %d, want 0: closing a closed forum changed nothing", len(ops.overwrit))
 	}
 }
 

@@ -31,8 +31,9 @@ type fakeStore struct {
 	prizes   map[string][]Prize
 
 	// failures a test can arm, so the fail-closed paths are reachable.
-	liveErr error
-	subsErr error
+	liveErr      error
+	subsErr      error
+	setForumFail error
 }
 
 func newFakeStore() *fakeStore {
@@ -91,18 +92,6 @@ func (f *fakeStore) LatestContest(_ context.Context, guildID string) (Contest, e
 	return Contest{}, ErrNoLiveContest
 }
 
-func (f *fakeStore) GuildsWithLiveContests(context.Context) ([]string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []string
-	for _, c := range f.contests {
-		if c.Live() {
-			out = append(out, c.GuildID)
-		}
-	}
-	return out, nil
-}
-
 func (f *fakeStore) AdvancePhase(_ context.Context, contestID string, from, to Phase) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -125,6 +114,9 @@ func (f *fakeStore) find(contestID string) *Contest {
 }
 
 func (f *fakeStore) SetForumChannel(_ context.Context, contestID, channelID string) error {
+	if f.setForumFail != nil {
+		return f.setForumFail
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if c := f.find(contestID); c != nil {
@@ -322,6 +314,7 @@ type fakeOps struct {
 	// forum post ends up on its own.
 	archived         []*discordgo.Channel
 	archivedAskedFor string
+	archivedPages    int
 
 	// messageReads counts starter-message fetches, which is the expensive
 	// half of a sync: one REST call per entry, per run.
@@ -340,7 +333,19 @@ func newFakeOps() *fakeOps {
 	}
 }
 
+// Channel hands back the stored channel, overwrites and all, rather than a
+// bare shell with the right ID. setForumOpen reads its own channel back to
+// change one bit inside the @everyone entry, so a fake that forgets what it
+// was created with reports "nothing to change" for every call and the test
+// passes while the real thing does the opposite.
 func (f *fakeOps) Channel(id string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, ch := range f.channels {
+		if ch.ID == id {
+			return ch, nil
+		}
+	}
 	return &discordgo.Channel{ID: id}, nil
 }
 
@@ -360,14 +365,37 @@ func (f *fakeOps) GuildThreadsActive(id string, _ ...discordgo.RequestOption) (*
 	return &discordgo.ThreadsList{Threads: f.threads}, nil
 }
 
-func (f *fakeOps) ThreadsArchived(id string, _ *time.Time, _ int, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+// ThreadsArchived pages the way Discord's does: newest archive time first,
+// `before` is the cursor, and HasMore says whether another page exists. The
+// fake used to hand back the whole slice and ignore both, so forumThreads'
+// cursor arithmetic -- the part that decides whether a quiet entry is found
+// or silently withdrawn -- was never exercised.
+func (f *fakeOps) ThreadsArchived(id string, before *time.Time, limit int, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.archivedAskedFor = id
+	f.archivedPages++
 	if f.archivedErr != nil {
 		return nil, f.archivedErr
 	}
-	return &discordgo.ThreadsList{Threads: f.archived}, nil
+	if limit <= 0 {
+		limit = archivedPageSize
+	}
+
+	rest := make([]*discordgo.Channel, 0, len(f.archived))
+	for _, th := range f.archived {
+		if before != nil {
+			if th.ThreadMetadata == nil || !th.ThreadMetadata.ArchiveTimestamp.Before(*before) {
+				continue
+			}
+		}
+		rest = append(rest, th)
+	}
+	page := rest
+	if len(page) > limit {
+		page = page[:limit]
+	}
+	return &discordgo.ThreadsList{Threads: page, HasMore: len(rest) > len(page)}, nil
 }
 
 func (f *fakeOps) ChannelMessages(channelID string, _ int, _, _, _ string, _ ...discordgo.RequestOption) ([]*discordgo.Message, error) {
@@ -384,14 +412,54 @@ func (f *fakeOps) GuildChannelCreateComplex(_ string, data discordgo.GuildChanne
 		return nil, f.createFail
 	}
 	f.created = append(f.created, data)
-	return &discordgo.Channel{ID: "forum-1", Name: data.Name}, nil
+	ch := &discordgo.Channel{
+		ID: "forum-1", Name: data.Name, GuildID: data.ParentID,
+		Type:                 data.Type,
+		PermissionOverwrites: data.PermissionOverwrites,
+	}
+	f.channels = append(f.channels, ch)
+	return ch, nil
 }
 
-func (f *fakeOps) ChannelPermissionSet(_, _ string, _ discordgo.PermissionOverwriteType, _, deny int64, _ ...discordgo.RequestOption) error {
+// ChannelPermissionSet replaces the whole (allow, deny) pair for one target,
+// which is what the real endpoint does and the reason setForumOpen has to
+// read before it writes.
+func (f *fakeOps) ChannelPermissionSet(channelID, targetID string, kind discordgo.PermissionOverwriteType, allow, deny int64, _ ...discordgo.RequestOption) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.overwrit = append(f.overwrit, deny)
+	for _, ch := range f.channels {
+		if ch.ID != channelID {
+			continue
+		}
+		for _, ow := range ch.PermissionOverwrites {
+			if ow.ID == targetID && ow.Type == kind {
+				ow.Allow, ow.Deny = allow, deny
+				return nil
+			}
+		}
+		ch.PermissionOverwrites = append(ch.PermissionOverwrites,
+			&discordgo.PermissionOverwrite{ID: targetID, Type: kind, Allow: allow, Deny: deny})
+	}
 	return nil
+}
+
+// everyoneOn is the (allow, deny) pair a channel carries for @everyone, which
+// in Discord's model is the role whose ID is the guild's.
+func (f *fakeOps) everyoneOn(channelID, guildID string) (allow, deny int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, ch := range f.channels {
+		if ch.ID != channelID {
+			continue
+		}
+		for _, ow := range ch.PermissionOverwrites {
+			if ow.ID == guildID && ow.Type == discordgo.PermissionOverwriteTypeRole {
+				return ow.Allow, ow.Deny
+			}
+		}
+	}
+	return 0, 0
 }
 
 func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
