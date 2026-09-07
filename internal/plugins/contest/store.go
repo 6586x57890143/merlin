@@ -55,6 +55,21 @@ var ErrNoLiveContest = errors.New("contest: this server has no contest running")
 // nobody wants to type.
 var ErrAlreadyLive = errors.New("contest: this server already has a contest running")
 
+// ErrUngated reports that nobody has said who the contest forum is for.
+//
+// /contest new refuses on it rather than creating a forum and hoping. The
+// message names both ways out, because the fix is one command and the failure
+// it prevents is silent: a forum whose permissions came from whatever category
+// it happened to land in, shown to every account on the server including the
+// ones that have not passed the gate.
+var ErrUngated = errors.New(
+	"contest: nobody has said who the contest forum is for. " +
+		"point merlin at a channel that is already gated the way you want it " +
+		"(/contest configure set gate-like:#your-members-channel), or name the " +
+		"roles outright (/contest configure access-role add @role). " +
+		"a server where everyone can see everything answers this too, by " +
+		"pointing gate-like at a channel everyone can see")
+
 // Config is the per-guild setup. Deliberately small: everything that varies
 // per contest is on Contest itself, and everything that varies per
 // deployment (the Worker URL and its keys) is env, since one deployment
@@ -64,6 +79,27 @@ type Config struct {
 	AnnounceChannelID string
 	ForumCategoryID   string
 	DefaultMaxVotes   int
+
+	// GateChannelID is a channel the guild already gates the way it wants
+	// its contest forum gated. merlin reads its view permissions at forum
+	// creation and mirrors them, so nothing about the role layout is stored
+	// here and a renamed or replaced role needs no change on this side.
+	GateChannelID string
+	// AccessRoleIDs is the escape hatch for a guild with no channel worth
+	// mirroring. Set, it wins over GateChannelID.
+	AccessRoleIDs []string
+	// MediaRoleIDs may attach files in the forum. Separate because the
+	// mirror copies only view-gating bits: a text channel's SendMessages is
+	// not a forum's CreatePublicThreads, so posting and attachment rights
+	// stay merlin's own to write.
+	MediaRoleIDs []string
+}
+
+// Gated reports whether somebody has said who the contest forum is for.
+// /contest new refuses without it rather than guessing, because the guess
+// that is wrong publishes members' work to a server that has not let them in.
+func (c Config) Gated() bool {
+	return c.GateChannelID != "" || len(c.AccessRoleIDs) > 0
 }
 
 // Contest is one contest. SubmitAt/VoteAt/ResultsAt are the instants each
@@ -214,9 +250,11 @@ func scanContest(row pgx.Row) (Contest, error) {
 func (s *pgStore) GetConfig(ctx context.Context, guildID string) (Config, error) {
 	cfg := Config{GuildID: guildID, DefaultMaxVotes: 3}
 	err := s.pool.QueryRow(ctx, `
-		SELECT announce_channel_id, forum_category_id, default_max_votes
+		SELECT announce_channel_id, forum_category_id, default_max_votes,
+		       gate_channel_id, access_role_ids, media_role_ids
 		FROM contest_config WHERE guild_id = $1
-	`, guildID).Scan(&cfg.AnnounceChannelID, &cfg.ForumCategoryID, &cfg.DefaultMaxVotes)
+	`, guildID).Scan(&cfg.AnnounceChannelID, &cfg.ForumCategoryID, &cfg.DefaultMaxVotes,
+		&cfg.GateChannelID, &cfg.AccessRoleIDs, &cfg.MediaRoleIDs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// An unconfigured guild is not an error. /contest new falls back
@@ -230,15 +268,29 @@ func (s *pgStore) GetConfig(ctx context.Context, guildID string) (Config, error)
 }
 
 func (s *pgStore) SetConfig(ctx context.Context, cfg Config) error {
+	// pgx encodes a nil slice as NULL and both columns are NOT NULL, so an
+	// empty list is the ordinary "nobody named yet" case, not an error.
+	access, media := cfg.AccessRoleIDs, cfg.MediaRoleIDs
+	if access == nil {
+		access = []string{}
+	}
+	if media == nil {
+		media = []string{}
+	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO contest_config (guild_id, announce_channel_id, forum_category_id, default_max_votes, updated_at)
-		VALUES ($1, $2, $3, $4, now())
+		INSERT INTO contest_config (guild_id, announce_channel_id, forum_category_id, default_max_votes,
+		                            gate_channel_id, access_role_ids, media_role_ids, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 		ON CONFLICT (guild_id) DO UPDATE SET
 			announce_channel_id = EXCLUDED.announce_channel_id,
 			forum_category_id   = EXCLUDED.forum_category_id,
 			default_max_votes   = EXCLUDED.default_max_votes,
+			gate_channel_id     = EXCLUDED.gate_channel_id,
+			access_role_ids     = EXCLUDED.access_role_ids,
+			media_role_ids      = EXCLUDED.media_role_ids,
 			updated_at          = now()
-	`, cfg.GuildID, cfg.AnnounceChannelID, cfg.ForumCategoryID, cfg.DefaultMaxVotes)
+	`, cfg.GuildID, cfg.AnnounceChannelID, cfg.ForumCategoryID, cfg.DefaultMaxVotes,
+		cfg.GateChannelID, access, media)
 	if err != nil {
 		return fmt.Errorf("contest store: set config: %w", err)
 	}

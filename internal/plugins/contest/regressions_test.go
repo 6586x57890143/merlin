@@ -355,7 +355,7 @@ func TestAFailedForumCreateLeavesTheGuildAbleToTryAgain(t *testing.T) {
 	// Stand in for the handler's own failure path: the row is committed and
 	// the forum create then fails.
 	ops.createFail = ErrForumFull
-	if _, err := p.createForum(c, ""); err == nil {
+	if _, err := p.createForum(gatedConfig(), c, false); err == nil {
 		t.Fatal("forum create was supposed to fail")
 	}
 	if _, err := store.AdvancePhase(context.Background(), c.ID, c.Phase, PhaseCancelled); err != nil {
@@ -423,12 +423,12 @@ func TestForumCreateRefusesNearTheChannelCap(t *testing.T) {
 	for i := range 500 - channelCapHeadroom - 1 {
 		ops.channels = append(ops.channels, &discordgo.Channel{ID: "c" + strconv.Itoa(i)})
 	}
-	if _, err := p.createForum(c, ""); err != nil {
+	if _, err := p.createForum(gatedConfig(), c, false); err != nil {
 		t.Fatalf("one under the headroom should still create: %v", err)
 	}
 
 	ops.channels = append(ops.channels, &discordgo.Channel{ID: "one-more"})
-	if _, err := p.createForum(c, ""); !errors.Is(err, ErrForumFull) {
+	if _, err := p.createForum(gatedConfig(), c, false); !errors.Is(err, ErrForumFull) {
 		t.Fatalf("at the headroom, create error = %v, want ErrForumFull", err)
 	}
 }

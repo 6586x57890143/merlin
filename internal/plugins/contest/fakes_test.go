@@ -20,6 +20,21 @@ import (
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+// botUserID is merlin's own snowflake in these tests. Every forum overwrite
+// list carries an entry for her, so it needs a name rather than a literal
+// repeated at a dozen assertions.
+const botUserID = "merlin-1"
+
+// guildRoles is a guild's role list as resolveAccess sees it: @everyone,
+// whose ID is the guild's, plus whatever the test names.
+func guildRoles(guildID string, ids ...string) []*discordgo.Role {
+	out := []*discordgo.Role{{ID: guildID, Name: "@everyone"}}
+	for _, id := range ids {
+		out = append(out, &discordgo.Role{ID: id, Name: id})
+	}
+	return out
+}
+
 // fakeStore is the whole Store interface backed by maps. Every plugin in
 // this repo has one of these; the point is that the phase machine and the
 // forum sync can be driven without Postgres.
@@ -320,7 +335,14 @@ type fakeOps struct {
 	// half of a sync: one REST call per entry, per run.
 	messageReads int
 
+	roles []*discordgo.Role
+	// edits counts whole-list permission writes, which is how a test tells
+	// "the resync changed something" from "it decided nothing had to change".
+	edits int
+
 	dmFails     bool
+	rolesErr    error
+	channelErr  error
 	createFail  error
 	threadsErr  error
 	archivedErr error
@@ -341,6 +363,9 @@ func newFakeOps() *fakeOps {
 func (f *fakeOps) Channel(id string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.channelErr != nil {
+		return nil, f.channelErr
+	}
 	for _, ch := range f.channels {
 		if ch.ID == id {
 			return ch, nil
@@ -353,6 +378,39 @@ func (f *fakeOps) GuildChannels(string, ...discordgo.RequestOption) ([]*discordg
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.channels, nil
+}
+
+// GuildRoles is what resolveAccess checks named roles against, so a test can
+// make a role disappear the way a guild can.
+func (f *fakeOps) GuildRoles(string, ...discordgo.RequestOption) ([]*discordgo.Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rolesErr != nil {
+		return nil, f.rolesErr
+	}
+	return f.roles, nil
+}
+
+func (f *fakeOps) User(id string, _ ...discordgo.RequestOption) (*discordgo.User, error) {
+	if id == "@me" {
+		return &discordgo.User{ID: botUserID}, nil
+	}
+	return &discordgo.User{ID: id}, nil
+}
+
+func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edits++
+	for _, ch := range f.channels {
+		if ch.ID == channelID {
+			if data.PermissionOverwrites != nil {
+				ch.PermissionOverwrites = data.PermissionOverwrites
+			}
+			return ch, nil
+		}
+	}
+	return &discordgo.Channel{ID: channelID}, nil
 }
 
 func (f *fakeOps) GuildThreadsActive(id string, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
@@ -600,4 +658,26 @@ func testKey() string {
 		panic("contest: generate test key: " + err.Error())
 	}
 	return base64.StdEncoding.EncodeToString(buf)
+}
+
+// gatedConfig is the minimum a guild has to have said before /contest new
+// will do anything: who the forum is for. Tests that are not about the gate
+// use it so the refusal does not have to be worked around in each one.
+func gatedConfig() Config {
+	return Config{GuildID: "g1", DefaultMaxVotes: 2, AccessRoleIDs: []string{"melted"}}
+}
+
+// seedGate configures a guild the way the melting pot is: @everyone sees
+// nothing, one role is what being let in means. gate-like points at that
+// channel, so merlin mirrors it rather than being told a role list.
+func seedGate(store *fakeStore, ops *fakeOps) {
+	ops.roles = guildRoles("g1", "melted", "mod")
+	ops.channels = append(ops.channels, &discordgo.Channel{
+		ID: "general-1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
+		PermissionOverwrites: []*discordgo.PermissionOverwrite{
+			{ID: "g1", Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+			{ID: "melted", Type: discordgo.PermissionOverwriteTypeRole, Allow: discordgo.PermissionViewChannel},
+		},
+	})
+	store.cfg["g1"] = Config{GuildID: "g1", DefaultMaxVotes: 2, GateChannelID: "general-1"}
 }

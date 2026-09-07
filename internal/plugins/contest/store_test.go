@@ -386,3 +386,51 @@ func TestPostgresConfigDefaultsAndRoundTrips(t *testing.T) {
 		t.Errorf("config = %+v", got)
 	}
 }
+
+// The gate columns, which /contest new refuses without. An unconfigured guild
+// has to come back ungated rather than erroring, since the whole point of the
+// refusal is that it is reached and reported rather than crashed into.
+func TestPostgresGateRoundTrips(t *testing.T) {
+	s, guildID := testStore(t)
+	ctx := context.Background()
+
+	cfg, err := s.GetConfig(ctx, guildID)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if cfg.Gated() {
+		t.Error("an unconfigured guild reads as gated, so /contest new would not refuse")
+	}
+
+	cfg.GateChannelID = "general-9"
+	cfg.AccessRoleIDs = []string{"melted", "mod"}
+	cfg.MediaRoleIDs = []string{"trusted"}
+	if err := s.SetConfig(ctx, cfg); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	got, err := s.GetConfig(ctx, guildID)
+	if err != nil {
+		t.Fatalf("GetConfig after set: %v", err)
+	}
+	if got.GateChannelID != "general-9" || !got.Gated() {
+		t.Errorf("gate did not round trip: %+v", got)
+	}
+	if len(got.AccessRoleIDs) != 2 || len(got.MediaRoleIDs) != 1 {
+		t.Errorf("role lists did not round trip: %+v", got)
+	}
+
+	// Emptying the lists has to store an empty array rather than NULL: both
+	// columns are NOT NULL, and pgx encodes a nil slice as NULL.
+	got.AccessRoleIDs = nil
+	got.MediaRoleIDs = nil
+	if err := s.SetConfig(ctx, got); err != nil {
+		t.Fatalf("SetConfig with empty lists: %v", err)
+	}
+	back, err := s.GetConfig(ctx, guildID)
+	if err != nil {
+		t.Fatalf("GetConfig after clearing: %v", err)
+	}
+	if len(back.AccessRoleIDs) != 0 || !back.Gated() {
+		t.Errorf("clearing the roles lost the channel gate too: %+v", back)
+	}
+}

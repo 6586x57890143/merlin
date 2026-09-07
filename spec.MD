@@ -417,7 +417,7 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 
 
 
-| 11 | Contests (delivered ahead of Factions/Reporting) | `internal/plugins/contest` — announce, submit, vote and results phases on one per-guild Scheduler tick, with entries arriving as posts in a Discord forum channel merlin creates per contest (so Discord's own CDN hosts every file for free and the bot stores none of them), a prize ledger whose redeemable codes are sealed at rest with `internal/secret` and DMed to the winner then wiped, and a Cloudflare Worker serving the gallery and the ballot. merlin stays outbound-only: it pushes a full snapshot and asks for a tally, and the Worker cannot make it do anything |
+| 11 | Contests (delivered ahead of Factions/Reporting) | `internal/plugins/contest` — announce, submit, vote and results phases on one per-guild Scheduler tick, with entries arriving as posts in a Discord forum channel merlin creates per contest (so Discord's own CDN hosts every file for free and the bot stores none of them), gated by mirroring the view permissions of a channel the guild already gates the way it wants rather than by a role list this bot would then have to keep in step, a prize ledger whose redeemable codes are sealed at rest with `internal/secret` and DMed to the winner then wiped, and a Cloudflare Worker serving the gallery and the ballot. merlin stays outbound-only: it pushes a full snapshot and asks for a tally, and the Worker cannot make it do anything |
 
 
 
