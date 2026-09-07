@@ -522,6 +522,118 @@ test("stats counts people, not ballots", async () => {
   assert.deepEqual(await res.json(), { votes: 3, voters: 2 });
 });
 
+// --- a whole contest, with a group rather than a fixture -------------------
+//
+// Every test above holds one rule still and pushes on it. This runs the thing
+// end to end with twelve members, because the failures worth catching on this
+// side are not in a single rule but in what happens when real numbers of
+// people each sign in, change their minds, and are counted: the ballot has to
+// be replaceable without being double-counted, the self-vote rule has to hold
+// against the real hash rather than a fixture string, and the tally merlin
+// ranks has to be the tally this side actually holds.
+
+test("twelve members run a whole contest and the tally is what they voted", async () => {
+  const e = env();
+
+  // Twelve members, twelve entries, each entry owned by the member whose
+  // Discord ID hashes to its by_hash. That pairing is the whole point: it is
+  // what makes the self-vote refusal reachable at all.
+  const group = ["ana", "bo", "cal", "dee", "eli", "fay", "gus", "hal", "ivy", "jo", "kit", "lou"];
+  const ids = group.map((_, n) => "90000000000000000" + n);
+  const hashes = [];
+  for (const id of ids) hashes.push(await hashID(id));
+
+  const entries = group.map((name, n) => ({
+    id: "e" + n, by: name, by_hash: hashes[n],
+    title: name + "'s cat", kind: "image",
+    url: "https://cdn.discordapp.com/attachments/1/" + n + "/art.png",
+  }));
+  await push(e, snapshot({ entries, max_votes: 3 }));
+
+  // Everybody signs in for real, through /login and /oauth/callback, so the
+  // state, the nonce cookie and the membership check run twelve times rather
+  // than once.
+  const cookies = [];
+  for (const id of ids) {
+    const { status, cookie } = await signIn(e, { userID: id });
+    assert.equal(status, 302, "sign in for " + id);
+    assert.ok(cookie, "no session for " + id);
+    cookies.push(cookie);
+  }
+
+  // Each member votes for the three entries after their own, wrapping round.
+  // Nobody can vote for themselves, so every ballot is legal and every entry
+  // ends on exactly three votes.
+  for (let n = 0; n < group.length; n++) {
+    const picks = [1, 2, 3].map((k) => "e" + ((n + k) % group.length));
+    const { status, body } = await vote(e, cookies[n], picks);
+    assert.equal(status, 200, group[n] + " could not vote: " + JSON.stringify(body));
+  }
+
+  // kit changes their mind. The server replaces the whole ballot on every
+  // call, so this must move kit's votes rather than add to them.
+  const kit = group.indexOf("kit");
+  assert.equal((await vote(e, cookies[kit], ["e0"])).status, 200, "kit could not re-vote");
+
+  // ana tries to vote for her own entry and is refused by the hash, not by a
+  // fixture: e0's by_hash was computed from ana's real Discord ID.
+  const selfVote = await vote(e, cookies[0], ["e0"]);
+  assert.equal(selfVote.status, 400, "ana voted for her own entry");
+
+  // ana tries to spend more picks than the contest allows.
+  const greedy = await vote(e, cookies[0], ["e1", "e2", "e3", "e4"]);
+  assert.equal(greedy.status, 400, "ana cast four picks in a three-pick contest");
+
+  // Somebody who is not in the server gets no ballot at all, however many
+  // Discord accounts they have.
+  const stranger = await signIn(e, { userID: "99999999999999999", inGuild: false });
+  assert.equal(stranger.status, 403, "a stranger was let in");
+
+  // The count before the close is what the members actually cast: eleven
+  // three-pick ballots plus kit's replacement single.
+  const statsRes = await call(e, `/api/c/${SLUG}/stats`, {
+    headers: { authorization: "Bearer " + BOT_TOKEN },
+  });
+  const stats = await statsRes.json();
+  assert.equal(stats.voters, group.length, "voters counts people, not ballots");
+  assert.equal(stats.votes, (group.length - 1) * 3 + 1, "picks were double counted or lost");
+
+  // Close, and the tally is what merlin will rank. Every entry took three
+  // votes from the wrap-around; kit's replacement ballot kept e0 and dropped
+  // the other two, so those two are the only entries that move.
+  const closeRes = await call(e, `/api/c/${SLUG}/close`, {
+    method: "POST", headers: { authorization: "Bearer " + BOT_TOKEN },
+  });
+  assert.equal(closeRes.status, 200, "close");
+  const tally = await closeRes.json();
+
+  const total = Object.values(tally).reduce((a, b) => a + b, 0);
+  assert.equal(total, stats.votes, "the tally and the vote count disagree");
+
+  const dropped = ["e" + ((kit + 1) % group.length), "e" + ((kit + 3) % group.length)];
+  for (const id of dropped) {
+    assert.equal(tally[id], 2, id + " kept a vote kit withdrew, so the ballot was added to rather than replaced");
+  }
+  assert.equal(tally.e0, 3, "e0 was double counted: kit voted for it both times");
+  for (const [id, n] of Object.entries(tally)) {
+    if (!dropped.includes(id)) assert.equal(n, 3, id + " moved, and only kit changed anything");
+  }
+
+  // And the ballot is frozen: a member who was mid-vote when it closed is
+  // refused rather than quietly counted after the fact.
+  const late = await vote(e, cookies[1], ["e5"]);
+  assert.equal(late.status, 409, "a vote landed after the contest closed");
+
+  // The public view still carries no hashes and no guild, with twelve real
+  // entries in it rather than the three the other tests use.
+  const view = await (await call(e, `/api/c/${SLUG}/view`)).json();
+  assert.equal(view.entries.length, group.length);
+  assert.ok(!JSON.stringify(view).includes("by_hash"), "the public view leaks voter hashes");
+  for (const h of hashes) {
+    assert.ok(!JSON.stringify(view).includes(h), "an entry hash reached the public view");
+  }
+});
+
 // --- run ------------------------------------------------------------------
 
 let failed = 0;

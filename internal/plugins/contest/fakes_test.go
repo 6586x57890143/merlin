@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -680,4 +681,19 @@ func seedGate(store *fakeStore, ops *fakeOps) {
 		},
 	})
 	store.cfg["g1"] = Config{GuildID: "g1", DefaultMaxVotes: 2, GateChannelID: "general-1"}
+}
+
+// dmCount is how many people were sent a direct message. DMs land in `sent`
+// under the channel UserChannelCreate handed back, so this is the count of
+// those rather than a second recording path.
+func (f *fakeOps) dmCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for id := range f.sent {
+		if strings.HasPrefix(id, "dm-") {
+			n++
+		}
+	}
+	return n
 }
