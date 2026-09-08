@@ -1,8 +1,26 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "merlin-contests",
+  "name": "contest",
   "main": "worker.js",
   "compatibility_date": "2025-08-01",
+
+  // The Worker answers on melting.lol, which is a Cloudflare-managed zone on
+  // this same account, so `custom_domain` is all it takes: wrangler creates
+  // the DNS record and provisions the certificate on deploy. There is no A or
+  // CNAME to write by hand, and writing one anyway is how you get a record
+  // fighting the route.
+  //
+  // Two things have to be true before a deploy that moves this, and neither
+  // is visible from here. Discord's OAuth redirect allowlist must already
+  // carry https://contest.melting.lol/oauth/callback, or voting 400s on the
+  // new host the moment the domain resolves. And the workers.dev route stays
+  // enabled on purpose: every contest announcement already sitting in a
+  // Discord channel carries the old origin as literal text, and a results
+  // gallery is meant to stay readable for artRefreshWindow (30 days) past
+  // close.
+  "routes": [
+    { "pattern": "contest.melting.lol", "custom_domain": true }
+  ],
 
   // Static assets are served from here, but not automatically: the Worker
   // fetches index.html itself so it can attach the noindex headers. A
@@ -13,6 +31,8 @@
     "binding": "ASSETS"
   },
 
+  // The database keeps the old name deliberately. Only the Worker was
+  // renamed; renaming a D1 database to match is a migration, not a tidy-up.
   "d1_databases": [
     {
       "binding": "DB",
