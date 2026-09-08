@@ -277,9 +277,15 @@ and `guilds.members.read`, and the second one is the point: it is what proves
 a voter is in your server rather than merely holding a Discord account.
 
 Add the redirect URI for a new hostname **before** the deploy that starts
-serving it, and leave the old one listed. The Worker derives `redirect_uri`
-from the origin it was reached on, so an unlisted host is not a warning, it is
-Discord rejecting every ballot on a page that otherwise looks fine.
+serving it. The Worker derives `redirect_uri` from whichever origin it was
+reached on, so an unlisted host is not a warning, it is Discord rejecting every
+ballot on a page that otherwise looks fine.
+
+Whether to keep the *old* hostname listed is a question about live votes, not
+about old links in general. Browsing takes no OAuth, so a gallery linked from
+an announcement posted months ago opens either way. Only a ballot reached
+through the old origin needs it, which means keeping it until the bot has been
+restarted onto the new URL and no contest is still in its vote phase.
 
 Then put the Worker's URL and the two shared secrets in the bot's `.env` and
 restart it. Leave them empty and contests still run, just without a gallery.
