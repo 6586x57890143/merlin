@@ -264,10 +264,28 @@ wrangler secret put DISCORD_CLIENT_SECRET
 wrangler deploy
 ```
 
+It answers on `contest.melting.lol`, declared as a `custom_domain` route in
+`wrangler.jsonc`. That zone is Cloudflare-managed on the same account, so the
+DNS record and the certificate are created by the deploy; there is nothing to
+add by hand. The `workers.dev` URL keeps working alongside it, deliberately:
+contest announcements already posted to Discord carry that origin as literal
+text, and a results gallery stays readable for 30 days past close.
+
 Voting is Discord OAuth, so add `https://<your-worker>/oauth/callback` as a
 redirect URI on the same application as the bot. The scopes are `identify`
 and `guilds.members.read`, and the second one is the point: it is what proves
 a voter is in your server rather than merely holding a Discord account.
+
+Add the redirect URI for a new hostname **before** the deploy that starts
+serving it. The Worker derives `redirect_uri` from whichever origin it was
+reached on, so an unlisted host is not a warning, it is Discord rejecting every
+ballot on a page that otherwise looks fine.
+
+Whether to keep the *old* hostname listed is a question about live votes, not
+about old links in general. Browsing takes no OAuth, so a gallery linked from
+an announcement posted months ago opens either way. Only a ballot reached
+through the old origin needs it, which means keeping it until the bot has been
+restarted onto the new URL and no contest is still in its vote phase.
 
 Then put the Worker's URL and the two shared secrets in the bot's `.env` and
 restart it. Leave them empty and contests still run, just without a gallery.
