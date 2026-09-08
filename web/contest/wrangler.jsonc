@@ -28,7 +28,21 @@
   // reporting should be reachable by anyone with the link and by no crawler.
   "assets": {
     "directory": "./public",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+
+    // ...but "not automatically" was never true of the root. Static assets
+    // are matched *before* the Worker runs, and public/index.html matches
+    // "/", so "/" never reached fetch(): it answered 200 with the gallery
+    // shell instead of the Worker's "you want the link from your server"
+    // 404, with {{COMMIT}} left as a literal and no x-robots-tag on the
+    // response. The meta robots tag inside index.html still covered the
+    // crawler half, so this was a layer thin rather than open, but the root
+    // was answering the wrong thing and nothing said so.
+    //
+    // Only "/" is listed. Everything under /stickers/ keeps coming straight
+    // off the asset layer without waking the Worker, which has no route for
+    // it and would 404 the lot.
+    "run_worker_first": ["/"]
   },
 
   // The database keeps the old name deliberately. Only the Worker was
