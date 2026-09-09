@@ -443,6 +443,29 @@ func (p *Plugin) advance(ctx context.Context, c Contest) error {
 		return nil
 
 	case PhaseSubmit:
+		// The entry list freezes here, so this is the last chance to read
+		// the forum, and whatever is missing now stays missing for the
+		// whole vote.
+		//
+		// tick() syncs a moment before it reaches this, which is what made
+		// the deadline-driven path look correct and hid the gap for the
+		// other caller. /contest advance calls straight in here, so an
+		// entry posted in the seconds between the last tick and the
+		// command was dropped from the contest it had been entered in,
+		// with nothing said to anyone. pushSnapshot reads
+		// p.store.Submissions and never the forum, so the push that opens
+		// voting cannot rescue it either.
+		//
+		// Before the claim, so the phase is still submit and the withdraw
+		// pass runs with it: what freezes is what the forum held at close,
+		// deletions included. A losing racer syncs for nothing, which is
+		// harmless because the sync is idempotent, and is the better trade
+		// against freezing a stale list. Non-fatal for the same reason it
+		// is non-fatal in tick(): a Discord blip must not pin a contest in
+		// its submission phase.
+		if err := p.syncSubmissions(ctx, c); err != nil {
+			p.log.Error("contest: final sync before vote", "contest", c.ID, "err", err)
+		}
 		won, err := p.store.AdvancePhase(ctx, c.ID, PhaseSubmit, PhaseVote)
 		if err != nil || !won {
 			return err
