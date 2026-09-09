@@ -327,3 +327,63 @@ func TestSyncForumWritesNothingWhenAlreadyRight(t *testing.T) {
 		t.Error("a resync that had nothing to change wrote to Discord anyway")
 	}
 }
+
+// --- the mirror reads permissions, not the overwrite list -----------------
+
+// The gate that actually exists on most servers: @everyone has no View
+// Channels at the guild level, a role granted on verification does, and the
+// gated channel itself carries no overwrites at all because it does not need
+// any. Scraping the overwrite list found nothing there and produced a forum
+// denied to @everyone and granted to nobody, so the only accounts that could
+// see a contest were merlin and the guild's admins.
+func TestAGateMadeOfRolePermissionsIsMirrored(t *testing.T) {
+	store, ops := newFakeStore(), newFakeOps()
+	ops.roles = guildRoles("g1", "melted", "outsider")
+	roleByID(ops.roles, "melted").Permissions = discordgo.PermissionViewChannel
+	ops.channels = append(ops.channels, &discordgo.Channel{
+		ID: "general-1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
+	})
+	cfg := Config{GuildID: "g1", GateChannelID: "general-1"}
+	p := newTestPlugin(t, store, ops, newFakeSched(), &fakeAudit{}, "")
+
+	ow, err := p.forumOverwritesFor(cfg, "g1", nil, false)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	role := discordgo.PermissionOverwriteTypeRole
+	if denyOn(ow, "g1", role)&discordgo.PermissionViewChannel == 0 {
+		t.Error("@everyone can see a forum in a server where @everyone sees nothing")
+	}
+	if allowOn(ow, "melted", role)&discordgo.PermissionViewChannel == 0 {
+		t.Error("the role that is what being let in means cannot see the contest")
+	}
+	if findIn(ow, "outsider", role) != nil {
+		t.Error("a role that cannot see the gate channel was let into the contest")
+	}
+}
+
+// The same read, failing the other way: a channel everybody can see because
+// the guild default says so and nothing overrides it. An absent @everyone
+// entry was taken as "everyone may not view", so an open server got a forum
+// its members could not find.
+func TestAChannelOpenByDefaultIsMirroredAsOpen(t *testing.T) {
+	store, ops := newFakeStore(), newFakeOps()
+	ops.roles = guildRoles("g1", "melted")
+	roleByID(ops.roles, "g1").Permissions = discordgo.PermissionViewChannel
+	ops.channels = append(ops.channels, &discordgo.Channel{
+		ID: "general-1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
+	})
+	cfg := Config{GuildID: "g1", GateChannelID: "general-1"}
+	p := newTestPlugin(t, store, ops, newFakeSched(), &fakeAudit{}, "")
+
+	ow, err := p.forumOverwritesFor(cfg, "g1", nil, false)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if denyOn(ow, "g1", discordgo.PermissionOverwriteTypeRole)&discordgo.PermissionViewChannel != 0 {
+		t.Error("a server where everyone sees everything got a hidden contest forum")
+	}
+	if findIn(ow, "melted", discordgo.PermissionOverwriteTypeRole) != nil {
+		t.Error("an entry per role on a forum everyone can already see, for nothing")
+	}
+}

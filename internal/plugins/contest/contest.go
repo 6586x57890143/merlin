@@ -285,7 +285,8 @@ func (p *Plugin) tick(ctx context.Context, guildID string) error {
 	// making 200 REST calls a minute for a link that needs refreshing twice
 	// a day.
 	refresh := c.Phase == PhaseVote && p.dueForRefresh(ctx, c)
-	if c.Phase == PhaseSubmit || refresh {
+	synced := c.Phase == PhaseSubmit || refresh
+	if synced {
 		if err := p.syncSubmissions(ctx, c); err != nil {
 			// Not fatal to the tick: a forum read failing must not stop a
 			// deadline from being enforced, or a Discord blip could hold a
@@ -299,9 +300,25 @@ func (p *Plugin) tick(ctx context.Context, guildID string) error {
 		return p.advance(ctx, c)
 	}
 
-	if refresh {
+	// A sync that ran is a snapshot that may have changed, so the push
+	// follows the sync rather than the refresh.
+	//
+	// Gating it on refresh alone meant the gallery was never pushed once
+	// during the submission window: syncSubmissions wrote every new entry
+	// into Postgres a minute after it was posted, and the Worker went on
+	// serving the snapshot from the announce phase until the vote
+	// transition pushed the finished list. Entrants watched a page that
+	// said nothing had been entered, for the entire time entering was
+	// open, which is the one phase where the page is meant to be filling
+	// up in front of people.
+	//
+	// Unconditional rather than diffed. The reads behind the sync are
+	// already one REST call per entry per minute; the push is one call
+	// with a few KB in it, and a full replace landing after a missed one
+	// is still correct with nothing to reconcile.
+	if synced {
 		if err := p.pushSnapshot(ctx, c); err != nil {
-			p.log.Error("contest: refresh push", "contest", c.ID, "err", err)
+			p.log.Error("contest: push after sync", "contest", c.ID, "err", err)
 		}
 	}
 	return nil

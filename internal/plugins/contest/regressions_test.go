@@ -560,3 +560,53 @@ func TestACancelledContestRefreshesNothing(t *testing.T) {
 		t.Error("a cancelled contest kept the tick job alive")
 	}
 }
+
+// --- the gallery fills up while submissions are open ----------------------
+
+// The push used to be gated on the CDN refresh, which only ever happens in
+// the vote phase, so nothing was pushed for the whole submission window.
+// syncSubmissions wrote each entry into Postgres a minute after it was
+// posted and the Worker went on serving the snapshot from the announce
+// phase, so the page said the contest was empty for exactly as long as
+// entering it was open.
+func TestEntriesReachTheGalleryWhileSubmissionsAreOpen(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
+	seedLive(t, store, PhaseSubmit, base)
+
+	var pushed []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			var snap struct {
+				Entries []struct{} `json:"entries"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&snap)
+			pushed = append(pushed, len(snap.Entries))
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p := newTestPlugin(t, store, ops, sched, audit, srv.URL)
+	// Well inside the submission window: this tick must not advance a phase.
+	p.now = func() time.Time { return base.Add(90 * time.Minute) }
+
+	ops.threads = []*discordgo.Channel{entryThread(ops, "100", "u1")}
+	if err := p.tick(context.Background(), "g1"); err != nil {
+		t.Fatalf("first tick: %v", err)
+	}
+	ops.threads = append(ops.threads, entryThread(ops, "101", "u2"))
+	if err := p.tick(context.Background(), "g1"); err != nil {
+		t.Fatalf("second tick: %v", err)
+	}
+
+	if got, _ := store.LatestContest(context.Background(), "g1"); got.Phase != PhaseSubmit {
+		t.Fatalf("phase = %s, want submit: the test moved off the path it is checking", got.Phase)
+	}
+	if len(pushed) != 2 {
+		t.Fatalf("pushes = %v, want one per tick while submissions are open", pushed)
+	}
+	if pushed[0] != 1 || pushed[1] != 2 {
+		t.Errorf("entry counts pushed = %v, want [1 2]: the gallery is not following the forum", pushed)
+	}
+}

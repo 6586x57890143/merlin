@@ -109,23 +109,83 @@ func (p *Plugin) resolveAccess(cfg Config, guildID string) (forumAccess, error) 
 		// out. /contest new reports it and creates nothing.
 		return forumAccess{}, fmt.Errorf("contest: read the channel to mirror: %w", err)
 	}
-	for _, ow := range ref.PermissionOverwrites {
-		if ow.Type != discordgo.PermissionOverwriteTypeRole {
-			// Member-level entries are deliberately not mirrored: one
-			// person's exception on one channel is not a statement about who
-			// the server is for, and copying it onto every future contest
-			// forum spreads a decision past where it was made.
+	// Who can see the reference channel is not the same question as which
+	// roles carry an allow on it, and reading the overwrite list as though it
+	// were is what made this mirror copy nothing on an ordinary server.
+	//
+	// A channel overwrite is an *adjustment* to a role's guild-level
+	// permissions, so the roles that can see a channel are usually not
+	// written on it at all: the common gate is @everyone without View
+	// Channels at the guild level and a @verified role that has it, on a
+	// channel carrying no overwrites whatsoever. Scraping allows found
+	// exactly nothing there, and since an absent @everyone entry was also
+	// read as "everyone may not view", the forum came out denied to
+	// @everyone and granted to nobody, which is a contest only merlin and
+	// the guild's admins can see. The reverse missed too: a genuinely open
+	// reference channel, whose @everyone View comes from the guild default
+	// with nothing to override it, produced a locked forum.
+	//
+	// So ask Discord's own question instead, with Discord's own arithmetic
+	// (developers/topics/permissions: base permissions, then the @everyone
+	// overwrite, then the role's). Nothing is stored either way, which is the
+	// property this whole file is built on.
+	roleOverwrite := func(id string) *discordgo.PermissionOverwrite {
+		return findIn(ref.PermissionOverwrites, id, discordgo.PermissionOverwriteTypeRole)
+	}
+	var everyoneBase int64
+	for _, r := range roles {
+		if r.ID == guildID {
+			everyoneBase = r.Permissions
+			break
+		}
+	}
+	canView := func(r *discordgo.Role) bool {
+		perms := everyoneBase | r.Permissions
+		// Administrator bypasses every overwrite, including a deny.
+		if perms&discordgo.PermissionAdministrator != 0 {
+			return true
+		}
+		if ow := roleOverwrite(guildID); ow != nil {
+			perms &^= ow.Deny
+			perms |= ow.Allow
+		}
+		if r.ID != guildID {
+			if ow := roleOverwrite(r.ID); ow != nil {
+				perms &^= ow.Deny
+				perms |= ow.Allow
+			}
+		}
+		return perms&discordgo.PermissionViewChannel != 0
+	}
+
+	for _, r := range roles {
+		if r.ID != guildID {
 			continue
 		}
-		if ow.ID == guildID {
-			// Only an explicit allow counts as "everyone may see this".
-			// Absent means inherited, and what it inherits from is a category
-			// the contest forum is not going in.
-			access.everyoneMayView = ow.Allow&discordgo.PermissionViewChannel != 0
-			continue
-		}
-		if ow.Allow&discordgo.PermissionViewChannel != 0 {
-			access.viewRoleIDs = append(access.viewRoleIDs, ow.ID)
+		access.everyoneMayView = canView(r)
+		break
+	}
+	// Only when the forum is being closed to @everyone is there anything to
+	// grant: an open forum is open, and an entry per role on top of that
+	// would say nothing while spending one of the channel's overwrite slots.
+	//
+	// ponytail: no cap on how many roles this writes. Discord takes 100
+	// overwrites per channel and a gated server has a handful of roles that
+	// pass the gate; if one ever overruns it, the answer is to name the roles
+	// with /contest configure access-role, which already wins over the mirror.
+	if !access.everyoneMayView {
+		for _, r := range roles {
+			if r.ID == guildID {
+				continue
+			}
+			// An Administrator role needs no entry for the same reason it is
+			// allowed above: overwrites do not apply to it.
+			if (everyoneBase|r.Permissions)&discordgo.PermissionAdministrator != 0 {
+				continue
+			}
+			if canView(r) {
+				access.viewRoleIDs = append(access.viewRoleIDs, r.ID)
+			}
 		}
 	}
 	access.viewRoleIDs = keep(access.viewRoleIDs)
