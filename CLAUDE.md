@@ -767,6 +767,28 @@ a Cloudflare Worker serving the gallery and the ballot.
   reading only the latest contest gave a winner until the next `/contest new`
   to collect, after which their prize was unreachable and its ciphertext sat
   in `contest_prizes` for good.
+- **A pledge waits for a mod, and the mod is not shown the code.** `/contest
+  prize` is `TierPublic` and used to publish on submission: row written,
+  snapshot pushed and the announce line posted before anybody had read a word
+  of it, so the gallery carried whatever any member typed under their own
+  name. Approval (migration 0033, `reviewed_at IS NULL` is pending) gates all
+  of that, and `awardPrizes` filters on it too, since an unreviewed code
+  reaching a winner is the queue having been for nothing. The mod is not
+  shown the code because a moderator is not a smaller exception to the
+  sealing than anybody else, and a review flow that decrypted would make
+  every mod somebody who could pocket a key and reject the pledge. What they
+  get is the donor, their account age (off the snowflake, no API call), the
+  title, the details, and one line of `codeShape` derived at pledge time in
+  the only function that holds the plaintext: "steam-shaped key, 17
+  characters", "link to discord.gift" (host only, never the path, which is
+  the entire secret), "4 words of prose". That is enough to throw out "lol
+  get rekt idiot" and deliberately not enough to catch a plausible fake,
+  because nothing short of redeeming a code can and a queue that looked like
+  a guarantee would be worse than one that does not. Rejecting keeps the row
+  and wipes the ciphertext **in the same statement** as the decision, DMs the
+  donor, and survives a bounced DM. `/contest status` counts what is pending,
+  which is what stops an undrained queue from being invisible given a pledge
+  nobody rules on appears nowhere else at all.
 - **Cancelling deletes nothing.** The forum, the posts and the pledges all
   stay: calling a contest off is a decision about the contest, not about
   anybody's work, and channel deletion has no undo.

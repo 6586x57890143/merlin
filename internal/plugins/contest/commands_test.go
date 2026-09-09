@@ -137,6 +137,19 @@ func modalSubmit(customID string, fields map[string]string) *discordgo.Interacti
 	}}
 }
 
+// componentClick builds a button press by a mod, which is how the prize
+// review queue is driven.
+func componentClick(customID string) *discordgo.InteractionCreate {
+	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		ID: "i3", Token: "tok", GuildID: "g1", ChannelID: "chan-1",
+		Type: discordgo.InteractionMessageComponent,
+		Member: &discordgo.Member{
+			Nick: "mod", User: &discordgo.User{ID: "mod-1", Username: "mod"},
+		},
+		Data: discordgo.MessageComponentInteractionData{CustomID: customID},
+	}}
+}
+
 // --- /contest new ---------------------------------------------------------
 
 func TestNewCreatesAForumAndAnnouncesIt(t *testing.T) {
@@ -364,8 +377,14 @@ func TestAPledgeWithoutACodeIsFine(t *testing.T) {
 	if len(prizes) != 1 || prizes[0].HasSecret() {
 		t.Fatalf("prizes = %+v", prizes)
 	}
-	if len(ops.sentTo("announce-1")) != 1 {
-		t.Error("the pledge was not announced, so nobody knows the pool grew")
+	if !prizes[0].Pending() {
+		t.Error("a pledge went in already approved, so /contest prize publishes itself again")
+	}
+	// The announcement is the approval's job now. /contest prize is
+	// TierPublic, so anything it posts is a member's own words reaching a
+	// channel with nobody having read them.
+	if len(ops.sentTo("announce-1")) != 0 {
+		t.Error("an unreviewed pledge was announced to the server")
 	}
 }
 
