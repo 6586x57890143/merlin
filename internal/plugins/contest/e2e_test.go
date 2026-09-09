@@ -162,6 +162,25 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 		t.Fatalf("prizes = %d (%v), want 2", len(prizes), err)
 	}
 
+	// --- and a mod rules on both before either is public -------------------
+	//
+	// Driven through the real button, not the store, because the queue being
+	// wired to the command router is half of what this test is for. Neither
+	// pledge exists to anybody outside this queue until these two clicks.
+	if len(ops.sentTo(c.AnnounceChannelID)) != 1 {
+		t.Fatalf("an unreviewed pledge reached the announce channel: %d posts", len(ops.sentTo(c.AnnounceChannelID)))
+	}
+	for _, pr := range prizes {
+		p.handleReviewButton(context.Background(), sess, componentClick(reviewPrefix+"approve:"+pr.ID),
+			reviewPrefix+"approve:"+pr.ID)
+	}
+	prizes, _ = store.Prizes(context.Background(), c.ID)
+	for _, pr := range prizes {
+		if !pr.Approved {
+			t.Fatalf("pledge %s did not survive the review queue", pr.Title)
+		}
+	}
+
 	// --- submissions open --------------------------------------------------
 
 	now = base.Add(time.Hour + time.Second)
@@ -385,6 +404,11 @@ func TestAWholeContestWithNoVotesCrownsNobody(t *testing.T) {
 	p.handlePrizeModal(context.Background(), sess, modalSubmit(prizeModalPrefix+c.ID, map[string]string{
 		prizeFieldTitle: "a steam key", prizeFieldCode: "STEAM-CCCC-DDDD",
 	}), prizeModalPrefix+c.ID)
+	// Approved, so that "nothing was awarded" below is about nobody voting
+	// rather than about the pledge never having been reviewed.
+	pending, _ := store.Prizes(context.Background(), c.ID)
+	p.handleReviewButton(context.Background(), sess, componentClick(reviewPrefix+"approve:"+pending[0].ID),
+		reviewPrefix+"approve:"+pending[0].ID)
 
 	for n, m := range testGroup[:3] {
 		ops.threads = append(ops.threads, post(ops, "t"+strconv.Itoa(200+n), m, m.name+"'s go"))

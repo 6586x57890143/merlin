@@ -513,6 +513,9 @@ func TestAPrizeCodeIsWipedOnlyAfterItIsDelivered(t *testing.T) {
 		if err := store.AddPrize(context.Background(), Prize{
 			ID: "p1", ContestID: "c1", DonorID: "u9", DonorName: "dana",
 			Title: "a steam key", SecretSealed: sealed,
+			// Approved, because this test is about delivery. A pending
+			// pledge is not awarded at all, which is its own test.
+			ReviewedAt: &base, ReviewedBy: "mod-1", Approved: true,
 		}); err != nil {
 			t.Fatalf("seed prize: %v", err)
 		}

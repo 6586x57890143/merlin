@@ -243,11 +243,16 @@ func entryTitle(s Submission) string {
 // in place and the pairing on record, which is exactly the state
 // /contest claim needs to finish the job.
 func (p *Plugin) awardPrizes(ctx context.Context, c Contest, subs []Submission, results []resultView) {
-	prizes, err := p.store.Prizes(ctx, c.ID)
+	all, err := p.store.Prizes(ctx, c.ID)
 	if err != nil {
 		p.log.Error("contest: read prizes", "contest", c.ID, "err", err)
 		return
 	}
+	// Approved only, and this matters at least as much here as it does on the
+	// gallery: an unreviewed code reaching a winner is the review queue
+	// having been for nothing. A pledge still pending when the contest closes
+	// is simply not awarded, and falls into the spare count below.
+	prizes := approvedPrizes(all)
 	if len(prizes) == 0 {
 		return
 	}

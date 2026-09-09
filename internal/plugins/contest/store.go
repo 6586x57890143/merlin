@@ -180,14 +180,47 @@ type Prize struct {
 	Title        string
 	Details      string
 	SecretSealed []byte
-	AwardedTo    *string
-	AwardedAt    *time.Time
-	CreatedAt    time.Time
+	// CodeShape describes the code without disclosing it ("steam-shaped key,
+	// 17 characters"), derived once at pledge time by codeShape. It is what
+	// the review surface shows, and the only thing said about a code
+	// anywhere outside the winner's DM.
+	CodeShape  string
+	ReviewedAt *time.Time
+	ReviewedBy string
+	Approved   bool
+	AwardedTo  *string
+	AwardedAt  *time.Time
+	CreatedAt  time.Time
 }
 
 // HasSecret reports whether a prize carries a code to deliver, without
 // anything having to touch the ciphertext to find out.
 func (p Prize) HasSecret() bool { return len(p.SecretSealed) > 0 }
+
+// Pending reports that no mod has ruled on this pledge yet. A pending pledge
+// reaches neither the gallery nor a winner.
+func (p Prize) Pending() bool { return p.ReviewedAt == nil }
+
+// Rejected reports that a mod turned this pledge down. The row survives the
+// decision on purpose: rejecting is a moderation record, and only the
+// ciphertext is destroyed.
+func (p Prize) Rejected() bool { return p.ReviewedAt != nil && !p.Approved }
+
+// approvedPrizes is the pool as everybody outside the review surface sees it.
+//
+// A package function over the slice rather than a second Store query, because
+// the two callers that need it (the snapshot push and the award) already hold
+// the full list for other reasons, and a filtered read method would be a
+// second thing for every future call site to remember to pick.
+func approvedPrizes(prizes []Prize) []Prize {
+	out := make([]Prize, 0, len(prizes))
+	for _, pr := range prizes {
+		if pr.Approved {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
 
 // Store is the narrow slice of Postgres this plugin needs. Declared here
 // rather than importing a concrete type so tests run against an in-memory
@@ -221,6 +254,15 @@ type Store interface {
 	// ciphertext for good.
 	PrizesAwardedTo(ctx context.Context, guildID, userID string) ([]Prize, error)
 	RemovePrize(ctx context.Context, contestID, prizeID, donorID string) (bool, error)
+	// ApprovePrize and RejectPrize both claim the decision with a conditional
+	// update and report whether they won it, so a stale review button cannot
+	// re-rule on a pledge somebody else already handled. Same
+	// claim-before-acting shape as AdvancePhase.
+	ApprovePrize(ctx context.Context, prizeID, byUserID string, at time.Time) (bool, error)
+	// RejectPrize wipes the sealed code in the same statement that records
+	// the rejection: two statements would leave a window where a pledge is
+	// rejected and merlin is still holding somebody's key.
+	RejectPrize(ctx context.Context, prizeID, byUserID string, at time.Time) (bool, error)
 	MarkPrizeAwarded(ctx context.Context, prizeID, winnerID string, at time.Time) error
 	// ClearPrizeSecret wipes the ciphertext once it has been delivered. A
 	// separate call from MarkPrizeAwarded on purpose: a failed DM must leave
@@ -458,9 +500,9 @@ func (s *pgStore) WithdrawMissing(ctx context.Context, contestID string, liveThr
 
 func (s *pgStore) AddPrize(ctx context.Context, p Prize) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO contest_prizes (id, contest_id, donor_id, donor_name, title, details, secret_sealed)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
-	`, p.ID, p.ContestID, p.DonorID, p.DonorName, p.Title, p.Details, p.SecretSealed)
+		INSERT INTO contest_prizes (id, contest_id, donor_id, donor_name, title, details, secret_sealed, code_shape)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`, p.ID, p.ContestID, p.DonorID, p.DonorName, p.Title, p.Details, p.SecretSealed, p.CodeShape)
 	if err != nil {
 		return fmt.Errorf("contest store: add prize: %w", err)
 	}
@@ -469,7 +511,8 @@ func (s *pgStore) AddPrize(ctx context.Context, p Prize) error {
 
 func (s *pgStore) Prizes(ctx context.Context, contestID string) ([]Prize, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, contest_id, donor_id, donor_name, title, details, secret_sealed, awarded_to, awarded_at, created_at
+		SELECT id, contest_id, donor_id, donor_name, title, details, secret_sealed, code_shape,
+			reviewed_at, reviewed_by, approved, awarded_to, awarded_at, created_at
 		FROM contest_prizes WHERE contest_id = $1 ORDER BY created_at
 	`, contestID)
 	if err != nil {
@@ -480,7 +523,8 @@ func (s *pgStore) Prizes(ctx context.Context, contestID string) ([]Prize, error)
 	for rows.Next() {
 		var p Prize
 		if err := rows.Scan(&p.ID, &p.ContestID, &p.DonorID, &p.DonorName, &p.Title,
-			&p.Details, &p.SecretSealed, &p.AwardedTo, &p.AwardedAt, &p.CreatedAt); err != nil {
+			&p.Details, &p.SecretSealed, &p.CodeShape, &p.ReviewedAt, &p.ReviewedBy, &p.Approved,
+			&p.AwardedTo, &p.AwardedAt, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("contest store: scan prize: %w", err)
 		}
 		out = append(out, p)
@@ -491,7 +535,8 @@ func (s *pgStore) Prizes(ctx context.Context, contestID string) ([]Prize, error)
 func (s *pgStore) PrizesAwardedTo(ctx context.Context, guildID, userID string) ([]Prize, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.id, p.contest_id, p.donor_id, p.donor_name, p.title, p.details,
-			p.secret_sealed, p.awarded_to, p.awarded_at, p.created_at
+			p.secret_sealed, p.code_shape, p.reviewed_at, p.reviewed_by, p.approved,
+			p.awarded_to, p.awarded_at, p.created_at
 		FROM contest_prizes p JOIN contests c ON c.id = p.contest_id
 		WHERE c.guild_id = $1 AND p.awarded_to = $2
 		ORDER BY p.awarded_at DESC
@@ -504,7 +549,8 @@ func (s *pgStore) PrizesAwardedTo(ctx context.Context, guildID, userID string) (
 	for rows.Next() {
 		var p Prize
 		if err := rows.Scan(&p.ID, &p.ContestID, &p.DonorID, &p.DonorName, &p.Title,
-			&p.Details, &p.SecretSealed, &p.AwardedTo, &p.AwardedAt, &p.CreatedAt); err != nil {
+			&p.Details, &p.SecretSealed, &p.CodeShape, &p.ReviewedAt, &p.ReviewedBy, &p.Approved,
+			&p.AwardedTo, &p.AwardedAt, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("contest store: scan awarded prize: %w", err)
 		}
 		out = append(out, p)
@@ -522,6 +568,33 @@ func (s *pgStore) RemovePrize(ctx context.Context, contestID, prizeID, donorID s
 	`, prizeID, contestID, donorID)
 	if err != nil {
 		return false, fmt.Errorf("contest store: remove prize: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *pgStore) ApprovePrize(ctx context.Context, prizeID, byUserID string, at time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE contest_prizes SET reviewed_at = $3, reviewed_by = $2, approved = true
+		WHERE id = $1 AND reviewed_at IS NULL
+	`, prizeID, byUserID, at)
+	if err != nil {
+		return false, fmt.Errorf("contest store: approve prize: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *pgStore) RejectPrize(ctx context.Context, prizeID, byUserID string, at time.Time) (bool, error) {
+	// The wipe rides in the same statement as the decision. Splitting it in
+	// two leaves a window where the pledge is rejected and merlin is still
+	// holding a stranger's key, and the retry for the second half is exactly
+	// the kind of bookkeeping nothing here would ever notice was missing.
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE contest_prizes
+		   SET reviewed_at = $3, reviewed_by = $2, approved = false, secret_sealed = NULL
+		 WHERE id = $1 AND reviewed_at IS NULL
+	`, prizeID, byUserID, at)
+	if err != nil {
+		return false, fmt.Errorf("contest store: reject prize: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

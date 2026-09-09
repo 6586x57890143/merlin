@@ -277,6 +277,41 @@ func (f *fakeStore) RemovePrize(_ context.Context, contestID, prizeID, donorID s
 	return false, nil
 }
 
+// ApprovePrize and RejectPrize model the store's conditional update, not just
+// its effect: both refuse a pledge that has already been ruled on, because
+// the review buttons rely on losing that claim rather than on the message
+// they arrived from being fresh.
+func (f *fakeStore) ApprovePrize(_ context.Context, prizeID, byUserID string, at time.Time) (bool, error) {
+	return f.review(prizeID, byUserID, at, true), nil
+}
+
+func (f *fakeStore) RejectPrize(_ context.Context, prizeID, byUserID string, at time.Time) (bool, error) {
+	return f.review(prizeID, byUserID, at, false), nil
+}
+
+func (f *fakeStore) review(prizeID, byUserID string, at time.Time, approved bool) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for cid := range f.prizes {
+		for i := range f.prizes[cid] {
+			pr := &f.prizes[cid][i]
+			if pr.ID != prizeID || pr.ReviewedAt != nil {
+				continue
+			}
+			t := at
+			pr.ReviewedAt, pr.ReviewedBy, pr.Approved = &t, byUserID, approved
+			if !approved {
+				// Wiped in the same write as the decision, as the real
+				// statement does: a fake that left it would let a test pass
+				// on an ordering the database does not allow.
+				pr.SecretSealed = nil
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeStore) MarkPrizeAwarded(_ context.Context, prizeID, winnerID string, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

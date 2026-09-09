@@ -635,7 +635,11 @@ func (p *Plugin) pushSnapshot(ctx context.Context, c Contest) error {
 	if err != nil {
 		return err
 	}
-	return p.worker.Push(ctx, p.snapshotOf(c, subs, prizes))
+	// Approved only. A pledge nobody has ruled on must not reach the public
+	// gallery, which is the whole point of the review queue: /contest prize
+	// is TierPublic, so without this the page carries whatever any member
+	// typed, under their own name.
+	return p.worker.Push(ctx, p.snapshotOf(c, subs, approvedPrizes(prizes)))
 }
 
 func (p *Plugin) snapshotOf(c Contest, subs []Submission, prizes []Prize) snapshot {

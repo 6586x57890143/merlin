@@ -13,7 +13,6 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/secret"
-	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // Action names namespace the per-guild allow/deny/tier-override machinery
@@ -24,6 +23,12 @@ import (
 const (
 	actionManage    = "contest.manage"
 	actionConfigure = "contest.configure"
+	// Its own action rather than actionManage, so a guild can raise the bar
+	// on it with /config permissions set-tier: rejecting a pledge destroys
+	// the code that came with it, which is a different blast radius from
+	// running a contest, the same reasoning that gave roles.jail_role its
+	// own action.
+	actionReview = "contest.review"
 )
 
 // Default phase lengths. Only the title is required on /contest new, because
@@ -123,6 +128,10 @@ func (p *Plugin) registerCommands() {
 				Description: "Where the contest is up to, and whether anything is broken.",
 			},
 			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "review",
+				Description: "Approve or reject pledged prizes. You never see the code.",
+			},
+			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "advance",
 				Description: "Move the contest to its next phase now, without waiting for the deadline.",
 			},
@@ -189,6 +198,7 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("contest", "link", public, p.handleLink)
 	p.commands.Handle("contest", "claim", public, p.handleClaim)
 	p.commands.Handle("contest", "status", mod, p.handleStatus)
+	p.commands.Handle("contest", "review", core.PermSpec{Tier: core.TierMod, Action: actionReview}, p.handleReview)
 	p.commands.Handle("contest", "advance", mod, p.handleAdvance)
 	p.commands.Handle("contest", "cancel", mod, p.handleCancel)
 	p.commands.Handle("contest", "configure/show", admin, p.handleConfigureShow)
@@ -197,6 +207,8 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("contest", "configure/sync-forum", admin, p.handleSyncForum)
 
 	p.commands.HandleComponent(p.Name(), linkButtonPrefix, public, p.handleLinkButton)
+	p.commands.HandleComponent(p.Name(), reviewPrefix,
+		core.PermSpec{Tier: core.TierMod, Action: actionReview}, p.handleReviewButton)
 	p.commands.HandleModal(p.Name(), prizeModalPrefix, public, p.handlePrizeModal)
 }
 
@@ -463,6 +475,9 @@ func (p *Plugin) handlePrizeModal(ctx context.Context, s *discordgo.Session, i *
 	}
 
 	if code := strings.TrimSpace(vals[prizeFieldCode]); code != "" {
+		// Derived here and nowhere else, because here is the only place the
+		// plaintext exists. Everything downstream reviews the shape.
+		prize.CodeShape = codeShape(code)
 		sealed, err := p.sealer.Seal(code)
 		if err != nil {
 			if errors.Is(err, secret.ErrNoKey) {
@@ -486,19 +501,16 @@ func (p *Plugin) handlePrizeModal(ctx context.Context, s *discordgo.Session, i *
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "contest.prize_pledged", "", prize.Title); err != nil {
 		p.log.Error("contest: audit prize", "contest", c.ID, "err", err)
 	}
-	p.pushBestEffort(ctx, c)
 
-	line := p.speak(ctx, i.GuildID, voice.KeyContestPrizePledged, map[string]string{
-		"donor": prize.DonorName,
-		"prize": prize.Title,
-	}, prize.DonorName+" put up "+prize.Title+".")
-	p.post(ctx, c, core.NewEmbed(core.ColorSuccess, "prize pledged", line), nil)
-
-	note := "It's in the pool. You keep hold of it until the winner is announced."
+	// Nothing public happens here any more. The snapshot push and the
+	// announce-channel line both moved to the approval, because this command
+	// is TierPublic and everything it used to do put a member's own words,
+	// under their own name, straight onto the gallery and into a channel.
+	note := "A mod looks at it before it shows up. You keep hold of it until the winner is announced."
 	if prize.HasSecret() {
-		note = "Code stored encrypted. merlin sends it straight to the winner and wipes it after."
+		note = "Code stored encrypted, and nobody reviewing it can read it. merlin sends it straight to the winner and wipes it after."
 	}
-	core.RespondOK(s, i, "Pledged", note)
+	core.RespondOK(s, i, "Pledged, waiting on a mod", note)
 }
 
 func (p *Plugin) handleUnpledge(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -553,7 +565,9 @@ func (p *Plugin) myPledges(ctx context.Context, c Contest, userID string) ([]Pri
 	}
 	var mine []Prize
 	for _, pr := range all {
-		if pr.DonorID == userID && pr.AwardedAt == nil {
+		// A rejected pledge is already out of the pool, so offering to take
+		// it back is offering to undo something that has happened.
+		if pr.DonorID == userID && pr.AwardedAt == nil && !pr.Rejected() {
 			mine = append(mine, pr)
 		}
 	}
@@ -711,7 +725,7 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "phase", Value: string(c.Phase), Inline: true},
 		{Name: "entries", Value: countOrErr(len(subs), subErr), Inline: true},
-		{Name: "prizes", Value: countOrErr(len(prizes), prizeErr), Inline: true},
+		{Name: "prizes", Value: prizeCount(prizes, prizeErr), Inline: true},
 		{Name: "forum", Value: core.MentionChannel(c.ForumChannelID), Inline: true},
 	}
 	if d, has := c.Deadline(); has {
@@ -794,6 +808,33 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	if err := core.FollowUpEmbed(s, i, core.NewEmbed(colour, c.Title, "where this one is up to.", fields...)); err != nil {
 		p.log.Error("contest: follow up status", "err", err)
 	}
+}
+
+// prizeCount is the prize line on /contest status: how many are actually in
+// the pool, and how many are still waiting on a mod.
+//
+// The pending half is what stops an unattended queue from being invisible.
+// Approval is always required and a pledge nobody rules on appears nowhere
+// else at all, so without a count here a server could quietly stop taking
+// prizes and the only symptom would be donors wondering where theirs went.
+func prizeCount(prizes []Prize, err error) string {
+	if err != nil {
+		return "unreadable"
+	}
+	var pool, pending int
+	for _, pr := range prizes {
+		switch {
+		case pr.Approved:
+			pool++
+		case pr.Pending():
+			pending++
+		}
+	}
+	out := strconv.Itoa(pool)
+	if pending > 0 {
+		out += " (" + strconv.Itoa(pending) + " waiting on `/contest review`)"
+	}
+	return out
 }
 
 func countOrErr(n int, err error) string {
