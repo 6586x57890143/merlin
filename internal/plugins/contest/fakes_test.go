@@ -697,3 +697,14 @@ func (f *fakeOps) dmCount() int {
 	}
 	return n
 }
+
+// roleByID picks one role out of a guildRoles list so a test can give it the
+// guild-level permissions the mirror now reads.
+func roleByID(roles []*discordgo.Role, id string) *discordgo.Role {
+	for _, r := range roles {
+		if r.ID == id {
+			return r
+		}
+	}
+	panic("no such role in the fake guild: " + id)
+}
