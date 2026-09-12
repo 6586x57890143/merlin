@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/go-playground/validator/v10 v10.30.3
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/joho/godotenv v1.5.1
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/image v0.45.0
