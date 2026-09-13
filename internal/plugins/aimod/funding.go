@@ -266,7 +266,7 @@ func (p *Plugin) checkCredit(ctx context.Context, guildID string) {
 	if err != nil {
 		return
 	}
-	info, err := p.keyInfo(ctx, spec, plain)
+	info, err := p.keyInfo(ctx, guildID, spec, plain)
 	// A key with no limit set reports LimitRemaining nil, and there is then
 	// no balance to warn about. /aimod funding says so and nudges the admin
 	// to set one; a warning cannot be invented from an unknown.
@@ -556,7 +556,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	spec, sealed := route(cfg)
 	if len(sealed) > 0 {
 		if plain, err := p.sealer.Open(sealed); err == nil {
-			if info, err := p.keyInfo(ctx, spec, plain); err == nil {
+			if info, err := p.keyInfo(ctx, i.GuildID, spec, plain); err == nil {
 				remaining, limit = info.LimitRemaining, info.Limit
 			}
 		}
@@ -577,7 +577,13 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		if haveRunway {
 			value += "\n" + subtext("about "+humanRunway(left)+" at the last week's rate")
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Scanning credit", Value: core.TruncateEmbedField(value)})
+		// Why the ceiling is still a big number next to a zero. Without this
+		// the pair reads as a bug rather than as the two different things
+		// they are: a cap somebody set on the key, and money in the account.
+		if p.outOfCredit(i.GuildID) && limit != nil && *limit > 0 {
+			value += "\n" + subtext(formatUSD(*limit)+" is the cap on the key, not money in the account")
+		}
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "⛽ Scanning credit", Value: core.TruncateEmbedField(value)})
 		switch {
 		case *remaining <= 0:
 			color = core.ColorError
@@ -588,7 +594,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 
 	if !f.Configured() {
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name: "Tip jar",
+			Name: "🫙 Tip jar",
 			Value: "Not set up yet.\n" +
 				subtext("The server owner can point it at a wallet with /aimod funding set-address."),
 		})
@@ -606,7 +612,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 				plural(f.Donations, "donation", "donations")))
 		}
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "In the tip jar",
+			Name:  "🫙 In the jar",
 			Value: core.TruncateEmbedField(jar),
 		})
 
@@ -639,8 +645,8 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 			}
 		}
 		where := "```\n" + f.Address + "\n```" +
-			"**Networks: " + family.networks + "**\n" +
-			family.note + "\n"
+			"**🔗 " + family.networks + "**\n" +
+			subtext(family.note) + "\n"
 		if family.swap != "" {
 			where += subtext(family.swap) + "\n"
 		}
@@ -649,7 +655,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		// per-chain explorer would show a single ledger and imply the other
 		// four were empty.
 		if family.explorer != "" {
-			where += subtext("[Check this wallet yourself]("+fmt.Sprintf(family.explorer, f.Address)+")") + "\n"
+			where += subtext("🔎 [Check this wallet yourself]("+fmt.Sprintf(family.explorer, f.Address)+")") + "\n"
 		}
 
 		// Whether donations can buy credit without a detour. Hedged and dated,
@@ -659,26 +665,25 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		// wrong: it told donors Ethereum mainnet USDC would be lost, which
 		// OpenRouter's checkout takes perfectly well.
 		if accepted := acceptedChains(spec, family); len(accepted) == 0 {
-			where += subtext("Note for the operator: as of "+spec.topUpVerified+", "+spec.label+
-				"'s checkout was taking "+joinWords(chainNames(spec.topUpChains))+
-				". Donations here will probably need swapping or bridging first.") + "\n"
+			where += subtext("For the operator: "+spec.label+"'s checkout took "+
+				joinWords(chainNames(spec.topUpChains))+" as of "+spec.topUpVerified+
+				", so this will need swapping or bridging first.") + "\n"
 			if color == core.ColorSuccess {
 				color = core.ColorWarning
 			}
 		} else {
-			where += subtext("As of "+spec.topUpVerified+", "+spec.label+"'s checkout took "+
-				joinWords(accepted)+", so donations on "+plural(len(accepted), "that network", "those networks")+
-				" buy scanning credit directly.") + "\n"
+			where += subtext(joinWords(accepted)+" buy credit straight from "+spec.label+
+				"'s checkout, last checked "+spec.topUpVerified+".") + "\n"
 		}
 
-		provenance := "merlin only reads this wallet. Funds go to whoever controls it."
+		provenance := "merlin only reads this wallet. Funds go to whoever holds its key."
 		if f.SetBy != "" {
 			provenance = "Set by " + core.MentionUser(f.SetBy) + " " + agoWords(p.now().Sub(f.SetAt)) + ". " + provenance
 		}
 		where += subtext(provenance)
 
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Send " + family.label + " to",
+			Name:  "💸 Send " + family.label + " to",
 			Value: core.TruncateEmbedField(where),
 		})
 	}
@@ -692,7 +697,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		if color == core.ColorSuccess {
 			color = core.ColorWarning
 		}
-		body = "**This address changed " + agoWords(p.now().Sub(f.SetAt)) +
+		body = "⚠️ **This address changed " + agoWords(p.now().Sub(f.SetAt)) +
 			".** Check with your server owner before sending.\n\n" + body
 	}
 

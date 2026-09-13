@@ -2,7 +2,9 @@ package aimod
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 )
 
@@ -94,6 +96,42 @@ func (p *Plugin) recordUsage(ctx context.Context, guildID string, u Usage, deep 
 	if err := p.store.AddSpend(ctx, guildID, today(p.now()), u, deep); err != nil {
 		p.log.Error("aimod: record spend", "guild", guildID, "err", err)
 	}
+}
+
+// notePayment records whether the gateway is still willing to be paid.
+//
+// One call site, right where the fast pass lands, because the fast pass runs
+// on every batch and nothing reaches the deep rung without it. A 402 is the
+// gateway saying the account is out of money (or the key is past its cap,
+// which spends the same); any other error says nothing either way and leaves
+// the last answer standing, so a rate limit does not read as bankruptcy.
+func (p *Plugin) notePayment(guildID string, err error) {
+	var apiErr *APIError
+	switch {
+	case errors.As(err, &apiErr) && apiErr.Status == http.StatusPaymentRequired:
+		p.paymentMu.Lock()
+		if p.paymentRefused == nil {
+			// New fills this in, but the plugin is also built field-wise in
+			// tests, and a write to a nil map panics inside a scan spawn
+			// rather than failing anything visible. Same guard as
+			// reconcileFundingJob's.
+			p.paymentRefused = make(map[string]time.Time)
+		}
+		p.paymentRefused[guildID] = p.now()
+		p.paymentMu.Unlock()
+	case err == nil:
+		p.paymentMu.Lock()
+		delete(p.paymentRefused, guildID)
+		p.paymentMu.Unlock()
+	}
+}
+
+// outOfCredit reports whether the gateway last refused this guild's money.
+func (p *Plugin) outOfCredit(guildID string) bool {
+	p.paymentMu.Lock()
+	defer p.paymentMu.Unlock()
+	_, out := p.paymentRefused[guildID]
+	return out
 }
 
 // Estimate is a projected daily cost for one model stack, built from this

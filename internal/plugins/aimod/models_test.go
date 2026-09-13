@@ -124,7 +124,7 @@ func TestPriceSurfacesDegradeWithoutARealClient(t *testing.T) {
 	sealer, _ := secret.New(testSecretKey)
 	p.sealer = sealer
 
-	if _, err := p.keyInfo(context.Background(), openRouter, "k"); err == nil {
+	if _, err := p.keyInfo(context.Background(), "g1", openRouter, "k"); err == nil {
 		t.Error("keyInfo did not report that prices are unavailable in this build")
 	}
 	// reasoningLine degrades to saying nothing rather than to a wrong claim:
@@ -138,7 +138,7 @@ func TestPriceSurfacesDegradeWithoutARealClient(t *testing.T) {
 
 func TestKeyInfoReadsTheAccount(t *testing.T) {
 	p := stubCatalogue(t, newFakeStore())
-	info, err := p.keyInfo(context.Background(), openRouter, "k")
+	info, err := p.keyInfo(context.Background(), "g1", openRouter, "k")
 	if err != nil {
 		t.Fatalf("keyInfo: %v", err)
 	}
@@ -350,3 +350,64 @@ func TestModelAutocompleteIsSilentWithoutAKey(t *testing.T) {
 }
 
 var _ = discordgo.ApplicationCommandOptionChoice{}
+
+// A spend cap is not a balance, and the gauge used to draw one as the other:
+// a $50 cap on an account holding nothing reported $50 remaining forever, so
+// a server whose scanning had already stopped saw a full tank and was told it
+// needed no help. Nothing on the gateway says otherwise from an inference key
+// (GET /credits wants a management key), so the ground truth is a 402 on a
+// real call, and it has to survive back into every surface that renders the
+// gauge.
+func TestAnEmptyAccountReadsAsEmptyWhateverTheKeyCapSays(t *testing.T) {
+	p := stubCatalogue(t, newFakeStore())
+	// The stub reports a $50 cap with nothing drawn against it, which is
+	// exactly the shape that made the tank read full.
+	p.client.(*Client).base = keyServer(t, `{"data":{"label":"merlin","limit":50,"limit_remaining":50,"usage":0,"usage_daily":0}}`)
+
+	info, err := p.keyInfo(context.Background(), "g1", openRouter, "k")
+	if err != nil {
+		t.Fatalf("keyInfo: %v", err)
+	}
+	if info.LimitRemaining == nil || *info.LimitRemaining != 50 {
+		t.Fatalf("a gateway that has not refused anything should report the cap: %+v", info.LimitRemaining)
+	}
+
+	// A rate limit says nothing about the balance and must not be mistaken
+	// for one, or an outage would empty a healthy gauge and beg for money.
+	p.notePayment("g1", &APIError{Status: http.StatusTooManyRequests})
+	if p.outOfCredit("g1") {
+		t.Error("a 429 was read as an empty account")
+	}
+
+	p.notePayment("g1", &APIError{Status: http.StatusPaymentRequired})
+	info, err = p.keyInfo(context.Background(), "g1", openRouter, "k")
+	if err != nil {
+		t.Fatalf("keyInfo: %v", err)
+	}
+	// Zero rather than nil: nil means "cannot be known", and the gauge
+	// renders that as no bar at all. This is known, and it is nothing, which
+	// is what has to reach the donor as an empty bar over "$0.00 of $50.00".
+	if info.LimitRemaining == nil || *info.LimitRemaining != 0 {
+		t.Errorf("a refused payment did not empty the gauge: %+v", info.LimitRemaining)
+	}
+	if info.Limit == nil || *info.Limit != 50 {
+		t.Errorf("the cap was lost, so the gauge has no denominator: %+v", info.Limit)
+	}
+
+	// One accepted call clears it. Nothing here is persisted, so a topped-up
+	// account must recover on its own rather than waiting for a restart.
+	p.notePayment("g1", nil)
+	if p.outOfCredit("g1") {
+		t.Error("a successful call did not clear the refusal")
+	}
+}
+
+// keyServer answers GET /key with one canned body.
+func keyServer(t *testing.T, body string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}

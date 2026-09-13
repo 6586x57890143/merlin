@@ -402,7 +402,7 @@ func TestFundingShowFormatsTheJar(t *testing.T) {
 
 	for _, want := range []string{
 		testWallet, // the address itself
-		"**Networks: " + familyEVM.networks + "**", // the money-losing mistake, at full weight
+		"**🔗 " + familyEVM.networks + "**", // the money-losing mistake, at full weight
 		"-# ",                           // Discord's small grey style is in use
 		"-# Set by ",                    // provenance, demoted
 		"merlin only reads this wallet", // the disclaimer is still present
@@ -590,7 +590,7 @@ func TestJarNamesTheNetworksOfItsOwnAddress(t *testing.T) {
 		}
 		// The network list is the one line a donor must not misread, so it
 		// carries full weight while the caveat below it does not.
-		if !strings.Contains(tc.body, "**Networks: "+tc.family.networks+"**") {
+		if !strings.Contains(tc.body, "**🔗 "+tc.family.networks+"**") {
 			t.Errorf("%s jar does not name its networks at full weight:\n%s", tc.name, tc.body)
 		}
 		// Routing advice is per family rather than one sentence with the
@@ -606,7 +606,7 @@ func TestJarNamesTheNetworksOfItsOwnAddress(t *testing.T) {
 	}
 
 	for _, other := range []*walletFamily{familyTron, familySolana} {
-		if strings.Contains(evm, "**Networks: "+other.networks+"**") {
+		if strings.Contains(evm, "**🔗 "+other.networks+"**") {
 			t.Errorf("the EVM jar is carrying %s's network line at full weight", other.name)
 		}
 	}
@@ -642,16 +642,16 @@ func TestGatewayFitIsDatedAndHedged(t *testing.T) {
 	evm := strings.Join(showTheJarAt(t, testWallet), "\n")
 	tron := strings.Join(showTheJarAt(t, testTronAddress), "\n")
 
-	if !strings.Contains(tron, "probably need swapping or bridging") {
+	if !strings.Contains(tron, "need swapping or bridging") {
 		t.Errorf("a jar on a chain the gateway has not been seen taking does not say so:\n%s", tron)
 	}
-	if strings.Contains(evm, "probably need swapping or bridging") {
+	if strings.Contains(evm, "need swapping or bridging") {
 		t.Errorf("a jar the gateway does take is warning about a mismatch:\n%s", evm)
 	}
 	// Both directions carry the date, because both are observations rather
 	// than facts and a reader has to be able to tell how stale one is.
 	for _, body := range []string{evm, tron} {
-		if !strings.Contains(body, "as of "+topUpCheckedOn) && !strings.Contains(body, "As of "+topUpCheckedOn) {
+		if !strings.Contains(body, topUpCheckedOn) {
 			t.Errorf("a claim about the checkout is undated:\n%s", body)
 		}
 	}
