@@ -70,12 +70,10 @@ type walletFamily struct {
 
 var familyEVM = &walletFamily{
 	name:     "evm",
-	label:    "USDC or USDT on any of these networks",
+	label:    "USDC or USDT",
 	networks: "Base, Ethereum, Polygon, Arbitrum or BNB Chain",
-	note: "Send only USDC or USDT, and only on one of those five networks. " +
-		"Another token, or the same token on a network not listed, will not be counted here.",
-	swap: "Holding SOL, ETH or anything else? Swap it to USDC on an exchange and withdraw on Base, " +
-		"which is usually the cheapest way across. Polygon and BNB Chain are close behind.",
+	note:     "USDC or USDT only. Another token or another network lands where merlin cannot see it.",
+	swap:     "Cheapest route is swapping to USDC and withdrawing on Base. Polygon and BNB Chain are close.",
 	explorer: "https://blockscan.com/address/%s",
 }
 
@@ -83,10 +81,8 @@ var familyTron = &walletFamily{
 	name:     "tron",
 	label:    "USDT on TRON (TRC-20)",
 	networks: "TRON",
-	note: "TRON, not Ethereum and not BNB Chain. USDT on any other network goes to a different ledger " +
-		"and is not counted here.",
-	swap: "Most exchanges let you withdraw USDT directly on TRON, which is usually the cheapest transfer " +
-		"of the lot. You need a little TRX in the sending wallet for gas.",
+	note:     "USDT on TRON only. On any other network it goes to a different ledger and is not counted.",
+	swap:     "Most exchanges withdraw USDT on TRON directly, usually the cheapest transfer going. Keep a little TRX for gas.",
 	explorer: "https://tronscan.org/#/address/%s",
 }
 
@@ -94,10 +90,8 @@ var familySolana = &walletFamily{
 	name:     "solana",
 	label:    "USDC or USDT on Solana",
 	networks: "Solana",
-	note: "Solana, and only USDC or USDT. Sending SOL itself, or either token on another network, " +
-		"is not counted here.",
-	swap: "Most exchanges withdraw USDC on Solana for a few cents. Keep a little SOL in the sending " +
-		"wallet for the fee.",
+	note:     "USDC or USDT on Solana only. SOL itself is not counted, nor either token on another network.",
+	swap:     "Most exchanges withdraw USDC on Solana for a few cents. Keep a little SOL for the fee.",
 	explorer: "https://solscan.io/account/%s",
 }
 

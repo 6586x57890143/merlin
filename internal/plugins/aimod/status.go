@@ -152,6 +152,15 @@ func (p *Plugin) statusPages(ctx context.Context, guildID string) ([]statusPage,
 		body.WriteString("**Enforcing.** Messages are removed or rewritten per `/aimod policy list`.")
 	}
 
+	// An empty account outranks the day's budget: a budget resets at midnight
+	// and this does not, and a server reading "Enforcing" over an account
+	// that cannot buy a token is being told the opposite of what it needs.
+	if p.outOfCredit(guildID) && cfg.Mode != ModeOff {
+		worse(core.ColorError)
+		body.WriteString("\n\n**Out of credit.** The gateway refused the last call, so only the pattern checks " +
+			"are running. Top the account up, or `/aimod funding` to ask the server for help.")
+	}
+
 	if remaining := cfg.DailyBudgetUSD - spend.SpentUSD; remaining <= 0 && cfg.Mode != ModeOff {
 		worse(core.ColorWarning)
 		fmt.Fprintf(&body, "\n\n**Budget spent for today.** %s of %s used. Pattern checks still run; "+
@@ -225,7 +234,7 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 			worse(core.ColorError)
 			page.fields = append(page.fields, &discordgo.MessageEmbedField{
 				Name: "API key", Value: "stored, but cannot be decrypted: " + err.Error()})
-		} else if info, err := p.keyInfo(ctx, spec, plain); err != nil {
+		} else if info, err := p.keyInfo(ctx, cfg.GuildID, spec, plain); err != nil {
 			worse(core.ColorWarning)
 			page.fields = append(page.fields, &discordgo.MessageEmbedField{
 				Name: spec.label, Value: core.TruncateEmbedField("could not reach " + spec.label + ": " + err.Error())})
@@ -243,6 +252,11 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 				if info.Limit != nil && *info.Limit > 0 {
 					balance = bar(*info.LimitRemaining/(*info.Limit), barWidth) + "\n" +
 						formatUSD(*info.LimitRemaining) + " of " + formatUSD(*info.Limit)
+				}
+				if p.outOfCredit(cfg.GuildID) {
+					worse(core.ColorError)
+					balance += "\nthe gateway refused the last call: the account behind this key is empty, " +
+						"whatever the key's own cap says"
 				}
 				// core.FormatDuration rather than humanRunway: this is a mod
 				// surface, and every admin or audit duration in this codebase

@@ -450,6 +450,24 @@ stay gateway-agnostic, nil-pointer "no limit set" branch included. A free-tier
 guild has no balance to draw at all, and both surfaces say so rather than
 rendering an empty bar: what runs out there is a request rate.
 
+**`limit_remaining` is a cap on the key, not the account's balance**, and
+reading it as one drew a full tank over an empty account: a $50 cap with
+nothing spent against it reports $50 left forever, so a server whose scanning
+had already stopped saw "$50.00 of $50.00", was told by `funding.ask` that all
+was well, and was never shown the "$0.00 of $50.00" that is the whole reason a
+fuel gauge sits next to a donation address. Nothing on the gateway says
+otherwise from the key a guild actually pastes: `GET /credits` answers the real
+balance but wants a management key and returns 403 to an inference one. So the
+ground truth is whether the gateway just agreed to be paid. A 402 on the fast
+pass (the one call every batch makes) sets `paymentRefused`, `keyInfo` zeroes
+`LimitRemaining` while it stands, and the next accepted call clears it. Zeroed
+rather than nil'd, because nil already means "cannot be known" and this is the
+opposite. Only a 402 counts: a 429 or a 5xx says nothing about the balance, and
+reading an outage as bankruptcy would empty a healthy gauge and beg for money.
+In memory like the other notice maps, since a restart re-learns it from the
+first batch and a stale row claiming a topped-up account is still broke would
+be worse than a moment of not knowing.
+
 **An address selects a family, not a chain** (`familyFor`). A `0x` address is
 the same account on Base, Ethereum, Polygon, Arbitrum and BNB Chain, because
 one private key controls all five, so "which chain is this address on" has no

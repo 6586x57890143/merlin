@@ -108,15 +108,39 @@ func (p *Plugin) catalogue(ctx context.Context, guildID string) ([]Model, error)
 // anything. A bare p.client.(*Client) panics inside a command handler the
 // moment that happens, and the router's recover() would turn a status
 // command into "the application did not respond" with no clue why.
-func (p *Plugin) keyInfo(ctx context.Context, spec *providerSpec, apiKey string) (KeyInfo, error) {
+func (p *Plugin) keyInfo(ctx context.Context, guildID string, spec *providerSpec, apiKey string) (KeyInfo, error) {
 	client, ok := p.client.(*Client)
 	if !ok {
 		return KeyInfo{}, fmt.Errorf("aimod: provider account details are unavailable in this build")
 	}
+	var (
+		info KeyInfo
+		err  error
+	)
 	if spec == orcaRouter {
-		return client.OrcaBalance(ctx, spec, apiKey)
+		info, err = client.OrcaBalance(ctx, spec, apiKey)
+	} else {
+		info, err = client.KeyInfo(ctx, apiKey)
 	}
-	return client.KeyInfo(ctx, apiKey)
+	if err != nil {
+		return info, err
+	}
+	// limit_remaining is what is left of a spending cap set on the key, and
+	// it is not a balance: a $50 cap on an account holding nothing reports
+	// $50 remaining forever, which drew a full fuel gauge over an empty
+	// account and told a server asking for donations that it needed none.
+	// Nothing on the gateway will say otherwise from the key a guild
+	// actually pastes, since GET /credits wants a management key and answers
+	// 403 to an inference one. The only ground truth is whether the gateway
+	// just agreed to be paid, which is what paymentRefused remembers.
+	//
+	// Zeroed rather than nil'd: nil means "cannot be known", and this is the
+	// opposite, a thing that is known and is nothing.
+	if p.outOfCredit(guildID) {
+		empty := 0.0
+		info.LimitRemaining = &empty
+	}
+	return info, nil
 }
 
 // reasoningLine says whether this stack is paying for the model to think.

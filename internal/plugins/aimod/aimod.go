@@ -206,6 +206,20 @@ type Plugin struct {
 	fundingNoticeMu sync.Mutex
 	fundingNoticed  map[string]time.Time
 
+	// paymentRefused remembers when a guild's gateway last answered 402, and
+	// is the only honest source this bot has for "the account is empty".
+	// The key endpoint reports a cap rather than a balance (see keyInfo), so
+	// without this the fuel gauge reads full on an account that cannot buy a
+	// single token, which is exactly the moment a tip jar needs to look
+	// empty. Cleared by the next call the gateway accepts.
+	//
+	// In memory rather than in Postgres, like every other notice map here: a
+	// restart re-learns it from the first batch, which is seconds on a live
+	// server, and a stale row claiming a topped-up account is still broke
+	// would be worse than a moment of not knowing.
+	paymentMu      sync.Mutex
+	paymentRefused map[string]time.Time
+
 	// triage holds one local rung 1.5 model per guild, loaded lazily and kept
 	// for the process lifetime. See triage.go.
 	triageMu sync.Mutex
@@ -260,6 +274,7 @@ func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker
 		calibrateRegistered: make(map[string]bool),
 		fundingRegistered:   make(map[string]bool),
 		fundingNoticed:      make(map[string]time.Time),
+		paymentRefused:      make(map[string]time.Time),
 		triage:              make(map[string]*triageModel),
 		triageSample:        func() bool { return rand.Float64() < triageSampleRate },
 		eth:                 newETHClient(nil, nil),
@@ -383,6 +398,10 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	p.fundingNoticeMu.Lock()
 	delete(p.fundingNoticed, guildID)
 	p.fundingNoticeMu.Unlock()
+
+	p.paymentMu.Lock()
+	delete(p.paymentRefused, guildID)
+	p.paymentMu.Unlock()
 
 	// The balance poll is stopped, unlike the row behind it, which stays in
 	// Postgres so a kick and re-invite keeps the guild's jar. Leaving the job
@@ -693,6 +712,11 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 				p.log.Error("aimod: count scanned", "guild", guildID, "err", err)
 			}
 		}
+		// Whether the gateway is still taking this guild's money, learned
+		// from the one call that runs on every batch. See notePayment: the
+		// key endpoint reports a spend cap rather than a balance, so this is
+		// the only place an empty account announces itself.
+		p.notePayment(guildID, err)
 		if err != nil {
 			p.log.Error("aimod: fast pass", "guild", guildID, "messages", len(batch), "err", err)
 			return
