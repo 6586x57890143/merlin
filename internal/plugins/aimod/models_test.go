@@ -368,18 +368,25 @@ func TestAnEmptyAccountReadsAsEmptyWhateverTheKeyCapSays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyInfo: %v", err)
 	}
-	if info.LimitRemaining == nil || *info.LimitRemaining != 50 {
-		t.Fatalf("a gateway that has not refused anything should report the cap: %+v", info.LimitRemaining)
+	// The cap must not become the gauge's numerator even before anything has
+	// been refused. nil is "merlin cannot know", which is the truth for an
+	// inference key, and it is what suppresses the bar rather than drawing a
+	// full one over an account nobody has confirmed holds anything.
+	if info.LimitRemaining != nil {
+		t.Fatalf("the key's spending cap was reported as a balance: %v", *info.LimitRemaining)
+	}
+	if info.Limit == nil || *info.Limit != 50 {
+		t.Fatalf("the cap itself was dropped, so it cannot even be named as a cap: %+v", info.Limit)
 	}
 
 	// A rate limit says nothing about the balance and must not be mistaken
 	// for one, or an outage would empty a healthy gauge and beg for money.
-	p.notePayment("g1", &APIError{Status: http.StatusTooManyRequests})
+	p.notePayment("g1", Usage{}, &APIError{Status: http.StatusTooManyRequests})
 	if p.outOfCredit("g1") {
 		t.Error("a 429 was read as an empty account")
 	}
 
-	p.notePayment("g1", &APIError{Status: http.StatusPaymentRequired})
+	p.notePayment("g1", Usage{}, &APIError{Status: http.StatusPaymentRequired})
 	info, err = p.keyInfo(context.Background(), "g1", openRouter, "k")
 	if err != nil {
 		t.Fatalf("keyInfo: %v", err)
@@ -394,11 +401,21 @@ func TestAnEmptyAccountReadsAsEmptyWhateverTheKeyCapSays(t *testing.T) {
 		t.Errorf("the cap was lost, so the gauge has no denominator: %+v", info.Limit)
 	}
 
-	// One accepted call clears it. Nothing here is persisted, so a topped-up
-	// account must recover on its own rather than waiting for a restart.
-	p.notePayment("g1", nil)
+	// A free call proves the gateway is up and proves nothing about the
+	// balance, so it must not clear the refusal. A guild whose fast rung runs
+	// on free models would otherwise wipe the flag on every batch while its
+	// paid deep rung went on being turned away.
+	p.notePayment("g1", Usage{}, nil)
+	if !p.outOfCredit("g1") {
+		t.Error("a call that cost nothing cleared the refusal")
+	}
+
+	// One call the account actually paid for clears it. Nothing here is
+	// persisted, so a topped-up account recovers on its own rather than
+	// waiting for a restart.
+	p.notePayment("g1", Usage{Cost: 0.0001}, nil)
 	if p.outOfCredit("g1") {
-		t.Error("a successful call did not clear the refusal")
+		t.Error("a billed call did not clear the refusal")
 	}
 }
 

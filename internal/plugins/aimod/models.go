@@ -125,17 +125,34 @@ func (p *Plugin) keyInfo(ctx context.Context, guildID string, spec *providerSpec
 	if err != nil {
 		return info, err
 	}
-	// limit_remaining is what is left of a spending cap set on the key, and
-	// it is not a balance: a $50 cap on an account holding nothing reports
-	// $50 remaining forever, which drew a full fuel gauge over an empty
-	// account and told a server asking for donations that it needed none.
-	// Nothing on the gateway will say otherwise from the key a guild
-	// actually pastes, since GET /credits wants a management key and answers
-	// 403 to an inference one. The only ground truth is whether the gateway
-	// just agreed to be paid, which is what paymentRefused remembers.
+	// The correction this function exists for: OpenRouter's limit_remaining
+	// is what is left of a spending cap somebody set on the key, and it is
+	// not a balance. A $50 cap on an account holding nothing reports $50
+	// remaining forever, which drew a full fuel gauge over an empty account
+	// and told a server asking for donations that it needed none.
 	//
-	// Zeroed rather than nil'd: nil means "cannot be known", and this is the
-	// opposite, a thing that is known and is nothing.
+	// So it is dropped rather than shown. nil already means "merlin cannot
+	// know this" everywhere downstream (no bar, no runway, no low-credit
+	// warning, creditUnknown in both renderers), which is exactly the truth
+	// here, and it is the only reading that cannot mislead in either
+	// direction: claiming a full tank on an empty account begs for nothing
+	// when the filter has already stopped, and claiming an empty one on a
+	// funded account cries wolf. Limit survives, because the cap is a real
+	// fact worth stating as a cap.
+	//
+	// Nothing on the gateway will give the balance from the key a guild
+	// actually pastes: GET /credits answers it but wants a management key
+	// and returns 403 to an inference one. The one ground truth available is
+	// whether the gateway just agreed to be paid.
+	//
+	// OrcaRouter is exempt. OrcaBalance subtracts a real spend from a real
+	// purchased ceiling, so its remaining figure is money.
+	if spec != orcaRouter {
+		info.LimitRemaining = nil
+	}
+	// A refused payment is the other direction, and it is knowledge rather
+	// than the absence of it: zeroed, not nil'd, so the gauge draws an empty
+	// bar under "$0.00 of $50.00" instead of disappearing.
 	if p.outOfCredit(guildID) {
 		empty := 0.0
 		info.LimitRemaining = &empty

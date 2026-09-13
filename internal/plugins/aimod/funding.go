@@ -326,15 +326,26 @@ func (p *Plugin) noticeFunding(ctx context.Context, guildID string, spec *provid
 // The two have different reasons for it and different fixes, and saying
 // "set a limit on the key" to somebody on a free tier would be advice for a
 // problem they do not have.
-func creditUnknown(spec *providerSpec) string {
+//
+// The OpenRouter branch is not a missing setting, which is what it used to
+// say. The gateway will not tell an inference key what the account holds at
+// all, so this is the ordinary state of a healthy guild and the honest thing
+// to print for one. It says what merlin does know and when it will know
+// more, rather than filling the gap with the key's cap, which is how a
+// server with nothing in the account came to be shown a full tank.
+func creditUnknown(spec *providerSpec, cap *float64) string {
 	if spec == orcaRouter {
 		return "Scanning runs on free models, so there is no balance to run down.\n" +
 			subtext("What limits it there is a request rate rather than money. The tip jar below still "+
 				"pays for the paid fallback, which confirms anything the free pass flags.")
 	}
-	return "Not shown: this server's key has no credit limit set.\n" +
-		subtext("Setting a limit on the key at openrouter.ai turns this into a gauge, "+
-			"and stops a leaked key draining the account.")
+	line := "Not shown: OpenRouter does not report an account balance to this key."
+	if cap != nil && *cap > 0 {
+		line = "Not shown: OpenRouter tells this key its own " + formatUSD(*cap) +
+			" spending cap and nothing about what the account holds."
+	}
+	return line + "\n" + subtext("merlin finds out the account is empty when a scan is refused, "+
+		"and says so here the moment it happens.")
 }
 
 // acceptedChains lists the chains in this family that the gateway's checkout
@@ -566,7 +577,8 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	var haveRunway bool
 	if remaining == nil {
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Value: core.TruncateEmbedField(creditUnknown(spec)),
+			Name:  "⛽ Scanning credit",
+			Value: core.TruncateEmbedField(creditUnknown(spec, limit)),
 		})
 	} else {
 		left, haveRunway = p.runway(ctx, i.GuildID, *remaining)

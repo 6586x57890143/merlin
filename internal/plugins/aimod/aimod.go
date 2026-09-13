@@ -714,9 +714,9 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 		}
 		// Whether the gateway is still taking this guild's money, learned
 		// from the one call that runs on every batch. See notePayment: the
-		// key endpoint reports a spend cap rather than a balance, so this is
-		// the only place an empty account announces itself.
-		p.notePayment(guildID, err)
+		// key endpoint reports a spend cap rather than a balance, so a
+		// refused call is the only way an empty account announces itself.
+		p.notePayment(guildID, usage, err)
 		if err != nil {
 			p.log.Error("aimod: fast pass", "guild", guildID, "messages", len(batch), "err", err)
 			return
@@ -858,6 +858,10 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, state budgetState, c 
 			p.recordUsage(ctx, cfg.GuildID, usage, true)
 		}
 	}
+	// The deep rung reports too, since a guild running free models on the
+	// fast rung would otherwise never see a refusal: this is the call that
+	// costs money there, so it is the one that gets turned away.
+	p.notePayment(cfg.GuildID, usage, err)
 	if err != nil {
 		// No action. A deep pass that failed is not a verdict, and treating
 		// an unreachable model as a confirmation would let an outage delete

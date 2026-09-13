@@ -239,11 +239,16 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 			page.fields = append(page.fields, &discordgo.MessageEmbedField{
 				Name: spec.label, Value: core.TruncateEmbedField("could not reach " + spec.label + ": " + err.Error())})
 		} else {
-			// A key with no limit set reports LimitRemaining nil, so there is
-			// no denominator and no balance to gauge. Saying so beats
-			// inventing a bar out of an unknown, and on a free tier there is
-			// genuinely nothing to draw: what runs out there is a request rate.
-			balance := "no limit set on this key"
+			// No balance to gauge is the ordinary case on OpenRouter rather
+			// than a misconfiguration: it reports the key's own spending cap
+			// and never the account behind it, so keyInfo drops the cap
+			// rather than letting it fill a bar. Saying so beats inventing a
+			// gauge out of an unknown, and on a free tier there is genuinely
+			// nothing to draw: what runs out there is a request rate.
+			balance := "no account balance reported to this key"
+			if info.Limit != nil && *info.Limit > 0 {
+				balance += " (its own cap is " + formatUSD(*info.Limit) + ")"
+			}
 			if spec == orcaRouter {
 				balance = "free tier: no balance to run down, only a request rate"
 			}

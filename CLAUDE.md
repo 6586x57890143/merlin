@@ -453,20 +453,33 @@ rendering an empty bar: what runs out there is a request rate.
 **`limit_remaining` is a cap on the key, not the account's balance**, and
 reading it as one drew a full tank over an empty account: a $50 cap with
 nothing spent against it reports $50 left forever, so a server whose scanning
-had already stopped saw "$50.00 of $50.00", was told by `funding.ask` that all
-was well, and was never shown the "$0.00 of $50.00" that is the whole reason a
-fuel gauge sits next to a donation address. Nothing on the gateway says
-otherwise from the key a guild actually pastes: `GET /credits` answers the real
-balance but wants a management key and returns 403 to an inference one. So the
-ground truth is whether the gateway just agreed to be paid. A 402 on the fast
-pass (the one call every batch makes) sets `paymentRefused`, `keyInfo` zeroes
-`LimitRemaining` while it stands, and the next accepted call clears it. Zeroed
-rather than nil'd, because nil already means "cannot be known" and this is the
-opposite. Only a 402 counts: a 429 or a 5xx says nothing about the balance, and
-reading an outage as bankruptcy would empty a healthy gauge and beg for money.
-In memory like the other notice maps, since a restart re-learns it from the
-first batch and a stale row claiming a topped-up account is still broke would
-be worse than a moment of not knowing.
+had already stopped saw "$50.00 of $50.00" and was told by `funding.ask` that
+all was well. Nothing on the gateway gives the balance from the key a guild
+actually pastes: `GET /credits` answers it but wants a management key and
+returns 403 to an inference one.
+
+So `keyInfo` **drops** OpenRouter's `limit_remaining` rather than showing it.
+`nil` already means "merlin cannot know this" everywhere downstream (no bar, no
+runway, no low-credit warning, `creditUnknown` in both renderers) and that is
+exactly the truth here. It is also the only reading that cannot mislead in
+either direction, which is why the fix is not "assume empty": a full tank over
+an empty account begs for nothing when the filter has already stopped, and an
+empty one over a funded account cries wolf. `Limit` survives so the cap can be
+named as a cap. OrcaRouter is exempt, since `OrcaBalance` subtracts a real
+spend from a real purchased ceiling.
+
+The one ground truth left is **whether the gateway just agreed to be paid**. A
+402 sets `paymentRefused`, and `keyInfo` then reports `LimitRemaining` as zero
+rather than nil, because that is knowledge instead of the absence of it: the
+gauge draws an empty bar under "$0.00 of $50.00" and `fundingWords` reaches
+`funding.dry` on its own. Only a 402 counts, since a 429 or a 5xx says nothing
+about the balance and reading an outage as bankruptcy would empty a healthy
+gauge and beg for money. Both paid rungs report it, and **only a call that was
+actually billed clears it**: a guild whose fast rung runs on free models would
+otherwise wipe the flag on every batch while its paid deep rung went on being
+turned away. In memory like the other notice maps, since a restart re-learns it
+from the first batch and a stale row claiming a topped-up account is still
+broke would be worse than a moment of not knowing.
 
 **An address selects a family, not a chain** (`familyFor`). A `0x` address is
 the same account on Base, Ethereum, Polygon, Arbitrum and BNB Chain, because
