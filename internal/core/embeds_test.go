@@ -271,3 +271,34 @@ func referencedAttachments(e *discordgo.MessageEmbed) []string {
 	}
 	return out
 }
+
+// TestFollowUpReplacesAttachmentsOnEveryEdit: an omitted attachments field
+// keeps what is already on the message and appends the new upload, and a
+// placeholder edited every twenty seconds hit Discord's cap of ten on the
+// eleventh edit, three minutes in, after which every edit was refused. The
+// wire body must say "attachments: []" so each edit replaces the last.
+func TestFollowUpReplacesAttachmentsOnEveryEdit(t *testing.T) {
+	cap := &captureTransport{}
+	s, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	s.Client = &http.Client{Transport: cap}
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		ID: "i1", Token: "tok", Type: discordgo.InteractionApplicationCommand,
+	}}
+
+	if err := FollowUpEmbed(s, i, NewEmbed(ColorInfo, "Still counting", "9369 messages so far")); err != nil {
+		t.Fatalf("FollowUpEmbed: %v", err)
+	}
+	if len(cap.bodies) != 1 {
+		t.Fatalf("expected one request, got %d", len(cap.bodies))
+	}
+	body := cap.bodies[0]
+	if !strings.Contains(body, `"attachments":[]`) {
+		t.Fatalf("edit must clear the previous upload; body was:\n%s", body)
+	}
+	if !strings.Contains(body, `filename="merlin_info.png"`) {
+		t.Fatalf("edit must still carry this response's own thumbnail; body was:\n%s", body)
+	}
+}

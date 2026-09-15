@@ -399,6 +399,14 @@ func followUpFiles(s *discordgo.Session, i *discordgo.InteractionCreate, embed *
 	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Embeds: &[]*discordgo.MessageEmbed{embed},
 		Files:  files,
+		// Empty, not omitted, exactly as FollowUpEmbedWithComponents: an
+		// omitted Attachments keeps what is on the message and appends the
+		// new upload, so a placeholder edited every twenty seconds carried
+		// one more copy of the mood thumbnail per edit until Discord's cap
+		// of ten refused the eleventh, three minutes in. /activity's
+		// progress went quiet at exactly that point on a scan that was
+		// still running.
+		Attachments: &[]*discordgo.MessageAttachment{},
 		// Suppressed here rather than at each call site, the same reasoning
 		// as discordguard.GuildOps: a mention inside an embed does not notify
 		// anybody today, so this changes nothing now, and it is what stops

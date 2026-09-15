@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -72,6 +73,7 @@ type Plugin struct {
 	privilege PrivilegeChecker
 	client    *http.Client
 	now       func() time.Time
+	log       *slog.Logger
 
 	// base outlives any one interaction and is cancelled at Shutdown. The
 	// router hands handlers a 30 second context, which is where the scan
@@ -88,6 +90,7 @@ func New() *Plugin {
 	return &Plugin{
 		client: &http.Client{Timeout: fetchTTL},
 		now:    func() time.Time { return time.Now().UTC() },
+		log:    slog.New(slog.DiscardHandler),
 		base:   base,
 		stop:   stop,
 	}
@@ -99,6 +102,9 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.session = deps.Session
 	p.source = deps.Session
 	p.privilege = deps.Perms
+	if deps.Logger != nil {
+		p.log = deps.Logger
+	}
 
 	deps.Commands.RegisterCommand(p.Name(), command())
 	// TierAdmin is the floor, not the gate: handleActivity refuses anybody
@@ -376,7 +382,13 @@ func (p *Plugin) narrate(s *discordgo.Session, i *discordgo.InteractionCreate, o
 		}
 		body := fmt.Sprintf("`%d` messages over `%d` channels so far, `%s` in.\n-# if this outlives Discord's fifteen minute window the report lands in %s instead",
 			prog.messages.Load(), prog.channels.Load(), humanSpan(p.now().Sub(started)), where)
-		_ = core.FollowUpEmbed(s, i, core.NewEmbed(core.ColorInfo, "Still counting", body))
+		// Logged rather than dropped: a progress edit that fails on every
+		// tick looks, from Discord, like a scan that stopped, and the
+		// attachment cap did exactly that for three weeks with nothing to
+		// show for it.
+		if err := core.FollowUpEmbed(s, i, core.NewEmbed(core.ColorInfo, "Still counting", body)); err != nil {
+			p.log.Warn("activity: progress edit failed", "guild", i.GuildID, "err", err)
+		}
 	}
 }
 
