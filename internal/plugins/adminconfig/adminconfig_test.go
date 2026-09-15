@@ -52,7 +52,7 @@ func (fakeSettingsAdmin) SetActionTier(ctx context.Context, guildID, action stri
 func (fakeSettingsAdmin) ClearActionTier(ctx context.Context, guildID, action string) error {
 	return nil
 }
-func (fakeSettingsAdmin) DisabledPlugins(guildID string) []string { return nil }
+func (fakeSettingsAdmin) PluginEnabled(guildID, pluginName string) bool { return true }
 func (fakeSettingsAdmin) DisablePlugin(ctx context.Context, guildID, pluginName string) error {
 	return nil
 }

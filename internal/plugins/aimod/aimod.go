@@ -691,32 +691,7 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 			return
 		}
 
-		hits, usage, err := p.classifyFast(ctx, state, cfg, batch)
-		// Booked before the error is handled: a call that returned usage was
-		// billed whether or not its body parsed.
-		//
-		// The scanned count rides the same condition, and that is the point
-		// of moving it here from above the call. Scanned is the denominator
-		// every cost-per-message figure in /aimod models show divides the
-		// booked tokens by, so the two have to agree on which batches count.
-		// Counted unconditionally, a batch that failed before reaching a
-		// model (a 429, an outage) added twenty to the denominator and
-		// nothing to the numerator, reporting the guild's scanning as cheaper
-		// than it is, and worst exactly when the model was failing most.
-		// Counted only on success, a billed-but-unparseable call would add
-		// tokens with no messages under them, which is the same error the
-		// other way and is what the budget tests pin down.
-		if usage.Cost > 0 || usage.TotalTokens > 0 {
-			p.recordUsage(ctx, guildID, usage, false)
-			if err := p.store.AddScanned(ctx, guildID, today(p.now()), len(batch)); err != nil {
-				p.log.Error("aimod: count scanned", "guild", guildID, "err", err)
-			}
-		}
-		// Whether the gateway is still taking this guild's money, learned
-		// from the one call that runs on every batch. See notePayment: the
-		// key endpoint reports a spend cap rather than a balance, so this is
-		// the only place an empty account announces itself.
-		p.notePayment(guildID, err)
+		hits, err := p.fastPass(ctx, cfg, state, batch)
 		if err != nil {
 			p.log.Error("aimod: fast pass", "guild", guildID, "messages", len(batch), "err", err)
 			return
@@ -828,36 +803,7 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, state budgetState, c 
 	}
 
 	priorLines, self := p.recentContext(cfg.GuildID, c)
-	v, usage, err := p.classifyDeep(ctx, state, cfg, hit.Bucket, c,
-		priorLines, self, action == ActionRewrite)
-	if usage.Cost > 0 || usage.TotalTokens > 0 {
-		p.recordUsage(ctx, cfg.GuildID, usage, true)
-	}
-	// One retry on the other gateway, for the deep rung only.
-	//
-	// This is the rung whose verdict can delete or rewrite, and its default
-	// gateway is a free tier: rate limited on a bucket shared with every
-	// other call this workspace makes, and with no way to require that the
-	// endpoint answering honours the JSON schema it was handed. Both of
-	// those arrive here as an error, and an unparseable answer is one of
-	// them, so no attempt is made to tell them apart. Nothing is acted on
-	// either way, which is the safe direction and also the useless one: a
-	// message that tripped the first pass goes unjudged.
-	//
-	// Deliberately not extended to the fast rung. That rung can only flag,
-	// everything it flags is re-read here, and re-running a twenty message
-	// batch at OpenRouter prices is the bill this gateway exists to avoid.
-	if err != nil && state.FallbackKey != "" && worthFallback(err) {
-		p.log.Info("aimod: deep pass falling back",
-			"guild", cfg.GuildID, "from", providerName(state.Spec), "err", err)
-		fb := state
-		fb.APIKey, fb.Spec = state.FallbackKey, state.fallback()
-		v, usage, err = p.classifyDeep(ctx, fb, cfg, hit.Bucket, c,
-			priorLines, self, action == ActionRewrite)
-		if usage.Cost > 0 || usage.TotalTokens > 0 {
-			p.recordUsage(ctx, cfg.GuildID, usage, true)
-		}
-	}
+	v, err := p.deepPass(ctx, cfg, state, hit.Bucket, c, priorLines, self, action == ActionRewrite)
 	if err != nil {
 		// No action. A deep pass that failed is not a verdict, and treating
 		// an unreachable model as a confirmation would let an outage delete
@@ -877,6 +823,71 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, state budgetState, c 
 		bucket: hit.Bucket, action: action, deep: v,
 	})
 	p.enforce(ctx, cfg, c, hit.Bucket, action, v)
+}
+
+// fastPass runs rung 2 over one batch and books what it cost. Shared by
+// classify and Screen so the two cannot keep the guild's ledger differently.
+func (p *Plugin) fastPass(ctx context.Context, cfg Config, state budgetState, batch []candidate) ([]Verdict, error) {
+	guildID := cfg.GuildID
+	hits, usage, err := p.classifyFast(ctx, state, cfg, batch)
+	// Booked before the error is handled: a call that returned usage was
+	// billed whether or not its body parsed.
+	//
+	// The scanned count rides the same condition, and that is the point
+	// of moving it here from above the call. Scanned is the denominator
+	// every cost-per-message figure in /aimod models show divides the
+	// booked tokens by, so the two have to agree on which batches count.
+	// Counted unconditionally, a batch that failed before reaching a
+	// model (a 429, an outage) added twenty to the denominator and
+	// nothing to the numerator, reporting the guild's scanning as cheaper
+	// than it is, and worst exactly when the model was failing most.
+	// Counted only on success, a billed-but-unparseable call would add
+	// tokens with no messages under them, which is the same error the
+	// other way and is what the budget tests pin down.
+	if usage.Cost > 0 || usage.TotalTokens > 0 {
+		p.recordUsage(ctx, guildID, usage, false)
+		if err := p.store.AddScanned(ctx, guildID, today(p.now()), len(batch)); err != nil {
+			p.log.Error("aimod: count scanned", "guild", guildID, "err", err)
+		}
+	}
+	// Whether the gateway is still taking this guild's money, learned
+	// from the one call that runs on every batch. See notePayment: the
+	// key endpoint reports a spend cap rather than a balance, so this is
+	// the only place an empty account announces itself.
+	p.notePayment(guildID, err)
+	return hits, err
+}
+
+// deepPass runs rung 3 on one message, with one retry on the other gateway.
+//
+// This is the rung whose verdict can delete or rewrite, and its default
+// gateway is a free tier: rate limited on a bucket shared with every
+// other call this workspace makes, and with no way to require that the
+// endpoint answering honours the JSON schema it was handed. Both of
+// those arrive here as an error, and an unparseable answer is one of
+// them, so no attempt is made to tell them apart. Nothing is acted on
+// either way, which is the safe direction and also the useless one: a
+// message that tripped the first pass goes unjudged.
+//
+// Deliberately not extended to the fast rung. That rung can only flag,
+// everything it flags is re-read here, and re-running a twenty message
+// batch at OpenRouter prices is the bill this gateway exists to avoid.
+func (p *Plugin) deepPass(ctx context.Context, cfg Config, state budgetState, bucket Bucket, c candidate, priorLines []string, self string, wantRewrite bool) (deepVerdict, error) {
+	v, usage, err := p.classifyDeep(ctx, state, cfg, bucket, c, priorLines, self, wantRewrite)
+	if usage.Cost > 0 || usage.TotalTokens > 0 {
+		p.recordUsage(ctx, cfg.GuildID, usage, true)
+	}
+	if err != nil && state.FallbackKey != "" && worthFallback(err) {
+		p.log.Info("aimod: deep pass falling back",
+			"guild", cfg.GuildID, "from", providerName(state.Spec), "err", err)
+		fb := state
+		fb.APIKey, fb.Spec = state.FallbackKey, state.fallback()
+		v, usage, err = p.classifyDeep(ctx, fb, cfg, bucket, c, priorLines, self, wantRewrite)
+		if usage.Cost > 0 || usage.TotalTokens > 0 {
+			p.recordUsage(ctx, cfg.GuildID, usage, true)
+		}
+	}
+	return v, err
 }
 
 // recentContext reads the handful of messages before this one, each labelled

@@ -55,6 +55,9 @@ var actions = map[string]meta{
 	"aimod.rewrite":    {title: "AI moderation: message rewritten", color: core.ColorWarning},
 	"aimod.flagged":    {title: "AI moderation: message flagged", color: core.ColorWarning},
 	"aimod.sanctioned": {title: "AI moderation: member jailed", color: core.ColorError},
+	// internal/plugins/whisper. Only refusals are audited: a posted whisper
+	// is its own record, wearing the member's username in the channel.
+	"whisper.refused": {title: "Whisper refused", color: core.ColorWarning},
 	// Contests. Nothing here is destructive: the worst a contest does is
 	// create a channel and post in it, and cancelling deliberately deletes
 	// nothing. So the palette runs info for routine, success for anything

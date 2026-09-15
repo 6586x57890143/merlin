@@ -502,6 +502,42 @@ func TestPluginToggleRoundTrip(t *testing.T) {
 	}
 }
 
+// A default-off plugin is off in a guild that never touched it, and only
+// enabled_plugins decides it: an entry in disabled_plugins is never read.
+func TestDefaultOffPluginIsOffUntilEnabled(t *testing.T) {
+	store, _, guildID := setupStore(t)
+	ctx := context.Background()
+	const plugin = "whisper"
+	store.DefaultOff(plugin)
+
+	if store.PluginEnabled(guildID, plugin) {
+		t.Fatal("default-off plugin reported enabled before anything ran")
+	}
+	if !store.PluginEnabled(guildID, "rotation") {
+		t.Fatal("marking one plugin default-off changed another plugin's default")
+	}
+
+	if err := store.EnablePlugin(ctx, guildID, plugin); err != nil {
+		t.Fatalf("EnablePlugin: %v", err)
+	}
+	if !store.PluginEnabled(guildID, plugin) {
+		t.Error("PluginEnabled is false after EnablePlugin")
+	}
+	if got := store.DisabledPlugins(guildID); len(got) != 0 {
+		t.Errorf("DisabledPlugins = %v after enabling a default-off plugin, want none", got)
+	}
+
+	if err := store.DisablePlugin(ctx, guildID, plugin); err != nil {
+		t.Fatalf("DisablePlugin: %v", err)
+	}
+	if store.PluginEnabled(guildID, plugin) {
+		t.Error("PluginEnabled is true after DisablePlugin")
+	}
+	if got := store.DisabledPlugins(guildID); len(got) != 0 {
+		t.Errorf("DisabledPlugins = %v after disabling a default-off plugin, want none", got)
+	}
+}
+
 // setWriteControl builds its SQL by interpolating a column name via
 // fmt.Sprintf. Both of its callers are internal and pass a fixed literal, so
 // this is not an injection risk, but nothing had ever proven the two

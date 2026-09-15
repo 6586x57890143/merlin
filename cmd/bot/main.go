@@ -27,6 +27,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
+	"github.com/6586x57890143/merlin/internal/plugins/whisper"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/6586x57890143/merlin/internal/settings"
@@ -240,6 +241,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		cfg.ContestWorkerURL, cfg.ContestWorkerToken, cfg.ContestLinkKey,
 	)
 
+	// Whisper: restricted members talking through the bot. Screened by
+	// aimod through the narrow whisper.Screener seam, the same shape as
+	// aimod.Jailer, so neither package imports the other. Off in every guild
+	// until an admin switches it on, which is what DefaultOff is for.
+	whisperPlugin := whisper.New(aimodPlugin,
+		func(guildID string) whisper.DiscordOps { return guard.For(guildID) },
+	)
+	settingsStore.DefaultOff(whisperPlugin.Name())
+
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New(speaker))
@@ -248,6 +258,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
 	registry.Register(aimodPlugin)
 	registry.Register(contestPlugin)
+	registry.Register(whisperPlugin)
 	// Takes nothing: it reads Discord's history on demand, and the one
 	// identity it cares about comes from Deps.Perms at Init.
 	registry.Register(activity.New())

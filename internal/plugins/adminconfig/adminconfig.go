@@ -39,7 +39,7 @@ type SettingsAdmin interface {
 	UndenyOverride(ctx context.Context, guildID, action, roleID, userID string) error
 	SetActionTier(ctx context.Context, guildID, action string, tier core.PermTier) error
 	ClearActionTier(ctx context.Context, guildID, action string) error
-	DisabledPlugins(guildID string) []string
+	PluginEnabled(guildID, pluginName string) bool
 	DisablePlugin(ctx context.Context, guildID, pluginName string) error
 	EnablePlugin(ctx context.Context, guildID, pluginName string) error
 	ImportFromLegacyYAML(ctx context.Context, path string) ([]string, error)
@@ -564,17 +564,16 @@ func renderPermissionsPage(lines []string, page int) (*discordgo.MessageEmbed, [
 }
 
 func (p *Plugin) handlePluginsList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	disabled := make(map[string]bool)
-	for _, name := range p.settings.DisabledPlugins(i.GuildID) {
-		disabled[name] = true
-	}
 	names := p.commands.Plugins()
 	sort.Strings(names)
 
+	// Asked per plugin rather than read off the disabled list, because a
+	// default-off plugin (settings.Store.DefaultOff) is absent from that
+	// list and off all the same.
 	var b strings.Builder
 	for _, name := range names {
 		status := "enabled"
-		if disabled[name] {
+		if !p.settings.PluginEnabled(i.GuildID, name) {
 			status = "disabled"
 		}
 		fmt.Fprintf(&b, "- `%s`: %s\n", name, status)
