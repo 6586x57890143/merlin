@@ -884,13 +884,16 @@ last line and the only subtext, and cannot be forged above the real one.
 - **`filter.go` is deliberately blunter than aimod's rung 1.** That table has
   to be near-zero on false positives because a wrong hit deletes somebody's
   message; a wrong hit here costs a restricted member one retry. So every
-  link goes, not just phishing shapes, and so does anything shaped like a
-  phone number, an email, a mention (`discordguard` already stops the ping;
-  this stops the rendered highlight), self-harm goading, a narrow child-safety
-  vocabulary (aimod's `neverSkipPattern` is built to force a *scan* and would
-  refuse "my kids are loud" if it were used to refuse), invisible/bidi
-  characters and Zalgo. `MaxLength` on the option is a client hint; `check`
-  re-measures.
+  link goes (any scheme, `www.`, any `host.tld`, a dotted IP), not just
+  phishing shapes, and so does anything shaped like a phone number, an
+  email, a mention (`discordguard` already stops the ping and the post sets
+  the zero `AllowedMentions` itself too; the regex stops the rendered
+  highlight), self-harm goading, a narrow child-safety vocabulary (aimod's
+  `neverSkipPattern` is built to force a *scan* and would refuse "my kids
+  are loud" if it were used to refuse), invisible/bidi characters and
+  Zalgo. Server emotes (`<:name:id>`) are allowed: they are blanked before
+  the suite runs, since their snowflake would otherwise read as a card
+  number. `MaxLength` on the option is a client hint; `check` re-measures.
 - **`aimod.Screen` runs rung 1 unconditionally** (gate, mode and key are
   irrelevant to a hard slur) **and the model rungs only where aimod is on and
   funded**, returning clean plus an error when the model is unavailable so

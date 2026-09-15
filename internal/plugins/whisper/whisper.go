@@ -203,6 +203,9 @@ func (p *Plugin) post(ctx context.Context, guildID, channelID string, m *discord
 		Content:   text + marker(m.User.Username),
 		Username:  webhookUsername(m),
 		AvatarURL: m.AvatarURL(""),
+		// discordguard overwrites this with the same zero value; set here
+		// too so the post cannot ping even if it is ever sent another way.
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	}); err != nil {
 		// Whatever it was, re-resolve next time rather than fail forever
 		// against a webhook somebody deleted.
