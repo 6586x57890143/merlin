@@ -20,13 +20,13 @@ import (
 	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
-	"github.com/6586x57890143/merlin/internal/plugins/activity"
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
+	"github.com/6586x57890143/merlin/internal/plugins/statistics"
 	"github.com/6586x57890143/merlin/internal/plugins/whisper"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/secret"
@@ -259,9 +259,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry.Register(aimodPlugin)
 	registry.Register(contestPlugin)
 	registry.Register(whisperPlugin)
-	// Takes nothing: it reads Discord's history on demand, and the one
-	// identity it cares about comes from Deps.Perms at Init.
-	registry.Register(activity.New())
+	// Channel names come off the gateway cache, the only piece of
+	// session.State this plugin reads; the counting itself is wired below.
+	statisticsPlugin := statistics.New(statistics.NewPostgresStore(db.Pool), settingsStore, func(guildID, channelID string) string {
+		if ch, err := session.State.Channel(channelID); err == nil && ch.GuildID == guildID {
+			return ch.Name
+		}
+		return ""
+	})
+	registry.Register(statisticsPlugin)
 	registry.Register(adminconfigPlugin)
 
 	if err := registry.InitAll(); err != nil {
@@ -327,6 +333,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// settingsLoaded: a guild whose settings refresh failed still gets
 		// its running contest ticked on to the next phase.
 		contestPlugin.SyncGuild(guildCtx, gc.ID)
+		statisticsPlugin.SyncGuild(guildCtx, gc.ID)
 		if settingsLoaded {
 			// Rotation, unlike the sweep, derives which jobs should exist from
 			// settings, and reconciling against fail-closed defaults would read as
@@ -373,9 +380,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			if ma.Member == nil || ma.User == nil {
 				return
 			}
+			statisticsPlugin.HandleMemberJoin(ma.GuildID)
 			joinCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			rolesPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.User.ID)
+		})
+		// Counted, and nothing else: see the note on GuildRoleDelete below for
+		// why roles deliberately has no handler here.
+		session.AddHandler(func(s *discordgo.Session, mr *discordgo.GuildMemberRemove) {
+			statisticsPlugin.HandleMemberLeave(mr.GuildID)
 		})
 
 		// A guild's Onboarding or Membership Screening flow grants a member
@@ -400,6 +413,13 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			"a jailed member who rejoins keeps full access until the next sweep, and roles regranted by " +
 			"a guild's Onboarding/Membership Screening flow after a jail aren't stripped again until then either")
 	}
+
+	// Every message is counted (author, channel, hour; never text), which
+	// GUILD_MESSAGES delivers without any privileged intent. A map write
+	// under a lock, so it does not hold up the handlers behind it.
+	session.AddHandler(func(s *discordgo.Session, mc *discordgo.MessageCreate) {
+		statisticsPlugin.HandleMessage(mc.Message)
+	})
 
 	// Message scanning. Registered only when the intent was actually
 	// requested, so the handler's presence always matches reality: without
@@ -500,6 +520,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		rolesPlugin.ForgetGuild(gd.ID)
 		aimodPlugin.ForgetGuild(gd.ID)
 		contestPlugin.ForgetGuild(gd.ID)
+		statisticsPlugin.ForgetGuild(gd.ID)
 		settingsStore.Forget(gd.ID)
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
 	})

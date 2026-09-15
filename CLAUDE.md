@@ -59,7 +59,7 @@ Concrete stores (`internal/settings.Store`, `internal/config.Loader`) are never 
 - `Authorize` (`internal/core/permissions.go`) checks four layers in order, coarsest first (spec.MD §4/§4a): (0) is the owning plugin enabled in this guild (`core.PluginGate`, `/config plugins set`), checked by `CommandRouter` before Authorize even runs; (1) deny, via `ActionPolicy.DenyRoleIDs/DenyUserIDs` (`/config permissions deny`), wins over everything below except the bootstrap admin, which nothing can deny; (2) tier, the guild's `ActionPolicy.RequiredTier` override if set (`/config permissions set-tier`), else the command's own `PermSpec.Tier`; `TierAdmin` passes for a DB-listed admin, the bootstrap identity, or anyone holding Discord's own Administrator permission bit (`member.Permissions`, already on every interaction, no extra API call); `TierMod` deliberately has no permission-bit shortcut, only DB-listed mod roles or admins; (3) allow, the additive per-action whitelist (`/config permissions allow`), independent of tier. Mutating any of admins/mod-roles/tier-overrides/allow/deny/plugin-toggle is itself `TierAdmin`-only, never `TierMod`, so a mod can never escalate. That invariant is enforced against the tier-override mechanism too: `/config permissions set-tier` refuses to lower `config.mutate` below `TierAdmin` (`adminconfig.validateTierChange`), since a guild that set it to `TierMod` would be letting any mod run `/config admins add @themselves`, the same class of self-inflicted lockout as disabling `adminconfig`, and guarded the same way.
 - Only `TierMod`/`TierAdmin` overrides are honored; a stored `RequiredTier` of `TierPublic` is ignored. `set-tier` never offers it, so one could only arrive from a corrupt row, a hand-edited DB, or a future import path, and honoring it would strip every check off a privileged action. Loosening Admin→Mod is a deliberate feature; loosening anything to "no check at all" is the one direction a stored value must never move a command.
 - The effective tier is resolved **before** the `TierPublic` shortcut, not after. Short-circuiting on the compiled-in `spec.Tier` would silently ignore a guild's `set-tier` override on a public action, a fail-open in the one function that must fail closed. The reverse can't happen: `set-tier` only offers Mod/Admin, so an override can raise a public command's bar but never lower a privileged one to public.
-- Discord's own `default_member_permissions` is **deliberately left unset** on Mod/Admin commands (see spec.MD §4a): the internal checks above are the sole real gate, so they can't be bypassed by a mismatched Discord permission bit. The one exception is `/activity` (`internal/plugins/activity`), which sets it to `0`, and the distinction is *listed* rather than *reachable*: every registered command shows in every member's picker whoever may run it, so leaving it unset there publishes the fact that somebody can ask merlin who was talking and when, to the people it is about, for a command none of them can run. It sits under the operator check rather than replacing it, so it can only ever narrow. `TestCommandIsNotListedToTheServer` pins it, since it is exactly the line a later reader deletes for matching this rule rather than its reasoning.
+- Discord's own `default_member_permissions` is **deliberately left unset** on Mod/Admin commands (see spec.MD §4a): the internal checks above are the sole real gate, so they can't be bypassed by a mismatched Discord permission bit. The one exception is `/statistics` (`internal/plugins/statistics`), which sets it to `0`, and the distinction is *listed* rather than *reachable*: every registered command shows in every member's picker whoever may run it, so leaving it unset there publishes the fact that somebody can ask merlin who was talking and when, to the people it is about, for a command none of them can run. It sits under the operator check rather than replacing it, so it can only ever narrow. `TestCommandIsNotListedToTheServer` pins it, since it is exactly the line a later reader deletes for matching this rule rather than its reasoning.
 - `adminconfig` (owning `/config`) can never be disabled via `/config plugins set`, guarded explicitly in its handler, since disabling it would permanently lock a guild out of ever re-enabling anything.
 - Commands register **per-guild** (via `RegisterGuild`, called reactively from a `GuildCreate` handler in `cmd/bot/main.go`), not globally, giving instant availability with no propagation delay. Because Discord stores those registrations and they survive restarts, **a guild whose `GuildCreate` handling failed still answers every command**, which makes that handler a uniquely deceptive place to bail out early. It used to `return` when `settingsStore.Refresh` failed, skipping both plugins' `SyncGuild`; the guild had never been through a settings mutator so it was never queued for retry either, and nothing re-ran for the life of the process. The visible result was a server where `/roles jail` worked perfectly and jails silently never expired and were escapable by rejoining, because `roles-sweep` had never been registered. The handler now marks the guild stale (`settings.Store.MarkStale`, feeding `RetryStale`) and continues with everything that doesn't need settings; the roles sweep needs none. Only rotation is skipped, since it *derives* which jobs should exist from settings and reconciling against fail-closed defaults would read as "this guild rotates nothing" and unregister real work; `RetryStale` publishes `EventConfigChanged` on recovery, which is what reconciles it.
 - Every dispatch (`dispatchCommand`/`dispatchAutocomplete`) runs under `recover()`; `discordgo`'s own event dispatch has none.
@@ -921,33 +921,58 @@ last line and the only subtext, and cannot be forged above the real one.
   aimod's sanction ladder: nothing was published. A nil `Screener` refuses
   everything rather than posting unscreened.
 
-### Activity (`internal/plugins/activity`)
+### Statistics (`internal/plugins/statistics`)
 
-`/activity` counts who posted between two instants by paging Discord's own
-history over REST; merlin keeps no message log. Operator-only, see the
-package doc. Three things about the scan are load bearing:
+Hourly activity buckets, counted from the gateway as messages arrive, and
+the commands that read them: `/statistics report` (who was talking, the
+card and the list; operator-only, see the package doc), `channels`,
+`members`, `status`, `backfill` (operator-only) and `configure retention`.
+This replaced `/activity`, which paged Discord's history over REST for every
+report at about one page a second per channel, so two weeks of one busy
+room was a half-hour scan that any push to `main` killed, and the answer
+was "who was talking in the 20 minutes it managed".
 
-- **It runs on its own goroutine, off the plugin's own base context, never
-  the router's.** `CommandRouter` hands every handler a 30 second context,
-  and deriving the scan deadline from it meant every report was cut at half
-  a minute and labelled as having "hit its ceiling"; the 600 page cap and
-  the 3 minute budget it also carried were never what stopped it. There is
-  no page ceiling now: the question is "who talked over these months", and
-  a count cut at N is not an answer to it. `scanBudget` (4h) is a runaway
-  guard. `Shutdown` cancels and waits.
-- **The interaction token dies at 15 minutes and the scan may not.** The
-  placeholder is edited every `progressEvery` with the running count and
-  where the report will land; past `interactionTTL` the finished report
-  goes to the operator's DMs (or the channel, with `share`) on the raw
-  session with mentions zeroed, as `scheduler.alert` does. Attachments are
-  built per attempt because discordgo drains the readers into the body.
-- **The throttle is merlin's, not Discord's** (`requestGap`, one page every
-  25ms across all workers = 40/s under the 50/s global ceiling). discordgo
-  sleeps out the per-channel bucket on its own and only learns the global
-  one from a 429, which an hour-long scan must not be rediscovering every
-  few seconds. `scanWorkers` (16) is sized so the throttle, not the worker
-  count, is what the scan waits on. Transient page failures (5xx, dropped
-  connections) are retried `pageRetries` times; a 4xx is an answer.
+- **Counting is free and exact; the scan is now only a backfill.**
+  `GUILD_MESSAGES` is unprivileged and always requested
+  (`core.NewSession`); the events carry author, channel and timestamp with
+  no text, which is all `HandleMessage` reads. Tallies sit in a map under a
+  lock and land every `flushEvery` as one `unnest` upsert per table, so a
+  busy guild costs one statement per ten seconds rather than one per
+  message. A failed flush puts the cells back for the next one (up to
+  `pendingCap`), swapped out under the lock first so nothing is counted
+  twice. `Shutdown` flushes once more, which is what makes a redeploy lose
+  nothing. Joins and departures are counted per hour with **no user id**:
+  that would be a different, more sensitive record than "is the server
+  growing" needs, and `GuildMemberRemove` gets a handler for this alone
+  (roles deliberately has none, see the note above it in `main.go`).
+- **Names are recorded as seen, not looked up at render.** `stats_users`
+  keeps the display name and avatar each member last posted under, newest
+  sighting wins; `stats_channels` does the same for channel names, so a
+  report over last month still says where after rotation has deleted the
+  room. A member never seen is named by id, which is ugly and unambiguous.
+- **The backfill is idempotent by construction** (`backfill.go`). It pages
+  newest-first and writes an hour only once the first message of an older
+  hour proves it complete, replacing the channel-hour (`SetHour`) rather
+  than adding to it, and moves the cursor to one above the newest unwritten
+  message; so a restart re-reads at most one partial hour and double counts
+  nothing. It runs as a per-guild Scheduler job in `backfillSlice` (5m)
+  runs that end by choice inside `jobTimeout`, registered only while
+  channels are pending, so a deploy pauses it and the next process resumes
+  it. It fills strictly before `live_since` truncated to the hour: the
+  partial hour between that and the moment counting began belongs to
+  neither source and stays uncounted once, rather than being counted by
+  both. Missing Access marks the channel done with the error and moves on.
+- **A window that starts before the buckets do says so.** `report.partial`
+  compares `from` with the oldest hour held (or `live_since`), and both the
+  markdown and the card carry "counting began ..." so a quiet week cannot be
+  mistaken for an uncounted one; the embed turns `ColorWarning`.
+- **Retention is per guild, re-read at prune time, 90 days by default, and
+  capped at ten years**: the `rotation_archives.delete_after` rule, and
+  the direction that has to work is shortening. `Prune` runs hourly on the
+  plugin's own loop; there is nothing per guild to register. The table is
+  metadata (counts, never content) but it is still a durable record of who
+  was talking where, which is why the reporting leaf keeps the operator
+  gate and why "forever" is not offered.
 
 The card image draws emoji as Twemoji art fetched from a pinned CDN path
 (`emoji.go`), the way it already fetches avatars, because the Go fonts carry

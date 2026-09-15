@@ -135,9 +135,9 @@ func TestNewSessionRequestsGuildMembersOnlyWhenAsked(t *testing.T) {
 }
 
 // MESSAGE_CONTENT is the largest ask this bot makes of a server: every
-// message in it. Nothing but an explicit request may turn it on, and asking
-// for it must also ask for GUILD_MESSAGES, since MESSAGE_CONTENT only fills
-// in the content field of message events rather than delivering them.
+// message in it. Nothing but an explicit request may turn it on. The
+// unprivileged GUILD_MESSAGES is always on, since statistics counts every
+// message's author and hour and needs no text to do it.
 func TestNewSessionRequestsMessageContentOnlyWhenAsked(t *testing.T) {
 	off, err := NewSession(testToken, Intents{Members: true})
 	if err != nil {
@@ -146,8 +146,8 @@ func TestNewSessionRequestsMessageContentOnlyWhenAsked(t *testing.T) {
 	if off.Identify.Intents&discordgo.IntentsMessageContent != 0 {
 		t.Error("MESSAGE_CONTENT was not asked for but is being requested")
 	}
-	if off.Identify.Intents&discordgo.IntentsGuildMessages != 0 {
-		t.Error("GUILD_MESSAGES is being requested with nothing to read")
+	if off.Identify.Intents&discordgo.IntentsGuildMessages == 0 {
+		t.Error("GUILD_MESSAGES must always be requested: statistics counts from it")
 	}
 
 	on, err := NewSession(testToken, Intents{MessageContent: true})

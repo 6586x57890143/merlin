@@ -1,0 +1,233 @@
+package statistics
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+)
+
+// discordEpoch is the millisecond epoch Discord snowflakes count from. A
+// timestamp converts straight into a snowflake, which is what lets a window
+// be paged with before/after instead of walking every channel back to its
+// first message.
+const discordEpoch = 1420070400000
+
+const (
+	// pageSize is Discord's own maximum for one ChannelMessages call.
+	pageSize = 100
+	// requestGap is the backfill's own throttle: one page request per gap,
+	// so 40 a second, under Discord's 50 a second global ceiling with room
+	// for everything else the bot is doing. Per channel, discordgo already
+	// tracks the bucket and sleeps out its reset, which for message history
+	// is about a page a second and is what actually bounds a backfill; this
+	// is the global half, which discordgo only learns about from a 429
+	// (spec.MD §4: self-throttle, do not rely on Discord's).
+	requestGap = 25 * time.Millisecond
+	// pageRetries is how many times one page is re-asked for after a
+	// transient failure (a 5xx, a dropped connection) before the channel is
+	// given up on. discordgo retries 429s itself; this is for the rest. A
+	// 4xx is not retried: Missing Access does not get better by asking.
+	pageRetries = 3
+	retryPause  = 2 * time.Second
+)
+
+// messageSource is the slice of *discordgo.Session the backfill uses, so it
+// can be driven by a fake in tests. The narrow-interface seam every other
+// consumer in this codebase uses, rather than depending on the concrete
+// session.
+type messageSource interface {
+	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
+	ThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
+	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
+}
+
+// person is one member's total over a window, as the renderer wants it.
+type person struct {
+	id       string
+	name     string
+	avatar   string // avatar hash, empty for a member on a default avatar
+	count    int
+	channels map[string]bool
+	last     time.Time
+}
+
+// report is everything a rendered answer needs.
+type report struct {
+	people   []*person
+	messages int
+	channels int // channels that carried at least one message
+	// coveredFrom is the earliest instant the buckets can speak for. A
+	// window starting before it is answered from what exists, and says so:
+	// silently reporting a quiet server for the days before counting began
+	// would be the wrong kind of wrong.
+	coveredFrom time.Time
+	from        time.Time
+}
+
+func (r report) partial() bool { return !r.coveredFrom.IsZero() && r.from.Before(r.coveredFrom) }
+
+// snowflake is the smallest id Discord could have minted at t.
+func snowflake(t time.Time) int64 {
+	return (t.UnixMilli() - discordEpoch) << 22
+}
+
+// parseWhen reads the formats a person actually types. Everything is utc: a
+// report whose numbers get compared across people in different places has no
+// business guessing a local zone.
+func parseWhen(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("%q is not a date i understand. try 2026-09-01, 2026-09-01 14:00 or an rfc3339 timestamp, all utc", s)
+}
+
+func readable(ch *discordgo.Channel) bool {
+	if ch == nil {
+		return false
+	}
+	switch ch.Type {
+	case discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews,
+		discordgo.ChannelTypeGuildPublicThread, discordgo.ChannelTypeGuildPrivateThread,
+		discordgo.ChannelTypeGuildNewsThread:
+		return true
+	}
+	return false
+}
+
+// errScanStopped is the context ending, as distinct from a channel that
+// could not be read.
+var errScanStopped = errors.New("scan stopped early")
+
+// page fetches one page, waiting for a request slot first and re-asking
+// after a transient failure. The context is checked at every wait, so a
+// deadline is felt within one gap rather than one retry pause.
+func page(ctx context.Context, src messageSource, channelID, before string, tick <-chan time.Time) ([]*discordgo.Message, error) {
+	for attempt := 0; ; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, errScanStopped
+		case <-tick:
+		}
+		msgs, err := src.ChannelMessages(channelID, pageSize, before, "", "")
+		if err == nil || attempt >= pageRetries || !transient(err) {
+			return msgs, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errScanStopped
+		case <-time.After(retryPause * time.Duration(attempt+1)):
+		}
+	}
+}
+
+// transient is an error worth asking again about: anything but a Discord
+// 4xx, which is an answer rather than a fault.
+func transient(err error) bool {
+	var rerr *discordgo.RESTError
+	if errors.As(err, &rerr) && rerr.Response != nil {
+		return rerr.Response.StatusCode >= 500
+	}
+	return true
+}
+
+// messageID parses a snowflake, or 0 for anything that is not one.
+func messageID(s string) int64 {
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// rank orders by message count, then by name so two runs over one window
+// produce the same list rather than swapping people on every tie.
+func rank(people map[string]*person) []*person {
+	out := make([]*person, 0, len(people))
+	for _, p := range people {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].count != out[j].count {
+			return out[i].count > out[j].count
+		}
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
+// markdown renders the report for Discord. limit 0 means everyone, which is
+// what the attached .md file gets.
+func markdown(rep report, guild string, start, end time.Time, limit int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## who was active in %s\n", guild)
+	fmt.Fprintf(&b, "`%s` to `%s` utc, over `%s`\n",
+		start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), humanSpan(end.Sub(start)))
+	fmt.Fprintf(&b, "`%d` people, `%d` messages, `%d` channels\n", len(rep.people), rep.messages, rep.channels)
+	if rep.partial() {
+		fmt.Fprintf(&b, "-# counting began `%s` utc, so this window is only counted from there. `/statistics backfill` fills in what came before\n",
+			rep.coveredFrom.Format("2006-01-02 15:04"))
+	}
+	b.WriteString("\n")
+
+	if len(rep.people) == 0 {
+		b.WriteString("nobody chatted in that window.\n")
+		return b.String()
+	}
+
+	shown := rep.people
+	if limit > 0 && len(shown) > limit {
+		shown = shown[:limit]
+	}
+	for i, p := range shown {
+		fmt.Fprintf(&b, "`%2d.` **%s** `%d` in %s\n", i+1, escape(p.name), p.count, channelList(p.channels))
+	}
+	if len(shown) < len(rep.people) {
+		fmt.Fprintf(&b, "\nshowing the top `%d` of `%d`, the rest is in %s\n", len(shown), len(rep.people), listAttachmentName)
+	}
+	return b.String()
+}
+
+// channelList names up to three channels so a row stays one line.
+func channelList(set map[string]bool) string {
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, "#"+n)
+	}
+	sort.Strings(names)
+	if len(names) > 3 {
+		return strings.Join(names[:3], " ") + fmt.Sprintf(" +%d", len(names)-3)
+	}
+	return strings.Join(names, " ")
+}
+
+// escape defuses the markdown in a display name. A member picks their own,
+// and an unescaped `**__` in a report is how a reader misreads a row.
+func escape(s string) string {
+	return strings.NewReplacer(
+		"*", "\\*", "_", "\\_", "`", "\\`", "~", "\\~", "|", "\\|", ">", "\\>", "#", "\\#",
+	).Replace(s)
+}
+
+// humanSpan is prose, matching the rest of the member-facing durations in
+// this bot rather than core.FormatDuration's compact admin form.
+func humanSpan(d time.Duration) string {
+	switch {
+	case d >= 48*time.Hour:
+		return fmt.Sprintf("%d days", int(d.Hours()/24))
+	case d >= 2*time.Hour:
+		return fmt.Sprintf("%d hours", int(d.Hours()))
+	case d >= 2*time.Minute:
+		return fmt.Sprintf("%d minutes", int(d.Minutes()))
+	default:
+		return "a minute"
+	}
+}

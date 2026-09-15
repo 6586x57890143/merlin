@@ -1,4 +1,4 @@
-package activity
+package statistics
 
 import (
 	"bytes"
@@ -53,7 +53,7 @@ func samplePeople() []*person {
 // canvas geometry, which is the part a layout change breaks silently.
 func TestRenderPNG(t *testing.T) {
 	client := stubCDN(t)
-	rep := report{people: samplePeople(), messages: 69, busy: 4, looked: 9, skipped: 1}
+	rep := report{people: samplePeople(), messages: 69, channels: 4}
 
 	body, err := renderPNG(client, rep, "birdland", windowStart, windowStart.Add(4*time.Hour), 24)
 	if err != nil {
@@ -227,8 +227,8 @@ func TestDefaultAvatarIndex(t *testing.T) {
 }
 
 func TestTotalsLine(t *testing.T) {
-	got := totalsLine(report{people: samplePeople(), messages: 69, busy: 4, looked: 9, skipped: 1, truncated: true})
-	if got != "4 people, 69 messages, 4 of 10 channels, stopped early" {
+	got := totalsLine(report{people: samplePeople(), messages: 69, channels: 4})
+	if got != "4 people, 69 messages, 4 channels" {
 		t.Fatalf("totals line: %q", got)
 	}
 }
