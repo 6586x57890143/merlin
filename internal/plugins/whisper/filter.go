@@ -32,19 +32,22 @@ var filters = []struct {
 	pattern *regexp.Regexp
 }{
 	{
-		reason: "links are not posted through whispers",
-		// Scheme, www., Discord's own invite hosts, or a bare host on a
-		// common TLD. The TLD list is short on purpose: it is the ones that
-		// carry invites, phishing and shock content, not the whole registry.
-		pattern: regexp.MustCompile(`(?i)https?://|\bwww\.|\bdiscord(?:app)?\.(?:gg|com|io)\b|\b[a-z0-9-]+\.(?:com|net|org|gg|io|co|xyz|ru|me|tv|link|app|dev|info|biz|cc|to|ly|sh|zip|mov|top|club|site|online|store|live|fun|pw|su)(?:/|\b)`),
-	},
-	{
-		reason:  "mentions are not posted through whispers",
-		pattern: regexp.MustCompile(`@everyone|@here|<@[!&]?\d+>`),
-	},
-	{
 		reason:  "that looks like an email address",
 		pattern: regexp.MustCompile(`(?i)\b[\w.+-]+@[\w-]+\.[a-z]{2,}\b`),
+	},
+	{
+		reason: "links are not posted through whispers",
+		// Any scheme, www., a bare host on any two-letter-or-longer TLD, or
+		// a dotted IP. Not a list of bad hosts: no link at all, since the
+		// audience is people Discord has decided not to trust with a message
+		// box. "e.g." and "3.14" survive because a TLD needs two letters.
+		pattern: regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://|\bwww\.|\b[a-z0-9-]+\.[a-z]{2,}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b`),
+	},
+	{
+		reason: "mentions are not posted through whispers",
+		// The webhook already sends with every mention suppressed, so none
+		// of these could ping; this stops them rendering as a highlight.
+		pattern: regexp.MustCompile(`@everyone|@here|<@[!&]?\d+>`),
 	},
 	{
 		reason: "that looks like a phone, card or ID number",
@@ -78,6 +81,12 @@ var filters = []struct {
 	},
 }
 
+// emote is a custom server emote, <:name:id> or <a:name:id>. Members may
+// use them, so they are blanked before the suite runs: the id is a snowflake
+// long enough to read as a card number, and nothing else in the tag is text
+// a member wrote.
+var emote = regexp.MustCompile(`<a?:\w{2,32}:\d{17,20}>`)
+
 // check returns the refusal for text, or "" when the suite has nothing
 // against it. The structural rules come first because they are the ones the
 // marker's honesty depends on: a whisper is one line, and it cannot start
@@ -96,8 +105,9 @@ func check(text string) string {
 	if strings.HasPrefix(text, "#") || strings.HasPrefix(text, "-#") {
 		return "a whisper cannot start with a heading"
 	}
+	scanned := emote.ReplaceAllString(text, " ")
 	for _, f := range filters {
-		if f.pattern.MatchString(text) {
+		if f.pattern.MatchString(scanned) {
 			return f.reason
 		}
 	}

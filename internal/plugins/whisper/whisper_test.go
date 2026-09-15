@@ -127,6 +127,11 @@ func TestCheckRefusesWhatItShould(t *testing.T) {
 		{"see www.example.com", "links"},
 		{"join discord.gg/abc", "links"},
 		{"join evil.xyz", "links"},
+		{"any host.example at all", "links"},
+		{"or node.js", "links"},
+		{"steam://run/440", "links"},
+		{"or 10.0.0.1:8080", "links"},
+		{"[masked](example.org)", "links"},
 		{"hi @everyone", "mentions"},
 		{"hi <@123456>", "mentions"},
 		{"hi <@&123456>", "mentions"},
@@ -158,6 +163,9 @@ func TestCheckPassesOrdinaryChat(t *testing.T) {
 		"cafe\u0301 is fine",
 		"the year 20240101 was not a year",
 		"my kids are loud",
+		// Server emotes carry a snowflake id and must not read as a card.
+		"<:pepe:123456789012345678> nice <a:dance:987654321098765432>",
+		"a.b then c.d",
 	} {
 		if got := check(text); got != "" {
 			t.Errorf("check(%q) = %q, want clean", text, got)
@@ -212,6 +220,9 @@ func TestPostPublishesUnderTheDisplayNameWithTheUsernameMarked(t *testing.T) {
 	}
 	if got.Content != "hello there\n-# whispered through merlin by @realname" {
 		t.Errorf("Content = %q: the marker must carry the Discord username", got.Content)
+	}
+	if am := got.AllowedMentions; am == nil || len(am.Parse) != 0 || len(am.Users) != 0 || len(am.Roles) != 0 {
+		t.Errorf("AllowedMentions = %+v, want the zero value so nothing can ping", am)
 	}
 	if len(audit.entries) != 0 {
 		t.Errorf("a successful whisper was audited: %v", audit.entries)
