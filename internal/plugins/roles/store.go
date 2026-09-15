@@ -92,18 +92,20 @@ type Store interface {
 	DueGrants(ctx context.Context, guildID string, now time.Time) ([]GrantRecord, error)
 	ListGrants(ctx context.Context, guildID, userID string) ([]GrantRecord, error)
 
-	// GetEternalRole and PutEternalRole back the eternal-role script
-	// (script_eternalrole.go). Put is an upsert: the first capture and every
-	// retarget after a recreate write the whole row.
-	GetEternalRole(ctx context.Context, guildID, userID, originRoleID string) (EternalRoleRecord, bool, error)
+	// The eternal-role script's definitions (script_eternalrole.go): one row
+	// per member+role, holding the copy. Put is an upsert: the capture on add
+	// and every retarget after a recreate write the whole row.
+	ListEternalRoles(ctx context.Context, guildID string) ([]EternalRoleRecord, error)
 	PutEternalRole(ctx context.Context, rec EternalRoleRecord) error
+	DeleteEternalRole(ctx context.Context, guildID, userID, originRoleID string) error
 }
 
-// EternalRoleRecord is the stored copy of one role the eternal-role script
-// keeps on one member: everything Discord lets a role be created with, plus
-// the icon bytes themselves so a deleted role comes back with its picture.
-// OriginRoleID is the ID compiled into the script; RoleID is whichever role
-// currently stands in for it, moved only by merlin's own recreate.
+// EternalRoleRecord is one eternal role: the member, and the stored copy of
+// the role kept on them (everything Discord lets a role be created with,
+// plus the icon bytes themselves so a deleted role comes back with its
+// picture). OriginRoleID is the role named when it was added; RoleID is
+// whichever role currently stands in for it, moved only by merlin's own
+// recreate.
 type EternalRoleRecord struct {
 	GuildID      string
 	UserID       string
@@ -336,20 +338,29 @@ func (s *pgStore) ListGrants(ctx context.Context, guildID, userID string) ([]Gra
 	return out, nil
 }
 
-func (s *pgStore) GetEternalRole(ctx context.Context, guildID, userID, originRoleID string) (EternalRoleRecord, bool, error) {
-	rec := EternalRoleRecord{GuildID: guildID, UserID: userID, OriginRoleID: originRoleID}
-	err := s.pool.QueryRow(ctx, `
-		SELECT role_id, name, color, hoist, mentionable, permissions, unicode_emoji, icon_hash, icon, captured_at
-		FROM script_eternal_roles WHERE guild_id = $1 AND user_id = $2 AND origin_role_id = $3
-	`, guildID, userID, originRoleID).Scan(&rec.RoleID, &rec.Name, &rec.Color, &rec.Hoist, &rec.Mentionable,
-		&rec.Permissions, &rec.UnicodeEmoji, &rec.IconHash, &rec.Icon, &rec.CapturedAt)
+func (s *pgStore) ListEternalRoles(ctx context.Context, guildID string) ([]EternalRoleRecord, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id, origin_role_id, role_id, name, color, hoist, mentionable, permissions, unicode_emoji, icon_hash, icon, captured_at
+		FROM script_eternal_roles WHERE guild_id = $1 ORDER BY captured_at
+	`, guildID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return EternalRoleRecord{}, false, nil
-		}
-		return EternalRoleRecord{}, false, fmt.Errorf("roles store: get eternal role: %w", err)
+		return nil, fmt.Errorf("roles store: list eternal roles: %w", err)
 	}
-	return rec, true, nil
+	defer rows.Close()
+
+	var out []EternalRoleRecord
+	for rows.Next() {
+		rec := EternalRoleRecord{GuildID: guildID}
+		if err := rows.Scan(&rec.UserID, &rec.OriginRoleID, &rec.RoleID, &rec.Name, &rec.Color, &rec.Hoist, &rec.Mentionable,
+			&rec.Permissions, &rec.UnicodeEmoji, &rec.IconHash, &rec.Icon, &rec.CapturedAt); err != nil {
+			return nil, fmt.Errorf("roles store: scan eternal role: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("roles store: iterate eternal roles: %w", err)
+	}
+	return out, nil
 }
 
 func (s *pgStore) PutEternalRole(ctx context.Context, rec EternalRoleRecord) error {
@@ -363,6 +374,14 @@ func (s *pgStore) PutEternalRole(ctx context.Context, rec EternalRoleRecord) err
 		rec.Permissions, rec.UnicodeEmoji, rec.IconHash, rec.Icon, rec.CapturedAt)
 	if err != nil {
 		return fmt.Errorf("roles store: put eternal role: %w", err)
+	}
+	return nil
+}
+
+func (s *pgStore) DeleteEternalRole(ctx context.Context, guildID, userID, originRoleID string) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM script_eternal_roles WHERE guild_id = $1 AND user_id = $2 AND origin_role_id = $3`,
+		guildID, userID, originRoleID); err != nil {
+		return fmt.Errorf("roles store: delete eternal role: %w", err)
 	}
 	return nil
 }

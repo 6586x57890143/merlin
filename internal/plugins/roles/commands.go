@@ -41,6 +41,11 @@ const (
 	// by this plugin: a script on is merlin overriding admins, and the one
 	// lever that stops it should not be a mod's.
 	actionScripts = "roles.scripts"
+	// actionScriptsDefine is adding and removing eternal roles. TierAdmin is
+	// only the coarse floor: the handler additionally requires the guild
+	// owner or the bootstrap operator (canDefineEternal), which PermSpec
+	// cannot express, exactly as /aimod funding set-address does.
+	actionScriptsDefine = "roles.scripts_define"
 )
 
 // pluginScripts is every script this plugin ships, for the fixed choice
@@ -201,7 +206,19 @@ func (p *Plugin) registerCommands() {
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "list",
-						Description: "Show which scripts are on in this server",
+						Description: "Show which scripts are on in this server, and what they protect",
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "eternal-add",
+						Description: "eternal-role: make a member always hold a role, exactly as it is now. Server owner only.",
+						Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "The member"), roleOpt("role", "The role they keep, copied as it is right now")},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "eternal-remove",
+						Description: "eternal-role: stop keeping a role on a member. Server owner only.",
+						Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "The member"), roleOpt("role", "The role to stop keeping (the original or its current copy)")},
 					},
 				},
 			},
@@ -223,6 +240,8 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("roles", "configure/sync-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleSyncChannels)
 	p.commands.Handle("roles", "scripts/set", core.PermSpec{Tier: core.TierAdmin, Action: actionScripts}, p.handleScriptsSet)
 	p.commands.Handle("roles", "scripts/list", core.PermSpec{Tier: core.TierAdmin, Action: actionScripts}, p.handleScriptsList)
+	p.commands.Handle("roles", "scripts/eternal-add", core.PermSpec{Tier: core.TierAdmin, Action: actionScriptsDefine}, p.handleEternalAdd)
+	p.commands.Handle("roles", "scripts/eternal-remove", core.PermSpec{Tier: core.TierAdmin, Action: actionScriptsDefine}, p.handleEternalRemove)
 }
 
 func scriptChoices() []*discordgo.ApplicationCommandOptionChoice {
@@ -459,8 +478,8 @@ func (p *Plugin) handleSyncChannels(ctx context.Context, s *discordgo.Session, i
 // handleScriptsSet turns a script on or off. Turning one on answers with a
 // warning rather than a success: the admin has just handed merlin authority
 // over their own future actions, and the response should read that way. The
-// first enforcement runs here as well, so the copy is captured now rather
-// than up to a sweep later; it can download an icon, hence the defer.
+// first enforcement runs here as well, so anything already defined is put
+// right now rather than up to a sweep later.
 func (p *Plugin) handleScriptsSet(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	opts := core.LeafArgs(i)
 	name := opts["script"].StringValue()
@@ -482,15 +501,16 @@ func (p *Plugin) handleScriptsSet(ctx context.Context, s *discordgo.Session, i *
 	}
 	if !enabled {
 		p.auditScript(ctx, i, "roles.script_disabled", name)
-		_ = core.FollowUpOK(s, i, "Script off", fmt.Sprintf("`%s` is off. Whatever it was protecting is an ordinary role again; merlin's stored copy is kept.", name))
+		_ = core.FollowUpOK(s, i, "Script off", fmt.Sprintf("`%s` is off. Whatever it was protecting is ordinary again; its definitions and merlin's stored copies are kept.", name))
 		return
 	}
 	p.auditScript(ctx, i, "roles.script_enabled", name)
 	if err := p.enforceEternalRoles(ctx, i.GuildID); err != nil {
 		p.log.Error("roles: first enforcement after enabling script", "guild", i.GuildID, "script", name, "err", err)
 	}
+	recs, _ := p.store.ListEternalRoles(ctx, i.GuildID)
 	_ = core.FollowUpEmbed(s, i, core.NewEmbed(core.ColorWarning, "Script on: "+name,
-		scripts.Warning+"\n\n"+scriptDescription(name)+
+		scripts.Warning+"\n\n"+scriptDescription(name, recs)+
 			fmt.Sprintf("\n\nTurn it off with `/roles scripts set script:%s enabled:false`.", name)))
 }
 
@@ -511,22 +531,113 @@ func (p *Plugin) handleScriptsList(ctx context.Context, s *discordgo.Session, i 
 				status = "on"
 			}
 		}
-		fmt.Fprintf(&b, "- `%s`: %s\n", name, status)
+		fmt.Fprintf(&b, "- `%s`: %s", name, status)
+		if name == scriptEternalRole {
+			recs, err := p.store.ListEternalRoles(ctx, i.GuildID)
+			if err != nil {
+				b.WriteString(" (definitions unreadable)")
+			} else {
+				b.WriteString(": " + eternalRolesLine(recs))
+			}
+		}
+		b.WriteString("\n")
 	}
 	core.RespondInfo(s, i, "Scripts", b.String())
 }
 
 // scriptDescription is what an admin is told they just turned on.
-func scriptDescription(name string) string {
+func scriptDescription(name string, recs []EternalRoleRecord) string {
 	switch name {
 	case scriptEternalRole:
-		var who []string
-		for _, e := range eternalRoles {
-			who = append(who, core.MentionUser(e.userID)+" keeps "+core.MentionRole(e.roleID))
-		}
-		return "**eternal-role**: " + strings.Join(who, "; ") + ". merlin keeps a copy of the role as it is right now. " +
+		return "**eternal-role**: " + eternalRolesLine(recs) + ". merlin keeps a copy of each role as it was when added. " +
 			"If it is removed from them it is given back; if it is deleted it is recreated from the copy; " +
-			"if it is edited, a fresh copy is created and placed above the edited one. Jail still works normally."
+			"if it is edited, a fresh copy is created and placed above the edited one. Jail still works normally. " +
+			"Only the server owner can add or remove definitions (`/roles scripts eternal-add`)."
 	}
 	return ""
+}
+
+// handleEternalAdd defines an eternal role. The owner-or-operator check is
+// the real gate here; see canDefineEternal. Deferred because the capture
+// downloads the role's icon.
+func (p *Plugin) handleEternalAdd(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !p.requireDefiner(s, i) {
+		return
+	}
+	opts := core.LeafArgs(i)
+	userID := opts["user"].UserValue(nil).ID
+	roleID := opts["role"].RoleValue(nil, "").ID
+	if err := core.DeferResponse(s, i); err != nil {
+		return
+	}
+	rec, err := p.addEternalRole(ctx, i.GuildID, userID, roleID, actorID(i))
+	if err != nil {
+		_ = core.FollowUpErr(s, i, "Not added", err)
+		return
+	}
+	if err := p.enforceEternalRoles(ctx, i.GuildID); err != nil {
+		p.log.Error("roles: enforce after eternal-add", "guild", i.GuildID, "err", err)
+	}
+	on := false
+	if p.scripts != nil {
+		on, _ = p.scripts.Enabled(ctx, i.GuildID, scriptEternalRole)
+	}
+	note := ""
+	if !on {
+		note = "\n\nThe script is **off** in this server, so nothing is enforced yet: `/roles scripts set script:eternal-role enabled:true`."
+	}
+	icon := "no icon"
+	if len(rec.Icon) > 0 {
+		icon = "icon captured"
+	}
+	_ = core.FollowUpOK(s, i, "Eternal role added",
+		fmt.Sprintf("%s now keeps %s. Copied as it is right now (%s); the copy never changes from Discord's side.%s",
+			core.MentionUser(userID), core.MentionRole(roleID), icon, note))
+}
+
+func (p *Plugin) handleEternalRemove(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !p.requireDefiner(s, i) {
+		return
+	}
+	opts := core.LeafArgs(i)
+	userID := opts["user"].UserValue(nil).ID
+	roleID := opts["role"].RoleValue(nil, "").ID
+	recs, err := p.store.ListEternalRoles(ctx, i.GuildID)
+	if err != nil {
+		core.RespondErr(s, i, "Not removed", err)
+		return
+	}
+	idx := slices.IndexFunc(recs, func(r EternalRoleRecord) bool {
+		return r.UserID == userID && (r.OriginRoleID == roleID || r.RoleID == roleID)
+	})
+	if idx < 0 {
+		core.RespondErr(s, i, "Not removed", fmt.Errorf("%s does not keep %s", core.MentionUser(userID), core.MentionRole(roleID)))
+		return
+	}
+	rec := recs[idx]
+	if err := p.store.DeleteEternalRole(ctx, i.GuildID, rec.UserID, rec.OriginRoleID); err != nil {
+		core.RespondErr(s, i, "Not removed", err)
+		return
+	}
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.eternal_removed", core.MentionRole(rec.RoleID),
+		fmt.Sprintf("no longer an eternal role of %s", core.MentionUser(userID))); err != nil {
+		p.log.Error("roles: audit eternal-remove failed", "guild", i.GuildID, "err", err)
+	}
+	core.RespondOK(s, i, "Eternal role removed",
+		fmt.Sprintf("%s no longer keeps %s. The role itself is untouched.", core.MentionUser(userID), core.MentionRole(rec.RoleID)))
+}
+
+// requireDefiner answers the interaction and returns false unless the actor
+// may define eternal roles.
+func (p *Plugin) requireDefiner(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
+	ok, err := p.canDefineEternal(i.GuildID, actorID(i))
+	if err != nil {
+		core.RespondErr(s, i, "Not allowed", err)
+		return false
+	}
+	if !ok {
+		core.RespondErr(s, i, "Not allowed", fmt.Errorf("only the server owner (or merlin's operator) can add or remove eternal roles; admins can only turn the script off"))
+		return false
+	}
+	return true
 }

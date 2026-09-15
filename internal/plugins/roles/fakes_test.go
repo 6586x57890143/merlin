@@ -63,6 +63,8 @@ type fakeOps struct {
 	// guildErr and dmErr stand in for a member with DMs closed or a guild
 	// lookup that fails, both of which must leave the jail itself intact.
 	guildErr error
+	// guildOwner is Guild's OwnerID, for the owner-or-operator gate.
+	guildOwner string
 	dmErr    error
 	dmSends  []sentDM
 
@@ -239,7 +241,7 @@ func (f *fakeOps) Guild(guildID string, options ...discordgo.RequestOption) (*di
 	if f.guildErr != nil {
 		return nil, f.guildErr
 	}
-	return &discordgo.Guild{ID: guildID, Name: "The Melting Pot"}, nil
+	return &discordgo.Guild{ID: guildID, Name: "The Melting Pot", OwnerID: f.guildOwner}, nil
 }
 
 func (f *fakeOps) UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
@@ -471,11 +473,24 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{jails: make(map[string]JailRecord), grants: make(map[string]GrantRecord), eternal: make(map[string]EternalRoleRecord)}
 }
 
-func (f *fakeStore) GetEternalRole(ctx context.Context, guildID, userID, originRoleID string) (EternalRoleRecord, bool, error) {
+func (f *fakeStore) ListEternalRoles(ctx context.Context, guildID string) ([]EternalRoleRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	rec, ok := f.eternal[guildID+":"+userID+":"+originRoleID]
-	return rec, ok, nil
+	var out []EternalRoleRecord
+	for _, rec := range f.eternal {
+		if rec.GuildID == guildID {
+			out = append(out, rec)
+		}
+	}
+	slices.SortFunc(out, func(a, b EternalRoleRecord) int { return a.CapturedAt.Compare(b.CapturedAt) })
+	return out, nil
+}
+
+func (f *fakeStore) DeleteEternalRole(ctx context.Context, guildID, userID, originRoleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.eternal, guildID+":"+userID+":"+originRoleID)
+	return nil
 }
 
 func (f *fakeStore) PutEternalRole(ctx context.Context, rec EternalRoleRecord) error {

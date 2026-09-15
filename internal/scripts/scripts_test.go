@@ -13,12 +13,17 @@ func TestScriptSwitchRoundTrip(t *testing.T) {
 	store := NewPostgresStore(dbtest.Pool(t))
 	ctx := context.Background()
 	guild := t.Name()
+	// The database outlives the run, so start from a known state rather
+	// than trusting the last run's final write.
+	if err := store.SetEnabled(ctx, guild, "eternal-role", false); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
 
 	on, err := store.Enabled(ctx, guild, "eternal-role")
 	if err != nil || on {
 		t.Fatalf("zero state must be off: on=%v err=%v", on, err)
 	}
-	for _, want := range []bool{true, true, false, false, true} {
+	for _, want := range []bool{true, true, false, false, true, false} {
 		if err := store.SetEnabled(ctx, guild, "eternal-role", want); err != nil {
 			t.Fatalf("set %v: %v", want, err)
 		}

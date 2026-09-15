@@ -3,10 +3,12 @@ package roles
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -14,18 +16,26 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
-// The eternal-role script: one member always holds one role, and the role
-// always looks the way it did when merlin first saw it.
+// The eternal-role script: a member always holds a role, and the role
+// always looks the way it did when it was made eternal.
 //
-// A script (see internal/scripts) is a table of data plus a hook into work
-// the plugin already does. This one rides the per-guild sweep and the
-// role/member gateway handlers; all of them call enforceEternalRoles, which
-// re-derives everything from live Discord state, so firing it twice for
-// one event is harmless. While the script is on it is stronger than the
-// guild's admins on purpose, so nothing an admin does through Discord can
-// change the stored copy: it is captured once and only merlin's own
-// recreate moves RoleID and IconHash. An admin who wants a different
-// eternal version has one option, turning the script off.
+// A script (see internal/scripts) is a hook into work the plugin already
+// does, off until a guild turns it on. This one rides the per-guild sweep
+// and the role/member gateway handlers; all of them call
+// enforceEternalRoles, which re-derives everything from live Discord state,
+// so firing it twice for one event is harmless. While the script is on it
+// is stronger than the guild's admins on purpose, so nothing an admin does
+// through Discord can change the stored copy: it is captured once, when
+// the role is added, and only merlin's own recreate moves RoleID and
+// IconHash. An admin who wants a different eternal version has one option,
+// turning the script off.
+//
+// Definitions live in script_eternal_roles, one row per member+role, so any
+// server can use the script and none is named in code. Adding or removing
+// one is for the guild owner or the bootstrap operator only (canDefineEternal),
+// never TierAdmin: an admin who could add themselves on a role carrying
+// Administrator would have merlin entrench them faster than anyone could
+// strip it, which is the one thing this script must not do for whoever asks.
 //
 // Three things can go wrong with the role and each has one answer:
 //   - removed from the member: added back
@@ -40,13 +50,9 @@ import (
 
 const scriptEternalRole = "eternal-role"
 
-type eternalRole struct{ guildID, userID, roleID string }
-
-// eternalRoles is the whole configuration. Adding a person is a one-line
-// change here, reviewed like any other; there is deliberately no command.
-var eternalRoles = []eternalRole{
-	{guildID: meltingPotGuildID, userID: "1539052473690366022", roleID: "1547265306408517662"},
-}
+// errEternalExists reports an add for a member+role already on record. The
+// copy is taken once, so a second add must not overwrite it.
+var errEternalExists = errors.New("that member already has that role as an eternal role")
 
 // iconFetchTimeout and maxIconBytes bound the one outbound HTTP call this
 // script makes, to Discord's CDN for the role icon. Discord caps uploads at
@@ -75,19 +81,10 @@ func fetchURL(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, maxIconBytes))
 }
 
-// enforceEternalRoles runs every eternal role defined for guildID, if the
+// enforceEternalRoles runs every eternal role defined in guildID, if the
 // script is on there. An unreadable switch reads as off.
 func (p *Plugin) enforceEternalRoles(ctx context.Context, guildID string) error {
 	if p.scripts == nil || p.dryRun(guildID) {
-		return nil
-	}
-	var mine []eternalRole
-	for _, e := range eternalRoles {
-		if e.guildID == guildID {
-			mine = append(mine, e)
-		}
-	}
-	if len(mine) == 0 {
 		return nil
 	}
 	on, err := p.scripts.Enabled(ctx, guildID, scriptEternalRole)
@@ -98,10 +95,14 @@ func (p *Plugin) enforceEternalRoles(ctx context.Context, guildID string) error 
 	if !on {
 		return nil
 	}
+	recs, err := p.store.ListEternalRoles(ctx, guildID)
+	if err != nil {
+		return fmt.Errorf("list eternal roles: %w", err)
+	}
 	var firstErr error
-	for _, e := range mine {
-		if err := p.enforceEternalRole(ctx, e); err != nil {
-			p.log.Error("roles: eternal-role: enforce failed", "guild", guildID, "user", e.userID, "err", err)
+	for _, rec := range recs {
+		if err := p.enforceEternalRole(ctx, rec); err != nil {
+			p.log.Error("roles: eternal-role: enforce failed", "guild", guildID, "user", rec.UserID, "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -110,46 +111,19 @@ func (p *Plugin) enforceEternalRoles(ctx context.Context, guildID string) error 
 	return firstErr
 }
 
-func (p *Plugin) enforceEternalRole(ctx context.Context, e eternalRole) error {
-	if _, jailed, err := p.store.GetJail(ctx, e.guildID, e.userID); err != nil {
+func (p *Plugin) enforceEternalRole(ctx context.Context, rec EternalRoleRecord) error {
+	if _, jailed, err := p.store.GetJail(ctx, rec.GuildID, rec.UserID); err != nil {
 		return fmt.Errorf("look up jail: %w", err)
 	} else if jailed {
 		return nil
 	}
 
-	ops := p.ops(e.guildID)
-	rolesList, err := ops.GuildRoles(e.guildID)
+	ops := p.ops(rec.GuildID)
+	rolesList, err := ops.GuildRoles(rec.GuildID)
 	if err != nil {
 		return fmt.Errorf("list roles: %w", err)
 	}
-	byID := func(id string) *discordgo.Role {
-		i := slices.IndexFunc(rolesList, func(r *discordgo.Role) bool { return r.ID == id })
-		if i < 0 {
-			return nil
-		}
-		return rolesList[i]
-	}
-
-	rec, ok, err := p.store.GetEternalRole(ctx, e.guildID, e.userID, e.roleID)
-	if err != nil {
-		return fmt.Errorf("read copy: %w", err)
-	}
-	if !ok {
-		// First run: the live role is the eternal version from here on.
-		// Nothing to copy from means nothing to enforce; merlin never
-		// invents a role.
-		live := byID(e.roleID)
-		if live == nil {
-			p.log.Warn("roles: eternal-role: origin role not found, nothing captured", "guild", e.guildID, "role", e.roleID)
-			return nil
-		}
-		rec, err = p.captureEternalRole(ctx, e, live)
-		if err != nil {
-			return err
-		}
-	}
-
-	role := byID(rec.RoleID)
+	role := findRole(rolesList, rec.RoleID)
 	switch {
 	case role == nil:
 		if role, err = p.recreateEternalRole(ctx, &rec, nil); err != nil {
@@ -161,7 +135,7 @@ func (p *Plugin) enforceEternalRole(ctx context.Context, e eternalRole) error {
 		}
 	}
 
-	member, err := ops.GuildMember(e.guildID, e.userID)
+	member, err := ops.GuildMember(rec.GuildID, rec.UserID)
 	if err != nil {
 		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
 			return nil // not in the guild; HandleMemberJoin or the next sweep
@@ -171,23 +145,53 @@ func (p *Plugin) enforceEternalRole(ctx context.Context, e eternalRole) error {
 	if slices.Contains(member.Roles, role.ID) {
 		return nil
 	}
-	if err := ops.GuildMemberRoleAdd(e.guildID, e.userID, role.ID); err != nil {
+	if err := ops.GuildMemberRoleAdd(rec.GuildID, rec.UserID, role.ID); err != nil {
 		return fmt.Errorf("re-add role: %w", err)
 	}
-	p.log.Warn("roles: eternal-role: role re-added", "guild", e.guildID, "user", e.userID, "role", role.ID)
-	p.auditEternal(ctx, e.guildID, "roles.eternal_reassigned", core.MentionRole(role.ID),
-		fmt.Sprintf("%s had lost it; given back", core.MentionUser(e.userID)))
+	p.log.Warn("roles: eternal-role: role re-added", "guild", rec.GuildID, "user", rec.UserID, "role", role.ID)
+	p.auditEternal(ctx, rec.GuildID, "roles.eternal_reassigned", core.MentionRole(role.ID),
+		fmt.Sprintf("%s had lost it; given back", core.MentionUser(rec.UserID)))
 	return nil
 }
 
-// captureEternalRole records live as the eternal version, icon bytes
-// included. An unreachable icon is captured as its hash alone rather than
-// failing: drift on the standing role is still detected, and a recreate
-// simply comes back without the picture. The role's name and colour are
-// the part people see, and the copy is taken once, so nothing retries this.
-func (p *Plugin) captureEternalRole(ctx context.Context, e eternalRole, live *discordgo.Role) (EternalRoleRecord, error) {
+func findRole(list []*discordgo.Role, id string) *discordgo.Role {
+	i := slices.IndexFunc(list, func(r *discordgo.Role) bool { return r.ID == id })
+	if i < 0 {
+		return nil
+	}
+	return list[i]
+}
+
+// addEternalRole defines a new eternal role by capturing roleID as it is
+// right now, icon bytes included. An unreachable icon is captured as its
+// hash alone rather than failing: drift on the standing role is still
+// detected, and a recreate simply comes back without the picture. The copy
+// is taken once, so nothing retries this, and a second add for the same
+// pair is refused rather than overwriting it.
+func (p *Plugin) addEternalRole(ctx context.Context, guildID, userID, roleID, actor string) (EternalRoleRecord, error) {
+	existing, err := p.store.ListEternalRoles(ctx, guildID)
+	if err != nil {
+		return EternalRoleRecord{}, fmt.Errorf("list eternal roles: %w", err)
+	}
+	for _, e := range existing {
+		if e.UserID == userID && (e.OriginRoleID == roleID || e.RoleID == roleID) {
+			return EternalRoleRecord{}, errEternalExists
+		}
+	}
+	rolesList, err := p.ops(guildID).GuildRoles(guildID)
+	if err != nil {
+		return EternalRoleRecord{}, fmt.Errorf("list roles: %w", err)
+	}
+	live := findRole(rolesList, roleID)
+	if live == nil {
+		return EternalRoleRecord{}, fmt.Errorf("role %s does not exist in this server", core.MentionRole(roleID))
+	}
+	if live.Managed {
+		return EternalRoleRecord{}, fmt.Errorf("%s is managed by an integration and cannot be copied or assigned", core.MentionRole(roleID))
+	}
+
 	rec := EternalRoleRecord{
-		GuildID: e.guildID, UserID: e.userID, OriginRoleID: e.roleID, RoleID: live.ID,
+		GuildID: guildID, UserID: userID, OriginRoleID: roleID, RoleID: live.ID,
 		Name: live.Name, Color: live.Color, Hoist: live.Hoist, Mentionable: live.Mentionable,
 		Permissions: live.Permissions, UnicodeEmoji: live.UnicodeEmoji, IconHash: live.Icon,
 		CapturedAt: p.now(),
@@ -195,7 +199,7 @@ func (p *Plugin) captureEternalRole(ctx context.Context, e eternalRole, live *di
 	if live.Icon != "" {
 		icon, err := p.fetch(ctx, live.IconURL("1024"))
 		if err != nil {
-			p.log.Error("roles: eternal-role: icon not captured", "guild", e.guildID, "role", live.ID, "err", err)
+			p.log.Error("roles: eternal-role: icon not captured", "guild", guildID, "role", live.ID, "err", err)
 		} else {
 			rec.Icon = icon
 		}
@@ -203,8 +207,10 @@ func (p *Plugin) captureEternalRole(ctx context.Context, e eternalRole, live *di
 	if err := p.store.PutEternalRole(ctx, rec); err != nil {
 		return EternalRoleRecord{}, fmt.Errorf("store copy: %w", err)
 	}
-	p.auditEternal(ctx, e.guildID, "roles.eternal_captured", core.MentionRole(live.ID),
-		fmt.Sprintf("now the eternal role of %s", core.MentionUser(e.userID)))
+	if err := p.audit.Record(ctx, guildID, actor, "roles.eternal_added", core.MentionRole(live.ID),
+		fmt.Sprintf("now an eternal role of %s", core.MentionUser(userID))); err != nil {
+		p.log.Error("roles: eternal-role: audit failed", "guild", guildID, "err", err)
+	}
 	return rec, nil
 }
 
@@ -281,4 +287,51 @@ func (p *Plugin) HandleRoleUpdated(ctx context.Context, guildID string) {
 	if err := p.enforceEternalRoles(ctx, guildID); err != nil {
 		p.log.Error("roles: eternal-role: enforce on role update", "guild", guildID, "err", err)
 	}
+}
+
+// memberChanged is the script's hook into HandleMemberJoin and
+// HandleMemberUpdate: a member who is eternal somewhere gets checked the
+// moment their roles move. Everyone else costs one indexed read.
+func (p *Plugin) memberChanged(ctx context.Context, guildID, userID string) {
+	recs, err := p.store.ListEternalRoles(ctx, guildID)
+	if err != nil || !slices.ContainsFunc(recs, func(r EternalRoleRecord) bool { return r.UserID == userID }) {
+		return
+	}
+	if err := p.enforceEternalRoles(ctx, guildID); err != nil {
+		p.log.Error("roles: eternal-role: enforce on member change", "guild", guildID, "user", userID, "err", err)
+	}
+}
+
+// canDefineEternal is the gate on adding and removing eternal roles: the
+// guild owner or the bootstrap operator, nobody else, for the entrenchment
+// reason in the file comment. Every branch either fails hard or compares
+// against a single identity; nothing widens on a missing dependency. Same
+// shape as aimod's ownerOrOperator.
+func (p *Plugin) canDefineEternal(guildID, userID string) (bool, error) {
+	if guildID == "" || userID == "" {
+		return false, fmt.Errorf("could not tell who you are, or which server this is")
+	}
+	if p.perms != nil && p.perms.IsBootstrapAdmin(userID) {
+		return true, nil
+	}
+	guild, err := p.ops(guildID).Guild(guildID)
+	if err != nil {
+		return false, fmt.Errorf("could not read this server to check who owns it: %w", err)
+	}
+	if guild == nil {
+		return false, fmt.Errorf("this server could not be read, so ownership cannot be confirmed")
+	}
+	return guild.OwnerID == userID, nil
+}
+
+// eternalRolesLine renders a guild's definitions for /roles scripts list.
+func eternalRolesLine(recs []EternalRoleRecord) string {
+	if len(recs) == 0 {
+		return "none defined"
+	}
+	parts := make([]string, 0, len(recs))
+	for _, r := range recs {
+		parts = append(parts, core.MentionUser(r.UserID)+" keeps "+core.MentionRole(r.RoleID))
+	}
+	return strings.Join(parts, ", ")
 }

@@ -527,18 +527,6 @@ func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 	}
 }
 
-// memberChanged is the eternal-role script's hook into HandleMemberJoin and
-// HandleMemberUpdate: a member who is eternal somewhere gets checked the
-// moment their roles move. Everyone else costs a slice scan.
-func (p *Plugin) memberChanged(ctx context.Context, guildID, userID string) {
-	if !slices.ContainsFunc(eternalRoles, func(e eternalRole) bool { return e.guildID == guildID && e.userID == userID }) {
-		return
-	}
-	if err := p.enforceEternalRoles(ctx, guildID); err != nil {
-		p.log.Error("roles: eternal-role: enforce on member change", "guild", guildID, "user", userID, "err", err)
-	}
-}
-
 // HandleMemberUpdate re-strips userID back to their jail role set if
 // Discord's own GUILD_MEMBER_UPDATE shows roles were regranted while they
 // were jailed, most commonly a guild's Onboarding or Membership Screening
