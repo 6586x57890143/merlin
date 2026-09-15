@@ -210,9 +210,14 @@ func (s *pgStore) UpsertUsers(ctx context.Context, users []UserSeen) error {
 	for i, u := range users {
 		guilds[i], ids[i], names[i], avatars[i], seen[i] = u.GuildID, u.UserID, u.Name, u.Avatar, u.SeenAt
 	}
+	// DISTINCT ON: a batch naming one member twice would otherwise be
+	// refused outright (ON CONFLICT cannot touch a row twice), and the
+	// callers dedupe per flush but nothing forces the next one to.
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO stats_users (guild_id, user_id, name, avatar, seen_at)
-		SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])
+		SELECT DISTINCT ON (g, u) g, u, n, a, t
+		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[]) AS r(g, u, n, a, t)
+		ORDER BY g, u, t DESC
 		ON CONFLICT (guild_id, user_id) DO UPDATE SET
 			name = EXCLUDED.name, avatar = EXCLUDED.avatar, seen_at = EXCLUDED.seen_at
 		WHERE stats_users.seen_at <= EXCLUDED.seen_at
@@ -233,7 +238,9 @@ func (s *pgStore) UpsertChannels(ctx context.Context, channels []ChannelSeen) er
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO stats_channels (guild_id, channel_id, name)
-		SELECT * FROM unnest($1::text[], $2::text[], $3::text[])
+		SELECT DISTINCT ON (g, c) g, c, n
+		FROM unnest($1::text[], $2::text[], $3::text[]) AS r(g, c, n)
+		ORDER BY g, c, n DESC
 		ON CONFLICT (guild_id, channel_id) DO UPDATE SET name = EXCLUDED.name
 		WHERE EXCLUDED.name <> ''
 	`, guilds, ids, names)
