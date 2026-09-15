@@ -40,6 +40,10 @@ type fakeOps struct {
 
 	nextRoleID int
 	overwrites map[overwriteKey]struct{ allow, deny int64 }
+	// roleCreateErr fails the next GuildRoleCreate once, standing in for a
+	// guild refusing a role icon; reorders records every GuildRoleReorder.
+	roleCreateErr bool
+	reorders      [][]*discordgo.Role
 
 	// memberFetchErr, when set, fails every GuildMember call with it, for
 	// tests that care about how a *kind* of failure is handled rather than
@@ -275,10 +279,50 @@ func (f *fakeOps) deleteRole(guildID, roleID string) {
 func (f *fakeOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.roleCreateErr {
+		f.roleCreateErr = false
+		return nil, fmt.Errorf("fakeOps: role create refused")
+	}
 	f.nextRoleID++
 	r := &discordgo.Role{ID: fmt.Sprintf("role-created-%d", f.nextRoleID), Name: data.Name}
+	// Everything the eternal-role script recreates from, so a test can
+	// check the copy was faithful. Icon becomes a hash the way Discord
+	// answers an upload with one.
+	if data.Color != nil {
+		r.Color = *data.Color
+	}
+	if data.Hoist != nil {
+		r.Hoist = *data.Hoist
+	}
+	if data.Mentionable != nil {
+		r.Mentionable = *data.Mentionable
+	}
+	if data.Permissions != nil {
+		r.Permissions = *data.Permissions
+	}
+	if data.UnicodeEmoji != nil {
+		r.UnicodeEmoji = *data.UnicodeEmoji
+	}
+	if data.Icon != nil {
+		r.Icon = "hash-of-" + (*data.Icon)[len(*data.Icon)-8:]
+	}
 	f.roles[guildID] = append(f.roles[guildID], r)
 	return r, nil
+}
+
+// GuildRoleReorder applies the positions given and records the call.
+func (f *fakeOps) GuildRoleReorder(guildID string, roles []*discordgo.Role, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reorders = append(f.reorders, roles)
+	for _, moved := range roles {
+		for _, r := range f.roles[guildID] {
+			if r.ID == moved.ID {
+				r.Position = moved.Position
+			}
+		}
+	}
+	return roles, nil
 }
 
 func (f *fakeOps) GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
@@ -417,13 +461,49 @@ type fakeStore struct {
 	dueJailsErr    error
 	dueGrantsErr   error
 	activeJailsErr error
-	jails          map[string]JailRecord  // guildID+":"+userID
-	grants         map[string]GrantRecord // guildID+":"+userID+":"+roleID
+	jails          map[string]JailRecord        // guildID+":"+userID
+	grants         map[string]GrantRecord       // guildID+":"+userID+":"+roleID
+	eternal        map[string]EternalRoleRecord // guildID+":"+userID+":"+originRoleID
 	nextID         int64
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{jails: make(map[string]JailRecord), grants: make(map[string]GrantRecord)}
+	return &fakeStore{jails: make(map[string]JailRecord), grants: make(map[string]GrantRecord), eternal: make(map[string]EternalRoleRecord)}
+}
+
+func (f *fakeStore) GetEternalRole(ctx context.Context, guildID, userID, originRoleID string) (EternalRoleRecord, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec, ok := f.eternal[guildID+":"+userID+":"+originRoleID]
+	return rec, ok, nil
+}
+
+func (f *fakeStore) PutEternalRole(ctx context.Context, rec EternalRoleRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.eternal[rec.GuildID+":"+rec.UserID+":"+rec.OriginRoleID] = rec
+	return nil
+}
+
+// fakeScripts is an in-memory scripts.Store: on is the set of enabled
+// script names per guild, err fails every read.
+type fakeScripts struct {
+	on  map[string]bool // guildID+":"+script
+	err error
+}
+
+func newFakeScripts() *fakeScripts { return &fakeScripts{on: make(map[string]bool)} }
+
+func (f *fakeScripts) Enabled(ctx context.Context, guildID, script string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.on[guildID+":"+script], nil
+}
+
+func (f *fakeScripts) SetEnabled(ctx context.Context, guildID, script string, on bool) error {
+	f.on[guildID+":"+script] = on
+	return nil
 }
 
 func (f *fakeStore) InsertJail(ctx context.Context, rec JailRecord) error {

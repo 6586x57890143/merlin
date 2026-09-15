@@ -91,6 +91,33 @@ type Store interface {
 	DeleteGrant(ctx context.Context, guildID, userID, roleID string) error
 	DueGrants(ctx context.Context, guildID string, now time.Time) ([]GrantRecord, error)
 	ListGrants(ctx context.Context, guildID, userID string) ([]GrantRecord, error)
+
+	// GetEternalRole and PutEternalRole back the eternal-role script
+	// (script_eternalrole.go). Put is an upsert: the first capture and every
+	// retarget after a recreate write the whole row.
+	GetEternalRole(ctx context.Context, guildID, userID, originRoleID string) (EternalRoleRecord, bool, error)
+	PutEternalRole(ctx context.Context, rec EternalRoleRecord) error
+}
+
+// EternalRoleRecord is the stored copy of one role the eternal-role script
+// keeps on one member: everything Discord lets a role be created with, plus
+// the icon bytes themselves so a deleted role comes back with its picture.
+// OriginRoleID is the ID compiled into the script; RoleID is whichever role
+// currently stands in for it, moved only by merlin's own recreate.
+type EternalRoleRecord struct {
+	GuildID      string
+	UserID       string
+	OriginRoleID string
+	RoleID       string
+	Name         string
+	Color        int
+	Hoist        bool
+	Mentionable  bool
+	Permissions  int64
+	UnicodeEmoji string
+	IconHash     string
+	Icon         []byte
+	CapturedAt   time.Time
 }
 
 type pgStore struct {
@@ -307,4 +334,35 @@ func (s *pgStore) ListGrants(ctx context.Context, guildID, userID string) ([]Gra
 		return nil, fmt.Errorf("roles store: iterate grants: %w", err)
 	}
 	return out, nil
+}
+
+func (s *pgStore) GetEternalRole(ctx context.Context, guildID, userID, originRoleID string) (EternalRoleRecord, bool, error) {
+	rec := EternalRoleRecord{GuildID: guildID, UserID: userID, OriginRoleID: originRoleID}
+	err := s.pool.QueryRow(ctx, `
+		SELECT role_id, name, color, hoist, mentionable, permissions, unicode_emoji, icon_hash, icon, captured_at
+		FROM script_eternal_roles WHERE guild_id = $1 AND user_id = $2 AND origin_role_id = $3
+	`, guildID, userID, originRoleID).Scan(&rec.RoleID, &rec.Name, &rec.Color, &rec.Hoist, &rec.Mentionable,
+		&rec.Permissions, &rec.UnicodeEmoji, &rec.IconHash, &rec.Icon, &rec.CapturedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return EternalRoleRecord{}, false, nil
+		}
+		return EternalRoleRecord{}, false, fmt.Errorf("roles store: get eternal role: %w", err)
+	}
+	return rec, true, nil
+}
+
+func (s *pgStore) PutEternalRole(ctx context.Context, rec EternalRoleRecord) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO script_eternal_roles (guild_id, user_id, origin_role_id, role_id, name, color, hoist, mentionable, permissions, unicode_emoji, icon_hash, icon, captured_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (guild_id, user_id, origin_role_id) DO UPDATE SET
+			role_id = $4, name = $5, color = $6, hoist = $7, mentionable = $8, permissions = $9,
+			unicode_emoji = $10, icon_hash = $11, icon = $12, captured_at = $13
+	`, rec.GuildID, rec.UserID, rec.OriginRoleID, rec.RoleID, rec.Name, rec.Color, rec.Hoist, rec.Mentionable,
+		rec.Permissions, rec.UnicodeEmoji, rec.IconHash, rec.Icon, rec.CapturedAt)
+	if err != nil {
+		return fmt.Errorf("roles store: put eternal role: %w", err)
+	}
+	return nil
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/statistics"
 	"github.com/6586x57890143/merlin/internal/plugins/whisper"
 	"github.com/6586x57890143/merlin/internal/scheduler"
+	"github.com/6586x57890143/merlin/internal/scripts"
 	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/6586x57890143/merlin/internal/settings"
 	"github.com/6586x57890143/merlin/internal/storage"
@@ -170,7 +171,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		guard.DryRun,
 		speaker,
 	)
-	rolesPlugin := roles.New(roles.NewPostgresStore(db.Pool), settingsStore,
+	rolesPlugin := roles.New(roles.NewPostgresStore(db.Pool), settingsStore, scripts.NewPostgresStore(db.Pool),
 		func(guildID string) roles.DiscordMemberOps { return guard.For(guildID) },
 		guard.DryRun,
 		speaker,
@@ -483,10 +484,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// or flagging it on leave is precisely the evasion bug that was fixed
 	// once already, and evasion_test.go asserts the row survives.
 	session.AddHandler(func(s *discordgo.Session, rd *discordgo.GuildRoleDelete) {
-		rolesPlugin.HandleRoleDeleted(rd.GuildID, rd.RoleID)
-
 		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		rolesPlugin.HandleRoleDeleted(guildCtx, rd.GuildID, rd.RoleID)
+
 		removed, err := settingsStore.PruneDeletedRole(guildCtx, rd.GuildID, rd.RoleID)
 		if err != nil {
 			log.Error("prune deleted role from settings", "guild", rd.GuildID, "role", rd.RoleID, "err", err)
@@ -504,6 +505,18 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			// post must not be reported as a failed prune.
 			log.Error("audit role prune", "guild", rd.GuildID, "err", err)
 		}
+	})
+
+	// An edited role is only interesting to the eternal-role script, which
+	// answers an edit with a fresh copy of the original. Latency only: the
+	// roles sweep re-checks every minute regardless.
+	session.AddHandler(func(s *discordgo.Session, ru *discordgo.GuildRoleUpdate) {
+		if ru.GuildRole == nil {
+			return
+		}
+		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		rolesPlugin.HandleRoleUpdated(guildCtx, ru.GuildID)
 	})
 
 	session.AddHandler(func(s *discordgo.Session, gd *discordgo.GuildDelete) {

@@ -11,6 +11,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/scripts"
 )
 
 // Action namespaces for whitelist grants (core.PermSpec.Action). jail is
@@ -36,7 +37,17 @@ const (
 	actionGrant           = "roles.grant"
 	actionList            = "roles.list"
 	actionConfigureJailCh = "roles.configure_jail_channels"
+	// actionScripts turns scripts on and off. Admin-only and never lowered
+	// by this plugin: a script on is merlin overriding admins, and the one
+	// lever that stops it should not be a mod's.
+	actionScripts = "roles.scripts"
 )
+
+// pluginScripts is every script this plugin ships, for the fixed choice
+// list on /roles scripts set. A compile-time set, so a plain Choices option
+// rather than autocomplete (spec.MD §4a's autocomplete rule is for values
+// that come from bot state).
+var pluginScripts = []string{scriptEternalRole}
 
 func (p *Plugin) registerCommands() {
 	userOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
@@ -173,6 +184,27 @@ func (p *Plugin) registerCommands() {
 					},
 				},
 			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+				Name:        "scripts",
+				Description: "Server-specific scripts. Off by default; while on, merlin overrides admins on what they protect",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "set",
+						Description: "Turn a script on or off for this server",
+						Options: []*discordgo.ApplicationCommandOption{
+							{Type: discordgo.ApplicationCommandOptionString, Name: "script", Description: "Which script", Required: true, Choices: scriptChoices()},
+							{Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled", Description: "true to turn on, false to turn off", Required: true},
+						},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "list",
+						Description: "Show which scripts are on in this server",
+					},
+				},
+			},
 		},
 	}
 
@@ -189,6 +221,16 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("roles", "configure/list-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleListChannels)
 	p.commands.Handle("roles", "configure/marker-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMarkerRole)
 	p.commands.Handle("roles", "configure/sync-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleSyncChannels)
+	p.commands.Handle("roles", "scripts/set", core.PermSpec{Tier: core.TierAdmin, Action: actionScripts}, p.handleScriptsSet)
+	p.commands.Handle("roles", "scripts/list", core.PermSpec{Tier: core.TierAdmin, Action: actionScripts}, p.handleScriptsList)
+}
+
+func scriptChoices() []*discordgo.ApplicationCommandOptionChoice {
+	out := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(pluginScripts))
+	for _, name := range pluginScripts {
+		out = append(out, &discordgo.ApplicationCommandOptionChoice{Name: name, Value: name})
+	}
+	return out
 }
 
 func actorID(i *discordgo.InteractionCreate) string {
@@ -412,4 +454,79 @@ func (p *Plugin) handleSyncChannels(ctx context.Context, s *discordgo.Session, i
 	if followUpErr != nil {
 		p.log.Error("roles: sync-channels follow-up failed", "guild", i.GuildID, "err", followUpErr)
 	}
+}
+
+// handleScriptsSet turns a script on or off. Turning one on answers with a
+// warning rather than a success: the admin has just handed merlin authority
+// over their own future actions, and the response should read that way. The
+// first enforcement runs here as well, so the copy is captured now rather
+// than up to a sweep later; it can download an icon, hence the defer.
+func (p *Plugin) handleScriptsSet(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	opts := core.LeafArgs(i)
+	name := opts["script"].StringValue()
+	enabled := opts["enabled"].BoolValue()
+	if !slices.Contains(pluginScripts, name) {
+		core.RespondErr(s, i, "Unknown script", fmt.Errorf("%q is not a script of this plugin", name))
+		return
+	}
+	if p.scripts == nil {
+		core.RespondErr(s, i, "Scripts unavailable", fmt.Errorf("this deployment has no script store"))
+		return
+	}
+	if err := core.DeferResponse(s, i); err != nil {
+		return
+	}
+	if err := p.scripts.SetEnabled(ctx, i.GuildID, name, enabled); err != nil {
+		_ = core.FollowUpErr(s, i, "Failed to change script", err)
+		return
+	}
+	if !enabled {
+		p.auditScript(ctx, i, "roles.script_disabled", name)
+		_ = core.FollowUpOK(s, i, "Script off", fmt.Sprintf("`%s` is off. Whatever it was protecting is an ordinary role again; merlin's stored copy is kept.", name))
+		return
+	}
+	p.auditScript(ctx, i, "roles.script_enabled", name)
+	if err := p.enforceEternalRoles(ctx, i.GuildID); err != nil {
+		p.log.Error("roles: first enforcement after enabling script", "guild", i.GuildID, "script", name, "err", err)
+	}
+	_ = core.FollowUpEmbed(s, i, core.NewEmbed(core.ColorWarning, "Script on: "+name,
+		scripts.Warning+"\n\n"+scriptDescription(name)+
+			fmt.Sprintf("\n\nTurn it off with `/roles scripts set script:%s enabled:false`.", name)))
+}
+
+func (p *Plugin) auditScript(ctx context.Context, i *discordgo.InteractionCreate, action, name string) {
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), action, "", name); err != nil {
+		p.log.Error("roles: audit script toggle failed", "guild", i.GuildID, "err", err)
+	}
+}
+
+func (p *Plugin) handleScriptsList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	var b strings.Builder
+	for _, name := range pluginScripts {
+		status := "off"
+		if p.scripts != nil {
+			if on, err := p.scripts.Enabled(ctx, i.GuildID, name); err != nil {
+				status = "unreadable (treated as off)"
+			} else if on {
+				status = "on"
+			}
+		}
+		fmt.Fprintf(&b, "- `%s`: %s\n", name, status)
+	}
+	core.RespondInfo(s, i, "Scripts", b.String())
+}
+
+// scriptDescription is what an admin is told they just turned on.
+func scriptDescription(name string) string {
+	switch name {
+	case scriptEternalRole:
+		var who []string
+		for _, e := range eternalRoles {
+			who = append(who, core.MentionUser(e.userID)+" keeps "+core.MentionRole(e.roleID))
+		}
+		return "**eternal-role**: " + strings.Join(who, "; ") + ". merlin keeps a copy of the role as it is right now. " +
+			"If it is removed from them it is given back; if it is deleted it is recreated from the copy; " +
+			"if it is edited, a fresh copy is created and placed above the edited one. Jail still works normally."
+	}
+	return ""
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/scheduler"
+	"github.com/6586x57890143/merlin/internal/scripts"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
@@ -63,6 +64,12 @@ type Plugin struct {
 	// and *discordgo.Session has no method to satisfy structurally here
 	// (State is a field, not an embedded promoter of its methods).
 	voiceChannelOf func(guildID, userID string) (channelID string, ok bool)
+	// scripts is the on/off switch for this plugin's scripts
+	// (script_eternalrole.go); nil means no scripts ever run. fetch is the
+	// bounded HTTP GET the eternal-role script captures a role icon with,
+	// injectable like now.
+	scripts scripts.Store
+	fetch   func(ctx context.Context, url string) ([]byte, error)
 
 	mu              sync.Mutex
 	sweepRegistered map[string]bool // guild ID -> sweep job registered
@@ -90,9 +97,11 @@ type OpsProvider func(guildID string) DiscordMemberOps
 // slice of internal/settings.Store (mirrors rotation's own SettingsProvider
 // parameter) for the one piece of guild configuration this plugin has:
 // jail's channel-visibility allowlist.
-func New(store Store, jailChannelConfig JailChannelConfig, ops OpsProvider, dryRun func(guildID string) bool, speaker voice.Source, voiceChannelOf func(guildID, userID string) (string, bool)) *Plugin {
+func New(store Store, jailChannelConfig JailChannelConfig, scriptStore scripts.Store, ops OpsProvider, dryRun func(guildID string) bool, speaker voice.Source, voiceChannelOf func(guildID, userID string) (string, bool)) *Plugin {
 	return &Plugin{
 		store:             store,
+		scripts:           scriptStore,
+		fetch:             fetchURL,
 		jailChannelConfig: jailChannelConfig,
 		ops:               ops,
 		dryRun:            dryRun,
@@ -181,7 +190,13 @@ func (p *Plugin) ForgetGuild(guildID string) {
 // for the discovery. Nothing else is touched: the role is gone, so no
 // member still holds it, and the jail records in Postgres are still the
 // only copy of what those members held before being jailed.
-func (p *Plugin) HandleRoleDeleted(guildID, roleID string) {
+//
+// The eternal-role script is also told, so a deleted eternal role comes
+// back now rather than on the next sweep.
+func (p *Plugin) HandleRoleDeleted(ctx context.Context, guildID, roleID string) {
+	if err := p.enforceEternalRoles(ctx, guildID); err != nil {
+		p.log.Error("roles: eternal-role: enforce on role delete", "guild", guildID, "err", err)
+	}
 	p.jailRoleMu.Lock()
 	cached, known := p.jailRoleID[guildID]
 	p.jailRoleMu.Unlock()

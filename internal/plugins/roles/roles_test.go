@@ -281,7 +281,7 @@ func TestDeletingTheJailRoleDropsTheCachedID(t *testing.T) {
 
 	// The role really is gone from Discord's side, not just from the cache.
 	ops.deleteRole("g1", first)
-	p.HandleRoleDeleted("g1", first)
+	p.HandleRoleDeleted(context.Background(), "g1", first)
 
 	second, err := p.resolveJailRole("g1")
 	if err != nil {
@@ -305,8 +305,8 @@ func TestDeletingAnUnrelatedRoleLeavesTheCacheAlone(t *testing.T) {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
 
-	p.HandleRoleDeleted("g1", "some-other-role")
-	p.HandleRoleDeleted("some-other-guild", first)
+	p.HandleRoleDeleted(context.Background(), "g1", "some-other-role")
+	p.HandleRoleDeleted(context.Background(), "some-other-guild", first)
 
 	second, err := p.resolveJailRole("g1")
 	if err != nil {
@@ -321,5 +321,5 @@ func TestDeletingAnUnrelatedRoleLeavesTheCacheAlone(t *testing.T) {
 // a no-op rather than a panic on a nil map read or a spurious warning.
 func TestRoleDeletedBeforeAnyJailIsHarmless(t *testing.T) {
 	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-	p.HandleRoleDeleted("never-seen", "some-role")
+	p.HandleRoleDeleted(context.Background(), "never-seen", "some-role")
 }

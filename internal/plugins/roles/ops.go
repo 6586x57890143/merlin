@@ -22,6 +22,10 @@ type DiscordMemberOps interface {
 	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 	GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
 	GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
+	// GuildRoleReorder is used only by the eternal-role script, to put a
+	// recreated role directly above the one it replaces. Discord accepts a
+	// partial list, so the call names just the role being moved.
+	GuildRoleReorder(guildID string, roles []*discordgo.Role, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 
 	// Guild, UserChannelCreate and ChannelMessageSendComplex exist only to
 	// tell a member what happened to them. A jail that arrives as silently

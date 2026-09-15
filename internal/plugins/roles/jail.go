@@ -508,6 +508,7 @@ func releaseAtText(rec JailRecord) string {
 // MERLIN_DISABLE_GUILD_MEMBERS_INTENT opts out). Without it Discord never
 // sends the event, and the sweep above remains the sole mechanism.
 func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
+	defer p.memberChanged(ctx, guildID, userID)
 	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
 	if err != nil {
 		p.log.Error("roles: look up jail on member join", "guild", guildID, "user", userID, "err", err)
@@ -526,6 +527,18 @@ func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 	}
 }
 
+// memberChanged is the eternal-role script's hook into HandleMemberJoin and
+// HandleMemberUpdate: a member who is eternal somewhere gets checked the
+// moment their roles move. Everyone else costs a slice scan.
+func (p *Plugin) memberChanged(ctx context.Context, guildID, userID string) {
+	if !slices.ContainsFunc(eternalRoles, func(e eternalRole) bool { return e.guildID == guildID && e.userID == userID }) {
+		return
+	}
+	if err := p.enforceEternalRoles(ctx, guildID); err != nil {
+		p.log.Error("roles: eternal-role: enforce on member change", "guild", guildID, "user", userID, "err", err)
+	}
+}
+
 // HandleMemberUpdate re-strips userID back to their jail role set if
 // Discord's own GUILD_MEMBER_UPDATE shows roles were regranted while they
 // were jailed, most commonly a guild's Onboarding or Membership Screening
@@ -541,6 +554,7 @@ func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 // authoritative push of the member's current state, not something read back
 // out of this bot's cache.
 func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string, roles []string) {
+	defer p.memberChanged(ctx, guildID, userID)
 	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
 	if err != nil {
 		p.log.Error("roles: look up jail on member update", "guild", guildID, "user", userID, "err", err)
