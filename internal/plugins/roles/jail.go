@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -634,8 +635,25 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 	}
 	defer p.unclaim(key)
 
-	member, err := p.ops(guildID).GuildMember(guildID, userID)
-	if err != nil {
+	// The two reads are independent, and on the timer path every round trip
+	// here is time the member spends jailed past their sentence. Same shape
+	// as rotation's top-of-rotate reads.
+	var member *discordgo.Member
+	var guildRoles []*discordgo.Role
+	var memberErr, rolesErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		member, memberErr = p.ops(guildID).GuildMember(guildID, userID)
+	}()
+	go func() {
+		defer wg.Done()
+		guildRoles, rolesErr = p.ops(guildID).GuildRoles(guildID)
+	}()
+	wg.Wait()
+
+	if err := memberErr; err != nil {
 		// Unknown Member specifically, not any unknown resource: the same
 		// call answers Unknown Guild once the bot has been removed, and
 		// reading that as "the member left" would drop the row ForgetGuild
@@ -656,9 +674,8 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 		return p.store.DeleteJail(ctx, guildID, userID)
 	}
 
-	guildRoles, err := p.ops(guildID).GuildRoles(guildID)
-	if err != nil {
-		return fmt.Errorf("roles: list guild roles for release: %w", err)
+	if rolesErr != nil {
+		return fmt.Errorf("roles: list guild roles for release: %w", rolesErr)
 	}
 	valid := make(map[string]bool, len(guildRoles))
 	for _, r := range guildRoles {
