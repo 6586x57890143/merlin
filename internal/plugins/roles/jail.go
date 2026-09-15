@@ -508,6 +508,7 @@ func releaseAtText(rec JailRecord) string {
 // MERLIN_DISABLE_GUILD_MEMBERS_INTENT opts out). Without it Discord never
 // sends the event, and the sweep above remains the sole mechanism.
 func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
+	defer p.memberChanged(ctx, guildID, userID)
 	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
 	if err != nil {
 		p.log.Error("roles: look up jail on member join", "guild", guildID, "user", userID, "err", err)
@@ -541,6 +542,7 @@ func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 // authoritative push of the member's current state, not something read back
 // out of this bot's cache.
 func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string, roles []string) {
+	defer p.memberChanged(ctx, guildID, userID)
 	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
 	if err != nil {
 		p.log.Error("roles: look up jail on member update", "guild", guildID, "user", userID, "err", err)

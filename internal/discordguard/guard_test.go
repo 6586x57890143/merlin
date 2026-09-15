@@ -19,8 +19,8 @@ func testLogger() *slog.Logger {
 // the tests below assert on it rather than on the returned errors alone.
 type fakeSession struct {
 	lastWebhook *discordgo.WebhookParams
-	writes int
-	reads  int
+	writes      int
+	reads       int
 	// sends records the full payload of every message send, so a test can
 	// assert on what was actually put on the wire (mention suppression)
 	// rather than only that a send happened.
@@ -151,6 +151,11 @@ func (f *fakeSession) GuildRoleCreate(string, *discordgo.RoleParams, ...discordg
 func (f *fakeSession) GuildRoleEdit(string, string, *discordgo.RoleParams, ...discordgo.RequestOption) (*discordgo.Role, error) {
 	f.writes++
 	return &discordgo.Role{}, nil
+}
+
+func (f *fakeSession) GuildRoleReorder(string, []*discordgo.Role, ...discordgo.RequestOption) ([]*discordgo.Role, error) {
+	f.writes++
+	return nil, nil
 }
 
 func (f *fakeSession) ChannelMessageDelete(string, string, ...discordgo.RequestOption) error {

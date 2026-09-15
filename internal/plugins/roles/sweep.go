@@ -92,5 +92,11 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 		}
 	}
 
+	// Scripts last, after the jail work above: enforceEternalRole yields to
+	// an active jail, so a release that just ran here is what lets it act.
+	if err := p.enforceEternalRoles(ctx, guildID); err != nil && firstErr == nil {
+		firstErr = err
+	}
+
 	return firstErr
 }

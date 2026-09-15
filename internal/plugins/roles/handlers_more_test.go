@@ -133,7 +133,7 @@ func auditActions(a *fakeAudit) []string {
 func TestInitRegistersAFullyWiredCommandTree(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := core.NewCommandRouter(core.NewPermissions(nil, nil, ""), nil, log)
-	p := New(newFakeStore(), newFakeSettings(), func(string) DiscordMemberOps { return newFakeOps() }, func(string) bool { return false }, testVoice(), nil)
+	p := New(newFakeStore(), newFakeSettings(), newFakeScripts(), func(string) DiscordMemberOps { return newFakeOps() }, func(string) bool { return false }, testVoice(), nil)
 	if p.Name() != "roles" {
 		t.Fatalf("Name: %q", p.Name())
 	}
