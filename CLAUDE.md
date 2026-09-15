@@ -844,6 +844,79 @@ the grid, since guessing which cell is `notice` and which is `info` is how
 the wrong bird ends up on a jail notice. `scripts/build-contest.sh` stages
 both sets into the gitignored `web/contest/public/stickers/`.
 
+### Whisper (`internal/plugins/whisper`)
+
+Milestone 12. `/whisper <text>` lets a member whose account Discord has
+chat-restricted (the mass-report outcome this community lives with; such an
+account cannot send messages but can still run slash commands) post through
+merlin: a per-channel webhook wearing their display name and avatar, with
+`-# whispered through merlin by @username` under it. The **Discord username**,
+not the display name the post already wears, because a webhook message has no
+profile to click and a username cannot be made to look like a mod's. That
+line is the whole transparency story, which is why `check` refuses newlines
+and a leading `#`/`-#`: a whisper is one line, so the marker is always the
+last line and the only subtext, and cannot be forged above the real one.
+
+- **Off per guild until `/config plugins set whisper true`**, and it is the
+  first plugin the settings store treats as default-off
+  (`settings.Store.DefaultOff`, `enabled_plugins`, migration 0034). The
+  toggle, the audit entry and `/config plugins list` are the ones every other
+  plugin already had; only the default moved, and it moved because a bot
+  publishing on members' behalf is something a server should choose rather
+  than discover. For a default-off plugin only `enabled_plugins` is consulted
+  and `disabled_plugins` is never written, so a stale entry there can never
+  re-enable one, and a never-refreshed guild reads it as **off**: a DB blip
+  fails closed for this plugin, the opposite direction from the others.
+- **Everything caught is refused, never rewritten.** aimod's daft slur
+  substitutions are the cheap outcome for a member's own message; text merlin
+  is about to publish in somebody's name gets no version with a hole in it.
+  The order is: the limiter (charged whether or not the whisper posts, so a
+  refusal is not a free retry), `filter.go`'s regex suite, the channel check
+  (`ChannelTypeGuildText` only), the room rule, then `aimod.Screen`.
+  **The room rule is View Channel and nothing more**: the people this
+  exists for do not have Send Messages, and reading that bit would refuse
+  every one of them. `Member.Permissions` is computed by Discord for the
+  interaction's channel, so the check is free; no `@everyone` overwrite is
+  ever read by hand. Every refusal names its
+  reason to the member and is audited as `whisper.refused` with the reason
+  and **never the text**. Posted whispers are not audited: the post is its
+  own record.
+- **`filter.go` is deliberately blunter than aimod's rung 1.** That table has
+  to be near-zero on false positives because a wrong hit deletes somebody's
+  message; a wrong hit here costs a restricted member one retry. So every
+  link goes, not just phishing shapes, and so does anything shaped like a
+  phone number, an email, a mention (`discordguard` already stops the ping;
+  this stops the rendered highlight), self-harm goading, a narrow child-safety
+  vocabulary (aimod's `neverSkipPattern` is built to force a *scan* and would
+  refuse "my kids are loud" if it were used to refuse), invisible/bidi
+  characters and Zalgo. `MaxLength` on the option is a client hint; `check`
+  re-measures.
+- **`aimod.Screen` runs rung 1 unconditionally** (gate, mode and key are
+  irrelevant to a hard slur) **and the model rungs only where aimod is on and
+  funded**, returning clean plus an error when the model is unavailable so
+  the caller posts on the free rungs alone. That fallback direction was the
+  user's call. A fast hit is confirmed by the deep pass before it refuses,
+  the same rule that keeps rung 2 off the delete path, but a confirmed
+  verdict refuses regardless of the bucket's action or flag mode: those
+  decide what happens to a member's own message, and this one is the bot's.
+  The member opt-out does not apply for the same reason. It shares
+  `dedupeCache` and `userMeter` with the firehose (a repeat costs nothing;
+  over the scan ceiling is a refusal, not a fallback, or the ceiling would be
+  a way past the model), and `fastPass`/`deepPass` were extracted from
+  `classify`/`escalate` so it cannot keep the guild's ledger differently.
+  Reached through `whisper.Screener`, wired in `cmd/bot/main.go` like
+  `aimod.Jailer`; neither package imports the other.
+- **The limiter is a light slowmode, not a cooldown** (`userGap` 3s,
+  `userHourly` 60): conversations have to work. `guildHourly` (200) sits
+  under discordguard's 300/hour `webhook.execute` cap on purpose: aimod's
+  rewrites share that budget, and a rewrite that has already deleted the
+  original and then cannot repost degrades silently to a removal.
+- The command is `TierPublic` **with** an action (`whisper.say`), which is
+  what lets a guild `/config permissions deny whisper.say user:@x` for one
+  abuser or raise the tier, with no code. Refused whispers do not feed
+  aimod's sanction ladder: nothing was published. A nil `Screener` refuses
+  everything rather than posting unscreened.
+
 ### Rotation disclosure modes
 
 `settings_rotation_channels.disclosure` (migration 0018, default `full`) is how much a freshly rotated channel is told about its own rotation: `full` (cadence + archival window), `cadence`, `retention`, or `generic` (neither). Per channel rather than per guild, matching `retention_hours` itself. Set via `/rotation configure add|edit`, a fixed four-value `Choices` option rather than autocomplete, since §4a's autocomplete rule is about values that come from bot state and cannot be enumerated at compile time.

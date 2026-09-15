@@ -419,6 +419,8 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 
 | 11 | Contests (delivered ahead of Factions/Reporting) | `internal/plugins/contest` — announce, submit, vote and results phases on one per-guild Scheduler tick, with entries arriving as posts in a Discord forum channel merlin creates per contest (so Discord's own CDN hosts every file for free and the bot stores none of them), gated by mirroring the view permissions of a channel the guild already gates the way it wants rather than by a role list this bot would then have to keep in step, a prize ledger whose redeemable codes are sealed at rest with `internal/secret` and DMed to the winner then wiped, and a Cloudflare Worker serving the gallery and the ballot. merlin stays outbound-only: it pushes a full snapshot and asks for a tally, and the Worker cannot make it do anything |
 
+| 12 | Whisper (delivered ahead of Factions/Reporting) | `internal/plugins/whisper` — `/whisper <text>` lets a member Discord has chat-restricted post through the bot: a per-channel webhook wearing their display name and avatar, with their real username in a subtext line under it. Off per guild until `/config plugins set whisper true` (the first plugin the settings store treats as default-off). Every whisper is screened before it exists: a blunt regex suite (links, mentions, contact shapes, self-harm goading, child-safety terms, invisible characters), then aimod's rung 1 unconditionally and its model rungs where funded, falling back to the free rungs when the model is down. Anything caught is refused, never rewritten, and audited without its text. Rate limited well under the guild's webhook budget so a flood cannot starve aimod's rewrites. |
+
 
 
 \---

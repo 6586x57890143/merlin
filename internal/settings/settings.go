@@ -37,6 +37,7 @@ type GuildSettings struct {
 	StatusChannelID       string
 	OnboardingNudgeSentAt *time.Time // nil until adminconfig's one-time "run /config setup" nudge has actually been posted
 	DisabledPlugins       []string   // plugin Name()s disabled in this guild (see core.PluginGate)
+	EnabledPlugins        []string   // plugin Name()s switched on, for plugins that are off by default (see DefaultOff)
 
 	// JailAllowedChannelIDs is which channels stay visible to a jailed
 	// member (internal/plugins/roles). Every other channel gets a deny
@@ -193,6 +194,9 @@ type Store struct {
 	// nothing would ever re-read them and the guild would stay locked into
 	// fail-closed defaults until the next mutation or restart.
 	stale map[string]bool
+	// defaultOff names the plugins that are off in a guild until it turns
+	// them on. See DefaultOff.
+	defaultOff map[string]bool
 }
 
 func New(pool *pgxpool.Pool, bus *core.EventBus) *Store {
@@ -216,10 +220,10 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins
 		FROM settings_guild WHERE guild_id = $1`, guildID)
 	var marker, announce sql.NullString
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs); err {
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins); err {
 	case nil, pgx.ErrNoRows:
 		if marker.Valid {
 			v := marker.String
@@ -448,8 +452,42 @@ func (s *Store) DisabledPlugins(guildID string) []string {
 	return s.guild(guildID).settings.DisabledPlugins
 }
 
+// DefaultOff marks plugins that are off in every guild until that guild
+// runs /config plugins set <name> true. Everything else is on unless
+// disabled, which is the right default for a plugin that serves the guild
+// (rotation, roles) and the wrong one for a plugin that lets members post
+// through the bot (whisper): a server should choose that, not discover it.
+//
+// The two lists are kept apart rather than one list with an inverted
+// meaning: for a default-off plugin only enabled_plugins is consulted, so a
+// stale entry in disabled_plugins can never re-enable one. Called once at
+// startup, before any guild is refreshed.
+func (s *Store) DefaultOff(pluginNames ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.defaultOff == nil {
+		s.defaultOff = make(map[string]bool)
+	}
+	for _, name := range pluginNames {
+		s.defaultOff[name] = true
+	}
+}
+
+func (s *Store) isDefaultOff(pluginName string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.defaultOff[pluginName]
+}
+
 // PluginEnabled satisfies core.PluginGate.
+//
+// A never-refreshed guild reads a default-off plugin as off: a DB blip fails
+// closed for these, the opposite direction from every other plugin and the
+// right one for a plugin whose whole effect is letting members post.
 func (s *Store) PluginEnabled(guildID, pluginName string) bool {
+	if s.isDefaultOff(pluginName) {
+		return slices.Contains(s.guild(guildID).settings.EnabledPlugins, pluginName)
+	}
 	return !slices.Contains(s.DisabledPlugins(guildID), pluginName)
 }
 
@@ -956,14 +994,34 @@ func (s *Store) UndenyOverride(ctx context.Context, guildID, action, roleID, use
 // authorized. internal/plugins/adminconfig itself must never be passed here
 // (enforced at the command layer, not here): disabling it would
 // permanently lock a guild out of ever re-enabling anything.
+//
+// A default-off plugin (see DefaultOff) lives in enabled_plugins instead, so
+// disabling one removes it from that list and enabling one adds it there;
+// disabled_plugins is never written for those.
 func (s *Store) DisablePlugin(ctx context.Context, guildID, pluginName string) error {
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO settings_guild (guild_id, disabled_plugins, updated_at) VALUES ($1, ARRAY[$2], now())
+	if s.isDefaultOff(pluginName) {
+		return s.removePlugin(ctx, guildID, "enabled_plugins", pluginName)
+	}
+	return s.addPlugin(ctx, guildID, "disabled_plugins", pluginName)
+}
+
+func (s *Store) EnablePlugin(ctx context.Context, guildID, pluginName string) error {
+	if s.isDefaultOff(pluginName) {
+		return s.addPlugin(ctx, guildID, "enabled_plugins", pluginName)
+	}
+	return s.removePlugin(ctx, guildID, "disabled_plugins", pluginName)
+}
+
+// addPlugin/removePlugin take the column name from the two callers above,
+// never from user input, exactly as setWriteControl does.
+func (s *Store) addPlugin(ctx context.Context, guildID, column, pluginName string) error {
+	sql := fmt.Sprintf(`
+		INSERT INTO settings_guild (guild_id, %[1]s, updated_at) VALUES ($1, ARRAY[$2], now())
 		ON CONFLICT (guild_id) DO UPDATE SET
-			disabled_plugins = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.disabled_plugins || $2) AS r),
-			updated_at = now()`,
-		guildID, pluginName); err != nil {
-		return fmt.Errorf("settings: disable plugin: %w", err)
+			%[1]s = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.%[1]s || $2) AS r),
+			updated_at = now()`, column)
+	if _, err := s.pool.Exec(ctx, sql, guildID, pluginName); err != nil {
+		return fmt.Errorf("settings: add to %s: %w", column, err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		s.invalidate(guildID)
@@ -973,12 +1031,12 @@ func (s *Store) DisablePlugin(ctx context.Context, guildID, pluginName string) e
 	return nil
 }
 
-func (s *Store) EnablePlugin(ctx context.Context, guildID, pluginName string) error {
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE settings_guild SET disabled_plugins = array_remove(disabled_plugins, $2), updated_at = now()
-		WHERE guild_id = $1`,
-		guildID, pluginName); err != nil {
-		return fmt.Errorf("settings: enable plugin: %w", err)
+func (s *Store) removePlugin(ctx context.Context, guildID, column, pluginName string) error {
+	sql := fmt.Sprintf(`
+		UPDATE settings_guild SET %[1]s = array_remove(%[1]s, $2), updated_at = now()
+		WHERE guild_id = $1`, column)
+	if _, err := s.pool.Exec(ctx, sql, guildID, pluginName); err != nil {
+		return fmt.Errorf("settings: remove from %s: %w", column, err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		s.invalidate(guildID)
