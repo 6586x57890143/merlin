@@ -917,10 +917,18 @@ last line and the only subtext, and cannot be forged above the real one.
   Reached through `whisper.Screener`, wired in `cmd/bot/main.go` like
   `aimod.Jailer`; neither package imports the other.
 - **The limiter is a light slowmode, not a cooldown** (`userGap` 3s,
-  `userHourly` 60): conversations have to work. `guildHourly` (200) sits
-  under discordguard's 300/hour `webhook.execute` cap on purpose: aimod's
-  rewrites share that budget, and a rewrite that has already deleted the
-  original and then cannot repost degrades silently to a removal.
+  `userHourly` 60): conversations have to work. Three keys, three reasons.
+  The member cap is the abuse control and scales with nothing. The channel
+  cap (`channelMinute` 25) sits under Discord's 30/min per-webhook limit so
+  a hot channel gets a refusal from here rather than 429s that would open
+  discordguard's breaker for the guild. The guild cap is `guildHourly`, one
+  per member per hour off the state cache with a floor of 200, since a
+  number sized for a small server gags a large one, and an unknown count
+  gets the floor. Whispers post through `GuildOps.WhisperPost` on their own
+  `webhook.whisper` bucket, **not** aimod's `webhook.execute`: a rewrite
+  that has already deleted the original and then cannot repost degrades
+  silently to a removal, and a busy hour of restricted members talking must
+  never be what spends that.
 - The command is `TierPublic` **with** an action (`whisper.say`), which is
   what lets a guild `/config permissions deny whisper.say user:@x` for one
   abuser or raise the tier, with no code. Refused whispers do not feed

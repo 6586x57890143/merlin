@@ -483,14 +483,26 @@ func (o *GuildOps) WebhookCreate(channelID, name, avatar string, options ...disc
 // The signature drops discordgo's wait parameter and the returned message:
 // no caller wants either, and false is the cheaper call.
 func (o *GuildOps) WebhookExecute(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
-	if err := o.allow(opWebhookExecute); err != nil {
+	return o.webhookExecute(opWebhookExecute, webhookID, token, data, options...)
+}
+
+// WhisperPost is WebhookExecute on its own budget (webhook.whisper), so a
+// server full of restricted members talking cannot spend the bucket aimod's
+// rewrites depend on. Same mention suppression, for the same reason: the
+// text is a member's.
+func (o *GuildOps) WhisperPost(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
+	return o.webhookExecute(opWhisperPost, webhookID, token, data, options...)
+}
+
+func (o *GuildOps) webhookExecute(op, webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
+	if err := o.allow(op); err != nil {
 		return err
 	}
 	if data == nil {
 		data = &discordgo.WebhookParams{}
 	}
 	data.AllowedMentions = &discordgo.MessageAllowedMentions{}
-	jid := o.beginJournal(opWebhookExecute, webhookID)
+	jid := o.beginJournal(op, webhookID)
 	_, err := o.guard.session.WebhookExecute(webhookID, token, false, data, options...)
 	return o.record(jid, err)
 }

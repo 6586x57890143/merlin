@@ -55,6 +55,13 @@ var opCaps = map[string]int{
 	// process, so this only moves when a guild is churning channels.
 	opWebhookCreate:  20,
 	opWebhookExecute: 300,
+	// Whispers post through a webhook too but must not draw on aimod's
+	// budget above: a rewrite that has already deleted the original and
+	// then cannot repost degrades silently to a removal, and a busy hour
+	// of restricted members talking is not a reason for that. This is the
+	// backstop above whisper's own member-scaled cap, sized so the plugin's
+	// polite refusal always fires first; only a bug or a raid reaches it.
+	opWhisperPost: 3000,
 	// Discord's own timeout, applied automatically only by aimod's abuse
 	// ceiling, which is itself rate limited per member.
 	opMemberTimeout: 60,
@@ -75,6 +82,7 @@ const (
 	opMessageDelete      = "message.delete"
 	opWebhookCreate      = "webhook.create"
 	opWebhookExecute     = "webhook.execute"
+	opWhisperPost        = "webhook.whisper"
 	opMemberTimeout      = "member.timeout"
 )
 
