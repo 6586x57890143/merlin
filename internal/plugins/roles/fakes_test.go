@@ -45,6 +45,9 @@ type fakeOps struct {
 	// tests that care about how a *kind* of failure is handled rather than
 	// which call fails.
 	memberFetchErr error
+	// memberFetchErrFor fails GuildMember for one user only, so a sweep can
+	// be shown carrying on past a single bad row.
+	memberFetchErrFor map[string]error
 	// memberEditErr does the same for GuildMemberEdit.
 	memberEditErr error
 	// memberListErr does the same for GuildMembers, standing in for a guild
@@ -150,6 +153,9 @@ func (f *fakeOps) GuildMember(guildID, userID string, options ...discordgo.Reque
 	defer f.mu.Unlock()
 	if f.memberFetchErr != nil {
 		return nil, f.memberFetchErr
+	}
+	if err := f.memberFetchErrFor[userID]; err != nil {
+		return nil, err
 	}
 	m, ok := f.members[memberKey(guildID, userID)]
 	if !ok {
@@ -404,17 +410,21 @@ type fakeStore struct {
 	// setJailReleaseErr, when set, fails every SetJailRelease, for testing
 	// what a re-jail reports when the sentence can't be moved.
 	setJailReleaseErr error
-	jails             map[string]JailRecord  // guildID+":"+userID
-	grants        map[string]GrantRecord // guildID+":"+userID+":"+roleID
-	nextID        int64
+	// The read-side errors, one per query, for the paths that must fail
+	// closed (a timer or sweep that cannot read its row does nothing).
+	getJailErr     error
+	getGrantErr    error
+	dueJailsErr    error
+	dueGrantsErr   error
+	activeJailsErr error
+	jails          map[string]JailRecord  // guildID+":"+userID
+	grants         map[string]GrantRecord // guildID+":"+userID+":"+roleID
+	nextID         int64
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{jails: make(map[string]JailRecord), grants: make(map[string]GrantRecord)}
 }
-
-func jailKey(guildID, userID string) string          { return guildID + ":" + userID }
-func grantKey(guildID, userID, roleID string) string { return guildID + ":" + userID + ":" + roleID }
 
 func (f *fakeStore) InsertJail(ctx context.Context, rec JailRecord) error {
 	if f.insertJailErr != nil {
@@ -451,6 +461,9 @@ func (f *fakeStore) SetJailRelease(ctx context.Context, guildID, userID string, 
 }
 
 func (f *fakeStore) GetJail(ctx context.Context, guildID, userID string) (JailRecord, bool, error) {
+	if f.getJailErr != nil {
+		return JailRecord{}, false, f.getJailErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	rec, ok := f.jails[jailKey(guildID, userID)]
@@ -465,6 +478,9 @@ func (f *fakeStore) DeleteJail(ctx context.Context, guildID, userID string) erro
 }
 
 func (f *fakeStore) DueJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error) {
+	if f.dueJailsErr != nil {
+		return nil, f.dueJailsErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []JailRecord
@@ -481,6 +497,9 @@ func (f *fakeStore) DueJails(ctx context.Context, guildID string, now time.Time)
 // jailed_at DESC purely so test output is stable; the ordering only exists
 // there to decide what falls off the LIMIT, which this fake has no need for.
 func (f *fakeStore) ActiveJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error) {
+	if f.activeJailsErr != nil {
+		return nil, f.activeJailsErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []JailRecord
@@ -503,6 +522,9 @@ func (f *fakeStore) InsertGrant(ctx context.Context, rec GrantRecord) error {
 }
 
 func (f *fakeStore) GetGrant(ctx context.Context, guildID, userID, roleID string) (GrantRecord, bool, error) {
+	if f.getGrantErr != nil {
+		return GrantRecord{}, false, f.getGrantErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	rec, ok := f.grants[grantKey(guildID, userID, roleID)]
@@ -517,6 +539,9 @@ func (f *fakeStore) DeleteGrant(ctx context.Context, guildID, userID, roleID str
 }
 
 func (f *fakeStore) DueGrants(ctx context.Context, guildID string, now time.Time) ([]GrantRecord, error) {
+	if f.dueGrantsErr != nil {
+		return nil, f.dueGrantsErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []GrantRecord

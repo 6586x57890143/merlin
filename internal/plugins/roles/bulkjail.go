@@ -112,6 +112,7 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 				res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, serr))
 				continue
 			}
+			p.armJailRelease(guildID, t.userID, releaseAt)
 			res.redated = append(res.redated, t.userID)
 		case err != nil:
 			res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, err))

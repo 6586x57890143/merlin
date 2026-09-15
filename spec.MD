@@ -411,7 +411,7 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 
 | 8 | Export (future) | Archived channel export to JSON/HTML before deletion, if still wanted |
 
-| 9 | Role Management (delivered ahead of Factions/Reporting) | `internal/plugins/roles` — jail (snapshot-and-strip + channel-visibility deny via a shared marker role) and timed single-role grants, Scheduler-driven automatic release/revoke, `Permissions.CanManageRole` role-hierarchy safeguard wired up for the first time, full audit logging |
+| 9 | Role Management (delivered ahead of Factions/Reporting) | `internal/plugins/roles` — jail (snapshot-and-strip + channel-visibility deny via a shared marker role) and timed single-role grants, timer-driven automatic release/revoke at the due instant with the Scheduler sweep as backstop, `Permissions.CanManageRole` role-hierarchy safeguard wired up for the first time, full audit logging |
 
 | 10 | AI Moderation (delivered ahead of Factions/Reporting) | `internal/plugins/aimod` — messages checked against Discord's own Community Guidelines and removed or rewritten. A cost ladder (free local filters, then a cheap model on a micro-batch, then a frontier model only on something already flagged, where a cheap-tier hit can never do more than flag), per-guild model gateway key encrypted at rest with a per-guild daily USD cap, routed through OrcaRouter's free tier by default and falling over to OpenRouter on the deep rung, ten policy areas as reviewable YAML carrying both what each rule covers and where it stops, per-member scan ceilings against budget-drain abuse, and an escalating jail ladder through `roles.JailAutomatic` |
 

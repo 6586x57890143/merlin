@@ -225,8 +225,8 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 // outside" failure the untrack-on-gone rule exists to prevent.
 //
 // Recording first can only fail the other way: a record for a member whose
-// roles were never touched. That self-heals on the next sweep a minute later
-// through the confused-deputy check release already applies: the marker
+// roles were never touched. That self-heals when the jail comes due, through
+// the confused-deputy check release already applies: the marker
 // isn't on them, so it counts as already handled, gets untracked, and no
 // roles are restored. A spurious row that cleans itself up beats a member
 // jailed indefinitely. The rollback below just makes that immediate instead
@@ -256,6 +256,7 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 		}
 		return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
 	}
+	p.armJailRelease(guildID, userID, releaseAt)
 	return unmanageable, nil
 }
 
@@ -398,8 +399,8 @@ func rejoinedSinceJail(member *discordgo.Member, rec JailRecord) bool {
 // reapplyEvadedJails re-jails anyone who left and rejoined to escape a jail
 // that is still in force.
 //
-// Runs on the same one-minute sweep as automatic release, so the window an
-// evader gets is bounded by that tick rather than by how long nobody notices.
+// Runs on the one-minute sweep, so the window an evader gets is bounded by
+// that tick rather than by how long nobody notices.
 // The GUILD_MEMBERS intent, requested by default, closes that window to
 // near-instant by also reacting to the rejoin event itself, see
 // HandleMemberJoin. This remains the backstop, and the sole mechanism for a
@@ -601,6 +602,10 @@ func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *dis
 	}
 
 	if err := p.releaseJail(ctx, i.GuildID, userID, rec); err != nil {
+		if errors.Is(err, errReleaseInProgress) {
+			core.RespondErr(s, i, "Release in progress", fmt.Errorf("<@%s> is being released right now; check `/roles list` in a moment", userID))
+			return
+		}
 		core.RespondErr(s, i, "Failed to release", err)
 		return
 	}
@@ -612,17 +617,30 @@ func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *dis
 }
 
 // releaseJail restores rec's snapshotted roles to userID and stops tracking
-// the jail. Shared by the sweep job (automatic release once due) and
-// handleRelease (a mod releasing early) so both paths apply the exact same
+// the jail. Shared by the release timer (release.go, automatic release at
+// the due instant), the sweep job (its backstop) and handleRelease (a mod
+// releasing early) so every path applies the exact same
 // confused-deputy safeguard: re-fetch the member fresh and only restore if
 // they still hold the jail marker role. If a mod already manually changed
 // the member's roles (marker gone), that's treated as an implicit "already
 // handled": stop tracking, don't fight the manual override, matching
 // rotation.sweepOne's rescue-hatch precedent.
 func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec JailRecord) error {
+	// The timer and the sweep can both arrive at a row that has just come
+	// due; the second one finds it claimed and leaves it to the first.
+	key := jailKey(guildID, userID)
+	if !p.claim(key) {
+		return errReleaseInProgress
+	}
+	defer p.unclaim(key)
+
 	member, err := p.ops(guildID).GuildMember(guildID, userID)
 	if err != nil {
-		if core.IsUnknownResource(err) {
+		// Unknown Member specifically, not any unknown resource: the same
+		// call answers Unknown Guild once the bot has been removed, and
+		// reading that as "the member left" would drop the row ForgetGuild
+		// keeps for a re-invite.
+		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
 			// Member left the guild, nothing left to restore.
 			return p.store.DeleteJail(ctx, guildID, userID)
 		}

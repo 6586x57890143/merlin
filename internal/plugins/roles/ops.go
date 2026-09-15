@@ -8,8 +8,8 @@ import "github.com/bwmarrin/discordgo"
 // an in-memory fake instead of live Discord.
 type DiscordMemberOps interface {
 	// GuildMember is a live REST fetch, deliberately not session.State's
-	// cached view: every confused-deputy re-check in this plugin (sweep.go,
-	// handleRelease, handleRevoke) needs the member's actual current roles,
+	// cached view: every confused-deputy re-check in this plugin (release.go,
+	// sweep.go, handleRelease, handleRevoke) needs the member's actual current roles,
 	// not a possibly-stale gateway cache snapshot.
 	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)
 	// GuildMembers pages the guild's member list, which is the only way to

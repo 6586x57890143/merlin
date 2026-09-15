@@ -2,15 +2,17 @@ package roles
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 )
 
-// makeSweepJob returns the Scheduler job function that releases due jails
-// and removes due grants for one guild. One sweep job per guild, running
-// every sweepInterval (see roles.go).
+// makeSweepJob returns the Scheduler job function that backstops the
+// release timers for one guild: it releases anything overdue that a timer
+// missed, arms timers for what is coming up, and re-applies evaded jails.
+// One sweep job per guild, running every sweepInterval (see roles.go).
 func (p *Plugin) makeSweepJob(guildID string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		// A paused guild is a deliberate operator state, not a failing job.
@@ -51,12 +53,21 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 		firstErr = err
 	}
 
-	dueJails, err := p.store.DueJails(ctx, guildID, p.now())
+	// One query for everything due within the lookahead: what is due now is
+	// released here (the backstop for a timer that failed, or that never
+	// existed because this process did not write the row), and what is due
+	// soon gets its timer, so a restart never turns a release late.
+	now := p.now()
+	dueJails, err := p.store.DueJails(ctx, guildID, now.Add(armLookahead))
 	if err != nil {
 		return fmt.Errorf("roles sweep: query due jails: %w", err)
 	}
 	for _, rec := range dueJails {
-		if err := p.releaseJail(ctx, guildID, rec.UserID, rec); err != nil {
+		if rec.ReleaseAt.After(now) {
+			p.armJailRelease(guildID, rec.UserID, *rec.ReleaseAt)
+			continue
+		}
+		if err := p.releaseJail(ctx, guildID, rec.UserID, rec); err != nil && !errors.Is(err, errReleaseInProgress) {
 			p.log.Error("roles sweep: release jail failed", "guild", guildID, "user", rec.UserID, "err", err)
 			if firstErr == nil {
 				firstErr = err
@@ -64,12 +75,16 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 		}
 	}
 
-	dueGrants, err := p.store.DueGrants(ctx, guildID, p.now())
+	dueGrants, err := p.store.DueGrants(ctx, guildID, now.Add(armLookahead))
 	if err != nil {
 		return fmt.Errorf("roles sweep: query due grants: %w", err)
 	}
 	for _, rec := range dueGrants {
-		if err := p.revokeGrant(ctx, guildID, rec.UserID, rec.RoleID, core.ActorSystem); err != nil {
+		if rec.ExpiresAt.After(now) {
+			p.armGrantRevoke(guildID, rec.UserID, rec.RoleID, *rec.ExpiresAt)
+			continue
+		}
+		if err := p.revokeGrant(ctx, guildID, rec.UserID, rec.RoleID, core.ActorSystem); err != nil && !errors.Is(err, errReleaseInProgress) {
 			p.log.Error("roles sweep: revoke grant failed", "guild", guildID, "user", rec.UserID, "role", rec.RoleID, "err", err)
 			if firstErr == nil {
 				firstErr = err
