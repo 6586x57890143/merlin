@@ -23,26 +23,44 @@ const discordEpoch = 1420070400000
 const (
 	// pageSize is Discord's own maximum for one ChannelMessages call.
 	pageSize = 100
-	// maxPages bounds the whole scan. A wide window over a busy guild would
-	// otherwise walk for longer than the 15 minutes an interaction token
-	// lives, and a report that never lands is worse than a partial one that
-	// says it is partial.
-	maxPages = 600
-	// scanBudget is the wall-clock half of the same bound, for the case
-	// where the pages are few but slow (rate limits, a struggling API).
-	scanBudget = 3 * time.Minute
-	// scanWorkers is how many channels are walked at once.
-	//
-	// Concurrency here is safe rather than cheeky: Discord buckets
-	// GET /channels/{id}/messages per channel, discordgo holds a lock per
-	// bucket and sleeps out a 429 on its own, and one worker per channel
-	// never queues two calls against the same bucket anyway. Six keeps the
-	// burst well under the 50 requests a second global ceiling while a wide
-	// window over a large guild finishes in a fraction of the time. Each
+	// scanBudget is the one bound on a scan, and it is wall clock rather
+	// than a page count: the question is "who talked over these months",
+	// and an answer cut off at N messages is not an answer to it. This is
+	// a runaway guard, not a working limit; at requestGap it is tens of
+	// millions of messages. The interaction token dies long before it (see
+	// interactionTTL), which is why the report can also land as a DM.
+	scanBudget = 4 * time.Hour
+	// requestGap is this scan's own throttle, shared by every worker: one
+	// page request per gap, so 40 a second, under Discord's 50 a second
+	// global ceiling with room for everything else the bot is doing. Per
+	// channel, discordgo already tracks the bucket and sleeps out its
+	// reset, so a worker never queues two calls against one channel; this
+	// is the global half, which discordgo only learns about from a 429,
+	// and a scan long enough to matter must not be finding that out every
+	// few seconds for an hour (spec.MD §4: self-throttle, do not rely on
+	// Discord's).
+	requestGap = 25 * time.Millisecond
+	// scanWorkers is how many channels are walked at once. Enough that the
+	// throttle above, not this, is what the scan waits on: a worker mostly
+	// sits in discordgo's per-channel bucket sleep, and sixteen of them
+	// keep the request slots full on any guild with that many rooms. Each
 	// worker tallies into its own map and merges once, so the concurrency
 	// costs no lock on the hot path.
-	scanWorkers = 6
+	scanWorkers = 16
+	// pageRetries is how many times one page is re-asked for after a
+	// transient failure (a 5xx, a dropped connection) before the channel is
+	// given up on. discordgo retries 429s itself; this is for the rest. A
+	// 4xx is not retried: Missing Access does not get better by asking.
+	pageRetries = 3
+	retryPause  = 2 * time.Second
 )
+
+// progress is what a scan has done so far, readable from another goroutine
+// while it runs, so a long one can say "still counting, N so far" rather
+// than going silent for an hour.
+type progress struct {
+	messages, pages, channels atomic.Int64
+}
 
 // messageSource is the slice of *discordgo.Session this plugin uses, so the
 // scan can be driven by a fake in tests. The narrow-interface seam every
@@ -73,7 +91,7 @@ type report struct {
 	busy      int  // channels that carried at least one message
 	looked    int  // channels the scan could read
 	skipped   int  // channels the bot could not read
-	truncated bool // the page ceiling or the deadline stopped the walk
+	truncated bool // the deadline stopped the walk
 }
 
 // snowflake is the smallest id Discord could have minted at t.
@@ -96,8 +114,11 @@ func parseWhen(s string) (time.Time, error) {
 
 // scan walks every readable channel and active thread in the guild, newest
 // first, stopping at the window start. onlyChannel narrows it to one room
-// when set.
-func scan(ctx context.Context, src messageSource, guildID, onlyChannel string, start, end time.Time) (report, error) {
+// when set. prog may be nil.
+func scan(ctx context.Context, src messageSource, guildID, onlyChannel string, start, end time.Time, prog *progress) (report, error) {
+	if prog == nil {
+		prog = &progress{}
+	}
 	channels, err := src.GuildChannels(guildID)
 	if err != nil {
 		return report{}, fmt.Errorf("could not list this server's channels: %w", err)
@@ -119,10 +140,14 @@ func scan(ctx context.Context, src messageSource, guildID, onlyChannel string, s
 		}
 	}
 
+	// One ticker for every worker: a tick is a request slot, and the channel
+	// holds at most one, so quiet time never banks a burst.
+	tick := time.NewTicker(requestGap)
+	defer tick.Stop()
+
 	var (
-		pages atomic.Int64
-		mu    sync.Mutex
-		wg    sync.WaitGroup
+		mu sync.Mutex
+		wg sync.WaitGroup
 	)
 	people := map[string]*person{}
 	rep := report{}
@@ -136,7 +161,7 @@ func scan(ctx context.Context, src messageSource, guildID, onlyChannel string, s
 			var seen, busy, looked, skipped int
 			stopped := false
 			for ch := range work {
-				n, err := scanChannel(deadline, src, ch, before, after, local, &pages)
+				n, err := scanChannel(deadline, src, ch, before, after, local, tick.C, prog)
 				switch {
 				case errors.Is(err, errScanStopped):
 					stopped = true
@@ -148,6 +173,7 @@ func scan(ctx context.Context, src messageSource, guildID, onlyChannel string, s
 					skipped++
 					continue
 				}
+				prog.channels.Add(1)
 				looked++
 				seen += n
 				if n > 0 {
@@ -206,9 +232,9 @@ func readable(ch *discordgo.Channel) bool {
 	return false
 }
 
-// errScanStopped is the page ceiling or the deadline, as distinct from a
-// channel that could not be read. One means the report is a floor and has to
-// say so; the other means one room is missing from an otherwise whole answer.
+// errScanStopped is the deadline, as distinct from a channel that could not
+// be read. One means the report is a floor and has to say so; the other means
+// one room is missing from an otherwise whole answer.
 var errScanStopped = errors.New("scan stopped early")
 
 // scanChannel pages one channel backwards from before, stopping at the first
@@ -216,16 +242,14 @@ var errScanStopped = errors.New("scan stopped early")
 // use one of before/after/around per call, and paging on before is the half
 // that terminates. It returns the messages counted, plus errScanStopped if it
 // ran out of budget rather than out of window.
-func scanChannel(ctx context.Context, src messageSource, ch *discordgo.Channel, before string, after int64, people map[string]*person, pages *atomic.Int64) (int, error) {
+func scanChannel(ctx context.Context, src messageSource, ch *discordgo.Channel, before string, after int64, people map[string]*person, tick <-chan time.Time, prog *progress) (int, error) {
 	seen := 0
 	for {
-		if ctx.Err() != nil || pages.Add(1) > maxPages {
-			return seen, errScanStopped
-		}
-		msgs, err := src.ChannelMessages(ch.ID, pageSize, before, "", "")
+		msgs, err := page(ctx, src, ch.ID, before, tick)
 		if err != nil {
 			return seen, err
 		}
+		prog.pages.Add(1)
 		if len(msgs) == 0 {
 			return seen, nil
 		}
@@ -241,10 +265,43 @@ func scanChannel(ctx context.Context, src messageSource, ch *discordgo.Channel, 
 				continue
 			}
 			seen++
+			prog.messages.Add(1)
 			tally(people, m, ch.Name)
 		}
 		before = msgs[len(msgs)-1].ID
 	}
+}
+
+// page fetches one page, waiting for a request slot first and re-asking
+// after a transient failure. The context is checked at every wait, so a
+// deadline is felt within one gap rather than one retry pause.
+func page(ctx context.Context, src messageSource, channelID, before string, tick <-chan time.Time) ([]*discordgo.Message, error) {
+	for attempt := 0; ; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, errScanStopped
+		case <-tick:
+		}
+		msgs, err := src.ChannelMessages(channelID, pageSize, before, "", "")
+		if err == nil || attempt >= pageRetries || !transient(err) {
+			return msgs, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errScanStopped
+		case <-time.After(retryPause * time.Duration(attempt+1)):
+		}
+	}
+}
+
+// transient is an error worth asking again about: anything but a Discord
+// 4xx, which is an answer rather than a fault.
+func transient(err error) bool {
+	var rerr *discordgo.RESTError
+	if errors.As(err, &rerr) && rerr.Response != nil {
+		return rerr.Response.StatusCode >= 500
+	}
+	return true
 }
 
 func tally(people map[string]*person, m *discordgo.Message, channel string) {
@@ -297,7 +354,7 @@ func markdown(rep report, guild string, start, end time.Time, limit int) string 
 		fmt.Fprintf(&b, "-# `%d` %s could not be read, so nothing said in %s is counted\n", rep.skipped, noun, them)
 	}
 	if rep.truncated {
-		b.WriteString("-# the scan hit its ceiling and stopped early, so this is a floor and not the whole window\n")
+		b.WriteString("-# the scan ran out of time and stopped early, so this is a floor and not the whole window\n")
 	}
 	b.WriteString("\n")
 

@@ -920,6 +920,43 @@ last line and the only subtext, and cannot be forged above the real one.
   aimod's sanction ladder: nothing was published. A nil `Screener` refuses
   everything rather than posting unscreened.
 
+### Activity (`internal/plugins/activity`)
+
+`/activity` counts who posted between two instants by paging Discord's own
+history over REST; merlin keeps no message log. Operator-only, see the
+package doc. Three things about the scan are load bearing:
+
+- **It runs on its own goroutine, off the plugin's own base context, never
+  the router's.** `CommandRouter` hands every handler a 30 second context,
+  and deriving the scan deadline from it meant every report was cut at half
+  a minute and labelled as having "hit its ceiling"; the 600 page cap and
+  the 3 minute budget it also carried were never what stopped it. There is
+  no page ceiling now: the question is "who talked over these months", and
+  a count cut at N is not an answer to it. `scanBudget` (4h) is a runaway
+  guard. `Shutdown` cancels and waits.
+- **The interaction token dies at 15 minutes and the scan may not.** The
+  placeholder is edited every `progressEvery` with the running count and
+  where the report will land; past `interactionTTL` the finished report
+  goes to the operator's DMs (or the channel, with `share`) on the raw
+  session with mentions zeroed, as `scheduler.alert` does. Attachments are
+  built per attempt because discordgo drains the readers into the body.
+- **The throttle is merlin's, not Discord's** (`requestGap`, one page every
+  25ms across all workers = 40/s under the 50/s global ceiling). discordgo
+  sleeps out the per-channel bucket on its own and only learns the global
+  one from a 429, which an hour-long scan must not be rediscovering every
+  few seconds. `scanWorkers` (16) is sized so the throttle, not the worker
+  count, is what the scan waits on. Transient page failures (5xx, dropped
+  connections) are retried `pageRetries` times; a 4xx is an answer.
+
+The card image draws emoji as Twemoji art fetched from a pinned CDN path
+(`emoji.go`), the way it already fetches avatars, because the Go fonts carry
+none and `x/image/font` cannot rasterise a colour font. `segments` splits a
+name into face-drawable text and emoji sequences (ZWJ, skin tones, flags,
+keycaps, tags) and drops what is neither (CJK); `TestTwemojiKeys` pins the
+file-name convention, including the rule that U+FE0F is dropped unless a
+joiner is present. A symbol the face *can* draw (©) stays text unless
+U+FE0F asks for the emoji.
+
 ### Rotation disclosure modes
 
 `settings_rotation_channels.disclosure` (migration 0018, default `full`) is how much a freshly rotated channel is told about its own rotation: `full` (cadence + archival window), `cadence`, `retention`, or `generic` (neither). Per channel rather than per guild, matching `retention_hours` itself. Set via `/rotation configure add|edit`, a fixed four-value `Choices` option rather than autocomplete, since §4a's autocomplete rule is about values that come from bot state and cannot be enumerated at compile time.

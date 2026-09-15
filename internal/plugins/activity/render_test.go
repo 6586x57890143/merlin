@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -30,9 +31,9 @@ func stubCDN(t *testing.T) *http.Client {
 		_, _ = w.Write(buf.Bytes())
 	}))
 	t.Cleanup(srv.Close)
-	old := cdnBase
-	cdnBase = srv.URL
-	t.Cleanup(func() { cdnBase = old })
+	old, oldEmoji := cdnBase, emojiBase
+	cdnBase, emojiBase = srv.URL, srv.URL
+	t.Cleanup(func() { cdnBase, emojiBase = old, oldEmoji })
 	return srv.Client()
 }
 
@@ -110,9 +111,9 @@ func TestRenderNarrowAndEmpty(t *testing.T) {
 // TestRenderSurvivesADeadCDN: a card is about the name beside the picture, so
 // an unreachable avatar host costs the circle, never the report.
 func TestRenderSurvivesADeadCDN(t *testing.T) {
-	old := cdnBase
-	cdnBase = "http://127.0.0.1:1"
-	defer func() { cdnBase = old }()
+	old, oldEmoji := cdnBase, emojiBase
+	cdnBase, emojiBase = "http://127.0.0.1:1", "http://127.0.0.1:1"
+	defer func() { cdnBase, emojiBase = old, oldEmoji }()
 
 	body, err := renderPNG(&http.Client{Timeout: time.Second}, report{people: samplePeople()}, "birdland", windowStart, windowStart.Add(time.Hour), 24)
 	if err != nil {
@@ -123,25 +124,72 @@ func TestRenderSurvivesADeadCDN(t *testing.T) {
 	}
 }
 
-// TestSanitizeName is the emoji and CJK case. The Go fonts carry neither, and
-// an undrawable rune renders as nothing at all, so a card would show a blank
-// line where a name should be with nothing saying why.
-func TestSanitizeName(t *testing.T) {
+// TestDisplayNameSegments is the emoji and CJK case. Emoji become inline art
+// keyed for the CDN; CJK, which neither the Go fonts nor the CDN can draw,
+// is dropped rather than rendered as nothing with no explanation.
+func TestDisplayNameSegments(t *testing.T) {
 	f, err := newFaces()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sanitizeName(f.name, "🦅 kestrel 隼"); got != "kestrel" {
-		t.Fatalf("sanitizeName kept something undrawable: %q", got)
+	got := segments(f.name, "🦅 kestrel 隼")
+	want := []seg{{emoji: "1f985"}, {text: " kestrel "}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("segments: %+v, want %+v", got, want)
 	}
-	if got := sanitizeName(f.name, "zoe"); got != "zoe" {
-		t.Fatalf("sanitizeName mangled an ordinary name: %q", got)
+	if got := segments(f.name, "zoe"); !reflect.DeepEqual(got, []seg{{text: "zoe"}}) {
+		t.Fatalf("an ordinary name was mangled: %+v", got)
 	}
 	// A name with nothing drawable left falls back to the id: ugly, and
-	// unambiguous, which beats an empty card.
-	p := &person{id: "80351110224678912", name: "🦅🦅"}
-	if got := displayName(f.name, p); got != p.id {
-		t.Fatalf("displayName fallback: %q", got)
+	// unambiguous, which beats an empty card. All-emoji is drawable now.
+	p := &person{id: "80351110224678912", name: "隼"}
+	if got := displayName(f.name, p); plain(got) != p.id {
+		t.Fatalf("displayName fallback: %+v", got)
+	}
+	if got := displayName(f.name, &person{id: "1", name: "🦅🦅"}); len(got) != 2 || got[0].emoji != "1f985" {
+		t.Fatalf("an all-emoji name should draw as emoji: %+v", got)
+	}
+}
+
+// TestTwemojiKeys pins the file-name convention against the sequences that
+// trip it: variation selectors dropped, kept inside joiner sequences,
+// keycaps, flags, skin tones, and a symbol the font can draw left as text.
+func TestTwemojiKeys(t *testing.T) {
+	f, err := newFaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string][]seg{
+		"\u2764\ufe0f":               {{emoji: "2764"}},
+		"\U0001F468\u200d\U0001F4BB": {{emoji: "1f468-200d-1f4bb"}},
+		"#\ufe0f\u20e3":              {{emoji: "23-20e3"}},
+		"\U0001F1F3\U0001F1F4":       {{emoji: "1f1f3-1f1f4"}},
+		"\U0001F44B\U0001F3FD hi":    {{emoji: "1f44b-1f3fd"}, {text: " hi"}},
+		"(c) \u00a9 plain":           {{text: "(c) \u00a9 plain"}},
+		"\u00a9\ufe0f":               {{emoji: "a9"}},
+		"\U0001F427-general-chat":    {{emoji: "1f427"}, {text: "-general-chat"}},
+	}
+	for in, want := range cases {
+		if got := segments(f.body, in); !reflect.DeepEqual(got, want) {
+			t.Errorf("segments(%q) = %+v, want %+v", in, got, want)
+		}
+	}
+}
+
+// TestFitRichMeasures: truncation counts emoji at their drawn width and
+// leaves room for the ellipsis.
+func TestFitRichMeasures(t *testing.T) {
+	f, err := newFaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	segs := segments(f.name, "🦅🦅🦅 a display name long enough that it has to be cut short somewhere")
+	got := fitRich(f.name, segs, 120)
+	if len(got) == 0 || richWidth(f.name, got) > 120 || got[len(got)-1].text != "..." {
+		t.Fatalf("fitRich returned %+v at width %d", got, richWidth(f.name, got))
+	}
+	if short := segments(f.name, "zoe"); !reflect.DeepEqual(fitRich(f.name, short, 200), short) {
+		t.Fatal("a string that fits must be left alone")
 	}
 }
 

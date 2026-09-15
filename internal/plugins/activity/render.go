@@ -7,10 +7,8 @@ import (
 	"image/color"
 	"image/png"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"golang.org/x/image/draw"
 	"golang.org/x/image/font"
@@ -124,7 +122,8 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 	draw.Draw(img, img.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
 
 	inner := w - pad*2
-	text(img, f.title, nameColor, pad, titleBase, truncate(f.title, "who was active in "+guild, inner))
+	g := newGlyphs(client)
+	drawRich(img, f.title, nameColor, pad, titleBase, fitRich(f.title, segments(f.title, "who was active in "+guild), inner), g)
 	text(img, f.body, mutedColor, pad, windowBase, fmt.Sprintf("%s to %s utc, over %s",
 		start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), humanSpan(end.Sub(start))))
 	text(img, f.body, countColor, pad, totalsBase, truncate(f.body, totalsLine(rep), inner))
@@ -139,7 +138,7 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 	for i, p := range people {
 		x := pad + (i%cols)*(cardW+gutter)
 		y := gridTop + (i/cols)*(cardH+gutter)
-		card(img, f, p, avatars[i], i+1, x, y)
+		card(img, f, g, p, avatars[i], i+1, x, y)
 	}
 	return encode(img)
 }
@@ -161,7 +160,7 @@ func encode(img image.Image) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func card(dst *image.RGBA, f faces, p *person, pic image.Image, rank, x, y int) {
+func card(dst *image.RGBA, f faces, g *glyphs, p *person, pic image.Image, rank, x, y int) {
 	draw.Draw(dst, image.Rect(px(x), px(y), px(x+cardW), px(y+cardH)), &image.Uniform{cardColor}, image.Point{}, draw.Src)
 
 	drawAvatar(dst, pic, image.Rect(px(x+10), px(y+14), px(x+10+avatarPx), px(y+14+avatarPx)))
@@ -175,38 +174,33 @@ func card(dst *image.RGBA, f faces, p *person, pic image.Image, rank, x, y int) 
 	tx := x + 10 + avatarPx + 12
 	nameW := x + cardW - 16 - rankW - tx
 	bodyW := x + cardW - 12 - tx
-	text(dst, f.name, nameColor, tx, y+30, truncate(f.name, displayName(f.name, p), nameW))
+	drawRich(dst, f.name, nameColor, tx, y+30, fitRich(f.name, displayName(f.name, p), nameW), g)
 	text(dst, f.body, countColor, tx, y+48, plural(p.count, "message"))
-	text(dst, f.body, chanColor, tx, y+64, truncate(f.body, channelList(p.channels), bodyW))
+	drawRich(dst, f.body, chanColor, tx, y+64, fitRich(f.body, segments(f.body, channelList(p.channels)), bodyW), g)
 }
 
-// displayName is the name as it can actually be drawn. The Go fonts carry no
-// CJK and no emoji, and a rune the face cannot advance renders as nothing at
-// all, so a member called "🦅" would get a card with a blank line where their
-// name should be and nothing anywhere saying why. Dropping what cannot be
-// drawn at least leaves the readable part, and a name that is entirely
-// undrawable falls back to the id, which is ugly and unambiguous. The
-// markdown keeps the real name: Discord renders it fine.
-func displayName(f font.Face, p *person) string {
-	out := sanitizeName(f, p.name)
-	if out == "" {
-		return p.id
+// displayName is the name as it can actually be drawn: the face's text and
+// the CDN's emoji, with what is neither (the Go fonts carry no CJK) dropped.
+// A rune the face cannot advance renders as nothing at all, so without this
+// a member called "隼" would get a card with a blank line where their name
+// should be and nothing anywhere saying why. A name with nothing drawable
+// left falls back to the id, which is ugly and unambiguous. The markdown
+// keeps the real name: Discord renders it fine.
+func displayName(f font.Face, p *person) []seg {
+	segs := segments(f, p.name)
+	if plain(segs) == "" && !hasEmoji(segs) {
+		return segments(f, p.id)
 	}
-	return out
+	return segs
 }
 
-func sanitizeName(f font.Face, name string) string {
-	var b strings.Builder
-	for _, r := range name {
-		if unicode.IsSpace(r) {
-			b.WriteRune(' ')
-			continue
-		}
-		if _, ok := f.GlyphAdvance(r); ok {
-			b.WriteRune(r)
+func hasEmoji(segs []seg) bool {
+	for _, s := range segs {
+		if s.emoji != "" {
+			return true
 		}
 	}
-	return strings.TrimSpace(strings.Join(strings.Fields(b.String()), " "))
+	return false
 }
 
 // fetchAvatars pulls every shown member's picture at once, in index order, so
