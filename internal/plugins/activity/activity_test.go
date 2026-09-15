@@ -131,7 +131,7 @@ func TestScanCountsAndExcludes(t *testing.T) {
 		},
 	}
 
-	rep, err := scan(context.Background(), src, "g1", "", windowStart, end)
+	rep, err := scan(context.Background(), src, "g1", "", windowStart, end, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestScanOneChannelOnly(t *testing.T) {
 			"c2": {msgAt(inside, 2, "u2", "abe")},
 		},
 	}
-	rep, err := scan(context.Background(), src, "g1", "c2", windowStart, windowStart.Add(4*time.Hour))
+	rep, err := scan(context.Background(), src, "g1", "c2", windowStart, windowStart.Add(4*time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestScanPages(t *testing.T) {
 		channels: []*discordgo.Channel{textChannel("c1", "general")},
 		msgs:     map[string][]*discordgo.Message{"c1": msgs},
 	}
-	rep, err := scan(context.Background(), src, "g1", "", windowStart, windowStart.Add(4*time.Hour))
+	rep, err := scan(context.Background(), src, "g1", "", windowStart, windowStart.Add(4*time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestScanPages(t *testing.T) {
 // empty report that reads as a quiet server.
 func TestScanReportsAnUnreadableGuild(t *testing.T) {
 	src := &fakeSource{channelsErr: context.DeadlineExceeded}
-	if _, err := scan(context.Background(), src, "g1", "", windowStart, windowStart.Add(time.Hour)); err == nil {
+	if _, err := scan(context.Background(), src, "g1", "", windowStart, windowStart.Add(time.Hour), nil); err == nil {
 		t.Fatal("expected an error when the channel list cannot be read")
 	}
 }
@@ -218,7 +218,7 @@ func TestScanStopsOnACancelledContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	rep, err := scan(ctx, src, "g1", "", windowStart, windowStart.Add(4*time.Hour))
+	rep, err := scan(ctx, src, "g1", "", windowStart, windowStart.Add(4*time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

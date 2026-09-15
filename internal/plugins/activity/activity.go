@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -48,6 +49,17 @@ const (
 	maxTop     = 60
 )
 
+const (
+	// interactionTTL is how long Discord honours an interaction token. A
+	// scan that outlives it cannot answer through the interaction at all,
+	// so the report goes to the operator's DMs (or the channel, when
+	// sharing) instead. A minute is shaved off so the last progress edit
+	// can still land and say where the report will arrive.
+	interactionTTL = 14 * time.Minute
+	// progressEvery is how often a running scan updates its placeholder.
+	progressEvery = 20 * time.Second
+)
+
 // PrivilegeChecker answers the one question this plugin asks about identity.
 // Satisfied by *core.Permissions, taken from Deps in Init.
 type PrivilegeChecker interface {
@@ -60,12 +72,24 @@ type Plugin struct {
 	privilege PrivilegeChecker
 	client    *http.Client
 	now       func() time.Time
+
+	// base outlives any one interaction and is cancelled at Shutdown. The
+	// router hands handlers a 30 second context, which is where the scan
+	// used to die: every report was silently cut at half a minute and
+	// labelled "hit its ceiling". A scan runs on this instead, on its own
+	// goroutine, for as long as scanBudget allows.
+	base context.Context
+	stop context.CancelFunc
+	wg   sync.WaitGroup
 }
 
 func New() *Plugin {
+	base, stop := context.WithCancel(context.Background())
 	return &Plugin{
 		client: &http.Client{Timeout: fetchTTL},
 		now:    func() time.Time { return time.Now().UTC() },
+		base:   base,
+		stop:   stop,
 	}
 }
 
@@ -152,8 +176,20 @@ func command() *discordgo.ApplicationCommand {
 	}
 }
 
-func (p *Plugin) Start(context.Context) error    { return nil }
-func (p *Plugin) Shutdown(context.Context) error { return nil }
+func (p *Plugin) Start(context.Context) error { return nil }
+
+// Shutdown cancels any running scan and waits for it to notice, so the
+// process never exits mid-page with a goroutine still paging Discord.
+func (p *Plugin) Shutdown(ctx context.Context) error {
+	p.stop()
+	done := make(chan struct{})
+	go func() { p.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+	return nil
+}
 
 // operator reports whether userID is the bootstrap identity.
 //
@@ -241,7 +277,37 @@ func (p *Plugin) handleActivity(ctx context.Context, s *discordgo.Session, i *di
 		return
 	}
 
-	rep, err := scan(ctx, p.source, i.GuildID, opts.channelID, opts.from, opts.to)
+	// Off the router's goroutine and its 30 second context: a scan over
+	// months runs for as long as it takes. The router's recover() does not
+	// reach a goroutine it did not start, so this one carries its own.
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				_ = core.FollowUpErr(s, i, "Could not read the history", fmt.Errorf("scan panicked: %v", r))
+			}
+		}()
+		p.run(s, i, actor, opts)
+	}()
+}
+
+// run is the whole scan-render-deliver path for one report, on its own
+// goroutine. Where the answer lands depends on how long it took: through the
+// interaction while its token lives, and otherwise as a DM to the operator
+// (or a post in the channel, when sharing), because a report that took an
+// hour to count is not one to lose to a fifteen minute token.
+func (p *Plugin) run(s *discordgo.Session, i *discordgo.InteractionCreate, actor string, opts options) {
+	ctx, cancel := context.WithTimeout(p.base, scanBudget)
+	defer cancel()
+
+	prog := &progress{}
+	started := p.now()
+	done := make(chan struct{})
+	go p.narrate(s, i, opts, prog, started, done)
+
+	rep, err := scan(ctx, p.source, i.GuildID, opts.channelID, opts.from, opts.to, prog)
+	close(done)
 	if err != nil {
 		_ = core.FollowUpErr(s, i, "Could not read the history", err)
 		return
@@ -257,20 +323,81 @@ func (p *Plugin) handleActivity(ctx context.Context, s *discordgo.Session, i *di
 	}
 	embed := core.NewEmbed(colour, "", core.TruncateEmbedDescription(shown))
 
-	var files []*discordgo.File
-	if image, err := renderPNG(p.client, rep, guild, opts.from, opts.to, opts.top); err == nil {
+	// Attachments are built fresh per attempt: discordgo drains the readers
+	// into the multipart body, so a file sent through an expired token
+	// would arrive empty on the second try.
+	var image []byte
+	if png, err := renderPNG(p.client, rep, guild, opts.from, opts.to, opts.top); err == nil {
 		embed.Image = &discordgo.MessageEmbedImage{URL: imageAttachmentURL}
-		files = append(files, fileFrom(imageAttachmentName, "image/png", image))
+		image = png
 	}
-	// The full list rides along whenever the embed is not carrying all of it,
-	// so a report never silently drops the tail of the very thing it is for.
-	if full != shown {
-		files = append(files, fileFrom(listAttachmentName, "text/markdown", []byte(full)))
+	files := func() []*discordgo.File {
+		var out []*discordgo.File
+		if image != nil {
+			out = append(out, fileFrom(imageAttachmentName, "image/png", image))
+		}
+		// The full list rides along whenever the embed is not carrying all
+		// of it, so a report never silently drops the tail of the very
+		// thing it is for.
+		if full != shown {
+			out = append(out, fileFrom(listAttachmentName, "text/markdown", []byte(full)))
+		}
+		return out
 	}
 
-	if err := core.FollowUpEmbedWithFiles(s, i, embed, files...); err != nil {
+	if p.now().Sub(started) < interactionTTL {
+		if err := core.FollowUpEmbedWithFiles(s, i, embed, files()...); err == nil {
+			return
+		}
+	}
+	if err := p.deliverLate(s, i, actor, opts.share, embed, files()); err != nil {
 		_ = core.FollowUpErr(s, i, "Could not post the report", err)
 	}
+}
+
+// narrate keeps the placeholder honest while the scan runs: what it has
+// counted so far, and where the report will land if it outlives the token.
+// It stops editing at interactionTTL, since nothing after that can land.
+func (p *Plugin) narrate(s *discordgo.Session, i *discordgo.InteractionCreate, opts options, prog *progress, started time.Time, done <-chan struct{}) {
+	t := time.NewTicker(progressEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+		}
+		if p.now().Sub(started) >= interactionTTL {
+			return
+		}
+		where := "your DMs"
+		if opts.share {
+			where = "this channel"
+		}
+		body := fmt.Sprintf("`%d` messages over `%d` channels so far, `%s` in.\n-# if this outlives Discord's fifteen minute window the report lands in %s instead",
+			prog.messages.Load(), prog.channels.Load(), humanSpan(p.now().Sub(started)), where)
+		_ = core.FollowUpEmbed(s, i, core.NewEmbed(core.ColorInfo, "Still counting", body))
+	}
+}
+
+// deliverLate posts the finished report without the interaction: to the
+// channel it was asked in when sharing, otherwise to the operator's DMs. On
+// the raw session, like scheduler.alert, so mentions are zeroed here.
+func (p *Plugin) deliverLate(s *discordgo.Session, i *discordgo.InteractionCreate, actor string, share bool, embed *discordgo.MessageEmbed, files []*discordgo.File) error {
+	channelID := i.ChannelID
+	if !share {
+		dm, err := s.UserChannelCreate(actor)
+		if err != nil {
+			return fmt.Errorf("open a DM: %w", err)
+		}
+		channelID = dm.ID
+	}
+	_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Embeds:          []*discordgo.MessageEmbed{embed},
+		Files:           append(core.EmbedFiles(embed), files...),
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	})
+	return err
 }
 
 func fileFrom(name, contentType string, body []byte) *discordgo.File {
