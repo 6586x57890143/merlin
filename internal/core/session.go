@@ -23,9 +23,14 @@ type Intents struct {
 }
 
 // NewSession builds the single shared *discordgo.Session used by every
-// plugin. Intents are the minimum this binary needs: GUILDS and
-// GUILD_VOICE_STATES always, plus the two privileged ones the caller asks
-// for.
+// plugin. Intents are the minimum this binary needs: GUILDS,
+// GUILD_VOICE_STATES and GUILD_MESSAGES always, plus the two privileged
+// ones the caller asks for.
+//
+// GUILD_MESSAGES is unprivileged and delivers message events with no text
+// in them: author, channel and timestamp, which is what
+// internal/plugins/statistics counts. MESSAGE_CONTENT below is what fills in
+// the content field, and nothing but aimod reads it.
 //
 // GUILD_VOICE_STATES is unprivileged (no Developer Portal toggle, no
 // approval process, unlike GUILD_MEMBERS below), so it is always requested.
@@ -40,9 +45,7 @@ type Intents struct {
 // appearing to work. It is the larger of the two asks by a wide margin (it
 // is every message in every server, and Discord reviews it above 100
 // guilds), which is why it is off unless MERLIN_ENABLE_MESSAGE_CONTENT_INTENT
-// says otherwise while GUILD_MEMBERS below is on unless told not to. GUILD_MESSAGES
-// rides along with it: MESSAGE_CONTENT only fills in the content field of
-// message events, it does not deliver the events themselves.
+// says otherwise while GUILD_MEMBERS below is on unless told not to.
 //
 // intents.Members controls GUILD_MEMBERS, which is what lets the roles plugin
 // react to a rejoin the instant it happens rather than on the next sweep
@@ -57,12 +60,12 @@ func NewSession(token string, intents Intents) (*discordgo.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
-	want := discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates
+	want := discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates | discordgo.IntentsGuildMessages
 	if intents.Members {
 		want |= discordgo.IntentsGuildMembers
 	}
 	if intents.MessageContent {
-		want |= discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
+		want |= discordgo.IntentsMessageContent
 	}
 	s.Identify.Intents = want
 	return s, nil

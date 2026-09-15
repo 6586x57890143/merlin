@@ -145,7 +145,10 @@ delete messages and time people out. Use the narrow link unless you need this.
 
 ### Intents
 
-`GUILDS` and `GUILD_VOICE_STATES` are unprivileged and always requested.
+`GUILDS`, `GUILD_VOICE_STATES` and `GUILD_MESSAGES` are unprivileged and always
+requested. `GUILD_MESSAGES` delivers message events with no text in them (that
+needs `MESSAGE_CONTENT`, below); `/statistics` counts who posted where, by the
+hour, from those.
 
 `GUILD_MEMBERS` is privileged, so if you're self-hosting you need to tick
 **Server Members Intent** under Bot in the Discord Developer Portal. The bot
@@ -387,6 +390,7 @@ event bus.
 | `internal/plugins/roles` | jail and timed role grants |
 | `internal/plugins/aimod` | the AI moderation ladder, its policy files and the tip jar |
 | `internal/plugins/contest` | contests: phases, the entry forum, the prize ledger |
+| `internal/plugins/statistics` | hourly activity and membership counts, `/statistics` |
 | `internal/plugins/adminconfig` | the `/config` command tree |
 | `internal/plugins/ping` | reference plugin, exercises the full lifecycle |
 | `web/contest` | the contest gallery and ballot, a Cloudflare Worker |

@@ -1,7 +1,7 @@
-package activity
+package statistics
 
 import (
-	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -41,7 +41,10 @@ func (f *fakeSource) ChannelMessages(channelID string, limit int, beforeID, _, _
 	f.calls++
 	f.mu.Unlock()
 	if f.unreadable[channelID] {
-		return nil, &discordgo.RESTError{Message: &discordgo.APIErrorMessage{Code: 50001, Message: "Missing Access"}}
+		return nil, &discordgo.RESTError{
+			Response: &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden"},
+			Message:  &discordgo.APIErrorMessage{Code: 50001, Message: "Missing Access"},
+		}
 	}
 	before, _ := strconv.ParseInt(beforeID, 10, 64)
 	var out []*discordgo.Message
@@ -104,178 +107,6 @@ func TestParseWhen(t *testing.T) {
 	}
 }
 
-// TestScanCountsAndExcludes walks two channels and a thread, and checks the
-// three things a wrong answer here would look plausible about: the window
-// bound, who is excluded, and a channel the bot cannot read being reported
-// rather than quietly dropped.
-func TestScanCountsAndExcludes(t *testing.T) {
-	end := windowStart.Add(4 * time.Hour)
-	inside := windowStart.Add(time.Hour)
-	src := &fakeSource{
-		channels: []*discordgo.Channel{
-			textChannel("c1", "general"), textChannel("c2", "media"),
-			textChannel("c3", "locked"), {ID: "c4", Name: "voice", Type: discordgo.ChannelTypeGuildVoice},
-		},
-		threads:    []*discordgo.Channel{{ID: "t1", Name: "thread", Type: discordgo.ChannelTypeGuildPublicThread}},
-		unreadable: map[string]bool{"c3": true},
-		msgs: map[string][]*discordgo.Message{
-			"c1": {
-				msgAt(inside, 3, "u1", "zoe"),
-				msgAt(inside, 2, "u2", "abe"),
-				func() *discordgo.Message { m := msgAt(inside, 1, "u3", "beep"); m.Author.Bot = true; return m }(),
-				func() *discordgo.Message { m := msgAt(inside, 0, "u4", "hook"); m.WebhookID = "w1"; return m }(),
-				msgAt(windowStart.Add(-time.Hour), 0, "u5", "before"), // outside the window
-			},
-			"c2": {msgAt(inside, 5, "u1", "zoe"), msgAt(inside, 4, "u1", "zoe")},
-			"t1": {msgAt(inside, 6, "u2", "abe")},
-		},
-	}
-
-	rep, err := scan(context.Background(), src, "g1", "", windowStart, end, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.messages != 5 {
-		t.Fatalf("want 5 counted messages, got %d", rep.messages)
-	}
-	if rep.busy != 3 || rep.looked != 3 || rep.skipped != 1 {
-		t.Fatalf("channel counts: busy %d looked %d skipped %d", rep.busy, rep.looked, rep.skipped)
-	}
-	if rep.truncated {
-		t.Fatal("a scan that finished must not report itself as stopped early")
-	}
-	if len(rep.people) != 2 {
-		t.Fatalf("want 2 people, got %d", len(rep.people))
-	}
-	// zoe leads on count; both of her channels survived the merge across
-	// workers, which is the part concurrency could silently lose.
-	if rep.people[0].name != "zoe" || rep.people[0].count != 3 || len(rep.people[0].channels) != 2 {
-		t.Fatalf("top person: %+v", rep.people[0])
-	}
-}
-
-// TestScanOneChannelOnly: the channel option narrows the walk rather than
-// filtering the result afterwards, so an unrelated channel is never read.
-func TestScanOneChannelOnly(t *testing.T) {
-	inside := windowStart.Add(time.Hour)
-	src := &fakeSource{
-		channels: []*discordgo.Channel{textChannel("c1", "general"), textChannel("c2", "media")},
-		msgs: map[string][]*discordgo.Message{
-			"c1": {msgAt(inside, 1, "u1", "zoe")},
-			"c2": {msgAt(inside, 2, "u2", "abe")},
-		},
-	}
-	rep, err := scan(context.Background(), src, "g1", "c2", windowStart, windowStart.Add(4*time.Hour), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rep.people) != 1 || rep.people[0].name != "abe" || rep.looked != 1 {
-		t.Fatalf("scoped scan read the wrong rooms: %+v", rep)
-	}
-}
-
-// TestScanPagesUntilTheWindowEnds: more messages than one page, all inside
-// the window, must not stop at the first hundred.
-func TestScanPages(t *testing.T) {
-	inside := windowStart.Add(time.Hour)
-	var msgs []*discordgo.Message
-	for n := range 250 {
-		msgs = append(msgs, msgAt(inside, 250-n, "u1", "zoe"))
-	}
-	src := &fakeSource{
-		channels: []*discordgo.Channel{textChannel("c1", "general")},
-		msgs:     map[string][]*discordgo.Message{"c1": msgs},
-	}
-	rep, err := scan(context.Background(), src, "g1", "", windowStart, windowStart.Add(4*time.Hour), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.messages != 250 {
-		t.Fatalf("want all 250 messages, got %d", rep.messages)
-	}
-	if src.calls < 3 {
-		t.Fatalf("want at least 3 pages, got %d calls", src.calls)
-	}
-}
-
-// TestScanReportsAnUnreadableGuild: listing channels failing is the one error
-// that has no partial answer, so it comes back as an error rather than an
-// empty report that reads as a quiet server.
-func TestScanReportsAnUnreadableGuild(t *testing.T) {
-	src := &fakeSource{channelsErr: context.DeadlineExceeded}
-	if _, err := scan(context.Background(), src, "g1", "", windowStart, windowStart.Add(time.Hour), nil); err == nil {
-		t.Fatal("expected an error when the channel list cannot be read")
-	}
-}
-
-// TestScanStopsOnACancelledContext: a cancelled scan reports itself as
-// truncated rather than presenting what it managed as the whole picture.
-func TestScanStopsOnACancelledContext(t *testing.T) {
-	inside := windowStart.Add(time.Hour)
-	src := &fakeSource{
-		channels: []*discordgo.Channel{textChannel("c1", "general")},
-		msgs:     map[string][]*discordgo.Message{"c1": {msgAt(inside, 1, "u1", "zoe")}},
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	rep, err := scan(ctx, src, "g1", "", windowStart, windowStart.Add(4*time.Hour), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !rep.truncated {
-		t.Fatal("a scan cut short has to say so")
-	}
-}
-
-func TestTallyAndRank(t *testing.T) {
-	people := map[string]*person{}
-	at := windowStart
-	tally(people, msgAt(at, 1, "1", "zoe"), "general")
-	tally(people, msgAt(at.Add(time.Minute), 2, "1", "zoe"), "media")
-	tally(people, msgAt(at, 3, "2", "abe"), "general")
-	tally(people, msgAt(at, 4, "2", "abe"), "general")
-
-	ranked := rank(people)
-	if len(ranked) != 2 {
-		t.Fatalf("want 2 people, got %d", len(ranked))
-	}
-	// Equal counts break on name, so two runs over one window agree.
-	if ranked[0].name != "abe" || ranked[1].name != "zoe" {
-		t.Fatalf("tie broken wrong: %s then %s", ranked[0].name, ranked[1].name)
-	}
-	if got := channelList(people["1"].channels); got != "#general #media" {
-		t.Fatalf("channel list: %q", got)
-	}
-	if !people["1"].last.Equal(at.Add(time.Minute)) {
-		t.Fatalf("last seen should be the newest message: %s", people["1"].last)
-	}
-}
-
-func TestTallyPrefersTheGlobalName(t *testing.T) {
-	people := map[string]*person{}
-	m := msgAt(windowStart, 1, "1", "zoe_underscore")
-	m.Author.GlobalName = "Zoe"
-	tally(people, m, "general")
-	if people["1"].name != "Zoe" {
-		t.Fatalf("want the display name, got %q", people["1"].name)
-	}
-}
-
-func TestMergePeople(t *testing.T) {
-	dst := map[string]*person{"1": {id: "1", name: "zoe", count: 2, channels: map[string]bool{"general": true}, last: windowStart}}
-	src := map[string]*person{
-		"1": {id: "1", name: "zoe", count: 3, channels: map[string]bool{"media": true}, last: windowStart.Add(time.Hour)},
-		"2": {id: "2", name: "abe", count: 1, channels: map[string]bool{"art": true}},
-	}
-	mergePeople(dst, src)
-	if dst["1"].count != 5 || len(dst["1"].channels) != 2 || !dst["1"].last.Equal(windowStart.Add(time.Hour)) {
-		t.Fatalf("merge lost something: %+v", dst["1"])
-	}
-	if dst["2"] == nil {
-		t.Fatal("merge dropped a person only one worker saw")
-	}
-}
-
 func TestChannelListCaps(t *testing.T) {
 	set := map[string]bool{"a": true, "b": true, "c": true, "d": true, "e": true}
 	if got := channelList(set); got != "#a #b #c +2" {
@@ -310,15 +141,14 @@ func TestMarkdownShape(t *testing.T) {
 			{id: "1", name: "zoe", count: 42, channels: map[string]bool{"general": true, "media": true}},
 			{id: "2", name: "abe", count: 7, channels: map[string]bool{"general": true}},
 		},
-		messages: 49, busy: 2, looked: 5, skipped: 1,
+		messages: 49, channels: 2,
 	}
 	md := markdown(rep, "birdland", windowStart, windowStart.Add(4*time.Hour), 0)
 
 	for _, want := range []string{
 		"## who was active in birdland",
 		"`2026-09-01 14:00` to `2026-09-01 18:00` utc, over `4 hours`",
-		"`2` people, `49` messages, `2` of `6` channels",
-		"`1` channel could not be read",
+		"`2` people, `49` messages, `2` channels",
 		"` 1.` **zoe** `42` in #general #media",
 		"` 2.` **abe** `7` in #general",
 	} {
@@ -346,13 +176,23 @@ func TestMarkdownShape(t *testing.T) {
 	}
 }
 
-func TestMarkdownEmptyAndTruncated(t *testing.T) {
-	md := markdown(report{looked: 3, truncated: true}, "birdland", windowStart, windowStart.Add(time.Hour), 0)
+// TestMarkdownEmptyAndPartial: a window that starts before counting began
+// has to say so, or a quiet week is indistinguishable from an uncounted one.
+func TestMarkdownEmptyAndPartial(t *testing.T) {
+	rep := report{from: windowStart, coveredFrom: windowStart.Add(time.Hour)}
+	md := markdown(rep, "birdland", windowStart, windowStart.Add(2*time.Hour), 0)
 	if !strings.Contains(md, "nobody chatted in that window.") {
 		t.Fatalf("empty report should say so:\n%s", md)
 	}
-	if !strings.Contains(md, "stopped early") {
-		t.Fatalf("a truncated scan has to admit it:\n%s", md)
+	if !strings.Contains(md, "counting began `2026-09-01 15:00`") {
+		t.Fatalf("a partly covered window has to admit it:\n%s", md)
+	}
+	whole := report{from: windowStart, coveredFrom: windowStart}
+	if whole.partial() || strings.Contains(markdown(whole, "b", windowStart, windowStart.Add(time.Hour), 0), "counting began") {
+		t.Fatal("a fully covered window carries no caveat")
+	}
+	if !strings.Contains(totalsLine(rep), "counted from 2026-09-01") {
+		t.Fatalf("the card's totals line should carry the caveat too: %q", totalsLine(rep))
 	}
 }
 
@@ -367,7 +207,7 @@ func (f fakePrivilege) IsBootstrapAdmin(userID string) bool {
 // floor on the leaf; every one of these is somebody who clears that floor and
 // still must not be able to profile the server.
 func TestOperatorOnly(t *testing.T) {
-	p := New()
+	p := New(newFakeStore(), nil, nil)
 	p.privilege = fakePrivilege{operator: "op"}
 
 	if !p.operator("op") {
@@ -381,7 +221,7 @@ func TestOperatorOnly(t *testing.T) {
 
 	// A missing checker loses the escape hatch rather than granting it to
 	// everybody: the one direction this must never fail in.
-	open := New()
+	open := New(newFakeStore(), nil, nil)
 	if open.operator("op") {
 		t.Fatal("a nil privilege checker must refuse, not open up")
 	}
@@ -401,7 +241,7 @@ func TestOperatorOnly(t *testing.T) {
 func TestCommandIsNotListedToTheServer(t *testing.T) {
 	cmd := command()
 	if cmd.DefaultMemberPermissions == nil {
-		t.Fatal("/activity must not be listed to every member of the server")
+		t.Fatal("/statistics must not be listed to every member of the server")
 	}
 	if *cmd.DefaultMemberPermissions != 0 {
 		t.Fatalf("want 0 (administrators only), got %d", *cmd.DefaultMemberPermissions)
@@ -409,7 +249,7 @@ func TestCommandIsNotListedToTheServer(t *testing.T) {
 	// The picker is cosmetic; the gate is not. If this ever stops being
 	// TierAdmin-floored and operator-checked, the line above is not what
 	// should have been relied on.
-	if cmd.Name != "activity" || len(cmd.Options) != 5 {
+	if cmd.Name != "statistics" || len(cmd.Options) != 6 {
 		t.Fatalf("command shape changed: %s with %d options", cmd.Name, len(cmd.Options))
 	}
 }

@@ -1,4 +1,4 @@
-package activity
+package statistics
 
 import (
 	"bytes"
@@ -144,10 +144,9 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 }
 
 func totalsLine(rep report) string {
-	line := fmt.Sprintf("%d people, %d messages, %d of %d channels",
-		len(rep.people), rep.messages, rep.busy, rep.looked+rep.skipped)
-	if rep.truncated {
-		line += ", stopped early"
+	line := fmt.Sprintf("%d people, %d messages, %d channels", len(rep.people), rep.messages, rep.channels)
+	if rep.partial() {
+		line += ", counted from " + rep.coveredFrom.Format("2006-01-02")
 	}
 	return line
 }
