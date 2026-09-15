@@ -2,6 +2,7 @@ package roles
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -55,6 +56,9 @@ func (p *Plugin) handleGrant(ctx context.Context, s *discordgo.Session, i *disco
 		core.RespondErr(s, i, "Failed to save grant record", err)
 		return
 	}
+	if expiresAt != nil {
+		p.armGrantRevoke(i.GuildID, userID, roleID, *expiresAt)
+	}
 
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.grant", "", fmt.Sprintf("user=%s role=%s reason=%q", core.MentionUser(userID), core.MentionRole(roleID), reason)); err != nil {
 		p.log.Error("roles: audit grant failed", "guild", i.GuildID, "user", userID, "err", err)
@@ -77,6 +81,10 @@ func (p *Plugin) handleRevoke(ctx context.Context, s *discordgo.Session, i *disc
 	}
 
 	if err := p.revokeGrant(ctx, i.GuildID, userID, roleID, actorID(i)); err != nil {
+		if errors.Is(err, errReleaseInProgress) {
+			core.RespondErr(s, i, "Revoke in progress", fmt.Errorf("<@&%s> is being revoked from <@%s> right now", roleID, userID))
+			return
+		}
 		core.RespondErr(s, i, "Failed to revoke", err)
 		return
 	}
@@ -84,14 +92,22 @@ func (p *Plugin) handleRevoke(ctx context.Context, s *discordgo.Session, i *disc
 }
 
 // revokeGrant removes roleID from userID and stops tracking the grant.
-// Shared by the sweep job (automatic expiry) and handleRevoke (a mod
-// revoking early) for the same confused-deputy reason releaseJail is: if a
+// Shared by the expiry timer (release.go), the sweep job (its backstop) and
+// handleRevoke (a mod revoking early) for the same confused-deputy reason
+// releaseJail is: if a
 // mod already manually removed the role, there's nothing left to revoke,
 // just stop tracking it.
 func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor string) error {
+	key := grantKey(guildID, userID, roleID)
+	if !p.claim(key) {
+		return errReleaseInProgress
+	}
+	defer p.unclaim(key)
+
 	member, err := p.ops(guildID).GuildMember(guildID, userID)
 	if err != nil {
-		if core.IsUnknownResource(err) {
+		// Unknown Member only; see releaseJail.
+		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
 			// Member left the guild, so the grant left with them.
 			return p.store.DeleteGrant(ctx, guildID, userID, roleID)
 		}

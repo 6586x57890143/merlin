@@ -37,7 +37,6 @@ readonly FLOOR=70
 baseline() {
   case "$1" in
     github.com/6586x57890143/merlin/internal/plugins/adminconfig) echo 37 ;;
-    github.com/6586x57890143/merlin/internal/plugins/roles)       echo 40 ;;
     github.com/6586x57890143/merlin/internal/plugins/rotation)    echo 51 ;;
     github.com/6586x57890143/merlin/internal/plugins/ping)        echo 0  ;;
     *) echo "" ;;

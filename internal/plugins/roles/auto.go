@@ -15,7 +15,7 @@ import (
 // sanction ladder). It exists so an automated caller cannot end up
 // reimplementing any part of jail: the same applyJail runs, so the record
 // is still written before the roles are stripped, the same marker role is
-// resolved or created, the sweep releases it on the same schedule, and
+// resolved or created, its release fires on the same timer, and
 // /roles release and /roles list see it exactly as they see a hand-made
 // jail. An automatic jail is a jail, not a second thing shaped like one.
 //
@@ -98,5 +98,6 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 	if err := p.store.SetJailRelease(ctx, guildID, userID, &releaseAt); err != nil {
 		return fmt.Errorf("roles: extend jail: %w", err)
 	}
+	p.armJailRelease(guildID, userID, releaseAt)
 	return nil
 }

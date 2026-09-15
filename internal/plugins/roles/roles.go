@@ -14,10 +14,13 @@ import (
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
-// sweepInterval is how often each guild's due-jail/due-grant sweep runs.
-// Jail/grant durations are realistically minutes-to-hours, not rotation's
-// day-scale retention, so this runs every minute rather than matching
-// rotation's hourly cadence, deliberately not "fixed" to match it later.
+// sweepInterval is how often each guild's sweep runs. Release and expiry
+// fire on their own timers at the due instant (release.go); the sweep is
+// the retry path for a timer that failed, the arming path after a restart,
+// and the evasion check. Jail/grant durations are realistically
+// minutes-to-hours, not rotation's day-scale retention, so this runs every
+// minute rather than matching rotation's hourly cadence, deliberately not
+// "fixed" to match it later.
 const sweepInterval = time.Minute
 
 // jailRoleName is the role /roles jail resolves or auto-creates (mirroring
@@ -66,6 +69,14 @@ type Plugin struct {
 
 	jailRoleMu sync.Mutex
 	jailRoleID map[string]string // guild ID -> resolved jail role ID, cached per process
+
+	// timers holds one pending release/expiry per jail or grant key, and
+	// inFlight the keys being released this instant. See release.go.
+	// afterFunc is time.AfterFunc, injectable like now.
+	timerMu   sync.Mutex
+	timers    map[string]*time.Timer
+	inFlight  map[string]bool
+	afterFunc func(d time.Duration, f func()) *time.Timer
 }
 
 // OpsProvider yields the Discord ops view for one guild. See
@@ -90,6 +101,9 @@ func New(store Store, jailChannelConfig JailChannelConfig, ops OpsProvider, dryR
 		now:               func() time.Time { return time.Now().UTC() },
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),
+		timers:            make(map[string]*time.Timer),
+		inFlight:          make(map[string]bool),
+		afterFunc:         time.AfterFunc,
 	}
 }
 
@@ -108,7 +122,13 @@ func (p *Plugin) Init(deps core.Deps) error {
 
 func (p *Plugin) Start(ctx context.Context) error { return nil }
 
-func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
+// Shutdown stops the release timers so none fires into a session that is
+// closing. The rows they were waiting on are still there for the next
+// process, whose sweep re-arms them.
+func (p *Plugin) Shutdown(ctx context.Context) error {
+	p.disarm("")
+	return nil
+}
 
 // SyncGuild ensures guildID has its sweep job registered. Call once per
 // guild right after startup/GuildCreate (cmd/bot/main.go), mirroring
@@ -139,6 +159,11 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	delete(p.sweepRegistered, guildID)
 	p.mu.Unlock()
 	p.forgetJailRole(guildID)
+	// A timer firing after the bot has left would ask Discord about a guild
+	// it can no longer see. releaseJail only drops a row on Unknown Member,
+	// never Unknown Guild, so the row would survive that anyway; this just
+	// stops the pointless call.
+	p.disarm(guildID + ":")
 }
 
 // HandleRoleDeleted reacts to a role disappearing from guildID.

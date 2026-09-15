@@ -63,6 +63,9 @@ func newTestPlugin(ops *fakeOps, store *fakeStore, settings *fakeSettings, audit
 		now:               func() time.Time { return fixedNow },
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),
+		timers:            make(map[string]*time.Timer),
+		inFlight:          make(map[string]bool),
+		afterFunc:         time.AfterFunc,
 		voice:             testVoice(),
 		voiceChannelOf:    func(string, string) (string, bool) { return "", false },
 	}
