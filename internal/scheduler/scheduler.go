@@ -43,6 +43,12 @@ type statusChannelResolver interface {
 }
 
 const (
+	// tickInterval is the backstop poll. A job fires on its own timer at the
+	// instant nextDue names (see consider); the tick exists for whatever a
+	// timer could not cover: a job registered before Start, a state write
+	// that failed so the re-arm read stale state, a timer stopped by an
+	// Unregister/Register pair. It is no longer the cadence anything is
+	// expected to fire at.
 	tickInterval           = 30 * time.Second
 	maxConsecutiveFailures = 5
 	backoffBase            = 1 * time.Minute
@@ -79,6 +85,10 @@ type registeredJob struct {
 
 	mu      sync.Mutex
 	running bool
+	// timer is the pending fire at this job's next-due instant, if any.
+	// Replaced on every re-arm and stopped on Unregister; a stale one that
+	// fires anyway re-reads state and finds nothing due.
+	timer *time.Timer
 }
 
 func (j *registeredJob) tryLock() bool {
@@ -95,6 +105,24 @@ func (j *registeredJob) unlock() {
 	j.mu.Lock()
 	j.running = false
 	j.mu.Unlock()
+}
+
+func (j *registeredJob) arm(d time.Duration, fire func()) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.timer != nil {
+		j.timer.Stop()
+	}
+	j.timer = time.AfterFunc(d, fire)
+}
+
+func (j *registeredJob) disarm() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.timer != nil {
+		j.timer.Stop()
+		j.timer = nil
+	}
 }
 
 // Scheduler implements both core.Plugin (so the Registry manages its
@@ -182,11 +210,16 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	// Deliberately not derived from ctx: Start's ctx bounds startup, not the
 	// scheduler's whole lifetime, and a job inheriting it would be cancelled
 	// the instant startup finished.
+	s.mu.Lock()
 	s.baseCtx, s.cancelJobs = context.WithCancel(context.Background())
+	s.mu.Unlock()
 	if _, err := s.cron.AddFunc("@every "+tickInterval.String(), func() { s.tick(s.baseCtx) }); err != nil {
 		return fmt.Errorf("scheduler: schedule tick: %w", err)
 	}
 	s.cron.Start()
+	// Everything registered during Init gets its timer now rather than on
+	// the first tick, thirty seconds from now.
+	go s.tick(s.baseCtx)
 	return nil
 }
 
@@ -199,6 +232,11 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	if s.cancelJobs != nil {
 		s.cancelJobs()
 	}
+	s.mu.Lock()
+	for _, j := range s.jobs {
+		j.disarm()
+	}
+	s.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
@@ -248,8 +286,12 @@ func (s *Scheduler) Register(jobKey string, spec CronSpec, fn func(ctx context.C
 // later tick).
 func (s *Scheduler) Unregister(jobKey string) error {
 	s.mu.Lock()
+	j := s.jobs[jobKey]
 	delete(s.jobs, jobKey)
 	s.mu.Unlock()
+	if j != nil {
+		j.disarm()
+	}
 	return nil
 }
 
@@ -270,8 +312,9 @@ func (s *Scheduler) UnregisterGuild(guildID string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
-	for key := range s.jobs {
+	for key, j := range s.jobs {
 		if strings.HasPrefix(key, prefix) {
+			j.disarm()
 			delete(s.jobs, key)
 			n++
 		}
@@ -293,7 +336,11 @@ func (s *Scheduler) RunNow(ctx context.Context, jobKey string) error {
 		return fmt.Errorf("scheduler: job %q is already running", jobKey)
 	}
 	defer j.unlock()
-	return s.execute(ctx, j)
+	err := s.execute(ctx, j)
+	// The run moved last_run, so the pending timer points at the wrong
+	// instant; re-read and re-arm off the new state.
+	s.rearm(j)
+	return err
 }
 
 // Seed marks jobKey as having just completed successfully at "at" (see
@@ -316,30 +363,75 @@ func (s *Scheduler) tick(ctx context.Context) {
 	s.mu.Unlock()
 
 	for _, j := range jobs {
-		due, err := s.isDue(ctx, j)
-		if err != nil {
-			s.log.Error("scheduler: check due", "job", j.key, "err", err)
-			continue
-		}
-		if !due || !j.tryLock() {
-			continue
-		}
-		s.wg.Add(1)
-		go func(j *registeredJob) {
-			defer s.wg.Done()
-			defer j.unlock()
-			runCtx, cancel := context.WithTimeout(ctx, jobTimeout)
-			defer cancel()
-			_ = s.execute(runCtx, j) // errors already logged inside execute
-		}(j)
+		s.consider(ctx, j)
 	}
 }
 
-// isDue decides whether j should run now, given its persisted state:
-//   - never attempted: due immediately.
-//   - failing: backoff since the last attempt, capped at backoffMax.
-//   - healthy: the schedule's own next-due instant (plus jitter) since the
-//     last success, or since the last attempt if there has never been one.
+// consider is the one decision point for a job: read its persisted state,
+// run it now if it is due, otherwise arm a timer for the instant it will be
+// (nextDue, jitter included, the same figure NextDue reports). Reached from
+// the tick, from the timer it armed last time, and after every run, so a
+// job's next fire is always derived from its current state rather than from
+// whatever was true when the previous timer was set. A timer that fires
+// against stale state (a Seed, a RunNow, a re-register in between) costs one
+// store read and re-arms.
+//
+// Timers exist only between Start and Shutdown: before Start there is no
+// base context to run under, and a job registered then waits for the first
+// tick exactly as it always did, which is what lets rotation Seed a job
+// right after Register without racing an immediate fire.
+func (s *Scheduler) consider(ctx context.Context, j *registeredJob) {
+	s.mu.Lock()
+	current := s.jobs[j.key] == j
+	baseCtx := s.baseCtx
+	s.mu.Unlock()
+	if !current || ctx.Err() != nil {
+		return
+	}
+	st, err := s.store.Get(ctx, j.key)
+	if err != nil {
+		s.log.Error("scheduler: check due", "job", j.key, "err", err)
+		return
+	}
+	now := s.now()
+	if jobIsDue(st, j.spec.Schedule, j.jitter, now) {
+		if !j.tryLock() {
+			return
+		}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			runCtx, cancel := context.WithTimeout(ctx, jobTimeout)
+			_ = s.execute(runCtx, j) // errors already logged inside execute
+			cancel()
+			j.unlock()
+			s.rearm(j)
+		}()
+		return
+	}
+	if baseCtx == nil {
+		return
+	}
+	if due, ok := nextDue(st, j.spec.Schedule, j.jitter); ok {
+		j.arm(due.Sub(now), func() { s.consider(baseCtx, j) })
+	}
+}
+
+// rearm re-evaluates j off its freshly written state, under the base
+// context so it outlives whichever run or command just finished.
+func (s *Scheduler) rearm(j *registeredJob) {
+	s.mu.Lock()
+	ctx := s.baseCtx
+	s.mu.Unlock()
+	if ctx == nil {
+		return
+	}
+	s.consider(ctx, j)
+}
+
+// isDue reports whether j should run now. consider inlines the same read so
+// it can reuse the state for the re-arm; this is for callers that only want
+// the answer.
 func (s *Scheduler) isDue(ctx context.Context, j *registeredJob) (bool, error) {
 	st, err := s.store.Get(ctx, j.key)
 	if err != nil {
@@ -348,6 +440,11 @@ func (s *Scheduler) isDue(ctx context.Context, j *registeredJob) (bool, error) {
 	return jobIsDue(st, j.spec.Schedule, j.jitter, s.now()), nil
 }
 
+// jobIsDue decides whether a job should run now, given its persisted state:
+//   - never attempted: due immediately.
+//   - failing: backoff since the last attempt, capped at backoffMax.
+//   - healthy: the schedule's own next-due instant (plus jitter) since the
+//     last success, or since the last attempt if there has never been one.
 func jobIsDue(st JobState, sched core.Schedule, jitter time.Duration, now time.Time) bool {
 	switch {
 	case st.ConsecutiveFailures == 0 && !st.HasLastRun:
