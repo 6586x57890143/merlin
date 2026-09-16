@@ -53,7 +53,7 @@ type DiscordOps interface {
 	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
-	WebhookExecute(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error
+	WhisperPost(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error
 }
 
 type OpsProvider func(guildID string) DiscordOps
@@ -65,6 +65,10 @@ type Plugin struct {
 	log      *slog.Logger
 	now      func() time.Time
 	limits   *limiter
+	// members reports a guild's member count for guildHourly; 0 when
+	// unknown. Read from discordgo's state cache, which every GuildCreate
+	// fills, so it costs no call.
+	members func(guildID string) int
 
 	webhookMu sync.Mutex
 	webhooks  map[string]*discordgo.Webhook
@@ -77,6 +81,7 @@ func New(screener Screener, ops OpsProvider) *Plugin {
 		log:      slog.Default(),
 		now:      func() time.Time { return time.Now().UTC() },
 		limits:   newLimiter(),
+		members:  func(string) int { return 0 },
 		webhooks: make(map[string]*discordgo.Webhook),
 	}
 }
@@ -87,6 +92,16 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.audit = deps.Audit
 	if deps.Logger != nil {
 		p.log = deps.Logger
+	}
+	if deps.Session != nil && deps.Session.State != nil {
+		state := deps.Session.State
+		p.members = func(guildID string) int {
+			g, err := state.Guild(guildID)
+			if err != nil {
+				return 0
+			}
+			return g.MemberCount
+		}
 	}
 	deps.Commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
 		Name:        "whisper",
@@ -150,10 +165,16 @@ func (p *Plugin) post(ctx context.Context, guildID, channelID string, m *discord
 
 	// The limiter first, before anything costs a call, and charged whether or
 	// not the whisper goes out, so a refusal is not a free retry.
-	if !p.limits.allow(guildID+":"+userID, p.now(), userGap, userHourly) {
-		return p.refuse(ctx, guildID, channelID, userID, "slow down: a few seconds between whispers, and not more than a few dozen an hour"), nil
+	now := p.now()
+	guildCap := guildHourly(p.members(guildID))
+	userCap := userHourly(guildCap - p.limits.count("g:"+guildID, now, time.Hour))
+	if !p.limits.allow("u:"+guildID+":"+userID, now, time.Hour, userGap, userCap) {
+		return p.refuse(ctx, guildID, channelID, userID, "slow down: a few seconds between whispers, and only so many from one person an hour"), nil
 	}
-	if !p.limits.allow(guildID, p.now(), 0, guildHourly) {
+	if !p.limits.allow("c:"+channelID, now, time.Minute, 0, channelMinute) {
+		return p.refuse(ctx, guildID, channelID, userID, "this channel is whispering as fast as Discord allows; try again in a minute"), nil
+	}
+	if !p.limits.allow("g:"+guildID, now, time.Hour, 0, guildCap) {
 		return p.refuse(ctx, guildID, channelID, userID, "this server has whispered as much as it can for the hour"), nil
 	}
 	if r := check(text); r != "" {
@@ -199,7 +220,7 @@ func (p *Plugin) post(ctx context.Context, guildID, channelID string, m *discord
 	if err != nil {
 		return "", fmt.Errorf("whisper: resolve webhook: %w", err)
 	}
-	if err := ops.WebhookExecute(hook.ID, hook.Token, &discordgo.WebhookParams{
+	if err := ops.WhisperPost(hook.ID, hook.Token, &discordgo.WebhookParams{
 		Content:   text + marker(m.User.Username),
 		Username:  webhookUsername(m),
 		AvatarURL: m.AvatarURL(""),

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,7 +62,7 @@ func (f *fakeOps) WebhookCreate(id, name, _ string, _ ...discordgo.RequestOption
 	return h, nil
 }
 
-func (f *fakeOps) WebhookExecute(_, _ string, data *discordgo.WebhookParams, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) WhisperPost(_, _ string, data *discordgo.WebhookParams, _ ...discordgo.RequestOption) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.execErr != nil {
@@ -178,26 +179,83 @@ func TestCheckPassesOrdinaryChat(t *testing.T) {
 func TestLimiterGapAndHourly(t *testing.T) {
 	l := newLimiter()
 	now := testNow
-	if !l.allow("k", now, 3*time.Second, 3) {
+	if !l.allow("k", now, time.Hour, 3*time.Second, 3) {
 		t.Fatal("first attempt refused")
 	}
-	if l.allow("k", now.Add(time.Second), 3*time.Second, 3) {
+	if l.allow("k", now.Add(time.Second), time.Hour, 3*time.Second, 3) {
 		t.Error("attempt inside the gap allowed")
 	}
-	if !l.allow("k", now.Add(3*time.Second), 3*time.Second, 3) {
+	if !l.allow("k", now.Add(3*time.Second), time.Hour, 3*time.Second, 3) {
 		t.Error("attempt at the gap refused")
 	}
-	if !l.allow("k", now.Add(6*time.Second), 3*time.Second, 3) {
+	if !l.allow("k", now.Add(6*time.Second), time.Hour, 3*time.Second, 3) {
 		t.Error("third attempt refused")
 	}
-	if l.allow("k", now.Add(9*time.Second), 3*time.Second, 3) {
+	if l.allow("k", now.Add(9*time.Second), time.Hour, 3*time.Second, 3) {
 		t.Error("fourth attempt inside the hour allowed past max 3")
 	}
-	if !l.allow("k", now.Add(window+time.Second), 3*time.Second, 3) {
+	if !l.allow("k", now.Add(time.Hour+time.Second), time.Hour, 3*time.Second, 3) {
 		t.Error("attempt after the window refused: old entries were not pruned")
 	}
-	if !l.allow("other", now, 3*time.Second, 3) {
+	if !l.allow("other", now, time.Hour, 3*time.Second, 3) {
 		t.Error("a different key shares the window")
+	}
+}
+
+func TestGuildHourlyScalesWithMembersAndNeverUnderTheFloor(t *testing.T) {
+	for members, want := range map[int]int{0: guildFloor, 50: guildFloor, 1800: guildFloor, 2000: 2000, 5000: 5000} {
+		if got := guildHourly(members); got != want {
+			t.Errorf("guildHourly(%d) = %d, want %d", members, got, want)
+		}
+	}
+}
+
+// One member's cap grows with the guild's unused hour and shrinks back to the
+// floor as it fills, and never lets one account take the whole guild cap.
+func TestUserHourlyScalesWithGuildHeadroomAndNeverUnderTheFloor(t *testing.T) {
+	for remaining, want := range map[int]int{0: userFloor, 200: userFloor, 1800: 900, 5000: 2500} {
+		if got := userHourly(remaining); got != want {
+			t.Errorf("userHourly(%d) = %d, want %d", remaining, got, want)
+		}
+	}
+	l := newLimiter()
+	now := time.Now()
+	l.allow("g", now.Add(-2*time.Hour), time.Hour, 0, 10)
+	l.allow("g", now, time.Hour, 0, 10)
+	if got := l.count("g", now, time.Hour); got != 1 {
+		t.Errorf("count = %d, want 1: an attempt outside the window was counted", got)
+	}
+	if got := l.count("g", now, time.Hour); got != 1 {
+		t.Errorf("count = %d after a second count: counting recorded an attempt", got)
+	}
+}
+
+func TestPostCapsOneChannelUnderDiscordsWebhookRate(t *testing.T) {
+	ops := newFakeOps()
+	ops.channels["c2"] = &discordgo.Channel{ID: "c2", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	p, _, now := testPlugin(ops, &fakeScreener{})
+	ctx := context.Background()
+	// Distinct members, so only the channel cap is in play.
+	whisper := func(i int, channel string) string {
+		m := member("")
+		m.User.ID = "u" + strconv.Itoa(i)
+		r, _ := p.post(ctx, "g1", channel, m, "hi")
+		return r
+	}
+	for i := 0; i < channelMinute; i++ {
+		if r := whisper(i, "c1"); r != "" {
+			t.Fatalf("whisper %d refused: %q", i, r)
+		}
+	}
+	if r := whisper(channelMinute, "c1"); !strings.Contains(r, "channel") {
+		t.Errorf("whisper past the channel cap: %q, want a channel refusal", r)
+	}
+	if r := whisper(channelMinute+1, "c2"); r != "" {
+		t.Errorf("another channel shares the cap: %q", r)
+	}
+	*now = now.Add(time.Minute)
+	if r := whisper(channelMinute+2, "c1"); r != "" {
+		t.Errorf("channel cap did not refill after a minute: %q", r)
 	}
 }
 

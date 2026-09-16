@@ -917,10 +917,25 @@ last line and the only subtext, and cannot be forged above the real one.
   Reached through `whisper.Screener`, wired in `cmd/bot/main.go` like
   `aimod.Jailer`; neither package imports the other.
 - **The limiter is a light slowmode, not a cooldown** (`userGap` 3s,
-  `userHourly` 60): conversations have to work. `guildHourly` (200) sits
-  under discordguard's 300/hour `webhook.execute` cap on purpose: aimod's
-  rewrites share that budget, and a rewrite that has already deleted the
-  original and then cannot repost degrades silently to a removal.
+  `userFloor` 120): conversations have to work. Three keys, three reasons.
+  The member cap is the abuse control: `userHourly` is the floor or half
+  the guild's unused hour, whichever is larger. A flat sixty was reached by
+  one person having an ordinary conversation, and what a flood costs is
+  other members' share of the guild cap, which is nothing while the guild
+  is quiet; as it fills, everyone drops to the floor, and `userShare` keeps
+  one account from taking the whole guild hour and gagging everyone. The channel
+  cap (`channelMinute` 25) sits under Discord's 30/min per-webhook limit
+  (`webhookMinute`) so a hot channel gets a refusal from here rather than
+  429s that would open discordguard's breaker for the guild. The guild cap
+  is `guildHourly`: a floor of one webhook's full hour (`guildFloor` 1800,
+  since every channel has its own webhook and nothing is gained by allowing
+  a guild less than one of them), and one per member per hour off the state
+  cache above that, since a number sized for a small server gags a large
+  one; an unknown count gets the floor. Whispers post through `GuildOps.WhisperPost` on their own
+  `webhook.whisper` bucket, **not** aimod's `webhook.execute`: a rewrite
+  that has already deleted the original and then cannot repost degrades
+  silently to a removal, and a busy hour of restricted members talking must
+  never be what spends that.
 - The command is `TierPublic` **with** an action (`whisper.say`), which is
   what lets a guild `/config permissions deny whisper.say user:@x` for one
   abuser or raise the tier, with no code. Refused whispers do not feed
