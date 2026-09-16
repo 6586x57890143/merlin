@@ -178,6 +178,11 @@ func (f *fakeSession) WebhookExecute(_, _ string, _ bool, data *discordgo.Webhoo
 	return &discordgo.Message{}, nil
 }
 
+func (f *fakeSession) WebhookMessageEdit(string, string, string, *discordgo.WebhookEdit, ...discordgo.RequestOption) (*discordgo.Message, error) {
+	f.writes++
+	return &discordgo.Message{}, nil
+}
+
 func (f *fakeSession) GuildMemberTimeout(string, string, *time.Time, ...discordgo.RequestOption) error {
 	f.writes++
 	return nil

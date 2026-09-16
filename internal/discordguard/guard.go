@@ -80,6 +80,7 @@ type Session interface {
 	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
 	WebhookExecute(webhookID, token string, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	WebhookMessageEdit(webhookID, token, messageID string, data *discordgo.WebhookEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
 	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
 	ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error
@@ -483,28 +484,46 @@ func (o *GuildOps) WebhookCreate(channelID, name, avatar string, options ...disc
 // The signature drops discordgo's wait parameter and the returned message:
 // no caller wants either, and false is the cheaper call.
 func (o *GuildOps) WebhookExecute(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
-	return o.webhookExecute(opWebhookExecute, webhookID, token, data, options...)
+	_, err := o.webhookExecute(opWebhookExecute, false, webhookID, token, data, options...)
+	return err
 }
 
 // WhisperPost is WebhookExecute on its own budget (webhook.whisper), so a
 // server full of restricted members talking cannot spend the bucket aimod's
 // rewrites depend on. Same mention suppression, for the same reason: the
-// text is a member's.
-func (o *GuildOps) WhisperPost(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
-	return o.webhookExecute(opWhisperPost, webhookID, token, data, options...)
+// text is a member's. Unlike WebhookExecute it waits for and returns the
+// posted message: whisper edits the one before it to join a block, and
+// needs the ID to do that.
+func (o *GuildOps) WhisperPost(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	return o.webhookExecute(opWhisperPost, true, webhookID, token, data, options...)
 }
 
-func (o *GuildOps) webhookExecute(op, webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
-	if err := o.allow(op); err != nil {
+// WhisperEdit rewrites the content of a message WhisperPost sent, on the
+// same budget and with the same mention suppression: the content is still
+// a member's, and an edit can ping exactly as a post can.
+func (o *GuildOps) WhisperEdit(webhookID, token, messageID, content string, options ...discordgo.RequestOption) error {
+	if err := o.allow(opWhisperPost); err != nil {
 		return err
+	}
+	jid := o.beginJournal(opWhisperPost, messageID)
+	_, err := o.guard.session.WebhookMessageEdit(webhookID, token, messageID, &discordgo.WebhookEdit{
+		Content:         &content,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	}, options...)
+	return o.record(jid, err)
+}
+
+func (o *GuildOps) webhookExecute(op string, wait bool, webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	if err := o.allow(op); err != nil {
+		return nil, err
 	}
 	if data == nil {
 		data = &discordgo.WebhookParams{}
 	}
 	data.AllowedMentions = &discordgo.MessageAllowedMentions{}
 	jid := o.beginJournal(op, webhookID)
-	_, err := o.guard.session.WebhookExecute(webhookID, token, false, data, options...)
-	return o.record(jid, err)
+	msg, err := o.guard.session.WebhookExecute(webhookID, token, wait, data, options...)
+	return msg, o.record(jid, err)
 }
 
 // GuildMemberTimeout applies or clears Discord's own communication timeout.

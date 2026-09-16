@@ -53,7 +53,9 @@ type DiscordOps interface {
 	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
-	WhisperPost(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error
+	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
+	WhisperPost(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	WhisperEdit(webhookID, token, messageID, content string, options ...discordgo.RequestOption) error
 }
 
 type OpsProvider func(guildID string) DiscordOps
@@ -72,6 +74,10 @@ type Plugin struct {
 
 	webhookMu sync.Mutex
 	webhooks  map[string]*discordgo.Webhook
+
+	// blocks is the current run of whispers per channel; see block.go.
+	blockMu sync.Mutex
+	blocks  map[string]*block
 }
 
 func New(screener Screener, ops OpsProvider) *Plugin {
@@ -83,6 +89,7 @@ func New(screener Screener, ops OpsProvider) *Plugin {
 		limits:   newLimiter(),
 		members:  func(string) int { return 0 },
 		webhooks: make(map[string]*discordgo.Webhook),
+		blocks:   make(map[string]*block),
 	}
 }
 
@@ -220,20 +227,31 @@ func (p *Plugin) post(ctx context.Context, guildID, channelID string, m *discord
 	if err != nil {
 		return "", fmt.Errorf("whisper: resolve webhook: %w", err)
 	}
-	if err := ops.WhisperPost(hook.ID, hook.Token, &discordgo.WebhookParams{
+	prev := p.continues(ops, channelID, userID, now)
+	msg, err := ops.WhisperPost(hook.ID, hook.Token, &discordgo.WebhookParams{
 		Content:   text + marker(m.User.Username),
 		Username:  webhookUsername(m),
 		AvatarURL: m.AvatarURL(""),
 		// discordguard overwrites this with the same zero value; set here
 		// too so the post cannot ping even if it is ever sent another way.
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
-	}); err != nil {
+	})
+	if err != nil {
 		// Whatever it was, re-resolve next time rather than fail forever
 		// against a webhook somebody deleted.
 		p.forgetWebhook(channelID)
 		return "", err
 	}
 	p.log.Info("whisper: posted", "guild", guildID, "channel", channelID, "user", userID)
+	p.extend(channelID, guildID, userID, m.User.Username,
+		whisperMsg{id: msg.ID, hookID: hook.ID, token: hook.Token, text: text, at: now}, prev != nil)
+	if prev != nil {
+		// The new whisper is up and marked; the old marker is now the
+		// stutter. Failing here leaves two markers, never none.
+		if err := ops.WhisperEdit(prev.hookID, prev.token, prev.id, prev.text); err != nil {
+			p.log.Warn("whisper: could not drop the previous marker", "guild", guildID, "channel", channelID, "message", prev.id, "err", err)
+		}
+	}
 	return "", nil
 }
 
