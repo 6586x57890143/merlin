@@ -456,7 +456,7 @@ func (s *Store) DisabledPlugins(guildID string) []string {
 // runs /config plugins set <name> true. Everything else is on unless
 // disabled, which is the right default for a plugin that serves the guild
 // (rotation, roles) and the wrong one for a plugin that lets members post
-// through the bot (whisper): a server should choose that, not discover it.
+// through the bot: a server should choose that, not discover it.
 //
 // The two lists are kept apart rather than one list with an inverted
 // meaning: for a default-off plugin only enabled_plugins is consulted, so a
