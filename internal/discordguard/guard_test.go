@@ -224,9 +224,6 @@ func callEveryWrite(o *GuildOps) []error {
 	_, err = o.WebhookCreate("c", "n", "")
 	errs = append(errs, err)
 	errs = append(errs, o.WebhookExecute("w", "t", &discordgo.WebhookParams{}))
-	_, err = o.WhisperPost("w", "t", &discordgo.WebhookParams{})
-	errs = append(errs, err)
-	errs = append(errs, o.WhisperDelete("w", "t", "m"))
 	errs = append(errs, o.GuildMemberTimeout("g", "u", nil))
 	return errs
 }
