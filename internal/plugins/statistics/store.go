@@ -22,6 +22,13 @@ type Bucket struct {
 	Messages                   int
 }
 
+// VoiceBucket is one (channel, member, hour) cell of seconds spent in voice.
+type VoiceBucket struct {
+	GuildID, ChannelID, UserID string
+	Hour                       time.Time
+	Seconds                    int
+}
+
 // MemberBucket is one hour of joins and departures for a guild.
 type MemberBucket struct {
 	GuildID          string
@@ -48,12 +55,22 @@ type Config struct {
 	LiveSince     time.Time
 }
 
-// Row is one member's total over a window.
+// Row is one member's total over a window. A member who only sat in voice
+// has zero messages and no channels; one who never did has zero seconds.
 type Row struct {
-	UserID   string
-	Messages int
-	Channels []string
-	Last     time.Time
+	UserID       string
+	Messages     int
+	VoiceSeconds int
+	Channels     []string
+	Last         time.Time
+}
+
+// DayStat is one UTC day of the whole server: what the heatmap is drawn
+// from, and what the cost projection in aimod reads.
+type DayStat struct {
+	Day          time.Time
+	Messages     int
+	VoiceSeconds int
 }
 
 // ChannelTotal is one channel's volume over a window.
@@ -95,6 +112,8 @@ type Store interface {
 	// so re-reading after a restart lands on the same numbers.
 	SetHour(ctx context.Context, guildID, channelID string, hour time.Time, counts map[string]int) error
 	AddMembers(ctx context.Context, rows []MemberBucket) error
+	// AddVoice adds seconds onto whatever is stored, like AddMessages.
+	AddVoice(ctx context.Context, rows []VoiceBucket) error
 	// UpsertUsers keeps the newest sighting per member.
 	UpsertUsers(ctx context.Context, users []UserSeen) error
 	UpsertChannels(ctx context.Context, channels []ChannelSeen) error
@@ -108,6 +127,9 @@ type Store interface {
 	Prune(ctx context.Context, now time.Time) (int64, error)
 
 	Report(ctx context.Context, guildID, channelID string, from, to time.Time) ([]Row, error)
+	// Days is the server's daily totals over a window, only days with
+	// something in them, oldest first.
+	Days(ctx context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error)
 	Users(ctx context.Context, guildID string, userIDs []string) (map[string]UserSeen, error)
 	Channels(ctx context.Context, guildID string) (map[string]string, error)
 	ChannelTotals(ctx context.Context, guildID string, from, to time.Time) ([]ChannelTotal, error)
@@ -197,6 +219,27 @@ func (s *pgStore) AddMembers(ctx context.Context, rows []MemberBucket) error {
 	`, guilds, hours, joined, departed)
 	if err != nil {
 		return fmt.Errorf("statistics store: add members: %w", err)
+	}
+	return nil
+}
+
+func (s *pgStore) AddVoice(ctx context.Context, rows []VoiceBucket) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	guilds, channels, users := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
+	hours, secs := make([]time.Time, len(rows)), make([]int32, len(rows))
+	for i, r := range rows {
+		guilds[i], channels[i], users[i], hours[i], secs[i] = r.GuildID, r.ChannelID, r.UserID, r.Hour, int32(r.Seconds)
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO stats_voice_hourly (guild_id, channel_id, user_id, hour, seconds)
+		SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::timestamptz[], $5::int[])
+		ON CONFLICT (guild_id, channel_id, user_id, hour)
+		DO UPDATE SET seconds = stats_voice_hourly.seconds + EXCLUDED.seconds
+	`, guilds, channels, users, hours, secs)
+	if err != nil {
+		return fmt.Errorf("statistics store: add voice: %w", err)
 	}
 	return nil
 }
@@ -291,7 +334,7 @@ func (s *pgStore) MarkLive(ctx context.Context, guildID string, at time.Time) er
 // retention has to apply to what is already stored, in both directions.
 func (s *pgStore) Prune(ctx context.Context, now time.Time) (int64, error) {
 	var total int64
-	for _, table := range []string{"stats_hourly", "stats_members_hourly"} {
+	for _, table := range []string{"stats_hourly", "stats_members_hourly", "stats_voice_hourly"} {
 		tag, err := s.pool.Exec(ctx, `
 			DELETE FROM `+table+` h
 			WHERE h.hour < $1::timestamptz - make_interval(days => COALESCE(
@@ -306,11 +349,23 @@ func (s *pgStore) Prune(ctx context.Context, now time.Time) (int64, error) {
 }
 
 func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, to time.Time) ([]Row, error) {
+	// A full join, so a member who only sat in voice still gets a row and
+	// one who only typed still gets theirs. The channel filter applies to
+	// both halves the same way: a text channel simply has no voice.
 	rows, err := s.pool.Query(ctx, `
-		SELECT user_id, SUM(messages)::bigint, array_agg(DISTINCT channel_id), MAX(hour)
-		FROM stats_hourly
-		WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
-		GROUP BY user_id
+		SELECT user_id, COALESCE(m.n, 0), COALESCE(m.chans, '{}'), m.last, COALESCE(v.secs, 0)
+		FROM (
+			SELECT user_id, SUM(messages)::bigint AS n, array_agg(DISTINCT channel_id) AS chans, MAX(hour) AS last
+			FROM stats_hourly
+			WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
+			GROUP BY user_id
+		) m
+		FULL OUTER JOIN (
+			SELECT user_id, SUM(seconds)::bigint AS secs
+			FROM stats_voice_hourly
+			WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
+			GROUP BY user_id
+		) v USING (user_id)
 	`, guildID, from.Truncate(time.Hour), to, channelID)
 	if err != nil {
 		return nil, fmt.Errorf("statistics store: report: %w", err)
@@ -319,12 +374,49 @@ func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, t
 	var out []Row
 	for rows.Next() {
 		var r Row
-		var n int64
-		if err := rows.Scan(&r.UserID, &n, &r.Channels, &r.Last); err != nil {
+		var n, secs int64
+		var last *time.Time
+		if err := rows.Scan(&r.UserID, &n, &r.Channels, &last, &secs); err != nil {
 			return nil, fmt.Errorf("statistics store: scan report row: %w", err)
 		}
-		r.Messages = int(n)
+		r.Messages, r.VoiceSeconds = int(n), int(secs)
+		if last != nil {
+			r.Last = last.UTC()
+		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) Days(ctx context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT day, COALESCE(m.n, 0), COALESCE(v.secs, 0)
+		FROM (
+			SELECT date_trunc('day', hour) AS day, SUM(messages)::bigint AS n FROM stats_hourly
+			WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
+			GROUP BY day
+		) m
+		FULL OUTER JOIN (
+			SELECT date_trunc('day', hour) AS day, SUM(seconds)::bigint AS secs FROM stats_voice_hourly
+			WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
+			GROUP BY day
+		) v USING (day)
+		ORDER BY day
+	`, guildID, from.Truncate(time.Hour), to, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("statistics store: days: %w", err)
+	}
+	defer rows.Close()
+	var out []DayStat
+	for rows.Next() {
+		var d DayStat
+		var n, secs int64
+		if err := rows.Scan(&d.Day, &n, &secs); err != nil {
+			return nil, fmt.Errorf("statistics store: scan day: %w", err)
+		}
+		d.Day = d.Day.UTC()
+		d.Messages, d.VoiceSeconds = int(n), int(secs)
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }

@@ -276,3 +276,38 @@ func TestHandleBackfillQueuesUpToTheLiveHour(t *testing.T) {
 		t.Fatal("no live_since means nothing to fill up to yet")
 	}
 }
+
+// TestBuildFoldsVoiceIn: a member who only sat in voice is a person with
+// no channels, voice adds to the totals, and the day listing carries both.
+func TestBuildFoldsVoiceIn(t *testing.T) {
+	p, store := seeded(t)
+	_ = store.AddVoice(context.Background(), []VoiceBucket{
+		{GuildID: "g1", ChannelID: "v1", UserID: "u1", Hour: windowStart, Seconds: 1800},
+		{GuildID: "g1", ChannelID: "v1", UserID: "u9", Hour: windowStart.Add(time.Hour), Seconds: 7200},
+	})
+	rep, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.Add(3 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.people) != 3 || rep.voice != 150*time.Minute {
+		t.Fatalf("people=%d voice=%s", len(rep.people), rep.voice)
+	}
+	if rep.people[0].name != "zoe" || rep.people[0].voice != 30*time.Minute {
+		t.Fatalf("zoe should carry her voice time: %+v", rep.people[0])
+	}
+	last := rep.people[2]
+	if last.id != "u9" || last.count != 0 || last.voice != 2*time.Hour || len(last.channels) != 0 {
+		t.Fatalf("a voice-only member: %+v", last)
+	}
+	if len(rep.days) != 1 || rep.days[0].Messages != 8 || rep.days[0].VoiceSeconds != 9000 {
+		t.Fatalf("days: %+v", rep.days)
+	}
+
+	perDay, ok := p.MessagesPerDay(context.Background(), "g1", 7)
+	if !ok || perDay != 8 {
+		t.Fatalf("messages per day = %v, %v; want 8", perDay, ok)
+	}
+	if _, ok := p.MessagesPerDay(context.Background(), "nowhere", 7); ok {
+		t.Fatal("a guild with nothing counted has no rate")
+	}
+}

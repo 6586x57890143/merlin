@@ -138,23 +138,36 @@ func TestHumanSpan(t *testing.T) {
 func TestMarkdownShape(t *testing.T) {
 	rep := report{
 		people: []*person{
-			{id: "1", name: "zoe", count: 42, channels: map[string]bool{"general": true, "media": true}},
+			{id: "1", name: "zoe", count: 42, voice: 90 * time.Minute, channels: map[string]bool{"general": true, "media": true}},
 			{id: "2", name: "abe", count: 7, channels: map[string]bool{"general": true}},
+			// Voice only: no channels, no message count, still a person.
+			{id: "3", name: "kit", voice: 3 * time.Hour, channels: map[string]bool{}},
 		},
-		messages: 49, channels: 2,
+		messages: 49, voice: 270 * time.Minute, channels: 2,
+		days: []DayStat{{Day: windowStart.Truncate(24 * time.Hour), Messages: 49, VoiceSeconds: 270 * 60}},
 	}
 	md := markdown(rep, "birdland", windowStart, windowStart.Add(4*time.Hour), 0)
 
 	for _, want := range []string{
 		"## who was active in birdland",
 		"`2026-09-01 14:00` to `2026-09-01 18:00` utc, over `4 hours`",
-		"`2` people, `49` messages, `2` channels",
-		"` 1.` **zoe** `42` in #general #media",
-		"` 2.` **abe** `7` in #general",
+		"`3` people, `49` messages, `4.5h` in voice, `2` channels",
+		"` 1.` **zoe** " + iconMessages + " `42` " + iconVoice + " `1.5h` in #general #media",
+		"` 2.` **abe** " + iconMessages + " `7` in #general\n",
+		"` 3.` **kit** " + iconVoice + " `3.0h`\n",
+		"## day by day\n`2026-09-01` " + iconMessages + " `49` " + iconVoice + " `4.5h`",
 	} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("markdown missing %q:\n%s", want, md)
 		}
+	}
+	// The embed's copy carries the heatmap instead of the listing.
+	if strings.Contains(markdown(rep, "birdland", windowStart, windowStart.Add(4*time.Hour), 24), "day by day") {
+		t.Fatal("the shown report should not carry the day listing")
+	}
+	// A text-only window says nothing about voice at all.
+	if strings.Contains(markdown(report{people: rep.people[1:2], messages: 7}, "b", windowStart, windowStart.Add(time.Hour), 0), "in voice") {
+		t.Fatal("no voice, no voice line")
 	}
 
 	// Kept for eyeballing, the same hook TestRenderPNG has: markdown is read
@@ -171,7 +184,7 @@ func TestMarkdownShape(t *testing.T) {
 	if strings.Contains(capped, "**abe**") {
 		t.Fatal("the cap did not apply")
 	}
-	if !strings.Contains(capped, "showing the top `1` of `2`") || !strings.Contains(capped, listAttachmentName) {
+	if !strings.Contains(capped, "showing the top `1` of `3`") || !strings.Contains(capped, listAttachmentName) {
 		t.Fatalf("capped list does not say what is missing:\n%s", capped)
 	}
 }

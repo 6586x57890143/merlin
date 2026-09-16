@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/png"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,8 +31,18 @@ const (
 	cardH    = 76
 	gutter   = 12
 	pad      = 24
-	gridTop  = 104
+	heatTop  = 104 // where the heatmap, or the grid without one, begins
 	avatarPx = 48
+
+	// The heatmap: GitHub's contribution graph, one cell per UTC day, weeks
+	// as columns and weekdays as rows. cellPitch is GitHub's own 11px cell
+	// in a 14px step; the pitch shrinks for a window too wide to fit and
+	// the oldest weeks are dropped past cellPitchMin.
+	cellPitch    = 14
+	cellPitchMin = 4
+	heatLabelW   = 26 // "Mon" in the rank face, plus a gap
+	heatMonthH   = 14 // the month labels above the cells
+	heatGap      = 16 // between the heatmap and the grid
 
 	titleBase  = 34
 	windowBase = 58
@@ -63,6 +74,11 @@ var (
 	countColor = rgb(0xC9B896) // 8.68:1
 	chanColor  = rgb(0x9FA2D4) // 6.92:1
 	mutedColor = rgb(0x9A8B7A) // 5.11:1
+
+	// heatColors are GitHub's dark-theme greens, empty first. A reader
+	// already knows what this graph means without a legend, which is the
+	// reason to borrow the palette rather than derive one from the brand.
+	heatColors = [5]color.RGBA{cardColor, rgb(0x0E4429), rgb(0x006D32), rgb(0x26A641), rgb(0x39D353)}
 )
 
 func rgb(v int) color.RGBA {
@@ -111,6 +127,12 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 	used := min(cols, max(1, len(people)))
 	rows := (len(people) + cols - 1) / cols
 	w := pad*2 + used*cardW + (used-1)*gutter
+	inner := w - pad*2
+	hm := newHeatmap(rep.days, start, end, inner)
+	gridTop := heatTop + hm.height()
+	if hm.height() > 0 {
+		gridTop += heatGap
+	}
 	// The empty state is one line of text where the grid would be, rather
 	// than an empty grid, which reads as a rendering fault.
 	h := gridTop + 40 + pad
@@ -121,13 +143,13 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 	img := image.NewRGBA(image.Rect(0, 0, px(w), px(h)))
 	draw.Draw(img, img.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
 
-	inner := w - pad*2
 	g := newGlyphs(client)
 	drawRich(img, f.title, nameColor, pad, titleBase, fitRich(f.title, segments(f.title, "who was active in "+guild), inner), g)
-	text(img, f.body, mutedColor, pad, windowBase, fmt.Sprintf("%s to %s utc, over %s",
-		start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), humanSpan(end.Sub(start))))
+	text(img, f.body, mutedColor, pad, windowBase, truncate(f.body, fmt.Sprintf("%s to %s utc, over %s",
+		start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), humanSpan(end.Sub(start))), inner))
 	text(img, f.body, countColor, pad, totalsBase, truncate(f.body, totalsLine(rep), inner))
 	draw.Draw(img, image.Rect(px(pad), px(ruleY), px(w-pad), px(ruleY)+scale), &image.Uniform{ruleColor}, image.Point{}, draw.Src)
+	hm.draw(img, f, pad, heatTop)
 
 	if len(people) == 0 {
 		text(img, f.body, mutedColor, pad, gridTop+24, "nobody chatted in that window.")
@@ -144,7 +166,11 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 }
 
 func totalsLine(rep report) string {
-	line := fmt.Sprintf("%d people, %d messages, %d channels", len(rep.people), rep.messages, rep.channels)
+	line := fmt.Sprintf("%d people, %d messages, ", len(rep.people), rep.messages)
+	if rep.voice > 0 {
+		line += hours(rep.voice) + " in voice, "
+	}
+	line += fmt.Sprintf("%d channels", rep.channels)
 	if rep.partial() {
 		line += ", counted from " + rep.coveredFrom.Format("2006-01-02")
 	}
@@ -174,8 +200,142 @@ func card(dst *image.RGBA, f faces, g *glyphs, p *person, pic image.Image, rank,
 	nameW := x + cardW - 16 - rankW - tx
 	bodyW := x + cardW - 12 - tx
 	drawRich(dst, f.name, nameColor, tx, y+30, fitRich(f.name, displayName(f.name, p), nameW), g)
-	text(dst, f.body, countColor, tx, y+48, plural(p.count, "message"))
+	drawRich(dst, f.body, countColor, tx, y+48, fitRich(f.body, segments(f.body, cardStats(p)), bodyW), g)
 	drawRich(dst, f.body, chanColor, tx, y+64, fitRich(f.body, segments(f.body, channelList(p.channels)), bodyW), g)
+}
+
+// cardStats is the two counts as the card shows them, icons and all: the
+// emoji go through the same Twemoji path a name's do.
+func cardStats(p *person) string {
+	var parts []string
+	if p.count > 0 {
+		parts = append(parts, iconMessages+" "+plural(p.count, "message"))
+	}
+	if p.voice > 0 {
+		parts = append(parts, iconVoice+" "+hours(p.voice))
+	}
+	return strings.Join(parts, "   ")
+}
+
+// heatmap is the day grid laid out for one canvas width.
+type heatmap struct {
+	days   map[time.Time]DayStat // by UTC midnight
+	first  time.Time             // the Monday the first column starts on
+	start  time.Time             // window bounds, at UTC midnight
+	end    time.Time
+	weeks  int // columns drawn
+	pitch  int
+	maxMsg int
+	maxSec int
+}
+
+// newHeatmap plans the grid. A window inside one UTC day gets none: a
+// single cell says nothing a totals line does not.
+func newHeatmap(days []DayStat, start, end time.Time, inner int) heatmap {
+	h := heatmap{days: map[time.Time]DayStat{}}
+	h.start = start.UTC().Truncate(24 * time.Hour)
+	h.end = end.UTC().Add(-time.Nanosecond).Truncate(24 * time.Hour)
+	if !h.end.After(h.start) {
+		return h
+	}
+	for _, d := range days {
+		h.days[d.Day.UTC().Truncate(24*time.Hour)] = d
+		h.maxMsg = max(h.maxMsg, d.Messages)
+		h.maxSec = max(h.maxSec, d.VoiceSeconds)
+	}
+	h.first = mondayOf(h.start)
+	h.weeks = int(h.end.Sub(h.first).Hours()/(24*7)) + 1
+	h.pitch = min(cellPitch, max(cellPitchMin, (inner-heatLabelW)/max(1, h.weeks)))
+	// ponytail: a window wider than the canvas at the minimum pitch shows
+	// only its most recent weeks; scale the cells if that ever matters.
+	if fit := (inner - heatLabelW) / h.pitch; h.weeks > fit {
+		h.first = h.first.AddDate(0, 0, 7*(h.weeks-fit))
+		h.weeks = fit
+	}
+	return h
+}
+
+func mondayOf(t time.Time) time.Time {
+	back := (int(t.Weekday()) + 6) % 7
+	return t.AddDate(0, 0, -back)
+}
+
+func (h heatmap) height() int {
+	if h.weeks == 0 {
+		return 0
+	}
+	return heatMonthH + 7*h.pitch
+}
+
+// level is the cell's shade for one day: nothing, or a quartile of the
+// day's activity against the window's busiest. Messages and voice are each
+// normalised to their own peak and averaged, so a voice-heavy server and a
+// text-heavy one both light up; a metric the window has none of is left
+// out rather than halving every score.
+func (h heatmap) level(day time.Time) int {
+	d, ok := h.days[day]
+	if !ok {
+		return 0
+	}
+	var score float64
+	var n int
+	if h.maxMsg > 0 {
+		score += float64(d.Messages) / float64(h.maxMsg)
+		n++
+	}
+	if h.maxSec > 0 {
+		score += float64(d.VoiceSeconds) / float64(h.maxSec)
+		n++
+	}
+	if n == 0 || score <= 0 {
+		return 0
+	}
+	return 1 + min(3, int(score/float64(n)*4))
+}
+
+func (h heatmap) draw(dst *image.RGBA, f faces, x, y int) {
+	if h.weeks == 0 {
+		return
+	}
+	cell := max(2, h.pitch*11/cellPitch)
+	cellsX, cellsY := x+heatLabelW, y+heatMonthH
+	for row, label := range []string{"Mon", "", "Wed", "", "Fri", "", ""} {
+		if label != "" && h.pitch >= 8 {
+			text(dst, f.rank, mutedColor, x, cellsY+row*h.pitch+cell-1, label)
+		}
+	}
+	// A month label on the first column that reaches into each month. Two
+	// closer than a word's width keep the later one, so a window opening
+	// on the last days of a month is labelled with the month it is mostly
+	// in. None at all once the cells are too small to leave room.
+	var labels []int
+	for col := range h.weeks {
+		m := h.first.AddDate(0, 0, 7*col+6).Month()
+		if col == 0 || m != h.first.AddDate(0, 0, 7*col-1).Month() {
+			if n := len(labels); n > 0 && col-labels[n-1] < 3 {
+				labels = labels[:n-1]
+			}
+			labels = append(labels, col)
+		}
+	}
+	if h.pitch >= 8 {
+		for _, col := range labels {
+			m := h.first.AddDate(0, 0, 7*col+6).Month()
+			text(dst, f.rank, mutedColor, cellsX+col*h.pitch, y+heatMonthH-4, m.String()[:3])
+		}
+	}
+	for col := range h.weeks {
+		week := h.first.AddDate(0, 0, 7*col)
+		for row := range 7 {
+			day := week.AddDate(0, 0, row)
+			if day.Before(h.start) || day.After(h.end) {
+				continue
+			}
+			cx, cy := cellsX+col*h.pitch, cellsY+row*h.pitch
+			draw.Draw(dst, image.Rect(px(cx), px(cy), px(cx+cell), px(cy+cell)),
+				&image.Uniform{heatColors[h.level(day)]}, image.Point{}, draw.Src)
+		}
+	}
 }
 
 // displayName is the name as it can actually be drawn: the face's text and
