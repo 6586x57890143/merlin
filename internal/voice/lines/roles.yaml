@@ -44,6 +44,15 @@ roles.jail_announce:
   - "{members}, jailed, no appeal. back {until}. the sky belongs to whichever bird can still see it"
   - "{members} down, flying privileges revoked until {until}, and yes, she is enjoying this a little 😏"
   - "{members}, until {until}. talk a big game somewhere else, the nest does not negotiate"
+  # gg. one crude phrase, kept as a running bit rather than a register: five
+  # of twenty lines so it lands about one jail in four, often enough to be
+  # her catchphrase and rare enough to stay one. Deliberate exception to
+  # PERSONA.md's "blunt is not crude", scoped to exactly this phrase.
+  - "gg fuckin' ez. {members} has been sent to the nest until {until}, and honestly it was not even close"
+  - "{members} is jailed until {until}. gg fuckin' ez, thanks for playing, better luck next round"
+  - "that's {members} in the nest until {until}. gg fuckin' ez, she did not even have to try"
+  - "{members} lasted about as long as expected. jailed until {until}. gg fuckin' ez"
+  - "gg fuckin' ez. {members} sits this one out until {until}, and the rematch is not scheduled"
 
 roles.release_announce:
   # calm
