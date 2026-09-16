@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/6586x57890143/merlin/internal/secret"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -166,7 +167,7 @@ func TestEstimateSaysWhenItIsGuessing(t *testing.T) {
 
 	// No history at all: the numbers are assumptions and must say so, since
 	// an admin is about to set a budget from them.
-	blind := estimateFor(nil, fast, deep)
+	blind := estimateFor(nil, fast, deep, 0)
 	if blind.Measured {
 		t.Error("an estimate with no history claimed to be measured")
 	}
@@ -178,7 +179,7 @@ func TestEstimateSaysWhenItIsGuessing(t *testing.T) {
 		Day: testNow, Scanned: 1000, FastCalls: 50, DeepCalls: 10,
 		FastPromptTokens: 60000, FastCompletionTokens: 500,
 		DeepPromptTokens: 16000, DeepCompletionTokens: 400,
-	}}, fast, deep)
+	}}, fast, deep, 0)
 	if !measured.Measured {
 		t.Error("an estimate built on a real day of traffic did not report itself as measured")
 	}
@@ -197,8 +198,8 @@ func TestEstimateRisesWithPrice(t *testing.T) {
 		Day: testNow, Scanned: 1000, FastCalls: 50, DeepCalls: 10,
 		FastPromptTokens: 60000, DeepPromptTokens: 16000,
 	}}
-	cheap := estimateFor(history, Model{PromptPerM: 0.05}, Model{PromptPerM: 0.25})
-	dear := estimateFor(history, Model{PromptPerM: 5.00}, Model{PromptPerM: 0.25})
+	cheap := estimateFor(history, Model{PromptPerM: 0.05}, Model{PromptPerM: 0.25}, 0)
+	dear := estimateFor(history, Model{PromptPerM: 5.00}, Model{PromptPerM: 0.25}, 0)
 
 	if dear.USDPerDay <= cheap.USDPerDay {
 		t.Errorf("a 100x more expensive fast model projected %v against %v", dear.USDPerDay, cheap.USDPerDay)
@@ -248,7 +249,7 @@ func TestActualSpendIsReportedFromTheReceipts(t *testing.T) {
 	}}
 
 	// Neither model priced, which is what produced the undercount.
-	est := estimateFor(history, Model{ID: "some/fast"}, Model{ID: "some/deep"})
+	est := estimateFor(history, Model{ID: "some/fast"}, Model{ID: "some/deep"}, 0)
 
 	if math.Abs(est.ActualPerDay-0.02514737) > 1e-9 {
 		t.Errorf("ActualPerDay = %v, want what was billed", est.ActualPerDay)
@@ -266,7 +267,7 @@ func TestActualSpendIsReportedFromTheReceipts(t *testing.T) {
 // missing a price.
 func TestFreeModelIsNotReportedAsUnpriced(t *testing.T) {
 	est := estimateFor([]Spend{{Day: testNow, Scanned: 10, FastCalls: 1}},
-		Model{ID: "a/model:free", Free: true}, Model{ID: "b/model", PromptPerM: 1})
+		Model{ID: "a/model:free", Free: true}, Model{ID: "b/model", PromptPerM: 1}, 0)
 	if len(est.Unpriced) != 0 {
 		t.Errorf("Unpriced = %v, want none: a free model has a price and it is zero", est.Unpriced)
 	}
@@ -275,11 +276,51 @@ func TestFreeModelIsNotReportedAsUnpriced(t *testing.T) {
 // With no history at all there is nothing billed, so the projection is what
 // there is to show.
 func TestNoHistoryLeavesActualAtZero(t *testing.T) {
-	est := estimateFor(nil, Model{ID: "a", PromptPerM: 1}, Model{ID: "b", PromptPerM: 1})
+	est := estimateFor(nil, Model{ID: "a", PromptPerM: 1}, Model{ID: "b", PromptPerM: 1}, 0)
 	if est.ActualPerDay != 0 {
 		t.Errorf("ActualPerDay = %v with no history, want 0", est.ActualPerDay)
 	}
 	if est.USDPerDay <= 0 {
 		t.Error("no projection either, so there is nothing to show a new guild")
+	}
+}
+
+// The server's own counted volume replaces the compiled-in guess while
+// there are no receipts, and never overrides what the receipts measured.
+func TestEstimateUsesCountedTrafficBeforeReceipts(t *testing.T) {
+	fast := Model{ID: "cheap/model", PromptPerM: 0.05}
+	deep := Model{ID: "good/model", PromptPerM: 0.25}
+
+	counted := estimateFor(nil, fast, deep, 200)
+	if counted.Measured || counted.ScannedPerDay != 200 || !strings.Contains(counted.Basis, "200 messages a day") {
+		t.Fatalf("no receipts, counted traffic: %+v", counted)
+	}
+	if blind := estimateFor(nil, fast, deep, 0); counted.USDPerDay >= blind.USDPerDay {
+		t.Fatalf("two hundred a day should cost less than the assumed %d: %v vs %v", assumedScannedPerDay, counted.USDPerDay, blind.USDPerDay)
+	}
+
+	history := []Spend{{Day: testNow, Scanned: 1000, FastCalls: 50, FastPromptTokens: 60000}}
+	if measured := estimateFor(history, fast, deep, 200); !measured.Measured || measured.ScannedPerDay != 1000 {
+		t.Fatalf("receipts must win over the count: %+v", measured)
+	}
+}
+
+type fakeTraffic struct {
+	perDay float64
+	ok     bool
+}
+
+func (f fakeTraffic) MessagesPerDay(context.Context, string, int) (float64, bool) { return f.perDay, f.ok }
+
+func TestMeasuredTrafficIsOptional(t *testing.T) {
+	p := &Plugin{}
+	if p.measuredTraffic(context.Background(), "g") != 0 {
+		t.Fatal("nothing wired should read as unknown")
+	}
+	if p.WithTraffic(fakeTraffic{perDay: 42, ok: false}).measuredTraffic(context.Background(), "g") != 0 {
+		t.Fatal("nothing counted should read as unknown")
+	}
+	if got := p.WithTraffic(fakeTraffic{perDay: 42, ok: true}).measuredTraffic(context.Background(), "g"); got != 42 {
+		t.Fatalf("measuredTraffic = %v, want 42", got)
 	}
 }

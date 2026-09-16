@@ -117,6 +117,39 @@ func TestPostgresStoreRoundTrip(t *testing.T) {
 	if err != nil || len(days) != 1 || days[0].Joined != 3 || days[0].Departed != 1 {
 		t.Fatalf("member days: %+v %v", days, err)
 	}
+
+	// Voice adds like messages, joins onto the report for members with or
+	// without messages, and rolls up per day beside them.
+	if err := s.AddVoice(ctx, []VoiceBucket{
+		{GuildID: g, ChannelID: "v1", UserID: "u1", Hour: h0, Seconds: 600},
+		{GuildID: g, ChannelID: "v1", UserID: "u9", Hour: h1, Seconds: 3600},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddVoice(ctx, []VoiceBucket{{GuildID: g, ChannelID: "v1", UserID: "u1", Hour: h0, Seconds: 300}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.Report(ctx, g, "", h0, h1.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = map[string]Row{}
+	for _, r := range rows {
+		got[r.UserID] = r
+	}
+	if got["u1"].Messages != 7 || got["u1"].VoiceSeconds != 900 {
+		t.Fatalf("u1 with voice: %+v", got["u1"])
+	}
+	if r := got["u9"]; r.Messages != 0 || r.VoiceSeconds != 3600 || len(r.Channels) != 0 || !r.Last.IsZero() {
+		t.Fatalf("voice-only member: %+v", r)
+	}
+	stats, err := s.Days(ctx, g, "", h0, h1.Add(time.Hour))
+	if err != nil || len(stats) != 1 || stats[0].Messages != 8 || stats[0].VoiceSeconds != 4500 || !stats[0].Day.Equal(h0.Truncate(24*time.Hour)) {
+		t.Fatalf("days: %+v %v", stats, err)
+	}
+	if stats, err = s.Days(ctx, g, "v1", h0, h1.Add(time.Hour)); err != nil || len(stats) != 1 || stats[0].Messages != 0 || stats[0].VoiceSeconds != 4500 {
+		t.Fatalf("days for a voice channel: %+v %v", stats, err)
+	}
 }
 
 func TestPostgresStoreConfigAndPrune(t *testing.T) {

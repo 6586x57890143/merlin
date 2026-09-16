@@ -189,13 +189,26 @@ const (
 // against the prompt: the fast pass answers with an empty array most of the
 // time. They are still counted, so the estimate does not drift if a future
 // model starts reasoning at length.
-func estimateFor(history []Spend, fast, deep Model) Estimate {
+//
+// traffic is the server's own messages a day as the statistics plugin
+// counted them, or zero when nothing has. It stands in for the compiled-in
+// volume only while there is no scanning history: once there are receipts,
+// what reached a model is measured directly and is the better number, since
+// the skip filters ahead of the models see to it that not every message
+// does. Before that, the server's real volume is the half of the projection
+// an admin cannot guess, and a guess of two thousand for a server doing two
+// hundred is a budget set ten times too high.
+func estimateFor(history []Spend, fast, deep Model, traffic float64) Estimate {
 	est := Estimate{
 		Basis:            "assumed traffic, no measured history yet",
 		ScannedPerDay:    assumedScannedPerDay,
 		FastTokensPerMsg: assumedFastTokensPerMsg,
 		DeepTokensPerMsg: assumedDeepTokensPerMsg,
 		DeepRate:         assumedDeepRate,
+	}
+	if traffic > 0 {
+		est.Basis = fmt.Sprintf("this server's own %.0f messages a day as counted by statistics, with assumed tokens per message; every message is priced as though it reached a model", traffic)
+		est.ScannedPerDay = traffic
 	}
 
 	var spent float64

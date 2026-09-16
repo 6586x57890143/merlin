@@ -10,8 +10,10 @@
 // it.
 //
 // What is kept is metadata, never content: message counts per member per
-// channel per hour, joins and departures per hour, and the display name and
-// avatar a member last posted under. It is still a durable record of who
+// channel per hour, seconds in voice per member per channel per hour (booked
+// from the gateway's voice state changes, since Discord keeps no voice
+// history to read back), joins and departures per hour, and the display name
+// and avatar a member last posted under. It is still a durable record of who
 // was talking where, which is why every row ages out on a per-guild
 // retention and why the one command that names people is gated the way it
 // was before: TierAdmin is only the coarse floor on the leaf, the real
@@ -481,17 +483,50 @@ func (p *Plugin) build(ctx context.Context, guildID string, opts options) (repor
 		if name == "" {
 			name = r.UserID
 		}
-		per := &person{id: r.UserID, name: name, avatar: u.Avatar, count: r.Messages, channels: map[string]bool{}, last: r.Last}
+		per := &person{id: r.UserID, name: name, avatar: u.Avatar, count: r.Messages,
+			voice: time.Duration(r.VoiceSeconds) * time.Second, channels: map[string]bool{}, last: r.Last}
 		for _, ch := range r.Channels {
 			per.channels[channelLabel(channels, ch)] = true
 			busy[ch] = true
 		}
 		people[r.UserID] = per
 		rep.messages += r.Messages
+		rep.voice += per.voice
 	}
 	rep.people = rank(people)
 	rep.channels = len(busy)
+	if rep.days, err = p.store.Days(ctx, guildID, opts.channelID, opts.from, opts.to); err != nil {
+		return report{}, err
+	}
 	return rep, nil
+}
+
+// MessagesPerDay is the server's measured traffic over the last few days:
+// the average over the whole days that have anything counted, and false
+// when nothing has been. It is what other plugins ask this one, aimod for
+// pricing a model stack against the traffic it would actually see rather
+// than a compiled-in guess.
+func (p *Plugin) MessagesPerDay(ctx context.Context, guildID string, days int) (float64, bool) {
+	now := p.now()
+	to := now.Truncate(24 * time.Hour)
+	from := to.AddDate(0, 0, -max(1, days))
+	stats, err := p.store.Days(ctx, guildID, "", from, to)
+	if err != nil {
+		p.log.Error("statistics: messages per day", "guild", guildID, "err", err)
+		return 0, false
+	}
+	var total float64
+	var counted int
+	for _, d := range stats {
+		if d.Messages > 0 {
+			total += float64(d.Messages)
+			counted++
+		}
+	}
+	if counted == 0 {
+		return 0, false
+	}
+	return total / float64(counted), true
 }
 
 // coveredFrom is the earliest instant the buckets speak for: the oldest

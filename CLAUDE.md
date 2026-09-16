@@ -983,6 +983,38 @@ was "who was talking in the 20 minutes it managed".
   partial hour between that and the moment counting began belongs to
   neither source and stays uncounted once, rather than being counted by
   both. Missing Access marks the channel done with the error and moves on.
+- **Voice time is booked from channel changes, never logged as sessions**
+  (`HandleVoiceState`, `stats_voice_hourly`, migration 0037). Discord keeps
+  no voice history to backfill from, so the only source is having watched:
+  `GUILD_VOICE_STATES` is always requested, a member's open sitting is one
+  cursor in memory (`counter.open`), and the seconds since it are split at
+  hour boundaries into the same cell shape messages use, on every change
+  and on every flush, so a crash costs at most one flush interval. A mute
+  or deafen toggle arrives as the same event with the channel unchanged and
+  is ignored, or one sitting would be many rows. `SyncVoice` seeds the
+  cursors from `GuildCreate.VoiceStates` at `now`, so a redeploy loses the
+  minutes it was down and never invents time nobody was there for. The
+  report shows hours per member and nothing finer; `Report` is a full join
+  so a member who only sat in voice is still a person, ranked after the
+  same message count by voice.
+- **The heatmap is drawn, not explained** (`heatmap` in `render.go`, from
+  `Store.Days`). GitHub's contribution grid on GitHub's dark greens, one
+  cell per UTC day, so a reader already knows what it means. A day's shade
+  is the quartile of its messages and voice seconds each normalised to the
+  window's own busiest day and averaged, a metric the window has none of
+  left out rather than halving every score. A window inside one day draws
+  none, a window wider than the canvas at the minimum pitch keeps its most
+  recent weeks (a `ponytail:` note), and the day by day rides only in the
+  full `.md` since the embed already carries the picture.
+- **Statistics informs aimod's cost projection** through `aimod.Traffic`
+  (`WithTraffic`, wired in `main.go` like `WithJailer`; aimod never imports
+  statistics). `estimateFor` takes the server's own counted messages a day
+  in place of `assumedScannedPerDay` **only while there are no receipts**:
+  once scanning has run, what reached a model is measured directly and is
+  the better number, since the skip filters see to it that not every
+  message does. Before that, a guess of two thousand for a server doing two
+  hundred is a budget set ten times too high, and the volume is the half of
+  a projection an admin cannot guess. `Basis` says which it used.
 - **A window that starts before the buckets do says so.** `report.partial`
   compares `from` with the oldest hour held (or `live_since`), and both the
   markdown and the card carry "counting began ..." so a quiet week cannot be
@@ -990,7 +1022,8 @@ was "who was talking in the 20 minutes it managed".
 - **Retention is per guild, re-read at prune time, 90 days by default, and
   capped at ten years**: the `rotation_archives.delete_after` rule, and
   the direction that has to work is shortening. `Prune` runs hourly on the
-  plugin's own loop; there is nothing per guild to register. The table is
+  plugin's own loop over every hourly table, voice included; there is
+  nothing per guild to register. The table is
   metadata (counts, never content) but it is still a durable record of who
   was talking where, which is why the reporting leaf keeps the operator
   gate and why "forever" is not offered.

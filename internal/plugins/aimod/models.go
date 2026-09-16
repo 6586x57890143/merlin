@@ -239,7 +239,7 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 
 	fastModel, _ := findModel(catalogue, fastIDs[0])
 	deepModel, _ := findModel(catalogue, deepIDs[0])
-	est := estimateFor(history, fastModel, deepModel)
+	est := estimateFor(history, fastModel, deepModel, p.measuredTraffic(ctx, i.GuildID))
 
 	// What the current stack costs comes from the receipts, not from a price
 	// list. OpenRouter returns the cost of every call, so for a stack the
@@ -405,13 +405,14 @@ func (p *Plugin) handleModelsCompare(ctx context.Context, s *discordgo.Session, 
 	spec, _ := route(cfg)
 	currentFast, _ := findModel(catalogue, modelsOr(cfg.FastModels, spec.fastModels)[0])
 	currentDeep, _ := findModel(catalogue, modelsOr(cfg.DeepModels, spec.deepModels)[0])
-	now := estimateFor(history, currentFast, currentDeep)
+	traffic := p.measuredTraffic(ctx, i.GuildID)
+	now := estimateFor(history, currentFast, currentDeep, traffic)
 
 	after := now
 	if pass == "deep" {
-		after = estimateFor(history, currentFast, candidateModel)
+		after = estimateFor(history, currentFast, candidateModel, traffic)
 	} else {
-		after = estimateFor(history, candidateModel, currentDeep)
+		after = estimateFor(history, candidateModel, currentDeep, traffic)
 	}
 
 	delta := after.USDPerDay - now.USDPerDay

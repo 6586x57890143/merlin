@@ -53,6 +53,7 @@ type person struct {
 	name     string
 	avatar   string // avatar hash, empty for a member on a default avatar
 	count    int
+	voice    time.Duration
 	channels map[string]bool
 	last     time.Time
 }
@@ -61,7 +62,11 @@ type person struct {
 type report struct {
 	people   []*person
 	messages int
+	voice    time.Duration
 	channels int // channels that carried at least one message
+	// days is the server's own day by day, oldest first, for the heatmap
+	// and the full listing. Only days with something in them.
+	days []DayStat
 	// coveredFrom is the earliest instant the buckets can speak for. A
 	// window starting before it is answered from what exists, and says so:
 	// silently reporting a quiet server for the days before counting began
@@ -148,8 +153,9 @@ func messageID(s string) int64 {
 	return id
 }
 
-// rank orders by message count, then by name so two runs over one window
-// produce the same list rather than swapping people on every tie.
+// rank orders by message count, then voice time, then by name so two runs
+// over one window produce the same list rather than swapping people on
+// every tie.
 func rank(people map[string]*person) []*person {
 	out := make([]*person, 0, len(people))
 	for _, p := range people {
@@ -159,9 +165,43 @@ func rank(people map[string]*person) []*person {
 		if out[i].count != out[j].count {
 			return out[i].count > out[j].count
 		}
+		if out[i].voice != out[j].voice {
+			return out[i].voice > out[j].voice
+		}
 		return out[i].name < out[j].name
 	})
 	return out
+}
+
+// Icons for the two kinds of activity, the same in the markdown and on the
+// card so a reader learns them once.
+const (
+	iconMessages = "\U0001F4AC"       // speech balloon
+	iconVoice    = "\U0001F399\uFE0F" // studio microphone
+)
+
+// stats renders a member's or a day's two counts, leaving out whichever
+// is zero: "🎙️ 0.0h" on somebody who never joined voice is noise on every
+// row of a text-only server.
+func stats(messages int, voice time.Duration) string {
+	var parts []string
+	if messages > 0 {
+		parts = append(parts, fmt.Sprintf("%s `%d`", iconMessages, messages))
+	}
+	if voice > 0 {
+		parts = append(parts, fmt.Sprintf("%s `%s`", iconVoice, hours(voice)))
+	}
+	return strings.Join(parts, " ")
+}
+
+// hours renders voice time to a tenth of an hour, the unit the report
+// promises. Anything under six minutes still shows as something rather
+// than rounding to "0.0h" and reading as nothing.
+func hours(d time.Duration) string {
+	if d > 0 && d < 6*time.Minute {
+		return "<0.1h"
+	}
+	return fmt.Sprintf("%.1fh", d.Hours())
 }
 
 // markdown renders the report for Discord. limit 0 means everyone, which is
@@ -171,7 +211,11 @@ func markdown(rep report, guild string, start, end time.Time, limit int) string 
 	fmt.Fprintf(&b, "## who was active in %s\n", guild)
 	fmt.Fprintf(&b, "`%s` to `%s` utc, over `%s`\n",
 		start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), humanSpan(end.Sub(start)))
-	fmt.Fprintf(&b, "`%d` people, `%d` messages, `%d` channels\n", len(rep.people), rep.messages, rep.channels)
+	fmt.Fprintf(&b, "`%d` people, `%d` messages, ", len(rep.people), rep.messages)
+	if rep.voice > 0 {
+		fmt.Fprintf(&b, "`%s` in voice, ", hours(rep.voice))
+	}
+	fmt.Fprintf(&b, "`%d` channels\n", rep.channels)
 	if rep.partial() {
 		fmt.Fprintf(&b, "-# counting began `%s` utc, so this window is only counted from there. `/statistics backfill` fills in what came before\n",
 			rep.coveredFrom.Format("2006-01-02 15:04"))
@@ -188,10 +232,23 @@ func markdown(rep report, guild string, start, end time.Time, limit int) string 
 		shown = shown[:limit]
 	}
 	for i, p := range shown {
-		fmt.Fprintf(&b, "`%2d.` **%s** `%d` in %s\n", i+1, escape(p.name), p.count, channelList(p.channels))
+		fmt.Fprintf(&b, "`%2d.` **%s** %s", i+1, escape(p.name), stats(p.count, p.voice))
+		if len(p.channels) > 0 {
+			fmt.Fprintf(&b, " in %s", channelList(p.channels))
+		}
+		b.WriteString("\n")
 	}
 	if len(shown) < len(rep.people) {
 		fmt.Fprintf(&b, "\nshowing the top `%d` of `%d`, the rest is in %s\n", len(shown), len(rep.people), listAttachmentName)
+	}
+	// The day by day rides only in the full file: the embed carries the
+	// same thing as the heatmap, and a listing under it would be the one
+	// section nobody scrolls to.
+	if limit == 0 && len(rep.days) > 0 {
+		b.WriteString("\n## day by day\n")
+		for _, d := range rep.days {
+			fmt.Fprintf(&b, "`%s` %s\n", d.Day.Format("2006-01-02"), stats(d.Messages, time.Duration(d.VoiceSeconds)*time.Second))
+		}
 	}
 	return b.String()
 }

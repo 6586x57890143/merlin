@@ -134,6 +134,10 @@ type Plugin struct {
 	// jailer is optional. Nil means no roles plugin is wired into this
 	// build, and the sanction ladder falls back to Discord's own timeout.
 	jailer Jailer
+	// traffic is optional too: the statistics plugin, when wired, so a
+	// cost projection with no receipts yet can use the server's real
+	// volume instead of a guess.
+	traffic Traffic
 	// gate reports whether this plugin is enabled for a guild. Optional: a
 	// nil gate means enabled, which is what the unit tests run with.
 	gate PluginGate
@@ -301,6 +305,37 @@ func (p *Plugin) WithGate(g PluginGate) *Plugin {
 func (p *Plugin) WithFundingChains(rpcURLs, contracts map[string]string) *Plugin {
 	p.eth = newETHClient(rpcURLs, contracts)
 	return p
+}
+
+// Traffic answers how busy a server is, for pricing a model stack before
+// there is any scanning history to measure from. Satisfied structurally by
+// *statistics.Plugin, wired in cmd/bot/main.go; this package never imports
+// that one.
+type Traffic interface {
+	// MessagesPerDay is the average over the last days that had anything
+	// counted, and false when none did.
+	MessagesPerDay(ctx context.Context, guildID string, days int) (float64, bool)
+}
+
+// WithTraffic attaches the server's own message counts to the cost
+// projection. Optional: without it the projection falls back to a stated
+// assumption, as it always did.
+func (p *Plugin) WithTraffic(t Traffic) *Plugin {
+	p.traffic = t
+	return p
+}
+
+// measuredTraffic is the guild's messages a day over the last week, or zero
+// when nothing is wired or nothing was counted.
+func (p *Plugin) measuredTraffic(ctx context.Context, guildID string) float64 {
+	if p.traffic == nil {
+		return 0
+	}
+	perDay, ok := p.traffic.MessagesPerDay(ctx, guildID, spendHistoryDays)
+	if !ok {
+		return 0
+	}
+	return perDay
 }
 
 // WithJailer attaches the jail mechanism the sanction ladder prefers.

@@ -269,6 +269,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return ""
 	})
 	registry.Register(statisticsPlugin)
+	// The server's own message volume feeds aimod's cost projection, so a
+	// guild pricing a model stack before it has spent anything is quoted on
+	// what it actually does rather than a compiled-in guess. Structural,
+	// like WithJailer: aimod never imports statistics.
+	aimodPlugin.WithTraffic(statisticsPlugin)
 	registry.Register(adminconfigPlugin)
 
 	if err := registry.InitAll(); err != nil {
@@ -335,6 +340,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// its running contest ticked on to the next phase.
 		contestPlugin.SyncGuild(guildCtx, gc.ID)
 		statisticsPlugin.SyncGuild(guildCtx, gc.ID)
+		// Whoever is in voice as the guild arrives starts their clock now;
+		// GUILD_VOICE_STATES is always requested, so this list is complete.
+		statisticsPlugin.SyncVoice(gc.ID, gc.VoiceStates)
 		if settingsLoaded {
 			// Rotation, unlike the sweep, derives which jobs should exist from
 			// settings, and reconciling against fail-closed defaults would read as
@@ -420,6 +428,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// under a lock, so it does not hold up the handlers behind it.
 	session.AddHandler(func(s *discordgo.Session, mc *discordgo.MessageCreate) {
 		statisticsPlugin.HandleMessage(mc.Message)
+	})
+	// Voice time is booked from channel changes (member, channel, hour;
+	// never a session log). Same map write under the same lock.
+	session.AddHandler(func(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
+		statisticsPlugin.HandleVoiceState(vs)
 	})
 
 	// Message scanning. Registered only when the intent was actually

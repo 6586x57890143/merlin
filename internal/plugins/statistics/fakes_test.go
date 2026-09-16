@@ -16,6 +16,7 @@ import (
 type fakeStore struct {
 	mu       sync.Mutex
 	hourly   map[bucketKey]int
+	voice    map[bucketKey]int // seconds
 	members  map[memberKey]MemberBucket
 	users    map[string]UserSeen // guild:user
 	channels map[string]string   // guild:channel -> name
@@ -30,6 +31,7 @@ type fakeStore struct {
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		hourly:   map[bucketKey]int{},
+		voice:    map[bucketKey]int{},
 		members:  map[memberKey]MemberBucket{},
 		users:    map[string]UserSeen{},
 		channels: map[string]string{},
@@ -61,6 +63,18 @@ func (f *fakeStore) SetHour(_ context.Context, guildID, channelID string, hour t
 	}
 	for u, n := range counts {
 		f.hourly[bucketKey{guildID, channelID, u, hour}] = n
+	}
+	return nil
+}
+
+func (f *fakeStore) AddVoice(_ context.Context, rows []VoiceBucket) error {
+	if f.addErr != nil {
+		return f.addErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range rows {
+		f.voice[bucketKey{r.GuildID, r.ChannelID, r.UserID, r.Hour}] += r.Seconds
 	}
 	return nil
 }
@@ -179,12 +193,61 @@ func (f *fakeStore) Report(_ context.Context, guildID, channelID string, from, t
 			r.Last = k.hour
 		}
 	}
+	for k, secs := range f.voice {
+		if k.guildID != guildID || k.hour.Before(from.Truncate(time.Hour)) || !k.hour.Before(to) {
+			continue
+		}
+		if channelID != "" && k.channelID != channelID {
+			continue
+		}
+		r := byUser[k.userID]
+		if r == nil {
+			r = &Row{UserID: k.userID}
+			byUser[k.userID] = r
+		}
+		r.VoiceSeconds += secs
+	}
 	var out []Row
 	for _, r := range byUser {
 		sort.Strings(r.Channels)
 		out = append(out, *r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out, nil
+}
+
+func (f *fakeStore) Days(_ context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	days := map[time.Time]*DayStat{}
+	at := func(hour time.Time) *DayStat {
+		day := hour.Truncate(24 * time.Hour)
+		d := days[day]
+		if d == nil {
+			d = &DayStat{Day: day}
+			days[day] = d
+		}
+		return d
+	}
+	in := func(k bucketKey) bool {
+		return k.guildID == guildID && !k.hour.Before(from.Truncate(time.Hour)) && k.hour.Before(to) &&
+			(channelID == "" || k.channelID == channelID)
+	}
+	for k, n := range f.hourly {
+		if in(k) {
+			at(k.hour).Messages += n
+		}
+	}
+	for k, secs := range f.voice {
+		if in(k) {
+			at(k.hour).VoiceSeconds += secs
+		}
+	}
+	var out []DayStat
+	for _, d := range days {
+		out = append(out, *d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Day.Before(out[j].Day) })
 	return out, nil
 }
 
@@ -332,6 +395,19 @@ func (f *fakeStore) BackfillStatus(_ context.Context, guildID string) (BackfillS
 		}
 	}
 	return s, nil
+}
+
+// voiceTotal sums a guild's voice seconds, optionally for one user.
+func (f *fakeStore) voiceTotal(guildID, userID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for k, c := range f.voice {
+		if k.guildID == guildID && (userID == "" || k.userID == userID) {
+			n += c
+		}
+	}
+	return n
 }
 
 // total sums a guild's buckets, optionally for one user.

@@ -39,7 +39,7 @@ func stubCDN(t *testing.T) *http.Client {
 
 func samplePeople() []*person {
 	return []*person{
-		{id: "80351110224678912", name: "zoe", avatar: "abc", count: 42,
+		{id: "80351110224678912", name: "zoe", avatar: "abc", count: 42, voice: 90 * time.Minute,
 			channels: map[string]bool{"general": true, "media": true}},
 		{id: "80351110224678913", name: "a display name long enough that it has to be cut short somewhere", count: 17,
 			channels: map[string]bool{"general": true, "media": true, "off-topic": true, "art": true}},
@@ -65,7 +65,7 @@ func TestRenderPNG(t *testing.T) {
 	}
 	// Four people is two rows of a three wide grid.
 	wantW := px(pad*2 + cols*cardW + (cols-1)*gutter)
-	wantH := px(gridTop + 2*cardH + gutter + pad)
+	wantH := px(heatTop + 2*cardH + gutter + pad)
 	if cfg.Width != wantW || cfg.Height != wantH {
 		t.Fatalf("canvas %dx%d, want %dx%d", cfg.Width, cfg.Height, wantW, wantH)
 	}
@@ -103,8 +103,8 @@ func TestRenderNarrowAndEmpty(t *testing.T) {
 	if cfg, err = png.DecodeConfig(bytes.NewReader(empty)); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Height != px(gridTop+40+pad) {
-		t.Fatalf("the empty state is %d tall, want %d", cfg.Height, px(gridTop+40+pad))
+	if cfg.Height != px(heatTop+40+pad) {
+		t.Fatalf("the empty state is %d tall, want %d", cfg.Height, px(heatTop+40+pad))
 	}
 }
 
@@ -230,5 +230,112 @@ func TestTotalsLine(t *testing.T) {
 	got := totalsLine(report{people: samplePeople(), messages: 69, channels: 4})
 	if got != "4 people, 69 messages, 4 channels" {
 		t.Fatalf("totals line: %q", got)
+	}
+}
+
+// TestHeatmap: a window over several days grows the canvas by the grid,
+// the busiest day is the brightest cell, a day with nothing is the empty
+// shade, a day outside the window is not drawn, and a window inside one
+// day draws no grid at all.
+func TestHeatmap(t *testing.T) {
+	client := stubCDN(t)
+	// windowStart is a Tuesday. Through the Sunday nineteen days on, so the
+	// grid has a leading Monday outside the window and three columns.
+	start, end := windowStart, windowStart.AddDate(0, 0, 19)
+	day := func(n int) time.Time { return start.Truncate(24 * time.Hour).AddDate(0, 0, n) }
+	rep := report{people: samplePeople()[:1], days: []DayStat{
+		{Day: day(0), Messages: 100},
+		{Day: day(1), Messages: 10, VoiceSeconds: 7200},
+		{Day: day(2), Messages: 1},
+	}}
+
+	body, err := renderPNG(client, rep, "birdland", start, end, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir := os.Getenv("ACTIVITY_SAMPLE_DIR"); dir != "" {
+		if err := os.WriteFile(filepath.Join(dir, "heatmap.png"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hm := newHeatmap(rep.days, start, end, cardW)
+	if hm.weeks != 3 || hm.pitch != cellPitch {
+		t.Fatalf("planned %d weeks at pitch %d, want 3 at %d", hm.weeks, hm.pitch, cellPitch)
+	}
+	if want := px(heatTop + hm.height() + heatGap + cardH + pad); img.Bounds().Dy() != want {
+		t.Fatalf("canvas is %d tall, want %d", img.Bounds().Dy(), want)
+	}
+
+	at := func(col, row int) color.RGBA {
+		x, y := pad+heatLabelW+col*hm.pitch+1, heatTop+heatMonthH+row*hm.pitch+1
+		return color.RGBAModel.Convert(img.At(px(x), px(y))).(color.RGBA)
+	}
+	// Tuesday of week one is the busiest: messages at their peak, no voice
+	// in a window that has some, so half the score and the third shade.
+	if got := at(0, 1); got != heatColors[3] {
+		t.Fatalf("busiest day drew %v, want %v", got, heatColors[3])
+	}
+	// Wednesday: a tenth of the messages and all of the voice, so a little
+	// over half and the same shade; Thursday: next to nothing, the first.
+	if got := at(0, 2); got != heatColors[3] {
+		t.Fatalf("voice day drew %v, want %v", got, heatColors[3])
+	}
+	if got := at(0, 3); got != heatColors[1] {
+		t.Fatalf("a quiet day drew %v, want %v", got, heatColors[1])
+	}
+	// Friday has no row at all and is the empty shade; the Monday before
+	// the window is background.
+	if got := at(0, 4); got != heatColors[0] {
+		t.Fatalf("an empty day drew %v, want %v", got, heatColors[0])
+	}
+	if got := at(0, 0); got != bgColor {
+		t.Fatalf("a day before the window drew %v, want background", got)
+	}
+
+	if dir := os.Getenv("ACTIVITY_SAMPLE_DIR"); dir != "" {
+		var days []DayStat
+		for n := range 60 {
+			days = append(days, DayStat{Day: day(n - 40), Messages: (n * 37) % 90, VoiceSeconds: ((n * 53) % 7) * 1800})
+		}
+		wide := report{people: samplePeople(), messages: 2000, voice: 40 * time.Hour, channels: 4, days: days}
+		body, err := renderPNG(client, wide, "birdland", day(-40), day(20), 24)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "heatmap-wide.png"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if none := newHeatmap(nil, start, start.Add(4*time.Hour), cardW); none.height() != 0 {
+		t.Fatal("a window inside one day should draw no grid")
+	}
+	// Three years in a one-card canvas cannot fit at the minimum pitch, so
+	// only the most recent weeks are kept and the width still holds.
+	long := newHeatmap(nil, start.AddDate(-3, 0, 0), end, cardW)
+	if long.pitch != cellPitchMin || long.weeks*long.pitch > cardW-heatLabelW {
+		t.Fatalf("a long window planned %d weeks at pitch %d", long.weeks, long.pitch)
+	}
+	if last := long.first.AddDate(0, 0, 7*long.weeks-1); last.Before(end.Truncate(24*time.Hour)) {
+		t.Fatalf("the kept weeks end %s, before the window does", last)
+	}
+}
+
+func TestCardStats(t *testing.T) {
+	for _, tc := range []struct {
+		p    person
+		want string
+	}{
+		{person{count: 1}, iconMessages + " 1 message"},
+		{person{count: 3, voice: 90 * time.Minute}, iconMessages + " 3 messages   " + iconVoice + " 1.5h"},
+		{person{voice: 2 * time.Minute}, iconVoice + " <0.1h"},
+	} {
+		if got := cardStats(&tc.p); got != tc.want {
+			t.Fatalf("cardStats = %q, want %q", got, tc.want)
+		}
 	}
 }
