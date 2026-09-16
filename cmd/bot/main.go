@@ -429,6 +429,12 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	session.AddHandler(func(s *discordgo.Session, mc *discordgo.MessageCreate) {
 		statisticsPlugin.HandleMessage(mc.Message)
 	})
+	// A deleted whisper that was the marked end of a run hands its marker
+	// back to the one before it. Same intent as above; the event carries
+	// IDs only, which is all this needs.
+	session.AddHandler(func(s *discordgo.Session, md *discordgo.MessageDelete) {
+		whisperPlugin.HandleMessageDelete(md.ChannelID, md.ID)
+	})
 	// Voice time is booked from channel changes (member, channel, hour;
 	// never a session log). Same map write under the same lock.
 	session.AddHandler(func(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
