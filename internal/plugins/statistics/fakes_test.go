@@ -206,10 +206,14 @@ func (f *fakeStore) Report(_ context.Context, guildID, channelID string, from, t
 			byUser[k.userID] = r
 		}
 		r.VoiceSeconds += secs
+		if !slices.Contains(r.VoiceChannels, k.channelID) {
+			r.VoiceChannels = append(r.VoiceChannels, k.channelID)
+		}
 	}
 	var out []Row
 	for _, r := range byUser {
 		sort.Strings(r.Channels)
+		sort.Strings(r.VoiceChannels)
 		out = append(out, *r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
@@ -217,11 +221,19 @@ func (f *fakeStore) Report(_ context.Context, guildID, channelID string, from, t
 }
 
 func (f *fakeStore) Days(_ context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error) {
+	return f.activity(guildID, channelID, from, to, 24*time.Hour)
+}
+
+func (f *fakeStore) Hours(_ context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error) {
+	return f.activity(guildID, channelID, from, to, time.Hour)
+}
+
+func (f *fakeStore) activity(guildID, channelID string, from, to time.Time, unit time.Duration) ([]DayStat, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	days := map[time.Time]*DayStat{}
 	at := func(hour time.Time) *DayStat {
-		day := hour.Truncate(24 * time.Hour)
+		day := hour.Truncate(unit)
 		d := days[day]
 		if d == nil {
 			d = &DayStat{Day: day}

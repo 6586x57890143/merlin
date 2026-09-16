@@ -58,15 +58,17 @@ type Config struct {
 // Row is one member's total over a window. A member who only sat in voice
 // has zero messages and no channels; one who never did has zero seconds.
 type Row struct {
-	UserID       string
-	Messages     int
-	VoiceSeconds int
-	Channels     []string
-	Last         time.Time
+	UserID        string
+	Messages      int
+	VoiceSeconds  int
+	Channels      []string // where they typed
+	VoiceChannels []string // where they sat
+	Last          time.Time
 }
 
-// DayStat is one UTC day of the whole server: what the heatmap is drawn
-// from, and what the cost projection in aimod reads.
+// DayStat is one UTC day (or, from Hours, one hour) of the whole server:
+// what the heatmap is drawn from, and what the cost projection in aimod
+// reads.
 type DayStat struct {
 	Day          time.Time
 	Messages     int
@@ -128,8 +130,9 @@ type Store interface {
 
 	Report(ctx context.Context, guildID, channelID string, from, to time.Time) ([]Row, error)
 	// Days is the server's daily totals over a window, only days with
-	// something in them, oldest first.
+	// something in them, oldest first. Hours is the same per hour.
 	Days(ctx context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error)
+	Hours(ctx context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error)
 	Users(ctx context.Context, guildID string, userIDs []string) (map[string]UserSeen, error)
 	Channels(ctx context.Context, guildID string) (map[string]string, error)
 	ChannelTotals(ctx context.Context, guildID string, from, to time.Time) ([]ChannelTotal, error)
@@ -353,7 +356,7 @@ func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, t
 	// one who only typed still gets theirs. The channel filter applies to
 	// both halves the same way: a text channel simply has no voice.
 	rows, err := s.pool.Query(ctx, `
-		SELECT user_id, COALESCE(m.n, 0), COALESCE(m.chans, '{}'), m.last, COALESCE(v.secs, 0)
+		SELECT user_id, COALESCE(m.n, 0), COALESCE(m.chans, '{}'), m.last, COALESCE(v.secs, 0), COALESCE(v.chans, '{}')
 		FROM (
 			SELECT user_id, SUM(messages)::bigint AS n, array_agg(DISTINCT channel_id) AS chans, MAX(hour) AS last
 			FROM stats_hourly
@@ -361,7 +364,7 @@ func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, t
 			GROUP BY user_id
 		) m
 		FULL OUTER JOIN (
-			SELECT user_id, SUM(seconds)::bigint AS secs
+			SELECT user_id, SUM(seconds)::bigint AS secs, array_agg(DISTINCT channel_id) AS chans
 			FROM stats_voice_hourly
 			WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
 			GROUP BY user_id
@@ -376,7 +379,7 @@ func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, t
 		var r Row
 		var n, secs int64
 		var last *time.Time
-		if err := rows.Scan(&r.UserID, &n, &r.Channels, &last, &secs); err != nil {
+		if err := rows.Scan(&r.UserID, &n, &r.Channels, &last, &secs, &r.VoiceChannels); err != nil {
 			return nil, fmt.Errorf("statistics store: scan report row: %w", err)
 		}
 		r.Messages, r.VoiceSeconds = int(n), int(secs)
@@ -389,15 +392,25 @@ func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, t
 }
 
 func (s *pgStore) Days(ctx context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error) {
+	return s.activity(ctx, "day", guildID, channelID, from, to)
+}
+
+func (s *pgStore) Hours(ctx context.Context, guildID, channelID string, from, to time.Time) ([]DayStat, error) {
+	return s.activity(ctx, "hour", guildID, channelID, from, to)
+}
+
+// activity totals both hourly tables per unit, which is a date_trunc field
+// name and never user input.
+func (s *pgStore) activity(ctx context.Context, unit, guildID, channelID string, from, to time.Time) ([]DayStat, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT day, COALESCE(m.n, 0), COALESCE(v.secs, 0)
 		FROM (
-			SELECT date_trunc('day', hour) AS day, SUM(messages)::bigint AS n FROM stats_hourly
+			SELECT date_trunc('`+unit+`', hour) AS day, SUM(messages)::bigint AS n FROM stats_hourly
 			WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
 			GROUP BY day
 		) m
 		FULL OUTER JOIN (
-			SELECT date_trunc('day', hour) AS day, SUM(seconds)::bigint AS secs FROM stats_voice_hourly
+			SELECT date_trunc('`+unit+`', hour) AS day, SUM(seconds)::bigint AS secs FROM stats_voice_hourly
 			WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
 			GROUP BY day
 		) v USING (day)

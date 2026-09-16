@@ -484,10 +484,13 @@ func (p *Plugin) build(ctx context.Context, guildID string, opts options) (repor
 			name = r.UserID
 		}
 		per := &person{id: r.UserID, name: name, avatar: u.Avatar, count: r.Messages,
-			voice: time.Duration(r.VoiceSeconds) * time.Second, channels: map[string]bool{}, last: r.Last}
+			voice: time.Duration(r.VoiceSeconds) * time.Second, channels: map[string]bool{}, rooms: map[string]bool{}, last: r.Last}
 		for _, ch := range r.Channels {
 			per.channels[channelLabel(channels, ch)] = true
 			busy[ch] = true
+		}
+		for _, ch := range r.VoiceChannels {
+			per.rooms[channelLabel(channels, ch)] = true
 		}
 		people[r.UserID] = per
 		rep.messages += r.Messages
@@ -495,7 +498,12 @@ func (p *Plugin) build(ctx context.Context, guildID string, opts options) (repor
 	}
 	rep.people = rank(people)
 	rep.channels = len(busy)
-	if rep.days, err = p.store.Days(ctx, guildID, opts.channelID, opts.from, opts.to); err != nil {
+	rep.hourly = opts.to.Sub(opts.from) <= hourlyHeatMax
+	series := p.store.Days
+	if rep.hourly {
+		series = p.store.Hours
+	}
+	if rep.days, err = series(ctx, guildID, opts.channelID, opts.from, opts.to); err != nil {
 		return report{}, err
 	}
 	return rep, nil
