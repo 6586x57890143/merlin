@@ -178,9 +178,9 @@ func (f *fakeSession) WebhookExecute(_, _ string, _ bool, data *discordgo.Webhoo
 	return &discordgo.Message{}, nil
 }
 
-func (f *fakeSession) WebhookMessageEdit(string, string, string, *discordgo.WebhookEdit, ...discordgo.RequestOption) (*discordgo.Message, error) {
+func (f *fakeSession) WebhookMessageDelete(string, string, string, ...discordgo.RequestOption) error {
 	f.writes++
-	return &discordgo.Message{}, nil
+	return nil
 }
 
 func (f *fakeSession) GuildMemberTimeout(string, string, *time.Time, ...discordgo.RequestOption) error {
@@ -224,6 +224,9 @@ func callEveryWrite(o *GuildOps) []error {
 	_, err = o.WebhookCreate("c", "n", "")
 	errs = append(errs, err)
 	errs = append(errs, o.WebhookExecute("w", "t", &discordgo.WebhookParams{}))
+	_, err = o.WhisperPost("w", "t", &discordgo.WebhookParams{})
+	errs = append(errs, err)
+	errs = append(errs, o.WhisperDelete("w", "t", "m"))
 	errs = append(errs, o.GuildMemberTimeout("g", "u", nil))
 	return errs
 }

@@ -55,7 +55,7 @@ type DiscordOps interface {
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
 	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
 	WhisperPost(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	WhisperEdit(webhookID, token, messageID, content string, options ...discordgo.RequestOption) error
+	WhisperDelete(webhookID, token, messageID string, options ...discordgo.RequestOption) error
 }
 
 type OpsProvider func(guildID string) DiscordOps
@@ -227,7 +227,10 @@ func (p *Plugin) post(ctx context.Context, guildID, channelID string, m *discord
 	if err != nil {
 		return "", fmt.Errorf("whisper: resolve webhook: %w", err)
 	}
-	prev := p.continues(ops, channelID, userID, now)
+	prev := p.continues(ops, channelID, userID, text, now)
+	if prev != nil {
+		text = prev.text + "\n" + text
+	}
 	msg, err := ops.WhisperPost(hook.ID, hook.Token, &discordgo.WebhookParams{
 		Content:   text + marker(m.User.Username),
 		Username:  webhookUsername(m),
@@ -243,13 +246,12 @@ func (p *Plugin) post(ctx context.Context, guildID, channelID string, m *discord
 		return "", err
 	}
 	p.log.Info("whisper: posted", "guild", guildID, "channel", channelID, "user", userID)
-	p.extend(channelID, guildID, userID, m.User.Username,
-		whisperMsg{id: msg.ID, hookID: hook.ID, token: hook.Token, text: text, at: now}, prev != nil)
+	p.remember(channelID, userID, whisperMsg{id: msg.ID, hookID: hook.ID, token: hook.Token, text: text, at: now})
 	if prev != nil {
-		// The new whisper is up and marked; the old marker is now the
-		// stutter. Failing here leaves two markers, never none.
-		if err := ops.WhisperEdit(prev.hookID, prev.token, prev.id, prev.text); err != nil {
-			p.log.Warn("whisper: could not drop the previous marker", "guild", guildID, "channel", channelID, "message", prev.id, "err", err)
+		// The run is up in full under the new message; the old copy is now
+		// the duplicate. Failing here leaves it standing, never a gap.
+		if err := ops.WhisperDelete(prev.hookID, prev.token, prev.id); err != nil {
+			p.log.Warn("whisper: could not remove the previous copy of the run", "guild", guildID, "channel", channelID, "message", prev.id, "err", err)
 		}
 	}
 	return "", nil
