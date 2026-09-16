@@ -203,10 +203,30 @@ func TestLimiterGapAndHourly(t *testing.T) {
 }
 
 func TestGuildHourlyScalesWithMembersAndNeverUnderTheFloor(t *testing.T) {
-	for members, want := range map[int]int{0: guildFloor, 50: guildFloor, 2000: 2000, 5000: 5000} {
+	for members, want := range map[int]int{0: guildFloor, 50: guildFloor, 1800: guildFloor, 2000: 2000, 5000: 5000} {
 		if got := guildHourly(members); got != want {
 			t.Errorf("guildHourly(%d) = %d, want %d", members, got, want)
 		}
+	}
+}
+
+// One member's cap grows with the guild's unused hour and shrinks back to the
+// floor as it fills, and never lets one account take the whole guild cap.
+func TestUserHourlyScalesWithGuildHeadroomAndNeverUnderTheFloor(t *testing.T) {
+	for remaining, want := range map[int]int{0: userFloor, 200: userFloor, 1800: 900, 5000: 2500} {
+		if got := userHourly(remaining); got != want {
+			t.Errorf("userHourly(%d) = %d, want %d", remaining, got, want)
+		}
+	}
+	l := newLimiter()
+	now := time.Now()
+	l.allow("g", now.Add(-2*time.Hour), time.Hour, 0, 10)
+	l.allow("g", now, time.Hour, 0, 10)
+	if got := l.count("g", now, time.Hour); got != 1 {
+		t.Errorf("count = %d, want 1: an attempt outside the window was counted", got)
+	}
+	if got := l.count("g", now, time.Hour); got != 1 {
+		t.Errorf("count = %d after a second count: counting recorded an attempt", got)
 	}
 }
 

@@ -166,13 +166,15 @@ func (p *Plugin) post(ctx context.Context, guildID, channelID string, m *discord
 	// The limiter first, before anything costs a call, and charged whether or
 	// not the whisper goes out, so a refusal is not a free retry.
 	now := p.now()
-	if !p.limits.allow("u:"+guildID+":"+userID, now, time.Hour, userGap, userHourly) {
-		return p.refuse(ctx, guildID, channelID, userID, "slow down: a few seconds between whispers, and not more than a few dozen an hour"), nil
+	guildCap := guildHourly(p.members(guildID))
+	userCap := userHourly(guildCap - p.limits.count("g:"+guildID, now, time.Hour))
+	if !p.limits.allow("u:"+guildID+":"+userID, now, time.Hour, userGap, userCap) {
+		return p.refuse(ctx, guildID, channelID, userID, "slow down: a few seconds between whispers, and only so many from one person an hour"), nil
 	}
 	if !p.limits.allow("c:"+channelID, now, time.Minute, 0, channelMinute) {
 		return p.refuse(ctx, guildID, channelID, userID, "this channel is whispering as fast as Discord allows; try again in a minute"), nil
 	}
-	if !p.limits.allow("g:"+guildID, now, time.Hour, 0, guildHourly(p.members(guildID))) {
+	if !p.limits.allow("g:"+guildID, now, time.Hour, 0, guildCap) {
 		return p.refuse(ctx, guildID, channelID, userID, "this server has whispered as much as it can for the hour"), nil
 	}
 	if r := check(text); r != "" {
