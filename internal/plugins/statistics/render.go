@@ -43,6 +43,7 @@ const (
 	heatLabelW   = 26 // "Mon" in the rank face, plus a gap
 	heatMonthH   = 14 // the month labels above the cells
 	heatGap      = 16 // between the heatmap and the grid
+	sectionH     = 36 // a section label and its rule, above the voice grid
 
 	titleBase  = 34
 	windowBase = 58
@@ -114,31 +115,32 @@ func newFaces() (faces, error) {
 // Nothing touches the filesystem: the image exists for as long as it takes to
 // upload it, which is the same promise the rest of this plugin makes.
 func renderPNG(client *http.Client, rep report, guild string, start, end time.Time, top int) ([]byte, error) {
-	people := rep.people
-	if top > 0 && len(people) > top {
-		people = people[:top]
-	}
+	chat, voice := capped(chatters(rep), top), capped(voicers(rep), top)
 
 	f, err := newFaces()
 	if err != nil {
 		return nil, err
 	}
 
-	used := min(cols, max(1, len(people)))
-	rows := (len(people) + cols - 1) / cols
+	used := min(cols, max(1, len(chat), len(voice)))
 	w := pad*2 + used*cardW + (used-1)*gutter
 	inner := w - pad*2
-	hm := newHeatmap(rep.days, start, end, inner)
+	hm := newHeatmap(rep.days, rep.hourly, start, end, inner)
 	gridTop := heatTop + hm.height()
 	if hm.height() > 0 {
 		gridTop += heatGap
 	}
 	// The empty state is one line of text where the grid would be, rather
 	// than an empty grid, which reads as a rendering fault.
-	h := gridTop + 40 + pad
-	if rows > 0 {
-		h = gridTop + rows*cardH + (rows-1)*gutter + pad
+	h := gridTop + 40
+	if len(chat) > 0 {
+		h = gridTop + gridHeight(len(chat))
 	}
+	voiceTop := h + sectionH
+	if len(voice) > 0 {
+		h = voiceTop + gridHeight(len(voice))
+	}
+	h += pad
 
 	img := image.NewRGBA(image.Rect(0, 0, px(w), px(h)))
 	draw.Draw(img, img.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
@@ -151,18 +153,32 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 	draw.Draw(img, image.Rect(px(pad), px(ruleY), px(w-pad), px(ruleY)+scale), &image.Uniform{ruleColor}, image.Point{}, draw.Src)
 	hm.draw(img, f, pad, heatTop)
 
-	if len(people) == 0 {
+	if len(chat) == 0 {
 		text(img, f.body, mutedColor, pad, gridTop+24, "nobody chatted in that window.")
-		return encode(img)
 	}
+	grid(img, f, g, client, chat, gridTop, false)
+	if len(voice) > 0 {
+		text(img, f.name, nameColor, pad, voiceTop-10, "in voice")
+		draw.Draw(img, image.Rect(px(pad), px(voiceTop-4), px(w-pad), px(voiceTop-4)+scale), &image.Uniform{ruleColor}, image.Point{}, draw.Src)
+		grid(img, f, g, client, voice, voiceTop+6, true)
+	}
+	return encode(img)
+}
 
+// gridHeight is the height of n cards in cols columns.
+func gridHeight(n int) int {
+	rows := (n + cols - 1) / cols
+	return rows*cardH + (rows-1)*gutter
+}
+
+// grid draws one ranked listing of cards from top down.
+func grid(img *image.RGBA, f faces, g *glyphs, client *http.Client, people []*person, top int, voiceFirst bool) {
 	avatars := fetchAvatars(client, people)
 	for i, p := range people {
 		x := pad + (i%cols)*(cardW+gutter)
-		y := gridTop + (i/cols)*(cardH+gutter)
-		card(img, f, g, p, avatars[i], i+1, x, y)
+		y := top + (i/cols)*(cardH+gutter)
+		card(img, f, g, p, avatars[i], i+1, x, y, voiceFirst)
 	}
-	return encode(img)
 }
 
 func totalsLine(rep report) string {
@@ -185,7 +201,7 @@ func encode(img image.Image) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func card(dst *image.RGBA, f faces, g *glyphs, p *person, pic image.Image, rank, x, y int) {
+func card(dst *image.RGBA, f faces, g *glyphs, p *person, pic image.Image, rank, x, y int, voiceFirst bool) {
 	draw.Draw(dst, image.Rect(px(x), px(y), px(x+cardW), px(y+cardH)), &image.Uniform{cardColor}, image.Point{}, draw.Src)
 
 	drawAvatar(dst, pic, image.Rect(px(x+10), px(y+14), px(x+10+avatarPx), px(y+14+avatarPx)))
@@ -200,13 +216,13 @@ func card(dst *image.RGBA, f faces, g *glyphs, p *person, pic image.Image, rank,
 	nameW := x + cardW - 16 - rankW - tx
 	bodyW := x + cardW - 12 - tx
 	drawRich(dst, f.name, nameColor, tx, y+30, fitRich(f.name, displayName(f.name, p), nameW), g)
-	drawRich(dst, f.body, countColor, tx, y+48, fitRich(f.body, segments(f.body, cardStats(p)), bodyW), g)
+	drawRich(dst, f.body, countColor, tx, y+48, fitRich(f.body, segments(f.body, cardStats(p, voiceFirst)), bodyW), g)
 	drawRich(dst, f.body, chanColor, tx, y+64, fitRich(f.body, segments(f.body, channelList(p.channels)), bodyW), g)
 }
 
 // cardStats is the two counts as the card shows them, icons and all: the
 // emoji go through the same Twemoji path a name's do.
-func cardStats(p *person) string {
+func cardStats(p *person, voiceFirst bool) string {
 	var parts []string
 	if p.count > 0 {
 		parts = append(parts, iconMessages+" "+plural(p.count, "message"))
@@ -214,43 +230,66 @@ func cardStats(p *person) string {
 	if p.voice > 0 {
 		parts = append(parts, iconVoice+" "+hours(p.voice))
 	}
+	if voiceFirst && len(parts) == 2 {
+		parts[0], parts[1] = parts[1], parts[0]
+	}
 	return strings.Join(parts, "   ")
 }
 
-// heatmap is the day grid laid out for one canvas width.
+// heatmap is the activity grid laid out for one canvas width, in one of
+// two shapes. Daily is GitHub's: weekday rows, one column per week, one
+// cell per UTC day. Hourly, for a window of hourlyHeatMax or less, is one
+// row per day and twenty four hour columns, one cell per hour, since a
+// handful of day cells says nothing a totals line does not and the hours
+// show when the server is awake.
 type heatmap struct {
-	days   map[time.Time]DayStat // by UTC midnight
-	first  time.Time             // the Monday the first column starts on
-	start  time.Time             // window bounds, at UTC midnight
+	cells  map[time.Time]DayStat // by cell start
+	hourly bool
+	unit   time.Duration // a cell's span
+	first  time.Time     // daily: the Monday of column 0; hourly: the day of row 0
+	start  time.Time     // window bounds, at cell resolution, inclusive
 	end    time.Time
-	weeks  int // columns drawn
+	cols   int
+	rows   int
 	pitch  int
+	labelW int
 	maxMsg int
 	maxSec int
 }
 
-// newHeatmap plans the grid. A window inside one UTC day gets none: a
-// single cell says nothing a totals line does not.
-func newHeatmap(days []DayStat, start, end time.Time, inner int) heatmap {
-	h := heatmap{days: map[time.Time]DayStat{}}
-	h.start = start.UTC().Truncate(24 * time.Hour)
-	h.end = end.UTC().Add(-time.Nanosecond).Truncate(24 * time.Hour)
+// newHeatmap plans the grid. Nothing is drawn for a window under two hours,
+// which is one cell either way.
+func newHeatmap(days []DayStat, hourly bool, start, end time.Time, inner int) heatmap {
+	h := heatmap{cells: map[time.Time]DayStat{}, hourly: hourly, unit: 24 * time.Hour, labelW: heatLabelW}
+	if hourly {
+		h.unit, h.labelW = time.Hour, heatLabelW+20
+	}
+	h.start = start.UTC().Truncate(h.unit)
+	h.end = end.UTC().Add(-time.Nanosecond).Truncate(h.unit)
 	if !h.end.After(h.start) {
 		return h
 	}
 	for _, d := range days {
-		h.days[d.Day.UTC().Truncate(24*time.Hour)] = d
+		h.cells[d.Day.UTC().Truncate(h.unit)] = d
 		h.maxMsg = max(h.maxMsg, d.Messages)
 		h.maxSec = max(h.maxSec, d.VoiceSeconds)
 	}
+	if hourly {
+		h.first = h.start.Truncate(24 * time.Hour)
+		h.cols = 24
+		h.rows = int(h.end.Sub(h.first).Hours()/24) + 1
+		h.pitch = min(cellPitch, max(cellPitchMin, (inner-h.labelW)/24))
+		return h
+	}
 	h.first = mondayOf(h.start)
-	h.weeks = int(h.end.Sub(h.first).Hours()/(24*7)) + 1
-	h.pitch = min(cellPitch, max(cellPitchMin, (inner-heatLabelW)/max(1, h.weeks)))
+	h.rows = 7
+	h.cols = int(h.end.Sub(h.first).Hours()/(24*7)) + 1
+	h.pitch = min(cellPitch, max(cellPitchMin, (inner-h.labelW)/max(1, h.cols)))
 	// ponytail: a window wider than the canvas at the minimum pitch shows
 	// only its most recent weeks; scale the cells if that ever matters.
-	if fit := (inner - heatLabelW) / h.pitch; h.weeks > fit {
-		h.first = h.first.AddDate(0, 0, 7*(h.weeks-fit))
-		h.weeks = fit
+	if fit := (inner - h.labelW) / h.pitch; h.cols > fit {
+		h.first = h.first.AddDate(0, 0, 7*(h.cols-fit))
+		h.cols = fit
 	}
 	return h
 }
@@ -260,11 +299,19 @@ func mondayOf(t time.Time) time.Time {
 	return t.AddDate(0, 0, -back)
 }
 
+// cell is the instant a cell stands for.
+func (h heatmap) cell(col, row int) time.Time {
+	if h.hourly {
+		return h.first.AddDate(0, 0, row).Add(time.Duration(col) * time.Hour)
+	}
+	return h.first.AddDate(0, 0, 7*col+row)
+}
+
 func (h heatmap) height() int {
-	if h.weeks == 0 {
+	if h.cols == 0 {
 		return 0
 	}
-	return heatMonthH + 7*h.pitch
+	return heatMonthH + h.rows*h.pitch
 }
 
 // level is the cell's shade for one day: nothing, or a quartile of the
@@ -273,7 +320,7 @@ func (h heatmap) height() int {
 // text-heavy one both light up; a metric the window has none of is left
 // out rather than halving every score.
 func (h heatmap) level(day time.Time) int {
-	d, ok := h.days[day]
+	d, ok := h.cells[day]
 	if !ok {
 		return 0
 	}
@@ -294,22 +341,59 @@ func (h heatmap) level(day time.Time) int {
 }
 
 func (h heatmap) draw(dst *image.RGBA, f faces, x, y int) {
-	if h.weeks == 0 {
+	if h.cols == 0 {
 		return
 	}
 	cell := max(2, h.pitch*11/cellPitch)
-	cellsX, cellsY := x+heatLabelW, y+heatMonthH
+	cellsX, cellsY := x+h.labelW, y+heatMonthH
+	if h.pitch >= 8 {
+		h.labels(dst, f, x, y, cellsX, cellsY, cell)
+	}
+	for col := range h.cols {
+		for row := range h.rows {
+			at := h.cell(col, row)
+			if at.Before(h.start) || at.After(h.end) {
+				continue
+			}
+			cx, cy := cellsX+col*h.pitch, cellsY+row*h.pitch
+			draw.Draw(dst, image.Rect(px(cx), px(cy), px(cx+cell), px(cy+cell)),
+				&image.Uniform{heatColors[h.level(at)]}, image.Point{}, draw.Src)
+		}
+	}
+}
+
+// labels draws the axis words: weekdays and months for the daily grid,
+// dates and hours for the hourly one. Skipped entirely once the cells are
+// too small to leave room for them.
+func (h heatmap) labels(dst *image.RGBA, f faces, x, y, cellsX, cellsY, cell int) {
+	rowLabel := func(row int, s string) { text(dst, f.rank, mutedColor, x, cellsY+row*h.pitch+cell-1, s) }
+	colLabel := func(col int, s string) { text(dst, f.rank, mutedColor, cellsX+col*h.pitch, y+heatMonthH-4, s) }
+	if h.hourly {
+		// Every row is a date, every other one when there are many or the
+		// rows are too tight for the face.
+		step := 1
+		if h.rows > 7 || h.pitch < 12 {
+			step = 2
+		}
+		for row := 0; row < h.rows; row += step {
+			rowLabel(row, h.cell(0, row).Format("Jan 2"))
+		}
+		for _, hr := range []int{0, 6, 12, 18} {
+			colLabel(hr, fmt.Sprintf("%dh", hr))
+		}
+		return
+	}
 	for row, label := range []string{"Mon", "", "Wed", "", "Fri", "", ""} {
-		if label != "" && h.pitch >= 8 {
-			text(dst, f.rank, mutedColor, x, cellsY+row*h.pitch+cell-1, label)
+		if label != "" {
+			rowLabel(row, label)
 		}
 	}
 	// A month label on the first column that reaches into each month. Two
 	// closer than a word's width keep the later one, so a window opening
 	// on the last days of a month is labelled with the month it is mostly
-	// in. None at all once the cells are too small to leave room.
+	// in.
 	var labels []int
-	for col := range h.weeks {
+	for col := range h.cols {
 		m := h.first.AddDate(0, 0, 7*col+6).Month()
 		if col == 0 || m != h.first.AddDate(0, 0, 7*col-1).Month() {
 			if n := len(labels); n > 0 && col-labels[n-1] < 3 {
@@ -318,23 +402,8 @@ func (h heatmap) draw(dst *image.RGBA, f faces, x, y int) {
 			labels = append(labels, col)
 		}
 	}
-	if h.pitch >= 8 {
-		for _, col := range labels {
-			m := h.first.AddDate(0, 0, 7*col+6).Month()
-			text(dst, f.rank, mutedColor, cellsX+col*h.pitch, y+heatMonthH-4, m.String()[:3])
-		}
-	}
-	for col := range h.weeks {
-		week := h.first.AddDate(0, 0, 7*col)
-		for row := range 7 {
-			day := week.AddDate(0, 0, row)
-			if day.Before(h.start) || day.After(h.end) {
-				continue
-			}
-			cx, cy := cellsX+col*h.pitch, cellsY+row*h.pitch
-			draw.Draw(dst, image.Rect(px(cx), px(cy), px(cx+cell), px(cy+cell)),
-				&image.Uniform{heatColors[h.level(day)]}, image.Point{}, draw.Src)
-		}
+	for _, col := range labels {
+		colLabel(col, h.first.AddDate(0, 0, 7*col+6).Month().String()[:3])
 	}
 }
 

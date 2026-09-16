@@ -65,7 +65,7 @@ func TestRenderPNG(t *testing.T) {
 	}
 	// Four people is two rows of a three wide grid.
 	wantW := px(pad*2 + cols*cardW + (cols-1)*gutter)
-	wantH := px(heatTop + 2*cardH + gutter + pad)
+	wantH := px(heatTop + gridHeight(4) + sectionH + gridHeight(1) + pad) // zoe is in voice too
 	if cfg.Width != wantW || cfg.Height != wantH {
 		t.Fatalf("canvas %dx%d, want %dx%d", cfg.Width, cfg.Height, wantW, wantH)
 	}
@@ -105,6 +105,14 @@ func TestRenderNarrowAndEmpty(t *testing.T) {
 	}
 	if cfg.Height != px(heatTop+40+pad) {
 		t.Fatalf("the empty state is %d tall, want %d", cfg.Height, px(heatTop+40+pad))
+	}
+	// Nobody in voice: no section for it.
+	one, err = renderPNG(client, report{people: samplePeople()[3:]}, "birdland", windowStart, windowStart.Add(time.Hour), 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = png.DecodeConfig(bytes.NewReader(one)); err != nil || cfg.Height != px(heatTop+gridHeight(1)+pad) {
+		t.Fatalf("a text-only report is %d tall, want %d (%v)", cfg.Height, px(heatTop+gridHeight(1)+pad), err)
 	}
 }
 
@@ -235,8 +243,7 @@ func TestTotalsLine(t *testing.T) {
 
 // TestHeatmap: a window over several days grows the canvas by the grid,
 // the busiest day is the brightest cell, a day with nothing is the empty
-// shade, a day outside the window is not drawn, and a window inside one
-// day draws no grid at all.
+// shade, and a day outside the window is not drawn.
 func TestHeatmap(t *testing.T) {
 	client := stubCDN(t)
 	// windowStart is a Tuesday. Through the Sunday nineteen days on, so the
@@ -262,11 +269,11 @@ func TestHeatmap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	hm := newHeatmap(rep.days, start, end, cardW)
-	if hm.weeks != 3 || hm.pitch != cellPitch {
-		t.Fatalf("planned %d weeks at pitch %d, want 3 at %d", hm.weeks, hm.pitch, cellPitch)
+	hm := newHeatmap(rep.days, false, start, end, cardW)
+	if hm.cols != 3 || hm.rows != 7 || hm.pitch != cellPitch {
+		t.Fatalf("planned %dx%d at pitch %d, want 3x7 at %d", hm.cols, hm.rows, hm.pitch, cellPitch)
 	}
-	if want := px(heatTop + hm.height() + heatGap + cardH + pad); img.Bounds().Dy() != want {
+	if want := px(heatTop + hm.height() + heatGap + gridHeight(1) + sectionH + gridHeight(1) + pad); img.Bounds().Dy() != want {
 		t.Fatalf("canvas is %d tall, want %d", img.Bounds().Dy(), want)
 	}
 
@@ -311,21 +318,102 @@ func TestHeatmap(t *testing.T) {
 		}
 	}
 
-	if none := newHeatmap(nil, start, start.Add(4*time.Hour), cardW); none.height() != 0 {
-		t.Fatal("a window inside one day should draw no grid")
-	}
 	// Three years in a one-card canvas cannot fit at the minimum pitch, so
 	// only the most recent weeks are kept and the width still holds.
-	long := newHeatmap(nil, start.AddDate(-3, 0, 0), end, cardW)
-	if long.pitch != cellPitchMin || long.weeks*long.pitch > cardW-heatLabelW {
-		t.Fatalf("a long window planned %d weeks at pitch %d", long.weeks, long.pitch)
+	long := newHeatmap(nil, false, start.AddDate(-3, 0, 0), end, cardW)
+	if long.pitch != cellPitchMin || long.cols*long.pitch > cardW-heatLabelW {
+		t.Fatalf("a long window planned %d weeks at pitch %d", long.cols, long.pitch)
 	}
-	if last := long.first.AddDate(0, 0, 7*long.weeks-1); last.Before(end.Truncate(24*time.Hour)) {
+	if last := long.first.AddDate(0, 0, 7*long.cols-1); last.Before(end.Truncate(24*time.Hour)) {
 		t.Fatalf("the kept weeks end %s, before the window does", last)
 	}
 }
 
+// TestHourlyHeatmap: a short window is one row per day and a cell per
+// hour, the hours before the window on its first day are not drawn, and
+// a window under two hours draws nothing.
+func TestHourlyHeatmap(t *testing.T) {
+	client := stubCDN(t)
+	start, end := windowStart, windowStart.Add(28*time.Hour) // 14:00 Tue to 18:00 Wed
+	rep := report{people: samplePeople()[:1], hourly: true, days: []DayStat{
+		{Day: start, Messages: 50},
+		{Day: start.Add(3 * time.Hour), Messages: 5, VoiceSeconds: 3600},
+		{Day: start.Add(25 * time.Hour), Messages: 50, VoiceSeconds: 3600},
+	}}
+	body, err := renderPNG(client, rep, "birdland", start, end, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir := os.Getenv("ACTIVITY_SAMPLE_DIR"); dir != "" {
+		if err := os.WriteFile(filepath.Join(dir, "heatmap-hourly.png"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hm := newHeatmap(rep.days, true, start, end, cardW)
+	if hm.cols != 24 || hm.rows != 2 || hm.pitch < cellPitchMin {
+		t.Fatalf("planned %dx%d at pitch %d, want 24x2", hm.cols, hm.rows, hm.pitch)
+	}
+	at := func(col, row int) color.RGBA {
+		x, y := pad+hm.labelW+col*hm.pitch+1, heatTop+heatMonthH+row*hm.pitch+1
+		return color.RGBAModel.Convert(img.At(px(x), px(y))).(color.RGBA)
+	}
+	if got := at(13, 0); got != bgColor {
+		t.Fatalf("an hour before the window drew %v, want background", got)
+	}
+	if got := at(14, 0); got != heatColors[3] {
+		t.Fatalf("the first hour drew %v, want %v", got, heatColors[3])
+	}
+	if got := at(15, 1); got != heatColors[4] {
+		t.Fatalf("the busiest hour drew %v, want %v", got, heatColors[4])
+	}
+	if got := at(16, 0); got != heatColors[0] {
+		t.Fatalf("an empty hour drew %v, want %v", got, heatColors[0])
+	}
+	if got := at(18, 1); got != bgColor {
+		t.Fatalf("an hour after the window drew %v, want background", got)
+	}
+	if none := newHeatmap(nil, true, start, start.Add(30*time.Minute), cardW); none.height() != 0 {
+		t.Fatal("a window inside one hour should draw no grid")
+	}
+}
+
+// TestVoiceListing: the people in voice are their own ranked grid under
+// the chatters, and a member doing both is in both.
+func TestVoiceListing(t *testing.T) {
+	client := stubCDN(t)
+	people := samplePeople()
+	people = append(people, &person{id: "80351110224678916", name: "mic", voice: 5 * time.Hour, channels: map[string]bool{}})
+	rep := report{people: rank(map[string]*person{"a": people[0], "b": people[1], "c": people[2], "d": people[3], "e": people[4]})}
+	chat, voice := chatters(rep), voicers(rep)
+	if len(chat) != 4 || len(voice) != 2 || voice[0].name != "mic" || voice[1].name != "zoe" {
+		t.Fatalf("chatters %d, voicers %v", len(chat), voice)
+	}
+	body, err := renderPNG(client, rep, "birdland", windowStart, windowStart.Add(time.Hour), 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := px(heatTop + gridHeight(4) + sectionH + gridHeight(2) + pad); cfg.Height != want {
+		t.Fatalf("canvas is %d tall, want %d", cfg.Height, want)
+	}
+	if dir := os.Getenv("ACTIVITY_SAMPLE_DIR"); dir != "" {
+		if err := os.WriteFile(filepath.Join(dir, "voice-listing.png"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestCardStats(t *testing.T) {
+	if got := cardStats(&person{count: 3, voice: time.Hour}, true); got != iconVoice+" 1.0h   "+iconMessages+" 3 messages" {
+		t.Fatalf("voice first: %q", got)
+	}
 	for _, tc := range []struct {
 		p    person
 		want string
@@ -334,7 +422,7 @@ func TestCardStats(t *testing.T) {
 		{person{count: 3, voice: 90 * time.Minute}, iconMessages + " 3 messages   " + iconVoice + " 1.5h"},
 		{person{voice: 2 * time.Minute}, iconVoice + " <0.1h"},
 	} {
-		if got := cardStats(&tc.p); got != tc.want {
+		if got := cardStats(&tc.p, false); got != tc.want {
 			t.Fatalf("cardStats = %q, want %q", got, tc.want)
 		}
 	}

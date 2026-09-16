@@ -299,8 +299,13 @@ func TestBuildFoldsVoiceIn(t *testing.T) {
 	if last.id != "u9" || last.count != 0 || last.voice != 2*time.Hour || len(last.channels) != 0 {
 		t.Fatalf("a voice-only member: %+v", last)
 	}
-	if len(rep.days) != 1 || rep.days[0].Messages != 8 || rep.days[0].VoiceSeconds != 9000 {
-		t.Fatalf("days: %+v", rep.days)
+	// A three hour window is hourly: three cells, not one day.
+	if !rep.hourly || len(rep.days) != 2 || rep.days[1].VoiceSeconds != 7200 {
+		t.Fatalf("hours: %v %+v", rep.hourly, rep.days)
+	}
+	long, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.AddDate(0, 0, 30)})
+	if err != nil || long.hourly || len(long.days) != 1 || long.days[0].Messages != 8 || long.days[0].VoiceSeconds != 9000 {
+		t.Fatalf("days: %v %+v %v", long.hourly, long.days, err)
 	}
 
 	perDay, ok := p.MessagesPerDay(context.Background(), "g1", 7)

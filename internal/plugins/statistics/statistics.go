@@ -495,7 +495,12 @@ func (p *Plugin) build(ctx context.Context, guildID string, opts options) (repor
 	}
 	rep.people = rank(people)
 	rep.channels = len(busy)
-	if rep.days, err = p.store.Days(ctx, guildID, opts.channelID, opts.from, opts.to); err != nil {
+	rep.hourly = opts.to.Sub(opts.from) <= hourlyHeatMax
+	series := p.store.Days
+	if rep.hourly {
+		series = p.store.Hours
+	}
+	if rep.days, err = series(ctx, guildID, opts.channelID, opts.from, opts.to); err != nil {
 		return report{}, err
 	}
 	return rep, nil

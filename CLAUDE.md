@@ -997,15 +997,23 @@ was "who was talking in the 20 minutes it managed".
   report shows hours per member and nothing finer; `Report` is a full join
   so a member who only sat in voice is still a person, ranked after the
   same message count by voice.
-- **The heatmap is drawn, not explained** (`heatmap` in `render.go`, from
-  `Store.Days`). GitHub's contribution grid on GitHub's dark greens, one
-  cell per UTC day, so a reader already knows what it means. A day's shade
-  is the quartile of its messages and voice seconds each normalised to the
-  window's own busiest day and averaged, a metric the window has none of
-  left out rather than halving every score. A window inside one day draws
-  none, a window wider than the canvas at the minimum pitch keeps its most
-  recent weeks (a `ponytail:` note), and the day by day rides only in the
-  full `.md` since the embed already carries the picture.
+- **The heatmap is drawn, not explained** (`heatmap` in `render.go`).
+  GitHub's contribution grid on GitHub's dark greens, so a reader already
+  knows what it means, in two shapes chosen by the window: up to
+  `hourlyHeatMax` (a week) it is one row per day and a cell per hour from
+  `Store.Hours`, since a handful of day cells says nothing a totals line
+  does not and the hours show when the server is awake; longer windows get
+  weekday rows and a column per week from `Store.Days`. A cell's shade is
+  the quartile of its messages and voice seconds each normalised to the
+  window's own busiest cell and averaged, a metric the window has none of
+  left out rather than halving every score. A window wider than the canvas
+  at the minimum pitch keeps its most recent weeks (a `ponytail:` note).
+  The hour by hour / day by day listing rides only in the full `.md`, since
+  the embed already carries the picture.
+- **Chat and voice are two listings** (`chatters`/`voicers`), in the
+  markdown and as two card grids: the people in voice are mostly not the
+  people typing, and one ranking buries whichever it is not sorted by. A
+  member doing both is in both, with the voice grid leading on hours.
 - **Statistics informs aimod's cost projection** through `aimod.Traffic`
   (`WithTraffic`, wired in `main.go` like `WithJailer`; aimod never imports
   statistics). `estimateFor` takes the server's own counted messages a day
