@@ -34,15 +34,17 @@ const (
 	heatTop  = 104 // where the heatmap, or the grid without one, begins
 	avatarPx = 48
 
-	// The heatmap: GitHub's contribution graph, one cell per UTC day, weeks
-	// as columns and weekdays as rows. cellPitch is GitHub's own 11px cell
-	// in a 14px step; the pitch shrinks for a window too wide to fit and
-	// the oldest weeks are dropped past cellPitchMin.
-	cellPitch    = 14
+	// The heatmap: GitHub's contribution graph, cells in a step with a gap
+	// of a fifth or so. The pitch grows to fill the canvas up to cellPitch
+	// (Discord shows the whole image at about a third of this scale, where
+	// GitHub's own 14px step would be a smear) and shrinks for a window too
+	// wide to fit, dropping the oldest weeks past cellPitchMin.
+	cellPitch    = 30
 	cellPitchMin = 4
-	heatLabelW   = 26 // "Mon" in the rank face, plus a gap
-	heatMonthH   = 14 // the month labels above the cells
-	heatGap      = 16 // between the heatmap and the grid
+	heatLabelW   = 30 // "Mon" in the rank face, plus a gap
+	heatMonthH   = 16 // the month labels above the cells
+	heatGap      = 20 // between the heatmap and the grid
+	legendW      = 120 // "less [][][][][] more" at the grid's right
 	sectionH     = 36 // a section label and its rule, above the voice grid
 
 	titleBase  = 34
@@ -79,7 +81,12 @@ var (
 	// heatColors are GitHub's dark-theme greens, empty first. A reader
 	// already knows what this graph means without a legend, which is the
 	// reason to borrow the palette rather than derive one from the brand.
-	heatColors = [5]color.RGBA{cardColor, rgb(0x0E4429), rgb(0x006D32), rgb(0x26A641), rgb(0x39D353)}
+	heatColors = [5]color.RGBA{rgb(0x2E241B), rgb(0x0E4429), rgb(0x006D32), rgb(0x26A641), rgb(0x39D353)}
+	// heatOutside is a cell the grid has a slot for but the window does not
+	// cover: the hours still to come today, the days before a window's
+	// first Tuesday. Faint, so the strip still reads as a whole day or a
+	// whole week without claiming anything happened there.
+	heatOutside = rgb(0x1F1812)
 )
 
 func rgb(v int) color.RGBA {
@@ -151,18 +158,29 @@ func renderPNG(client *http.Client, rep report, guild string, start, end time.Ti
 		start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), humanSpan(end.Sub(start))), inner))
 	text(img, f.body, countColor, pad, totalsBase, truncate(f.body, totalsLine(rep), inner))
 	draw.Draw(img, image.Rect(px(pad), px(ruleY), px(w-pad), px(ruleY)+scale), &image.Uniform{ruleColor}, image.Point{}, draw.Src)
-	hm.draw(img, f, pad, heatTop)
+	hm.draw(img, f, pad, heatTop, inner)
 
 	if len(chat) == 0 {
 		text(img, f.body, mutedColor, pad, gridTop+24, "nobody chatted in that window.")
 	}
 	grid(img, f, g, client, chat, gridTop, false)
 	if len(voice) > 0 {
-		text(img, f.name, nameColor, pad, voiceTop-10, "in voice")
+		drawRich(img, f.name, nameColor, pad, voiceTop-10, fitRich(f.name, segments(f.name, voiceHeading(rep)), inner), g)
 		draw.Draw(img, image.Rect(px(pad), px(voiceTop-4), px(w-pad), px(voiceTop-4)+scale), &image.Uniform{ruleColor}, image.Point{}, draw.Src)
 		grid(img, f, g, client, voice, voiceTop+6, true)
 	}
 	return encode(img)
+}
+
+// voiceHeading labels the voice grid with its own totals, the way the
+// headline does the chat: how many sat, and for how long between them.
+func voiceHeading(rep report) string {
+	all := voicers(rep)
+	line := fmt.Sprintf("%s in voice: %s, %s", iconVoice, plural(len(all), "person", "people"), hours(rep.voice))
+	if len(all) > 1 {
+		line += " between them"
+	}
+	return line
 }
 
 // gridHeight is the height of n cards in cols columns.
@@ -182,11 +200,11 @@ func grid(img *image.RGBA, f faces, g *glyphs, client *http.Client, people []*pe
 }
 
 func totalsLine(rep report) string {
-	line := fmt.Sprintf("%d people, %d messages, ", len(rep.people), rep.messages)
+	line := plural(len(rep.people), "person", "people") + ", " + plural(rep.messages, "message") + ", "
 	if rep.voice > 0 {
 		line += hours(rep.voice) + " in voice, "
 	}
-	line += fmt.Sprintf("%d channels", rep.channels)
+	line += plural(rep.channels, "channel")
 	if rep.partial() {
 		line += ", counted from " + rep.coveredFrom.Format("2006-01-02")
 	}
@@ -217,7 +235,11 @@ func card(dst *image.RGBA, f faces, g *glyphs, p *person, pic image.Image, rank,
 	bodyW := x + cardW - 12 - tx
 	drawRich(dst, f.name, nameColor, tx, y+30, fitRich(f.name, displayName(f.name, p), nameW), g)
 	drawRich(dst, f.body, countColor, tx, y+48, fitRich(f.body, segments(f.body, cardStats(p, voiceFirst)), bodyW), g)
-	drawRich(dst, f.body, chanColor, tx, y+64, fitRich(f.body, segments(f.body, channelList(p.channels)), bodyW), g)
+	where := channelList(p.channels)
+	if voiceFirst {
+		where = roomList(p.rooms)
+	}
+	drawRich(dst, f.body, chanColor, tx, y+64, fitRich(f.body, segments(f.body, where), bodyW), g)
 }
 
 // cardStats is the two counts as the card shows them, icons and all: the
@@ -262,7 +284,13 @@ type heatmap struct {
 func newHeatmap(days []DayStat, hourly bool, start, end time.Time, inner int) heatmap {
 	h := heatmap{cells: map[time.Time]DayStat{}, hourly: hourly, unit: 24 * time.Hour, labelW: heatLabelW}
 	if hourly {
-		h.unit, h.labelW = time.Hour, heatLabelW+20
+		h.unit, h.labelW = time.Hour, heatLabelW+22
+	}
+	// The legend takes the right edge only when there is room for it
+	// beside a full-width grid; a one-card canvas keeps the cells.
+	room := inner - h.labelW
+	if room > 24*cellPitch+legendW {
+		room -= legendW
 	}
 	h.start = start.UTC().Truncate(h.unit)
 	h.end = end.UTC().Add(-time.Nanosecond).Truncate(h.unit)
@@ -278,16 +306,16 @@ func newHeatmap(days []DayStat, hourly bool, start, end time.Time, inner int) he
 		h.first = h.start.Truncate(24 * time.Hour)
 		h.cols = 24
 		h.rows = int(h.end.Sub(h.first).Hours()/24) + 1
-		h.pitch = min(cellPitch, max(cellPitchMin, (inner-h.labelW)/24))
+		h.pitch = min(cellPitch, max(cellPitchMin, room/24))
 		return h
 	}
 	h.first = mondayOf(h.start)
 	h.rows = 7
 	h.cols = int(h.end.Sub(h.first).Hours()/(24*7)) + 1
-	h.pitch = min(cellPitch, max(cellPitchMin, (inner-h.labelW)/max(1, h.cols)))
+	h.pitch = min(cellPitch, max(cellPitchMin, room/max(1, h.cols)))
 	// ponytail: a window wider than the canvas at the minimum pitch shows
 	// only its most recent weeks; scale the cells if that ever matters.
-	if fit := (inner - h.labelW) / h.pitch; h.cols > fit {
+	if fit := room / h.pitch; h.cols > fit {
 		h.first = h.first.AddDate(0, 0, 7*(h.cols-fit))
 		h.cols = fit
 	}
@@ -340,24 +368,44 @@ func (h heatmap) level(day time.Time) int {
 	return 1 + min(3, int(score/float64(n)*4))
 }
 
-func (h heatmap) draw(dst *image.RGBA, f faces, x, y int) {
+// cellSide is the drawn square inside a pitch: GitHub's 11 of 14.
+func (h heatmap) cellSide() int { return max(2, h.pitch*11/14) }
+
+// draw paints the grid at x, y; inner is the width it may use, for the
+// legend.
+func (h heatmap) draw(dst *image.RGBA, f faces, x, y, inner int) {
 	if h.cols == 0 {
 		return
 	}
-	cell := max(2, h.pitch*11/cellPitch)
+	cell := h.cellSide()
 	cellsX, cellsY := x+h.labelW, y+heatMonthH
 	if h.pitch >= 8 {
 		h.labels(dst, f, x, y, cellsX, cellsY, cell)
 	}
+	// The legend, GitHub's "less ... more", bottom right, when the grid
+	// leaves room for it. The one word of explanation the picture needs.
+	if gridRight := cellsX + h.cols*h.pitch; x+inner-gridRight >= legendW {
+		lx := min(x+inner-legendW, gridRight+24)
+		ly := cellsY + (h.rows-1)*h.pitch + (cell-min(cell, 11))
+		swatch := min(cell, 11)
+		text(dst, f.rank, mutedColor, lx, ly+swatch-1, "less")
+		lx += measure(f.rank, "less") + 6
+		for _, c := range heatColors {
+			draw.Draw(dst, image.Rect(px(lx), px(ly), px(lx+swatch), px(ly+swatch)), &image.Uniform{c}, image.Point{}, draw.Src)
+			lx += swatch + 3
+		}
+		text(dst, f.rank, mutedColor, lx+3, ly+swatch-1, "more")
+	}
 	for col := range h.cols {
 		for row := range h.rows {
 			at := h.cell(col, row)
-			if at.Before(h.start) || at.After(h.end) {
-				continue
+			shade := heatOutside
+			if !at.Before(h.start) && !at.After(h.end) {
+				shade = heatColors[h.level(at)]
 			}
 			cx, cy := cellsX+col*h.pitch, cellsY+row*h.pitch
 			draw.Draw(dst, image.Rect(px(cx), px(cy), px(cx+cell), px(cy+cell)),
-				&image.Uniform{heatColors[h.level(at)]}, image.Point{}, draw.Src)
+				&image.Uniform{shade}, image.Point{}, draw.Src)
 		}
 	}
 }
@@ -366,7 +414,9 @@ func (h heatmap) draw(dst *image.RGBA, f faces, x, y int) {
 // dates and hours for the hourly one. Skipped entirely once the cells are
 // too small to leave room for them.
 func (h heatmap) labels(dst *image.RGBA, f faces, x, y, cellsX, cellsY, cell int) {
-	rowLabel := func(row int, s string) { text(dst, f.rank, mutedColor, x, cellsY+row*h.pitch+cell-1, s) }
+	// Row labels sit on the cell's vertical centre: the rank face's cap
+	// height is about eight units, so the baseline is four below it.
+	rowLabel := func(row int, s string) { text(dst, f.rank, mutedColor, x, cellsY+row*h.pitch+cell/2+4, s) }
 	colLabel := func(col int, s string) { text(dst, f.rank, mutedColor, cellsX+col*h.pitch, y+heatMonthH-4, s) }
 	if h.hourly {
 		// Every row is a date, every other one when there are many or the
@@ -378,7 +428,11 @@ func (h heatmap) labels(dst *image.RGBA, f faces, x, y, cellsX, cellsY, cell int
 		for row := 0; row < h.rows; row += step {
 			rowLabel(row, h.cell(0, row).Format("Jan 2"))
 		}
-		for _, hr := range []int{0, 6, 12, 18} {
+		every := 6
+		if h.pitch >= 18 {
+			every = 3
+		}
+		for hr := 0; hr < 24; hr += every {
 			colLabel(hr, fmt.Sprintf("%dh", hr))
 		}
 		return
@@ -557,10 +611,14 @@ func truncate(f font.Face, s string, maxW int) string {
 }
 
 // plural keeps a card from reading "1 messages", which is the sort of thing
-// that makes a report look machine generated.
-func plural(n int, word string) string {
+// that makes a report look machine generated. An irregular plural can be
+// given as a second word.
+func plural(n int, word string, words ...string) string {
 	if n == 1 {
 		return fmt.Sprintf("%d %s", n, word)
+	}
+	if len(words) > 0 {
+		return fmt.Sprintf("%d %s", n, words[0])
 	}
 	return fmt.Sprintf("%d %ss", n, word)
 }

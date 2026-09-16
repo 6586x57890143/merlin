@@ -206,10 +206,14 @@ func (f *fakeStore) Report(_ context.Context, guildID, channelID string, from, t
 			byUser[k.userID] = r
 		}
 		r.VoiceSeconds += secs
+		if !slices.Contains(r.VoiceChannels, k.channelID) {
+			r.VoiceChannels = append(r.VoiceChannels, k.channelID)
+		}
 	}
 	var out []Row
 	for _, r := range byUser {
 		sort.Strings(r.Channels)
+		sort.Strings(r.VoiceChannels)
 		out = append(out, *r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })

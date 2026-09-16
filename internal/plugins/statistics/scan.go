@@ -54,7 +54,8 @@ type person struct {
 	avatar   string // avatar hash, empty for a member on a default avatar
 	count    int
 	voice    time.Duration
-	channels map[string]bool
+	channels map[string]bool // where they typed
+	rooms    map[string]bool // where they sat in voice
 	last     time.Time
 }
 
@@ -243,6 +244,15 @@ func stats(messages int, voice time.Duration, voiceFirst bool) string {
 	return strings.Join(parts, " ")
 }
 
+// word picks the singular or plural for n, for the lines that quote the
+// number separately.
+func word(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
 // hours renders voice time to a tenth of an hour, the unit the report
 // promises. Anything under six minutes still shows as something rather
 // than rounding to "0.0h" and reading as nothing.
@@ -260,11 +270,11 @@ func markdown(rep report, guild string, start, end time.Time, limit int) string 
 	fmt.Fprintf(&b, "## who was active in %s\n", guild)
 	fmt.Fprintf(&b, "`%s` to `%s` utc, over `%s`\n",
 		start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), humanSpan(end.Sub(start)))
-	fmt.Fprintf(&b, "`%d` people, `%d` messages, ", len(rep.people), rep.messages)
+	fmt.Fprintf(&b, "`%d` %s, `%d` %s, ", len(rep.people), word(len(rep.people), "person", "people"), rep.messages, word(rep.messages, "message", "messages"))
 	if rep.voice > 0 {
 		fmt.Fprintf(&b, "`%s` in voice, ", hours(rep.voice))
 	}
-	fmt.Fprintf(&b, "`%d` channels\n", rep.channels)
+	fmt.Fprintf(&b, "`%d` %s\n", rep.channels, word(rep.channels, "channel", "channels"))
 	if rep.partial() {
 		fmt.Fprintf(&b, "-# counting began `%s` utc, so this window is only counted from there. `/statistics backfill` fills in what came before\n",
 			rep.coveredFrom.Format("2006-01-02 15:04"))
@@ -292,7 +302,11 @@ func markdown(rep report, guild string, start, end time.Time, limit int) string 
 		b.WriteString("\n## in voice\n")
 		shown := capped(voice, limit)
 		for i, p := range shown {
-			fmt.Fprintf(&b, "`%2d.` **%s** %s\n", i+1, escape(p.name), stats(p.count, p.voice, true))
+			fmt.Fprintf(&b, "`%2d.` **%s** %s", i+1, escape(p.name), stats(p.count, p.voice, true))
+			if len(p.rooms) > 0 {
+				fmt.Fprintf(&b, " in %s", roomList(p.rooms))
+			}
+			b.WriteString("\n")
 		}
 		if len(shown) < len(voice) {
 			fmt.Fprintf(&b, "\nshowing the top `%d` of `%d`, the rest is in %s\n", len(shown), len(voice), listAttachmentName)
@@ -315,10 +329,15 @@ func markdown(rep report, guild string, start, end time.Time, limit int) string 
 }
 
 // channelList names up to three channels so a row stays one line.
-func channelList(set map[string]bool) string {
+// roomList is the same for voice channels, which Discord marks with a
+// speaker rather than a hash.
+func channelList(set map[string]bool) string { return listWith(set, "#") }
+func roomList(set map[string]bool) string    { return listWith(set, "🔊") }
+
+func listWith(set map[string]bool, prefix string) string {
 	names := make([]string, 0, len(set))
 	for n := range set {
-		names = append(names, "#"+n)
+		names = append(names, prefix+n)
 	}
 	sort.Strings(names)
 	if len(names) > 3 {

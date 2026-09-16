@@ -58,11 +58,12 @@ type Config struct {
 // Row is one member's total over a window. A member who only sat in voice
 // has zero messages and no channels; one who never did has zero seconds.
 type Row struct {
-	UserID       string
-	Messages     int
-	VoiceSeconds int
-	Channels     []string
-	Last         time.Time
+	UserID        string
+	Messages      int
+	VoiceSeconds  int
+	Channels      []string // where they typed
+	VoiceChannels []string // where they sat
+	Last          time.Time
 }
 
 // DayStat is one UTC day (or, from Hours, one hour) of the whole server:
@@ -355,7 +356,7 @@ func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, t
 	// one who only typed still gets theirs. The channel filter applies to
 	// both halves the same way: a text channel simply has no voice.
 	rows, err := s.pool.Query(ctx, `
-		SELECT user_id, COALESCE(m.n, 0), COALESCE(m.chans, '{}'), m.last, COALESCE(v.secs, 0)
+		SELECT user_id, COALESCE(m.n, 0), COALESCE(m.chans, '{}'), m.last, COALESCE(v.secs, 0), COALESCE(v.chans, '{}')
 		FROM (
 			SELECT user_id, SUM(messages)::bigint AS n, array_agg(DISTINCT channel_id) AS chans, MAX(hour) AS last
 			FROM stats_hourly
@@ -363,7 +364,7 @@ func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, t
 			GROUP BY user_id
 		) m
 		FULL OUTER JOIN (
-			SELECT user_id, SUM(seconds)::bigint AS secs
+			SELECT user_id, SUM(seconds)::bigint AS secs, array_agg(DISTINCT channel_id) AS chans
 			FROM stats_voice_hourly
 			WHERE guild_id = $1 AND hour >= $2 AND hour < $3 AND ($4::text = '' OR channel_id = $4::text)
 			GROUP BY user_id
@@ -378,7 +379,7 @@ func (s *pgStore) Report(ctx context.Context, guildID, channelID string, from, t
 		var r Row
 		var n, secs int64
 		var last *time.Time
-		if err := rows.Scan(&r.UserID, &n, &r.Channels, &last, &secs); err != nil {
+		if err := rows.Scan(&r.UserID, &n, &r.Channels, &last, &secs, &r.VoiceChannels); err != nil {
 			return nil, fmt.Errorf("statistics store: scan report row: %w", err)
 		}
 		r.Messages, r.VoiceSeconds = int(n), int(secs)
