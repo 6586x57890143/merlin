@@ -1006,14 +1006,23 @@ was "who was talking in the 20 minutes it managed".
   weekday rows and a column per week from `Store.Days`. A cell's shade is
   the quartile of its messages and voice seconds each normalised to the
   window's own busiest cell and averaged, a metric the window has none of
-  left out rather than halving every score. A window wider than the canvas
-  at the minimum pitch keeps its most recent weeks (a `ponytail:` note).
+  left out rather than halving every score. Cells grow to fill the canvas up
+  to `cellPitch`, since Discord shows the whole image at about a third of
+  its scale; slots the window does not cover (the rest of today, the days
+  before a window's first Tuesday) are drawn in a faint `heatOutside` so a
+  strip still reads as a whole day; GitHub's "less ... more" legend sits
+  beside the grid where there is room. A window wider than the canvas at
+  the minimum pitch keeps its most recent weeks (a `ponytail:` note).
+  `TestRenderSamples` writes realistic renders to `ACTIVITY_SAMPLE_DIR`
+  for eyeballing a layout change.
   The hour by hour / day by day listing rides only in the full `.md`, since
   the embed already carries the picture.
 - **Chat and voice are two listings** (`chatters`/`voicers`), in the
   markdown and as two card grids: the people in voice are mostly not the
   people typing, and one ranking buries whichever it is not sorted by. A
-  member doing both is in both, with the voice grid leading on hours.
+  member doing both is in both, with the voice grid leading on hours and
+  naming the rooms they sat in (`Row.VoiceChannels`, a speaker prefix
+  rather than a hash) instead of where they typed.
 - **Statistics informs aimod's cost projection** through `aimod.Traffic`
   (`WithTraffic`, wired in `main.go` like `WithJailer`; aimod never imports
   statistics). `estimateFor` takes the server's own counted messages a day

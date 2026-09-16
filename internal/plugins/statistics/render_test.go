@@ -299,8 +299,8 @@ func TestHeatmap(t *testing.T) {
 	if got := at(0, 4); got != heatColors[0] {
 		t.Fatalf("an empty day drew %v, want %v", got, heatColors[0])
 	}
-	if got := at(0, 0); got != bgColor {
-		t.Fatalf("a day before the window drew %v, want background", got)
+	if got := at(0, 0); got != heatOutside {
+		t.Fatalf("a day before the window drew %v, want the faint outside shade", got)
 	}
 
 	if dir := os.Getenv("ACTIVITY_SAMPLE_DIR"); dir != "" {
@@ -361,8 +361,8 @@ func TestHourlyHeatmap(t *testing.T) {
 		x, y := pad+hm.labelW+col*hm.pitch+1, heatTop+heatMonthH+row*hm.pitch+1
 		return color.RGBAModel.Convert(img.At(px(x), px(y))).(color.RGBA)
 	}
-	if got := at(13, 0); got != bgColor {
-		t.Fatalf("an hour before the window drew %v, want background", got)
+	if got := at(13, 0); got != heatOutside {
+		t.Fatalf("an hour before the window drew %v, want the faint outside shade", got)
 	}
 	if got := at(14, 0); got != heatColors[3] {
 		t.Fatalf("the first hour drew %v, want %v", got, heatColors[3])
@@ -373,8 +373,8 @@ func TestHourlyHeatmap(t *testing.T) {
 	if got := at(16, 0); got != heatColors[0] {
 		t.Fatalf("an empty hour drew %v, want %v", got, heatColors[0])
 	}
-	if got := at(18, 1); got != bgColor {
-		t.Fatalf("an hour after the window drew %v, want background", got)
+	if got := at(18, 1); got != heatOutside {
+		t.Fatalf("an hour after the window drew %v, want the faint outside shade", got)
 	}
 	if none := newHeatmap(nil, true, start, start.Add(30*time.Minute), cardW); none.height() != 0 {
 		t.Fatal("a window inside one hour should draw no grid")
