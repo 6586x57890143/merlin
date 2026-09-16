@@ -21,13 +21,15 @@ import (
 // --- fakes ---
 
 type fakeOps struct {
-	mu       sync.Mutex
-	channels map[string]*discordgo.Channel
-	hooks    map[string][]*discordgo.Webhook
-	created  int
-	execErr  error
-	posted   []*discordgo.WebhookParams
-	messages []*discordgo.Message // the channel, oldest first
+	mu        sync.Mutex
+	channels  map[string]*discordgo.Channel
+	hooks     map[string][]*discordgo.Webhook
+	created   int
+	execErr   error
+	deleteErr error
+	posted    []*discordgo.WebhookParams
+	messages  []*discordgo.Message // the channel, oldest first
+	seq       int                  // message IDs never repeat, even after a delete
 }
 
 func newFakeOps() *fakeOps {
@@ -77,21 +79,24 @@ func (f *fakeOps) WhisperPost(_, _ string, data *discordgo.WebhookParams, _ ...d
 // appendMessage adds to the channel's timeline; the caller holds f.mu.
 // Every fake post lands in c1, which is the only channel the tests post to.
 func (f *fakeOps) appendMessage(content string) *discordgo.Message {
-	m := &discordgo.Message{ID: "m" + strconv.Itoa(len(f.messages)+1), Content: content}
+	f.seq++
+	m := &discordgo.Message{ID: "m" + strconv.Itoa(f.seq), Content: content}
 	f.messages = append(f.messages, m)
 	return m
 }
 
-func (f *fakeOps) WhisperEdit(_, _, messageID, content string, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) WhisperDelete(_, _, messageID string, _ ...discordgo.RequestOption) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, m := range f.messages {
-		if m.ID == messageID {
-			m.Content = content
-			return nil
-		}
+	if f.deleteErr != nil {
+		return f.deleteErr
 	}
-	return errors.New("unknown message")
+	before := len(f.messages)
+	f.messages = slices.DeleteFunc(f.messages, func(m *discordgo.Message) bool { return m.ID == messageID })
+	if len(f.messages) == before {
+		return errors.New("unknown message")
+	}
+	return nil
 }
 
 func (f *fakeOps) ChannelMessages(_ string, _ int, _, _, _ string, _ ...discordgo.RequestOption) ([]*discordgo.Message, error) {
@@ -112,12 +117,6 @@ func (f *fakeOps) contents() []string {
 		out = append(out, m.Content)
 	}
 	return out
-}
-
-func (f *fakeOps) remove(messageID string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.messages = slices.DeleteFunc(f.messages, func(m *discordgo.Message) bool { return m.ID == messageID })
 }
 
 type fakeScreener struct {
@@ -522,7 +521,7 @@ func TestInitRegistersOnePublicLeafWithAnAction(t *testing.T) {
 
 // --- runs of whispers ---
 
-func TestRunWearsOneMarkerAtItsEnd(t *testing.T) {
+func TestRunIsOneMessageRepostedWhole(t *testing.T) {
 	ops := newFakeOps()
 	p, _, now := testPlugin(ops, &fakeScreener{})
 	ctx := context.Background()
@@ -533,9 +532,14 @@ func TestRunWearsOneMarkerAtItsEnd(t *testing.T) {
 		}
 		*now = now.Add(userGap)
 	}
-	want := []string{"one", "two", "three" + mark}
+	// Three whispers, one message, no edit anywhere: each grew the run by
+	// reposting it whole and deleting the copy before.
+	want := []string{"one\ntwo\nthree" + mark}
 	if got := ops.contents(); !slices.Equal(got, want) {
 		t.Errorf("channel = %q, want %q", got, want)
+	}
+	if len(ops.posted) != 3 {
+		t.Errorf("posted %d times, want 3", len(ops.posted))
 	}
 
 	// Somebody else talks in between: the next whisper stands alone.
@@ -572,39 +576,59 @@ func TestRunWearsOneMarkerAtItsEnd(t *testing.T) {
 	if got := ops.contents(); !slices.Equal(got, want) {
 		t.Errorf("another member, channel = %q, want %q", got, want)
 	}
+
+	// A run that would outgrow Discord's content limit starts over.
+	*now = now.Add(userGap)
+	long := strings.Repeat("x", maxLen)
+	for i := 0; i < 6; i++ {
+		if r, err := p.post(ctx, "g1", "c1", other, long); r != "" || err != nil {
+			t.Fatalf("post long %d: refusal=%q err=%v", i, r, err)
+		}
+		*now = now.Add(userGap)
+	}
+	for _, c := range ops.contents() {
+		if len(c) > maxRunLen {
+			t.Errorf("a run grew to %d bytes, over Discord's %d", len(c), maxRunLen)
+		}
+	}
 }
 
-func TestDeletingTheEndOfARunHandsTheMarkerBack(t *testing.T) {
+func TestRunSurvivesAFailedDeleteAndAModsDeletion(t *testing.T) {
 	ops := newFakeOps()
 	p, _, now := testPlugin(ops, &fakeScreener{})
 	ctx := context.Background()
 	mark := marker("realname")
-	for _, text := range []string{"one", "two", "three"} {
-		if r, err := p.post(ctx, "g1", "c1", member(""), text); r != "" || err != nil {
-			t.Fatalf("post %q: refusal=%q err=%v", text, r, err)
-		}
-		*now = now.Add(userGap)
+	if r, err := p.post(ctx, "g1", "c1", member(""), "one"); r != "" || err != nil {
+		t.Fatalf("post one: refusal=%q err=%v", r, err)
 	}
-	// A middle line going changes nothing about who wears the marker.
-	ops.remove("m2")
-	p.HandleMessageDelete("c1", "m2")
-	if got, want := ops.contents(), []string{"one", "three" + mark}; !slices.Equal(got, want) {
-		t.Errorf("after a middle deletion, channel = %q, want %q", got, want)
+	*now = now.Add(userGap)
+	// The delete failing leaves the old copy standing, never a gap, and
+	// the run carries on from the new message.
+	ops.deleteErr = errors.New("rate limited")
+	if r, err := p.post(ctx, "g1", "c1", member(""), "two"); r != "" || err != nil {
+		t.Fatalf("post two: refusal=%q err=%v", r, err)
 	}
-	// The end going would leave the run unmarked, so the marker moves back.
-	ops.remove("m3")
-	p.HandleMessageDelete("c1", "m3")
-	if got, want := ops.contents(), []string{"one" + mark}; !slices.Equal(got, want) {
-		t.Errorf("after the tail was deleted, channel = %q, want %q", got, want)
+	if got, want := ops.contents(), []string{"one" + mark, "one\ntwo" + mark}; !slices.Equal(got, want) {
+		t.Errorf("after a failed delete, channel = %q, want %q", got, want)
 	}
-	// And the next whisper continues under it as before.
+	ops.deleteErr = nil
+	*now = now.Add(userGap)
+	if r, err := p.post(ctx, "g1", "c1", member(""), "three"); r != "" || err != nil {
+		t.Fatalf("post three: refusal=%q err=%v", r, err)
+	}
+	if got, want := ops.contents(), []string{"one" + mark, "one\ntwo\nthree" + mark}; !slices.Equal(got, want) {
+		t.Errorf("channel = %q, want %q", got, want)
+	}
+	// A moderator deleting the run: the next whisper stands alone rather
+	// than reposting what was removed.
+	ops.mu.Lock()
+	ops.messages = nil
+	ops.mu.Unlock()
+	*now = now.Add(userGap)
 	if r, err := p.post(ctx, "g1", "c1", member(""), "four"); r != "" || err != nil {
 		t.Fatalf("post four: refusal=%q err=%v", r, err)
 	}
-	if got, want := ops.contents(), []string{"one", "four" + mark}; !slices.Equal(got, want) {
-		t.Errorf("channel = %q, want %q", got, want)
+	if got, want := ops.contents(), []string{"four" + mark}; !slices.Equal(got, want) {
+		t.Errorf("after a mod deleted the run, channel = %q, want %q", got, want)
 	}
-	// Unknown messages and channels are ignored, not a panic.
-	p.HandleMessageDelete("c1", "nope")
-	p.HandleMessageDelete("c9", "m1")
 }

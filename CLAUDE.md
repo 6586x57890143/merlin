@@ -941,6 +941,18 @@ last line and the only subtext, and cannot be forged above the real one.
   abuser or raise the tier, with no code. Refused whispers do not feed
   aimod's sanction ladder: nothing was published. A nil `Screener` refuses
   everything rather than posting unscreened.
+- **A run of whispers is one message, reposted whole** (`block.go`). The
+  next whisper from the same member, directly under their last one and
+  inside Discord's seven minute grouping window, is posted as the run so
+  far plus the new line with the marker under it, and the copy it grew out
+  of is then deleted through the webhook's own token (`WhisperDelete`,
+  which cannot reach anything else). Editing the previous message to drop
+  its marker was the first version and stamped `(edited)` on every line
+  but the last, which read worse than the stutter it fixed. Post first,
+  delete second: a failed delete leaves a duplicate line, never a gap.
+  "Directly under" is read off the channel, never assumed, which is also
+  why a moderator deleting the run needs no handler: it is simply not the
+  newest message any more, and the next whisper stands alone.
 
 ### Statistics (`internal/plugins/statistics`)
 

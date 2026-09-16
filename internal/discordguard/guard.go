@@ -80,7 +80,7 @@ type Session interface {
 	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
 	WebhookExecute(webhookID, token string, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	WebhookMessageEdit(webhookID, token, messageID string, data *discordgo.WebhookEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	WebhookMessageDelete(webhookID, token, messageID string, options ...discordgo.RequestOption) error
 	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
 	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
 	ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error
@@ -492,25 +492,24 @@ func (o *GuildOps) WebhookExecute(webhookID, token string, data *discordgo.Webho
 // server full of restricted members talking cannot spend the bucket aimod's
 // rewrites depend on. Same mention suppression, for the same reason: the
 // text is a member's. Unlike WebhookExecute it waits for and returns the
-// posted message: whisper edits the one before it to join a block, and
-// needs the ID to do that.
+// posted message: whisper folds the one before it into a run, and needs
+// the ID to do that.
 func (o *GuildOps) WhisperPost(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	return o.webhookExecute(opWhisperPost, true, webhookID, token, data, options...)
 }
 
-// WhisperEdit rewrites the content of a message WhisperPost sent, on the
-// same budget and with the same mention suppression: the content is still
-// a member's, and an edit can ping exactly as a post can.
-func (o *GuildOps) WhisperEdit(webhookID, token, messageID, content string, options ...discordgo.RequestOption) error {
+// WhisperDelete removes a message WhisperPost sent, on the same budget.
+// Through the webhook's own token rather than ChannelMessageDelete, so it
+// can only ever reach a message this webhook posted and needs no Manage
+// Messages permission to do it. Whisper uses it to fold a run of whispers
+// into one message: the text is reposted, never lost, so this is not the
+// destructive call ChannelMessageDelete is.
+func (o *GuildOps) WhisperDelete(webhookID, token, messageID string, options ...discordgo.RequestOption) error {
 	if err := o.allow(opWhisperPost); err != nil {
 		return err
 	}
 	jid := o.beginJournal(opWhisperPost, messageID)
-	_, err := o.guard.session.WebhookMessageEdit(webhookID, token, messageID, &discordgo.WebhookEdit{
-		Content:         &content,
-		AllowedMentions: &discordgo.MessageAllowedMentions{},
-	}, options...)
-	return o.record(jid, err)
+	return o.record(jid, o.guard.session.WebhookMessageDelete(webhookID, token, messageID, options...))
 }
 
 func (o *GuildOps) webhookExecute(op string, wait bool, webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
