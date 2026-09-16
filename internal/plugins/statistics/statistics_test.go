@@ -154,7 +154,7 @@ func TestMarkdownShape(t *testing.T) {
 		"`3` people, `49` messages, `4.5h` in voice, `2` channels",
 		"` 1.` **zoe** " + iconMessages + " `42` " + iconVoice + " `1.5h` in #general #media",
 		"` 2.` **abe** " + iconMessages + " `7` in #general\n",
-		"` 3.` **kit** " + iconVoice + " `3.0h`\n",
+		"## in voice\n` 1.` **kit** " + iconVoice + " `3.0h`\n` 2.` **zoe** " + iconVoice + " `1.5h` " + iconMessages + " `42`\n",
 		"## day by day\n`2026-09-01` " + iconMessages + " `49` " + iconVoice + " `4.5h`",
 	} {
 		if !strings.Contains(md, want) {
@@ -164,6 +164,13 @@ func TestMarkdownShape(t *testing.T) {
 	// The embed's copy carries the heatmap instead of the listing.
 	if strings.Contains(markdown(rep, "birdland", windowStart, windowStart.Add(4*time.Hour), 24), "day by day") {
 		t.Fatal("the shown report should not carry the day listing")
+	}
+	// An hourly window lists hours.
+	hourly := rep
+	hourly.hourly = true
+	hourly.days = []DayStat{{Day: windowStart, Messages: 49}}
+	if md := markdown(hourly, "b", windowStart, windowStart.Add(time.Hour), 0); !strings.Contains(md, "## hour by hour\n`2026-09-01 14:00` ") {
+		t.Fatalf("hourly listing:\n%s", md)
 	}
 	// A text-only window says nothing about voice at all.
 	if strings.Contains(markdown(report{people: rep.people[1:2], messages: 7}, "b", windowStart, windowStart.Add(time.Hour), 0), "in voice") {
@@ -184,7 +191,7 @@ func TestMarkdownShape(t *testing.T) {
 	if strings.Contains(capped, "**abe**") {
 		t.Fatal("the cap did not apply")
 	}
-	if !strings.Contains(capped, "showing the top `1` of `3`") || !strings.Contains(capped, listAttachmentName) {
+	if !strings.Contains(capped, "showing the top `1` of `2`") || !strings.Contains(capped, listAttachmentName) {
 		t.Fatalf("capped list does not say what is missing:\n%s", capped)
 	}
 }
