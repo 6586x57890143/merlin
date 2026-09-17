@@ -109,7 +109,7 @@ moderation.ban:
 
 moderation.ban_permanent:
   # warm
-  - "you've been banned from {guild}. this one doesn't lift on its own. the reason is below, and if you think it's wrong, the server's mods are the people to ask."
+  - "you've been banned from {guild}. this one doesn't lift on its own. the reason is below."
   - "a moderator in {guild} has banned you. there's no end date on it. the why is below."
   - "this is a ban from {guild}, and it stands until a moderator says otherwise. the reason is below."
   # plain
@@ -122,16 +122,16 @@ moderation.ban_permanent:
 
 moderation.strike_notice:
   # warm
-  - "a note from {guild}: your record there has built up a bit. nothing has happened, and nothing will if it stops here. this is just the heads-up before it would."
-  - "quick heads-up from {guild}: a few things have gone on your record recently, and the next one would carry a consequence. this message is the warning before that, not the consequence."
-  - "this is a friendly one from {guild}. your moderation record has reached the point where merlin is supposed to say something, so: something. nothing has been done, and it is entirely in your hands whether anything is."
+  - "a note from {guild}: your record there has built up a bit. no consequence yet, and none if it stops here. this is just the heads-up before it would. `/rapsheet me` in the server shows what is on it."
+  - "quick heads-up from {guild}: a few things have gone on your record recently, and the next one would carry a consequence. this message is the warning before that, not the consequence. `/rapsheet me` in the server shows the record."
+  - "this is a friendly one from {guild}. your moderation record has reached the point where merlin is supposed to say something, so: something. no consequence yet, and it is in your hands whether there is one. `/rapsheet me` in the server shows what is there."
   # plain
-  - "a note from {guild}: your moderation record there has built up to the point where the next thing on it carries a consequence. nothing has happened yet. this is the heads-up."
-  - "your record in {guild} has reached the first line on the server's ladder. no action has been taken. the next entry would carry one."
-  - "from {guild}: several things have been recorded against you recently, and one more would mean a consequence. this is the notice that comes first."
+  - "a note from {guild}: your moderation record there has built up to the point where the next thing on it carries a consequence. no consequence yet. this is the heads-up. `/rapsheet me` in the server shows the record."
+  - "your record in {guild} has reached the first line on the server's ladder. no consequence yet; the next entry would carry one. `/rapsheet me` in the server shows what is on it."
+  - "from {guild}: several things have been recorded against you recently, and one more would mean a consequence. this is the notice that comes first. `/rapsheet me` in the server shows the record."
   # matter of fact
-  - "notice from {guild}: your record has reached the point where the next entry carries a consequence. nothing has happened yet."
-  - "record notice, {guild}. no action taken. the next entry would carry one."
+  - "notice from {guild}: your record has reached the point where the next entry carries a consequence. no consequence yet. `/rapsheet me` in the server shows the record."
+  - "record notice, {guild}. no consequence yet; the next entry would carry one. `/rapsheet me` in the server shows what is on it."
 
 moderation.aimod_removed:
   # warm

@@ -60,7 +60,7 @@ func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageCompo
 	if v.ForMember {
 		entries = memberVisible(entries)
 	}
-	pageEntries, page, totalPages := core.Paginate(entries, v.Page)
+	pageEntries, page, totalPages := paginate(entries, v.Page)
 
 	var b strings.Builder
 	writeHeader(&b, v)
@@ -75,6 +75,9 @@ func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageCompo
 	}
 
 	title := "Rapsheet: " + v.Name
+	if v.ForMember {
+		title = "Your rapsheet"
+	}
 	color := core.ColorInfo
 	if _, ok := standing(v.Sheet.Entries, v.Now); ok {
 		color = core.ColorWarning
@@ -91,13 +94,16 @@ func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageCompo
 // writeHeader is the summary block above the entries.
 func writeHeader(b *strings.Builder, v sheetView) {
 	fmt.Fprintf(b, "**Score:** %.0f", v.Sheet.Score)
-	if v.Sheet.Rec.Action != ActionNone {
-		fmt.Fprintf(b, " · **Ladder:** %s", recWords(v.Sheet.Rec))
-	}
 	if !v.ForMember {
-		fmt.Fprintf(b, " · half-life %s", core.FormatDuration(v.Config.HalfLife))
+		if v.Sheet.Rec.Action != ActionNone {
+			fmt.Fprintf(b, " · **Band:** %s", recWords(v.Sheet.Rec))
+		}
+		fmt.Fprintf(b, " · %d entries · half-life %s", len(v.Sheet.Entries), core.FormatDuration(v.Config.HalfLife))
 	}
 	b.WriteString("\n")
+	if v.ForMember && v.Sheet.Rec.Action != ActionNone {
+		fmt.Fprintf(b, "Your record is in this server's **%s** band. Points fade with time; each line says what it still counts for.\n", recWords(v.Sheet.Rec))
+	}
 
 	if st, ok := standing(v.Sheet.Entries, v.Now); ok {
 		fmt.Fprintf(b, "**Standing:** %s", standingWords(st))
@@ -159,10 +165,12 @@ func entryLine(e Entry, now time.Time, halfLife time.Duration, forMember bool) s
 		head = "~~" + head + "~~"
 	}
 	b.WriteString("**" + head + "**")
-	if e.Category != "" && (e.Category != CategoryOther || e.Points > 0) {
-		b.WriteString(" · " + categoryLabel(e.Category))
-	}
+	// The category is the offence's, so it rides only on a scored entry. A
+	// consequence (a jail, a ban) or a ladder row has no offence of its
+	// own, and "jailed 8h · server rule" over an aimod hate-speech reason
+	// read as a contradiction.
 	if e.Points > 0 {
+		b.WriteString(" · " + categoryLabel(e.Category))
 		if e.Voided() {
 			fmt.Fprintf(&b, " · %d pts (voided)", e.Points)
 		} else {
@@ -172,15 +180,45 @@ func entryLine(e Entry, now time.Time, halfLife time.Duration, forMember bool) s
 	b.WriteString(" · " + relativeTimestamp(e.CreatedAt))
 	b.WriteString(" · by " + actorWords(e.ActorID, forMember))
 	if e.Reason != "" {
-		b.WriteString("\n> " + oneLine(e.Reason))
+		b.WriteString("\n> " + clip(oneLine(e.Reason), maxReasonShown))
 	}
 	if e.Voided() && !forMember {
 		fmt.Fprintf(&b, "\n> voided by %s", actorWords(e.VoidedBy, false))
 		if e.VoidReason != "" {
-			b.WriteString(": " + oneLine(e.VoidReason))
+			b.WriteString(": " + clip(oneLine(e.VoidReason), maxVoidReasonShown))
 		}
 	}
 	return b.String()
+}
+
+// The sheet is one embed description, capped by Discord at 4096 bytes, and
+// a reason is free text a moderator typed. sheetPageSize entries with every
+// reason at maxReasonShown and every void at maxVoidReasonShown fit under
+// the cap with room for the header; TruncateEmbedDescription is only the
+// backstop.
+const (
+	sheetPageSize      = 8
+	maxReasonShown     = 150
+	maxVoidReasonShown = 100
+)
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-3] + "..."
+}
+
+// paginate is core.Paginate at the sheet's own page size.
+func paginate(items []Entry, page int) (pageItems []Entry, clampedPage, totalPages int) {
+	totalPages = max(1, (len(items)+sheetPageSize-1)/sheetPageSize)
+	page = max(0, min(page, totalPages-1))
+	start := page * sheetPageSize
+	end := min(start+sheetPageSize, len(items))
+	if start >= len(items) {
+		return nil, page, totalPages
+	}
+	return items[start:end], page, totalPages
 }
 
 // kindWords is the entry's kind with its sentence, where it has one.
@@ -259,10 +297,5 @@ func standingWords(e Entry) string {
 // are typed into a slash-command option and cannot carry a newline, but a
 // reason ingested from an aimod incident or a Discord audit entry can.
 func oneLine(s string) string {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "\n", " ")
-	const maxLen = 300
-	if len(s) > maxLen {
-		return s[:maxLen-3] + "..."
-	}
-	return s
+	return strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "\n", " "))
 }

@@ -91,15 +91,16 @@ func (p *Plugin) record(ctx context.Context, cfg Config, in newEntry) (Entry, bo
 		return Entry{}, false, nil
 	}
 	e.ID = id
-	p.afterRecord(ctx, cfg, e)
+	e.ladderNote = p.afterRecord(ctx, cfg, e)
 	return e, true, nil
 }
 
 // afterRecord is everything that follows a written entry and must never
-// fail it: the forum mirror, then the ladder.
-func (p *Plugin) afterRecord(ctx context.Context, cfg Config, e Entry) {
+// fail it: the forum mirror, then the ladder. Returns the ladder's one-line
+// account of itself for the command's confirmation.
+func (p *Plugin) afterRecord(ctx context.Context, cfg Config, e Entry) string {
 	p.mirror(cfg, e)
-	p.escalate(ctx, cfg, e)
+	return p.escalate(ctx, cfg, e)
 }
 
 // ensureCaseFile makes sure the member is on file and refreshes the

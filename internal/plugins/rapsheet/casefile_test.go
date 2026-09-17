@@ -165,7 +165,7 @@ func TestEntryEmbedShapes(t *testing.T) {
 	e := Entry{ID: 7, Kind: KindBan, Category: CategoryThreats, Points: 100, ActorID: modID, Reason: "r",
 		Duration: time.Hour, EndsAt: &ends, Source: SourceCommand, UserID: "u1"}
 	em := entryEmbed(e)
-	if !strings.HasPrefix(em.Title, "#7 · banned 1h") || fieldValue(em, "Points") != "100" || fieldValue(em, "Until") == "" || fieldValue(em, "Source") != "" {
+	if !strings.HasPrefix(em.Title, "#7 · banned 1h") || fieldValue(em, "Offence") != "threats · 100 pts" || fieldValue(em, "Until") == "" || fieldValue(em, "Source") != "" {
 		t.Errorf("embed = %+v", em)
 	}
 	e.Source = SourceDiscord
@@ -173,7 +173,7 @@ func TestEntryEmbedShapes(t *testing.T) {
 		t.Error("a non-command source should be named")
 	}
 	note := entryEmbed(Entry{ID: 8, Kind: KindNote, ActorID: modID})
-	if note.Description != "(no reason given)" || fieldValue(note, "Category") != "" || fieldValue(note, "Points") != "" {
+	if note.Description != "(no reason given)" || fieldValue(note, "Offence") != "" {
 		t.Errorf("note embed = %+v", note)
 	}
 	if threadName(CaseFile{Username: "dana"}, "u1") != "dana (u1)" || threadName(CaseFile{}, "u1") != "member (u1)" {

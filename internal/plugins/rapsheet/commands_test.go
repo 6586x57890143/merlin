@@ -412,7 +412,7 @@ func TestListCategoriesShowsTuning(t *testing.T) {
 	_ = h.store.SetConfig(context.Background(), cfg)
 	s, rt := stubSession()
 	h.p.handleListCategories(context.Background(), s, interaction("list/categories"))
-	if !strings.Contains(rt.said(), "`spam` · 42 pts (tuned)") || !strings.Contains(rt.said(), "`child_safety` · 100 pts") {
+	if !strings.Contains(rt.said(), "**spam** · 42 pts (tuned)") || !strings.Contains(rt.said(), "**child safety** · 100 pts") {
 		t.Errorf("got %s", rt.said())
 	}
 }

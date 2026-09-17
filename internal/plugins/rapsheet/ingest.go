@@ -127,6 +127,9 @@ func (p *Plugin) handleModerationReversed(_ context.Context, ev core.Event) {
 		}
 		e.VoidedAt, e.VoidedBy, e.VoidReason = &now, by, reason
 		p.afterAmend(ctx, e)
+		if e.Points > 0 {
+			p.withdrawStaleSuggestions(ctx, p.config(ctx, ev.GuildID), ev.GuildID, e.UserID)
+		}
 	})
 }
 

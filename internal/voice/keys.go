@@ -301,7 +301,7 @@ var specs = map[Key]spec{
 		register: RegisterPlain,
 		required: []string{"guild"},
 		maxLen:   maxEmbedDescription,
-		fallback: "a note from {guild}: your moderation record there has built up to the point where the next thing on it carries a consequence. nothing has happened yet. this is the heads-up.",
+		fallback: "a note from {guild}: your moderation record there has built up to the point where the next thing on it carries a consequence. no consequence yet. this is the heads-up. `/rapsheet me` in the server shows the record.",
 	},
 
 	KeyAIModRemoved: {

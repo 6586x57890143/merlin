@@ -68,11 +68,11 @@ func (p *Plugin) handleTimeout(ctx context.Context, s *discordgo.Session, i *dis
 	}
 	_, present, err := p.checkTarget(ctx, i, userID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Timeout", err)
+		_ = core.FollowUpErr(s, i, "Not timed out", err)
 		return
 	}
 	if !present {
-		_ = core.FollowUpErr(s, i, "Timeout", fmt.Errorf("%s is not in this server", core.MentionUser(userID)))
+		_ = core.FollowUpErr(s, i, "Not timed out", fmt.Errorf("%s is not in this server", core.MentionUser(userID)))
 		return
 	}
 
@@ -92,7 +92,7 @@ func (p *Plugin) handleTimeout(ctx context.Context, s *discordgo.Session, i *dis
 		return
 	}
 	p.dm(ctx, i.GuildID, userID, voice.KeyTimeoutNotice, "Timed out", core.ColorWarning,
-		map[string]string{"guild": p.guildName(i.GuildID), "until": relativeTimestamp(until)}, reasonFields(category, reason)...)
+		map[string]string{"guild": p.guildName(i.GuildID), "until": relativeTimestamp(until)}, append(reasonFields(category, reason), nextStepField())...)
 	p.auditEntry(ctx, "rapsheet.timeout", e)
 	_ = core.FollowUpOK(s, i, "Timed out", p.caseSummary(ctx, cfg, e))
 }
@@ -111,13 +111,13 @@ func (p *Plugin) handleKick(ctx context.Context, s *discordgo.Session, i *discor
 	}
 	_, present, err := p.checkTarget(ctx, i, userID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Kick", err)
+		_ = core.FollowUpErr(s, i, "Not kicked", err)
 		return
 	}
 	if !present {
 		// A kick of somebody who already left is a no-op Discord would
 		// refuse, and a record of it would be a lie.
-		_ = core.FollowUpErr(s, i, "Kick", fmt.Errorf("%s is not in this server", core.MentionUser(userID)))
+		_ = core.FollowUpErr(s, i, "Not kicked", fmt.Errorf("%s is not in this server", core.MentionUser(userID)))
 		return
 	}
 
@@ -191,11 +191,11 @@ func (p *Plugin) handleBan(ctx context.Context, s *discordgo.Session, i *discord
 	// A ban works on somebody who has already left, which is most of what
 	// bans are for, so presence is not required here.
 	if _, _, err := p.checkTarget(ctx, i, userID); err != nil {
-		_ = core.FollowUpErr(s, i, "Ban", err)
+		_ = core.FollowUpErr(s, i, "Not banned", err)
 		return
 	}
 	if _, active, err := p.store.ActiveBan(ctx, i.GuildID, userID); err == nil && active {
-		_ = core.FollowUpErr(s, i, "Ban", fmt.Errorf("%s is already banned; `/rapsheet unban` first if the sentence should change", core.MentionUser(userID)))
+		_ = core.FollowUpErr(s, i, "Not banned", fmt.Errorf("%s is already banned; `/rapsheet unban` first if the sentence should change", core.MentionUser(userID)))
 		return
 	}
 

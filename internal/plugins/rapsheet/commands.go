@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -118,6 +119,20 @@ func (p *Plugin) registerCommands() {
 				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to unban."), reasonOpt(true)},
 			},
 			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "link",
+				Description: "Say two accounts are the same person. They share one sheet and one score from then on.",
+				Options: []*discordgo.ApplicationCommandOption{
+					userOpt("user", "The account to link."),
+					userOpt("other", "The account already on record."),
+					reasonOpt(false),
+				},
+			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "unlink",
+				Description: "Take an account back out of a linked group.",
+				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "The account to unlink.")},
+			},
+			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "void",
 				Description: "Strike an entry. It stays visible, struck through, and counts for nothing.",
 				Options:     []*discordgo.ApplicationCommandOption{caseOpt, reasonOpt(true)},
@@ -195,6 +210,14 @@ func (p *Plugin) registerCommands() {
 						},
 					},
 					{
+						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "alt-hints",
+						Description: "Whether joins are compared with members on record and possible alts flagged for a mod.",
+						Options: []*discordgo.ApplicationCommandOption{{
+							Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled", Required: true,
+							Description: "On by default. Nothing is ever linked without a moderator.",
+						}},
+					},
+					{
 						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "bands",
 						Description: "The ladder: which score owes what. Never a permanent ban.",
 						Options: []*discordgo.ApplicationCommandOption{{
@@ -220,6 +243,10 @@ func (p *Plugin) registerCommands() {
 	// mods to hold it lowers the bar on purpose with set-tier.
 	p.commands.Handle("rapsheet", "ban", core.PermSpec{Tier: core.TierAdmin, Action: actionBan}, p.handleBan)
 	p.commands.Handle("rapsheet", "unban", core.PermSpec{Tier: core.TierAdmin, Action: actionUnban}, p.handleUnban)
+	linkSpec := core.PermSpec{Tier: core.TierMod, Action: actionLink}
+	p.commands.Handle("rapsheet", "link", linkSpec, p.handleLink)
+	p.commands.Handle("rapsheet", "unlink", linkSpec, p.handleUnlink)
+	p.commands.HandleComponent(p.Name(), altPrefix, linkSpec, p.handleAltButton)
 	p.commands.Handle("rapsheet", "void", core.PermSpec{Tier: core.TierMod, Action: actionVoid}, p.handleVoid)
 	p.commands.Handle("rapsheet", "edit", core.PermSpec{Tier: core.TierMod, Action: actionEdit}, p.handleEdit)
 	p.commands.Handle("rapsheet", "list/categories", view, p.handleListCategories)
@@ -233,6 +260,7 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("rapsheet", "configure/half-life", admin, p.handleConfigureHalfLife)
 	p.commands.Handle("rapsheet", "configure/points", admin, p.handleConfigurePoints)
 	p.commands.Handle("rapsheet", "configure/bands", admin, p.handleConfigureBands)
+	p.commands.Handle("rapsheet", "configure/alt-hints", admin, p.handleConfigureAltHints)
 
 	p.commands.HandleComponent(p.Name(), suggestPrefix, core.PermSpec{Tier: core.TierMod, Action: actionApply}, p.handleSuggestion)
 	p.commands.HandleComponent(p.Name(), viewPrefix, view, p.handleViewPage)
@@ -416,6 +444,10 @@ func (p *Plugin) checkTarget(_ context.Context, i *discordgo.InteractionCreate, 
 		member = &discordgo.Member{User: &discordgo.User{ID: userID}}
 	}
 	if err := p.perms.CanModerate(i.GuildID, i.Member, userID, member.Roles); err != nil {
+		var forbidden core.ErrForbidden
+		if errors.As(err, &forbidden) {
+			return nil, false, fmt.Errorf("%s outranks you (%s), so nothing was recorded", core.MentionUser(userID), forbidden.Reason)
+		}
 		return nil, false, err
 	}
 	return member, present, nil
@@ -436,7 +468,7 @@ func (p *Plugin) handleWarn(ctx context.Context, s *discordgo.Session, i *discor
 		return
 	}
 	if _, _, err := p.checkTarget(ctx, i, userID); err != nil {
-		_ = core.FollowUpErr(s, i, "Warn", err)
+		_ = core.FollowUpErr(s, i, "Not warned", err)
 		return
 	}
 
@@ -447,7 +479,7 @@ func (p *Plugin) handleWarn(ctx context.Context, s *discordgo.Session, i *discor
 		PointsOverride: override, Identity: resolvedUser(i, userID),
 	})
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Warn", err)
+		_ = core.FollowUpErr(s, i, "Not warned", err)
 		return
 	}
 
@@ -482,16 +514,26 @@ func (p *Plugin) handleNote(ctx context.Context, s *discordgo.Session, i *discor
 	_ = core.FollowUpOK(s, i, "Noted", fmt.Sprintf("Case #%d added to %s's sheet.", e.ID, core.MentionUser(userID)))
 }
 
-// caseSummary is the follow-up after a scored entry: the case number and
-// where it leaves the score, so a mod sees the ladder move without opening
-// the sheet.
+// caseSummary is the follow-up after a scored entry: the case number, what
+// was recorded, where it leaves the score, and what the ladder did about
+// it, so a mod sees the whole effect without opening the sheet. The ladder
+// clause is the ladder's own account (recorded on the entry by escalate),
+// never a bare band name, which read as a consequence being owed.
 func (p *Plugin) caseSummary(ctx context.Context, cfg Config, e Entry) string {
+	line := fmt.Sprintf("Case #%d: %s %s", e.ID, core.MentionUser(e.UserID), kindWords(e))
+	if e.Points > 0 {
+		line += fmt.Sprintf(" (%d pts)", e.Points)
+	}
+	line += "."
 	sh, err := p.loadSheet(ctx, cfg, e.GuildID, e.UserID)
 	if err != nil {
-		return fmt.Sprintf("Case #%d recorded for %s.", e.ID, core.MentionUser(e.UserID))
+		return line
 	}
-	return fmt.Sprintf("Case #%d recorded for %s (%d pts). Score is now %.0f; ladder: %s.",
-		e.ID, core.MentionUser(e.UserID), e.Points, sh.Score, recWords(sh.Rec))
+	line += fmt.Sprintf(" Score is now %.0f.", sh.Score)
+	if e.ladderNote != "" {
+		line += "\n" + e.ladderNote
+	}
+	return line
 }
 
 // auditEntry writes the audit line for a command-made entry. Log-and-
@@ -545,22 +587,22 @@ func (p *Plugin) handleVoid(ctx context.Context, s *discordgo.Session, i *discor
 	}
 	e, err := p.store.Entry(ctx, i.GuildID, id)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Void", err)
+		_ = core.FollowUpErr(s, i, "Not voided", err)
 		return
 	}
 	if e.Voided() {
-		_ = core.FollowUpErr(s, i, "Void", fmt.Errorf("case #%d is already voided", e.ID))
+		_ = core.FollowUpErr(s, i, "Not voided", fmt.Errorf("case #%d is already voided", e.ID))
 		return
 	}
 	if err := p.canAmend(i.GuildID, i.Member, e); err != nil {
-		_ = core.FollowUpErr(s, i, "Void", err)
+		_ = core.FollowUpErr(s, i, "Not voided", err)
 		return
 	}
 	if e.Kind == KindBan && e.Standing(p.now()) {
 		// Voiding the record of a ban that is still in force would leave a
 		// banned member with nothing saying so and nothing scheduled to lift
 		// it. The unban is the decision; the void follows from it.
-		_ = core.FollowUpErr(s, i, "Void", fmt.Errorf("case #%d is a ban still in force; unban first", e.ID))
+		_ = core.FollowUpErr(s, i, "Not voided", fmt.Errorf("case #%d is a ban still in force; unban first", e.ID))
 		return
 	}
 	now := p.now()
@@ -568,11 +610,14 @@ func (p *Plugin) handleVoid(ctx context.Context, s *discordgo.Session, i *discor
 	// definition not standing, and the consequence still is.
 	wasStanding := e.Standing(now)
 	if err := p.store.Void(ctx, i.GuildID, e.ID, actorID(i), reason, now); err != nil {
-		_ = core.FollowUpErr(s, i, "Void", err)
+		_ = core.FollowUpErr(s, i, "Not voided", err)
 		return
 	}
 	e.VoidedAt, e.VoidedBy, e.VoidReason = &now, actorID(i), reason
 	p.afterAmend(ctx, e)
+	if e.Points > 0 {
+		p.withdrawStaleSuggestions(ctx, p.config(ctx, i.GuildID), i.GuildID, e.UserID)
+	}
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.void", "",
 		fmt.Sprintf("case #%d user=%s was %s reason=%q", e.ID, core.MentionUser(e.UserID), kindWords(e), reason)); err != nil {
 		p.log.Error("rapsheet: audit void", "guild", i.GuildID, "err", err)
@@ -605,16 +650,16 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 	}
 	e, err := p.store.Entry(ctx, i.GuildID, id)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Edit", err)
+		_ = core.FollowUpErr(s, i, "Not edited", err)
 		return
 	}
 	if err := p.canAmend(i.GuildID, i.Member, e); err != nil {
-		_ = core.FollowUpErr(s, i, "Edit", err)
+		_ = core.FollowUpErr(s, i, "Not edited", err)
 		return
 	}
 	old := e.Reason
 	if err := p.store.UpdateReason(ctx, i.GuildID, e.ID, reason); err != nil {
-		_ = core.FollowUpErr(s, i, "Edit", err)
+		_ = core.FollowUpErr(s, i, "Not edited", err)
 		return
 	}
 	e.Reason = reason
@@ -635,16 +680,24 @@ func (p *Plugin) afterAmend(ctx context.Context, e Entry) {
 
 func (p *Plugin) handleListCategories(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	cfg := p.config(ctx, i.GuildID)
+	// Highest first, then by name, so the list reads as the ladder does.
+	sorted := append([]Category(nil), categories...)
+	pts := func(c Category) int { return pointsFor(cfg, KindWarn, c, actorID(i), 0) }
+	sort.SliceStable(sorted, func(a, b int) bool {
+		if pts(sorted[a]) != pts(sorted[b]) {
+			return pts(sorted[a]) > pts(sorted[b])
+		}
+		return sorted[a] < sorted[b]
+	})
 	var b strings.Builder
-	for _, c := range categories {
-		pts := pointsFor(cfg, KindWarn, c, actorID(i), 0)
-		fmt.Fprintf(&b, "`%s` · %d pts", c, pts)
+	for _, c := range sorted {
+		fmt.Fprintf(&b, "**%s** · %d pts", categoryLabel(c), pts(c))
 		if _, tuned := cfg.CategoryPoints[c]; tuned {
 			b.WriteString(" (tuned)")
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\nAn automatic consequence (a jail aimod or the ladder applied) carries no points of its own: the offence behind it already did.")
+	b.WriteString("\nThese are what one offence costs when a moderator records it, or when aimod removes a message. A jail, timeout or ban that follows from an offence carries no points of its own: the offence already did.")
 	core.RespondInfo(s, i, "Categories", b.String())
 }
 
@@ -680,7 +733,10 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	}
 	switch ok, err := p.auditLogPermission(i.GuildID); {
 	case err != nil:
-		fmt.Fprintf(&b, "**Discord's own bans and kicks:** could not check View Audit Log (%v)\n", err)
+		// Not interpolated: a Discord error is a paragraph, and the one
+		// fact that matters here is that the check did not happen.
+		p.log.Warn("rapsheet: check View Audit Log", "guild", i.GuildID, "err", err)
+		b.WriteString("**Discord's own bans and kicks:** could not check whether merlin holds View Audit Log; try again in a moment.\n")
 	case ok:
 		b.WriteString("**Discord's own bans and kicks:** recorded (View Audit Log held)\n")
 	default:
@@ -700,10 +756,10 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		b.WriteString("**Case files:** no forum set; entries live in the database only.\n")
 	}
 	if warn {
-		core.RespondWarn(s, i, "Rapsheet status", b.String())
+		core.RespondWarn(s, i, "Rapsheet status", strings.TrimRight(b.String(), "\n"))
 		return
 	}
-	core.RespondInfo(s, i, "Rapsheet status", b.String())
+	core.RespondInfo(s, i, "Rapsheet status", strings.TrimRight(b.String(), "\n"))
 }
 
 // --- configure --------------------------------------------------------------
@@ -764,7 +820,7 @@ func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, 
 	fmt.Fprintf(&b, "**Escalation:** %s\n**Half-life:** %s\n", cfg.EscalationMode, core.FormatDuration(cfg.HalfLife))
 	fmt.Fprintf(&b, "**Mod channel:** %s\n", orUnset(core.MentionChannel(cfg.ModChannelID)))
 	fmt.Fprintf(&b, "**Case-file forum:** %s\n", orUnset(core.MentionChannel(cfg.ForumChannelID)))
-	fmt.Fprintf(&b, "**Alt hints:** %v\n", cfg.AltHints)
+	fmt.Fprintf(&b, "**Alt hints:** %s\n", onOff(cfg.AltHints))
 	if len(cfg.CategoryPoints) > 0 {
 		b.WriteString("**Tuned points:**")
 		for _, c := range categories {
@@ -779,7 +835,14 @@ func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, 
 	} else {
 		b.WriteString("**Bands:** defaults\n")
 	}
-	core.RespondInfo(s, i, "Rapsheet configuration", b.String())
+	core.RespondInfo(s, i, "Rapsheet configuration", strings.TrimRight(b.String(), "\n"))
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 func orUnset(s string) string {
@@ -855,7 +918,7 @@ func (p *Plugin) handleConfigureHalfLife(ctx context.Context, s *discordgo.Sessi
 	old := cfg.HalfLife
 	cfg.HalfLife = d
 	p.setConfig(ctx, s, i, cfg, "half_life", core.FormatDuration(old), core.FormatDuration(d))
-	core.RespondOK(s, i, "Half-life", fmt.Sprintf("Points now count half after %s, a quarter after %s. Existing entries decay on the new curve from now; nothing is re-scored.",
+	core.RespondOK(s, i, "Half-life", fmt.Sprintf("Points now count half after %s and a quarter after %s. Every entry's current value is worked out from its own date on the new curve; the points each was given do not change.",
 		core.FormatDuration(d), core.FormatDuration(2*d)))
 }
 

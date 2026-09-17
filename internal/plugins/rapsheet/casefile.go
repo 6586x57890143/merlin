@@ -267,17 +267,16 @@ func entryEmbed(e Entry) *discordgo.MessageEmbed {
 	}
 	if e.Voided() {
 		title = "~~" + title + "~~ (voided)"
-		color = core.ColorWarning
+		color = core.ColorPrimary
 	}
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "Member", Value: core.MentionUser(e.UserID), Inline: true},
 		{Name: "By", Value: actorWords(e.ActorID, false), Inline: true},
 	}
-	if e.Category != "" && (e.Category != CategoryOther || e.Points > 0) {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Category", Value: categoryLabel(e.Category), Inline: true})
-	}
 	if e.Points > 0 {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Points", Value: fmt.Sprintf("%d", e.Points), Inline: true})
+		// One field, so the row stays three across: Discord lays inline
+		// fields out three to a row and a fourth drops to a row of its own.
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Offence", Value: fmt.Sprintf("%s · %d pts", categoryLabel(e.Category), e.Points), Inline: true})
 	}
 	if e.EndsAt != nil {
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Until", Value: absoluteTimestamp(*e.EndsAt), Inline: true})

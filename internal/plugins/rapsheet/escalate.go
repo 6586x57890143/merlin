@@ -78,33 +78,35 @@ func (p *Plugin) Priors(ctx context.Context, guildID, userID string, since time.
 
 // escalate runs after every recorded entry and decides whether the ladder
 // owes anything. Never returns an error: nothing here may fail the entry.
-func (p *Plugin) escalate(ctx context.Context, cfg Config, e Entry) {
+// What it returns is one line for the confirmation the moderator sees:
+// what the ladder did, or "" when it did nothing.
+func (p *Plugin) escalate(ctx context.Context, cfg Config, e Entry) string {
 	switch {
 	case cfg.EscalationMode == ModeOff:
-		return
+		return ""
 	case e.Voided(), e.Points == 0, e.Source == SourceLadder:
-		return
+		return ""
 	}
 	switch e.Kind {
 	case KindNote, KindUnban, KindRelease, KindSuggestion:
-		return
+		return ""
 	}
 
 	sh, err := p.loadSheet(ctx, cfg, e.GuildID, e.UserID)
 	if err != nil {
 		p.log.Error("rapsheet: load sheet for escalation", "guild", e.GuildID, "user", e.UserID, "err", err)
-		return
+		return ""
 	}
 	rec := sh.Rec
 	if rec.Action == ActionNone {
-		return
+		return ""
 	}
 	now := p.now()
 	if rec.Band <= maxLadderBand(sh.Entries, now.Add(-cfg.HalfLife)) {
-		return
+		return fmt.Sprintf("Their record is in the %s band; the ladder has already suggested or applied it.", recWords(rec))
 	}
 	if st, ok := standing(sh.Entries, now); ok && covers(st, rec, now) {
-		return
+		return ""
 	}
 
 	switch {
@@ -114,9 +116,11 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, e Entry) {
 			// consequence row is voided with the reason, so the sheet shows
 			// what was tried, and the next crossing tries again.
 			p.log.Warn("rapsheet: automatic escalation not applied", "guild", e.GuildID, "user", e.UserID, "action", rec.Action, "err", err)
+			return fmt.Sprintf("The ladder reached %s but could not apply it: %v.", recWords(rec), err)
 		}
+		return fmt.Sprintf("The ladder applied %s.", recWords(rec))
 	default:
-		p.suggest(ctx, cfg, e.UserID, rec, sh.Score)
+		return p.suggest(ctx, cfg, e, rec, sh)
 	}
 }
 
@@ -155,47 +159,80 @@ func covers(st Entry, rec Recommendation, now time.Time) bool {
 // can see would still satisfy the idempotency check and silence the band
 // for a half-life, so a guild that sets its mod channel later would hear
 // nothing about the members who crossed a line before it did.
-func (p *Plugin) suggest(ctx context.Context, cfg Config, userID string, rec Recommendation, score float64) {
+func (p *Plugin) suggest(ctx context.Context, cfg Config, trigger Entry, rec Recommendation, sh sheet) string {
+	userID := trigger.UserID
 	if cfg.ModChannelID == "" {
 		p.log.Warn("rapsheet: ladder has a suggestion and no mod channel to post it in; set one with /rapsheet configure mod-channel",
 			"guild", cfg.GuildID, "user", userID, "action", rec.Action)
-		return
+		return fmt.Sprintf("Their record reached %s, but no mod channel is set to suggest it in.", recWords(rec))
 	}
+	// The reason is parsed back by settle and shown on the sheet, so it
+	// carries the score and what tipped it: the case a moderator opens
+	// first when deciding.
 	e, written, err := p.record(ctx, cfg, newEntry{
-		GuildID: cfg.GuildID, UserID: userID, Kind: KindSuggestion, Category: CategoryServerRule,
-		ActorID: core.ActorSystem, Reason: fmt.Sprintf("score %.0f: %s", score, recWords(rec)),
+		GuildID: cfg.GuildID, UserID: userID, Kind: KindSuggestion, Category: CategoryOther,
+		ActorID: core.ActorSystem, Reason: fmt.Sprintf("score %.0f after #%d: %s", sh.Score, trigger.ID, recWords(rec)),
 		Duration: rec.Duration, Source: SourceLadder, Band: rec.Band,
 	})
 	if err != nil || !written {
 		p.log.Error("rapsheet: record suggestion", "guild", cfg.GuildID, "user", userID, "err", err)
-		return
+		return ""
 	}
-	embed, components := suggestionEmbed(e, rec, score, "", false)
+	var standingLine string
+	if st, ok := standing(sh.Entries, p.now()); ok {
+		standingLine = "Already " + standingWords(st) + " (#" + strconv.FormatInt(st.ID, 10) + ")."
+	}
+	embed, components := suggestionEmbed(e, rec, sh.Score, &trigger, standingLine, "", false)
 	if _, err := p.ops(cfg.GuildID).ChannelMessageSendComplex(cfg.ModChannelID, &discordgo.MessageSend{
 		Embeds:     []*discordgo.MessageEmbed{embed},
 		Components: components,
 		Files:      core.EmbedFiles(embed),
 	}); err != nil {
 		p.log.Error("rapsheet: post suggestion", "guild", cfg.GuildID, "channel", cfg.ModChannelID, "err", err)
+		return fmt.Sprintf("The ladder reached %s; the suggestion could not be posted in %s.", recWords(rec), core.MentionChannel(cfg.ModChannelID))
 	}
+	return fmt.Sprintf("The ladder suggested %s in %s.", recWords(rec), core.MentionChannel(cfg.ModChannelID))
 }
 
-// suggestionEmbed is the mod-channel post. note is appended when there is
-// something to say; settled drops the buttons, which happens once the
-// suggestion has been applied or dismissed and never for a note that leaves
-// it open (a mod without the rank to apply a ban, for instance).
-func suggestionEmbed(e Entry, rec Recommendation, score float64, note string, settled bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
-	desc := fmt.Sprintf("%s's record has reached **%.0f points**, which puts them at **%s** on the ladder.\n\n"+
-		"Apply it, or dismiss it; either way it is case #%d on their sheet. `/rapsheet view` shows what got them here.",
-		core.MentionUser(e.UserID), score, recWords(rec), e.ID)
-	color := core.ColorWarning
-	if note != "" {
-		desc += "\n\n" + note
+// suggestionEmbed is the mod-channel post. trigger is the entry that tipped
+// the score (nil once settled, when it is read back off the suggestion's
+// reason instead); standingLine says what the member is already under, the
+// main reason a mod dismisses. note is appended when there is something to
+// say; settled drops the buttons and the invitation to click them, which
+// happens once the suggestion has been applied or dismissed and never for a
+// note that leaves it open (a mod without the rank to apply a ban).
+func suggestionEmbed(e Entry, rec Recommendation, score float64, trigger *Entry, standingLine, note string, settled bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s's record has reached **%.0f points**, which puts them at **%s** on the ladder.", core.MentionUser(e.UserID), score, recWords(rec))
+	if trigger != nil {
+		fmt.Fprintf(&b, "\n\n**Tipped by:** #%d %s", trigger.ID, kindWords(*trigger))
+		if trigger.Points > 0 {
+			fmt.Fprintf(&b, " · %s · %d pts", categoryLabel(trigger.Category), trigger.Points)
+		}
+		if trigger.Reason != "" {
+			b.WriteString("\n> " + oneLine(trigger.Reason))
+		}
+	} else if _, after, ok := strings.Cut(e.Reason, "after #"); ok {
+		if n, _, ok := strings.Cut(after, ":"); ok {
+			fmt.Fprintf(&b, "\n\n**Tipped by:** case #%s", n)
+		}
 	}
+	if standingLine != "" {
+		b.WriteString("\n\n" + standingLine)
+	}
+	if settled {
+		fmt.Fprintf(&b, "\n\nThis is case #%d on their sheet.", e.ID)
+	} else {
+		fmt.Fprintf(&b, "\n\nApply it, or dismiss it; either way it is case #%d on their sheet. `/rapsheet view` shows the whole record.", e.ID)
+	}
+	if note != "" {
+		b.WriteString("\n\n" + note)
+	}
+	color := core.ColorWarning
 	if settled {
 		color = core.ColorInfo
 	}
-	embed := core.NewEmbed(color, "Ladder: "+recWords(rec), desc)
+	embed := core.NewEmbed(color, "Ladder: "+recWords(rec), core.TruncateEmbedDescription(b.String()))
 	if settled {
 		return embed, nil
 	}
@@ -276,6 +313,13 @@ func (p *Plugin) handleSuggestion(ctx context.Context, s *discordgo.Session, i *
 		p.settle(s, i, sug, rec, "Already applied.", true)
 		return
 	}
+	if sh.Rec.Band < sug.Band {
+		// Something was voided since; the record no longer reaches this
+		// band and applying would punish for points that are gone.
+		p.withdrawStaleSuggestions(ctx, cfg, i.GuildID, sug.UserID)
+		p.settle(s, i, sug, rec, fmt.Sprintf("Withdrawn: their record no longer reaches this band (score %.0f now).", sh.Score), true)
+		return
+	}
 	if !p.claim(sug.ID) {
 		return
 	}
@@ -320,13 +364,9 @@ func maxAppliedBand(entries []Entry, since time.Time) int {
 }
 
 func (p *Plugin) settle(s *discordgo.Session, i *discordgo.InteractionCreate, sug Entry, rec Recommendation, outcome string, settled bool) {
-	score := 0.0
-	if _, after, ok := strings.Cut(sug.Reason, "score "); ok {
-		if n, _, ok := strings.Cut(after, ":"); ok {
-			score, _ = strconv.ParseFloat(n, 64)
-		}
-	}
-	embed, components := suggestionEmbed(sug, rec, score, outcome, settled)
+	var score float64
+	_, _ = fmt.Sscanf(sug.Reason, "score %f", &score)
+	embed, components := suggestionEmbed(sug, rec, score, nil, "", outcome, settled)
 	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
 		p.log.Error("rapsheet: update suggestion message", "guild", i.GuildID, "err", err)
 	}
@@ -446,4 +486,32 @@ func (p *Plugin) applyLadder(ctx context.Context, cfg Config, userID string, rec
 		p.mu.Unlock()
 	}
 	return outcome, nil
+}
+
+// withdrawStaleSuggestions voids open suggestions the record no longer
+// supports, after an entry was voided or reversed. A suggestion made off a
+// warning that turned out to be a misread would otherwise sit open in the
+// mod channel asking for a jail nobody is owed, and, since an open
+// suggestion satisfies the band check, it would also silence every lower
+// band for a half-life. The mod-channel post is not edited here (its message
+// id is not kept); a click on it finds the suggestion voided and says so.
+func (p *Plugin) withdrawStaleSuggestions(ctx context.Context, cfg Config, guildID, userID string) {
+	sh, err := p.loadSheet(ctx, cfg, guildID, userID)
+	if err != nil {
+		p.log.Error("rapsheet: load sheet to withdraw suggestions", "guild", guildID, "user", userID, "err", err)
+		return
+	}
+	for _, e := range sh.Entries {
+		if e.Kind != KindSuggestion || e.Voided() || e.Band <= sh.Rec.Band {
+			continue
+		}
+		now := p.now()
+		reason := fmt.Sprintf("withdrawn: the record no longer reaches this band (score %.0f)", sh.Score)
+		if err := p.store.Void(ctx, guildID, e.ID, core.ActorSystem, reason, now); err != nil {
+			p.log.Error("rapsheet: withdraw suggestion", "guild", guildID, "case", e.ID, "err", err)
+			continue
+		}
+		e.VoidedAt, e.VoidedBy, e.VoidReason = &now, core.ActorSystem, reason
+		p.afterAmend(ctx, e)
+	}
 }

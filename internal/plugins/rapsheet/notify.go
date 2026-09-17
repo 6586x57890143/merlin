@@ -24,7 +24,7 @@ import (
 func (p *Plugin) notifyWarned(ctx context.Context, guildID, userID string, category Category, reason string) {
 	p.dm(ctx, guildID, userID, voice.KeyWarnNotice, "Warning", core.ColorWarning,
 		map[string]string{"guild": p.guildName(guildID)},
-		reasonFields(category, reason)...)
+		append(reasonFields(category, reason), nextStepField())...)
 }
 
 // reasonFields is the "what for" block every notice carries.
@@ -41,6 +41,16 @@ func reasonFields(category Category, reason string) []*discordgo.MessageEmbedFie
 		})
 	}
 	return fields
+}
+
+// nextStepField is the "what now" line for a member who is still in the
+// server: where to take it up, and where to see their own record. A ban
+// gets none, because a banned member can reach neither.
+func nextStepField() *discordgo.MessageEmbedField {
+	return &discordgo.MessageEmbedField{
+		Name:  "What now",
+		Value: "If you think this was a mistake, a moderator in the server can look at it. `/rapsheet me` there shows everything on your record.",
+	}
 }
 
 func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, title string, color int, vars map[string]string, fields ...*discordgo.MessageEmbedField) {

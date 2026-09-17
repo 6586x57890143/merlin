@@ -401,3 +401,50 @@ func TestParseBandsErrors(t *testing.T) {
 		t.Errorf("parseBands = %+v, %v", b, err)
 	}
 }
+
+func TestVoidingTheOffenceWithdrawsTheSuggestionItCaused(t *testing.T) {
+	h := newHarness()
+	withModChannel(h, ModeSuggest)
+	h.ops.addMember(modID)
+	warnPts(h, "u1", 30)  // notice band, suggested
+	warnPts(h, "u1", 100) // jail 1d band, suggested
+	sug := suggestions(h)
+	if len(sug) != 2 {
+		t.Fatalf("suggestions = %+v", sug)
+	}
+	// The 100-point warning was a mistake.
+	s, _ := stubSession()
+	h.p.handleVoid(context.Background(), s, interaction("void", intOpt("case", 3), strOpt("reason", "misread")))
+	sug = suggestions(h)
+	if sug[0].Voided() || !sug[1].Voided() || !strings.Contains(sug[1].VoidReason, "no longer reaches") {
+		t.Errorf("after void: notice suggestion %v, jail suggestion %v (%q)", sug[0].Voided(), sug[1].Voided(), sug[1].VoidReason)
+	}
+	// A click on the withdrawn one says so and applies nothing.
+	h.p.jailer = &fakeJailer{}
+	id := suggestApplyPrefix + strconv.FormatInt(sug[1].ID, 10)
+	s2, rt := stubSession()
+	h.p.handleSuggestion(context.Background(), s2, componentClick(modID, id), id)
+	if len(h.p.jailer.(*fakeJailer).calls) != 0 || !strings.Contains(rt.said(), "dismissed") && !strings.Contains(rt.said(), "Withdrawn") && !strings.Contains(rt.said(), "withdrawn") {
+		t.Errorf("said %s", rt.said())
+	}
+}
+
+func TestApplyRefusesWhenTheRecordNoLongerReachesTheBand(t *testing.T) {
+	h := newHarness()
+	withModChannel(h, ModeSuggest)
+	h.p.jailer = &fakeJailer{}
+	warnPts(h, "u1", 60)
+	sug := suggestions(h)[0]
+	// The warning is voided directly in the store, bypassing the command's
+	// own withdrawal, so the click is what finds out.
+	_ = h.store.Void(context.Background(), testGuild, 1, "mod-2", "x", testNow)
+	id := suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
+	s, rt := stubSession()
+	h.p.handleSuggestion(context.Background(), s, componentClick(modID, id), id)
+	if len(h.p.jailer.(*fakeJailer).calls) != 0 || !strings.Contains(rt.said(), "no longer reaches") {
+		t.Errorf("calls %d said %s", len(h.p.jailer.(*fakeJailer).calls), rt.said())
+	}
+	if e, _ := h.store.Entry(context.Background(), testGuild, sug.ID); !e.Voided() {
+		t.Error("the stale suggestion should be withdrawn on the click")
+	}
+}

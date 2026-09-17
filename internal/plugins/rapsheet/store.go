@@ -83,6 +83,11 @@ type Entry struct {
 	VoidReason      string
 	ThreadMessageID string
 	CreatedAt       time.Time
+
+	// ladderNote is what the ladder did when this entry was recorded
+	// ("suggested jail 2h"), carried back to the command's confirmation.
+	// Never stored.
+	ladderNote string
 }
 
 // Voided is the one-word form of the check every reader makes.
@@ -202,6 +207,9 @@ type Store interface {
 	MarkLifted(ctx context.Context, id int64, at time.Time) error
 	// ActiveBan is the member's standing ban, if any.
 	ActiveBan(ctx context.Context, guildID, userID string) (Entry, bool, error)
+	// RecentActioned lists jail, ban and kick entries since `since`, for the
+	// "joined right after their ban" alt signal.
+	RecentActioned(ctx context.Context, guildID string, since time.Time) ([]Entry, error)
 
 	CaseFile(ctx context.Context, guildID, userID string) (CaseFile, bool, error)
 	// UpsertCaseFile creates the row or refreshes its identity snapshot;
@@ -546,6 +554,27 @@ func (s *pgStore) ActiveBan(ctx context.Context, guildID, userID string) (Entry,
 		return Entry{}, false, fmt.Errorf("rapsheet store: active ban: %w", err)
 	}
 	return e, true, nil
+}
+
+func (s *pgStore) RecentActioned(ctx context.Context, guildID string, since time.Time) ([]Entry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+entryCols+` FROM rapsheet_entries
+		WHERE guild_id = $1 AND kind IN ('jail', 'ban', 'kick') AND voided_at IS NULL AND created_at > $2
+		ORDER BY created_at DESC
+	`, guildID, since)
+	if err != nil {
+		return nil, fmt.Errorf("rapsheet store: recent actioned: %w", err)
+	}
+	defer rows.Close()
+	var out []Entry
+	for rows.Next() {
+		e, err := scanEntry(rows)
+		if err != nil {
+			return nil, fmt.Errorf("rapsheet store: recent actioned: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 const caseFileCols = `guild_id, user_id, thread_id, username, global_name, avatar_hash, created_at, updated_at`

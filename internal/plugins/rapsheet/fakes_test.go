@@ -269,6 +269,18 @@ func (f *fakeStore) ActiveBan(_ context.Context, guildID, userID string) (Entry,
 	return best, found, nil
 }
 
+func (f *fakeStore) RecentActioned(_ context.Context, guildID string, since time.Time) ([]Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Entry
+	for _, e := range f.entries {
+		if e.GuildID == guildID && (e.Kind == KindJail || e.Kind == KindBan || e.Kind == KindKick) && e.VoidedAt == nil && e.CreatedAt.After(since) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeStore) CaseFile(_ context.Context, guildID, userID string) (CaseFile, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -407,6 +407,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			joinCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			rolesPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.User.ID)
+			// Compared with the members on record for a possible alt; a hint
+			// for a mod, never a link. Takes the whole member: the avatar
+			// hash, the names and the join time are the signals.
+			rapsheetPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.Member)
 		})
 		// Counted, and nothing else: see the note on GuildRoleDelete below for
 		// why roles deliberately has no handler here.
