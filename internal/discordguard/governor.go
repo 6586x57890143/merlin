@@ -64,6 +64,13 @@ var opCaps = map[string]int{
 	// should not be the thing keeping up with.
 	opThreadCreate: 60,
 	opMessageEdit:  120,
+	// Rapsheet's bans and kicks, by command or by the ladder. Thirty bans an
+	// hour is a raid being handled; anything past that is the bot doing the
+	// raiding, and the sweep's unbans share the same footing so a batch of
+	// expiring bans cannot lift more than a batch of mistakes could make.
+	opMemberBan:   30,
+	opMemberUnban: 30,
+	opMemberKick:  60,
 }
 
 const (
@@ -84,6 +91,9 @@ const (
 	opMemberTimeout      = "member.timeout"
 	opThreadCreate       = "thread.create"
 	opMessageEdit        = "message.edit"
+	opMemberBan          = "member.ban"
+	opMemberUnban        = "member.unban"
+	opMemberKick         = "member.kick"
 )
 
 // capWindow is the period each cap is denominated over. Buckets refill

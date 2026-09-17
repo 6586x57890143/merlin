@@ -73,11 +73,12 @@ CREATE TABLE IF NOT EXISTS rapsheet_entries (
     -- permanent ban.
     duration_secs BIGINT,
     ends_at       TIMESTAMPTZ,
-    -- Who wrote the row: a /rapsheet command, the ladder, an aimod incident,
-    -- a roles jail or release, or Discord's own audit log (a ban done through
-    -- the client rather than through merlin).
+    -- Who wrote the row: a /rapsheet command, the ladder, this plugin's own
+    -- unban sweep, an aimod incident, a roles jail or release, or Discord's
+    -- own audit log (a ban done through the client rather than through
+    -- merlin).
     source        TEXT NOT NULL
-                  CHECK (source IN ('command', 'ladder', 'aimod', 'roles', 'discord')),
+                  CHECK (source IN ('command', 'ladder', 'sweep', 'aimod', 'roles', 'discord')),
     -- The publisher's own id for the event that produced this row: an aimod
     -- incident id, a Discord audit-log entry id. The ingestion dedupe key.
     ref           TEXT NOT NULL DEFAULT '',

@@ -42,6 +42,8 @@ type Source string
 const (
 	SourceCommand Source = "command"
 	SourceLadder  Source = "ladder"
+	// SourceSweep is the unban sweep lifting a served ban.
+	SourceSweep   Source = "sweep"
 	SourceAIMod   Source = "aimod"
 	SourceRoles   Source = "roles"
 	SourceDiscord Source = "discord"

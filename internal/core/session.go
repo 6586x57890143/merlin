@@ -60,7 +60,13 @@ func NewSession(token string, intents Intents) (*discordgo.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
-	want := discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates | discordgo.IntentsGuildMessages
+	// IntentsGuildBans is what discordgo calls GUILD_MODERATION: it carries
+	// ban events and, more usefully, GUILD_AUDIT_LOG_ENTRY_CREATE, which is
+	// how the rapsheet learns about a ban, kick or timeout done through the
+	// Discord client rather than through merlin. Unprivileged, so no portal
+	// toggle; the bot does still need View Audit Log in the guild or Discord
+	// delivers nothing, silently.
+	want := discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates | discordgo.IntentsGuildMessages | discordgo.IntentsGuildBans
 	if intents.Members {
 		want |= discordgo.IntentsGuildMembers
 	}

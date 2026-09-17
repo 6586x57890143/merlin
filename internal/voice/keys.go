@@ -47,6 +47,14 @@ const (
 	// and nothing else has happened. The category and the moderator's reason
 	// ride as embed fields.
 	KeyWarnNotice Key = "moderation.warn"
+	// KeyTimeoutNotice, KeyKickNotice, KeyBanNotice and KeyBanPermanentNotice
+	// are the DMs behind the corresponding /rapsheet leaves. The ban ones
+	// have to be sent before the ban lands: a banned member shares no server
+	// with the bot and Discord refuses the DM. Plain register throughout.
+	KeyTimeoutNotice      Key = "moderation.timeout"
+	KeyKickNotice         Key = "moderation.kick"
+	KeyBanNotice          Key = "moderation.ban"
+	KeyBanPermanentNotice Key = "moderation.ban_permanent"
 
 	// KeyAIModRemoved and KeyAIModRewritten are DMs to the member whose
 	// message the AI moderation plugin acted on. Plain register, like the
@@ -260,6 +268,30 @@ var specs = map[Key]spec{
 		required: []string{"guild"},
 		maxLen:   maxEmbedDescription,
 		fallback: "a moderator in {guild} has given you a warning. it is on record, and nothing else has happened. the reason is below.",
+	},
+	KeyTimeoutNotice: {
+		register: RegisterPlain,
+		required: []string{"guild", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been timed out in {guild}. you can read but not post, and it ends {until}. the reason is below.",
+	},
+	KeyKickNotice: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been removed from {guild}. this is not a ban: you can rejoin with an invite. the reason is below.",
+	},
+	KeyBanNotice: {
+		register: RegisterPlain,
+		required: []string{"guild", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been banned from {guild}. the ban is temporary and lifts {until}. the reason is below.",
+	},
+	KeyBanPermanentNotice: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been banned from {guild}. the reason is below.",
 	},
 
 	KeyAIModRemoved: {

@@ -46,6 +46,14 @@ type DiscordOps interface {
 	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	// The consequences this plugin applies itself (bans.go). Jail is not
+	// here: it stays roles' primitive, reached through Jailer.
+	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
+	GuildBanCreateWithReason(guildID, userID, reason string, days int, options ...discordgo.RequestOption) error
+	GuildBanDelete(guildID, userID string, options ...discordgo.RequestOption) error
+	GuildMemberDeleteWithReason(guildID, userID, reason string, options ...discordgo.RequestOption) error
+	// GuildRoles backs the View Audit Log check on /rapsheet status.
+	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 }
 
 // OpsProvider hands back the guild-bound Discord view. Mirrors
@@ -98,8 +106,9 @@ type Plugin struct {
 	// command or roles' sweep.
 	synchronous bool
 
-	mu    sync.Mutex
-	botID string
+	mu              sync.Mutex
+	botID           string
+	sweepRegistered map[string]bool
 }
 
 // New builds the plugin.
@@ -110,6 +119,8 @@ func New(store Store, opsFor OpsProvider, modRoles ModRoles, speaker voice.Sourc
 		modRoles: modRoles,
 		speaker:  speaker,
 		now:      time.Now,
+
+		sweepRegistered: make(map[string]bool),
 	}
 }
 
@@ -142,19 +153,27 @@ func (p *Plugin) Init(deps core.Deps) error {
 func (p *Plugin) Start(context.Context) error    { return nil }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
-// SyncGuild is called from cmd/bot/main.go on every GuildCreate.
+// SyncGuild is called from cmd/bot/main.go on every GuildCreate. It reads
+// this plugin's own tables, not internal/settings, so it does not wait on
+// the settings refresh: a guild whose settings failed to load still gets
+// its expiring bans lifted.
 func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	_ = ctx
-	_ = guildID
+	p.reconcileSweepJob(ctx, guildID)
 }
 
-// ForgetGuild drops bookkeeping when merlin leaves a guild.
+// ForgetGuild drops bookkeeping when merlin leaves a guild. The rows stay:
+// a re-invite finds the sheets where they were.
 func (p *Plugin) ForgetGuild(guildID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	_ = guildID
+	if p.sweepRegistered[guildID] {
+		delete(p.sweepRegistered, guildID)
+		if err := p.sched.Unregister(sweepKey(guildID)); err != nil {
+			p.log.Error("rapsheet: unregister sweep job", "guild", guildID, "err", err)
+		}
+	}
 }
 
 func (p *Plugin) ops(guildID string) DiscordOps { return p.opsFor(guildID) }

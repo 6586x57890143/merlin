@@ -84,6 +84,9 @@ type Session interface {
 	WebhookExecute(webhookID, token string, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	WebhookMessageDelete(webhookID, token, messageID string, options ...discordgo.RequestOption) error
 	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
+	GuildBanCreateWithReason(guildID, userID, reason string, days int, options ...discordgo.RequestOption) error
+	GuildBanDelete(guildID, userID string, options ...discordgo.RequestOption) error
+	GuildMemberDeleteWithReason(guildID, userID, reason string, options ...discordgo.RequestOption) error
 	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
 	ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error
 	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
@@ -362,6 +365,36 @@ func (o *GuildOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.Me
 	jid := o.beginJournal(opMessageSend, channelID)
 	v, err := o.guard.session.ChannelMessageSendEmbed(channelID, embed, options...)
 	return v, o.record(jid, err)
+}
+
+// GuildBanCreateWithReason bans a member. The reason lands in Discord's own
+// audit log next to merlin's name, which is how a moderator reading that
+// log rather than /rapsheet still learns why. days is how many days of the
+// member's messages Discord deletes with the ban.
+func (o *GuildOps) GuildBanCreateWithReason(guildID, userID, reason string, days int, options ...discordgo.RequestOption) error {
+	if err := o.allow(opMemberBan); err != nil {
+		return err
+	}
+	jid := o.beginJournal(opMemberBan, userID)
+	return o.record(jid, o.guard.session.GuildBanCreateWithReason(guildID, userID, reason, days, options...))
+}
+
+// GuildBanDelete lifts a ban.
+func (o *GuildOps) GuildBanDelete(guildID, userID string, options ...discordgo.RequestOption) error {
+	if err := o.allow(opMemberUnban); err != nil {
+		return err
+	}
+	jid := o.beginJournal(opMemberUnban, userID)
+	return o.record(jid, o.guard.session.GuildBanDelete(guildID, userID, options...))
+}
+
+// GuildMemberDeleteWithReason kicks a member.
+func (o *GuildOps) GuildMemberDeleteWithReason(guildID, userID, reason string, options ...discordgo.RequestOption) error {
+	if err := o.allow(opMemberKick); err != nil {
+		return err
+	}
+	jid := o.beginJournal(opMemberKick, userID)
+	return o.record(jid, o.guard.session.GuildMemberDeleteWithReason(guildID, userID, reason, options...))
 }
 
 // ChannelMessageEditComplex edits one of merlin's own messages in place.

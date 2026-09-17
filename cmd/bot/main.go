@@ -491,6 +491,19 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// The plugin then reads that one starter message over REST. contest
 	// deliberately does not join aimod on the gateway firehose.
 	session.AddHandler(contestPlugin.HandleThreadCreate)
+	// Bans, kicks and timeouts done through the Discord client, not through
+	// merlin, so the rapsheet does not lie by omission. Arrives under the
+	// always-on GUILD_MODERATION intent, but only if the bot holds View
+	// Audit Log in the guild; /rapsheet status says when it does not.
+	session.AddHandler(func(s *discordgo.Session, e *discordgo.GuildAuditLogEntryCreate) {
+		botID := ""
+		if s.State != nil && s.State.User != nil {
+			botID = s.State.User.ID
+		}
+		entryCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		rapsheetPlugin.HandleAuditLogEntry(entryCtx, botID, e)
+	})
 
 	// A deleted role is invisible to this bot otherwise, and it leaves two
 	// distinct traces: entries in the guild's settings that name a role

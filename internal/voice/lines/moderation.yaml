@@ -68,6 +68,58 @@ moderation.warn:
   - "warning issued in {guild}. on record, no other consequence. reason below."
   - "a warning has been added to your record in {guild}. the moderator's reason is below."
 
+moderation.timeout:
+  # warm
+  - "you've been timed out in {guild}. you can still read everything, you just can't post for a bit. it ends {until}, and the reason is below."
+  - "a moderator in {guild} has put you on a timeout. nothing is removed and no roles are touched; you're on read-only until {until}. the why is below."
+  - "quick one: you're timed out in {guild} until {until}. reading is fine, posting isn't, and it lifts on its own. the reason is below."
+  # plain
+  - "you have been timed out in {guild}. you can read but not post, and it ends {until}. the reason is below."
+  - "a timeout has been applied to you in {guild}. it lifts {until}. the moderator's reason is below."
+  - "you're on a timeout in {guild} until {until}. it ends by itself; nothing else has been done."
+  # matter of fact
+  - "timed out in {guild}, ending {until}. reason below."
+  - "timeout in {guild}. read-only until {until}. the reason given is below."
+
+moderation.kick:
+  # warm
+  - "you've been removed from {guild}. this isn't a ban: you can come back with an invite whenever you like. the reason is below."
+  - "a moderator in {guild} has removed you from the server. your record there is kept, and you're free to rejoin. the why is below."
+  - "heads up: you were kicked from {guild}. it's not a ban, and an invite gets you back in. the reason is below."
+  # plain
+  - "you have been removed from {guild}. this is not a ban: you can rejoin with an invite. the reason is below."
+  - "you were kicked from {guild}. nothing stops you rejoining. the moderator's reason is below."
+  - "a moderator has removed you from {guild}. this is a kick, not a ban. the reason given is below."
+  # matter of fact
+  - "kicked from {guild}. not a ban; rejoining is allowed. reason below."
+  - "removed from {guild} by a moderator. the reason is below."
+
+moderation.ban:
+  # warm
+  - "you've been banned from {guild}, for now. it's temporary and lifts on its own {until}. the reason is below."
+  - "a moderator in {guild} has banned you until {until}. after that you can come back with an invite. the why is below."
+  - "this is a temporary ban from {guild}. it ends {until}, and nothing needs doing on your end. the reason is below."
+  # plain
+  - "you have been banned from {guild}. the ban is temporary and lifts {until}. the reason is below."
+  - "you are banned from {guild} until {until}. it lifts by itself. the moderator's reason is below."
+  - "a temporary ban has been applied to you in {guild}, ending {until}. the reason given is below."
+  # matter of fact
+  - "banned from {guild} until {until}. it lifts automatically. reason below."
+  - "temporary ban from {guild}, ending {until}. the reason is below."
+
+moderation.ban_permanent:
+  # warm
+  - "you've been banned from {guild}. this one doesn't lift on its own. the reason is below, and if you think it's wrong, the server's mods are the people to ask."
+  - "a moderator in {guild} has banned you. there's no end date on it. the why is below."
+  - "this is a ban from {guild}, and it stands until a moderator says otherwise. the reason is below."
+  # plain
+  - "you have been banned from {guild}. the reason is below."
+  - "you are banned from {guild}. this ban has no end date. the moderator's reason is below."
+  - "a moderator has banned you from {guild}. the reason given is below."
+  # matter of fact
+  - "banned from {guild}. no end date. reason below."
+  - "permanent ban from {guild}. the reason is below."
+
 moderation.aimod_removed:
   # warm
   - "a message you posted in {guild} was taken down automatically. it matched one of Discord's own rules, and no moderator was involved. the reason is below, and your text is there too so nothing is lost."

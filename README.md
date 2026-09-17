@@ -143,6 +143,25 @@ Two links rather than one on purpose. The plugin is off until an admin turns it
 on, and a deployment that never will shouldn't be handing the bot the ability to
 delete messages and time people out. Use the narrow link unless you need this.
 
+### If you're running rapsheets with bans
+
+`/rapsheet` keeps the ledger with the link above. To let it also ban, kick and
+time people out, and to see the bans your moderators place by hand, it needs
+one more:
+
+```
+https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=1100333786262
+```
+
+That's everything in the AI moderation link plus `Ban Members`, `Kick Members`
+and `View Audit Log`. The last one is what lets merlin hear about a ban done
+from a member's context menu rather than through her, so the sheet doesn't
+lie by omission; without it Discord sends nothing and says nothing, and
+`/rapsheet status` will tell you.
+
+Three links, same reasoning. Use the narrowest one that covers what you've
+turned on.
+
 ### Intents
 
 `GUILDS`, `GUILD_VOICE_STATES` and `GUILD_MESSAGES` are unprivileged and always

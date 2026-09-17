@@ -84,6 +84,38 @@ func (p *Plugin) registerCommands() {
 				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who the note is about."), reasonOpt(true)},
 			},
 			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "timeout",
+				Description: "Time a member out (Discord's own mute, up to 28 days). Goes on their sheet.",
+				Options: []*discordgo.ApplicationCommandOption{
+					userOpt("user", "Who to time out."),
+					{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Required: true, Description: "How long: 10m, 2h, 3d, up to 28d."},
+					categoryOption(),
+					reasonOpt(true),
+				},
+			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "kick",
+				Description: "Remove a member from the server. They can rejoin. Goes on their sheet.",
+				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to kick."), categoryOption(), reasonOpt(true)},
+			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "ban",
+				Description: "Ban a member, for a while or for good. merlin lifts a temporary ban itself.",
+				Options: []*discordgo.ApplicationCommandOption{
+					userOpt("user", "Who to ban."),
+					categoryOption(),
+					reasonOpt(true),
+					{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Description: "How long: 7d, 30d, up to 365d. Leave out for a permanent ban, and say so."},
+					{Type: discordgo.ApplicationCommandOptionBoolean, Name: "permanent", Description: "A ban with no end date. Required if no duration is given."},
+					{Type: discordgo.ApplicationCommandOptionInteger, Name: "delete_message_days", Description: "Also delete their messages from the last N days (0-7).", MinValue: ptr(0.0), MaxValue: maxDeleteDays},
+				},
+			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "unban",
+				Description: "Lift a ban, whoever placed it.",
+				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to unban."), reasonOpt(true)},
+			},
+			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "void",
 				Description: "Strike an entry. It stays visible, struck through, and counts for nothing.",
 				Options:     []*discordgo.ApplicationCommandOption{caseOpt, reasonOpt(true)},
@@ -133,6 +165,13 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("rapsheet", "me", core.PermSpec{Tier: core.TierPublic, Action: actionMe}, p.handleMe)
 	p.commands.Handle("rapsheet", "warn", core.PermSpec{Tier: core.TierMod, Action: actionWarn}, p.handleWarn)
 	p.commands.Handle("rapsheet", "note", core.PermSpec{Tier: core.TierMod, Action: actionNote}, p.handleNote)
+	p.commands.Handle("rapsheet", "timeout", core.PermSpec{Tier: core.TierMod, Action: actionTimeout}, p.handleTimeout)
+	p.commands.Handle("rapsheet", "kick", core.PermSpec{Tier: core.TierMod, Action: actionKick}, p.handleKick)
+	// Ban is TierAdmin by default: it is the one consequence here a member
+	// cannot see the end of from inside the server, and a guild that wants
+	// mods to hold it lowers the bar on purpose with set-tier.
+	p.commands.Handle("rapsheet", "ban", core.PermSpec{Tier: core.TierAdmin, Action: actionBan}, p.handleBan)
+	p.commands.Handle("rapsheet", "unban", core.PermSpec{Tier: core.TierAdmin, Action: actionUnban}, p.handleUnban)
 	p.commands.Handle("rapsheet", "void", core.PermSpec{Tier: core.TierMod, Action: actionVoid}, p.handleVoid)
 	p.commands.Handle("rapsheet", "edit", core.PermSpec{Tier: core.TierMod, Action: actionEdit}, p.handleEdit)
 	p.commands.Handle("rapsheet", "list/categories", view, p.handleListCategories)
@@ -301,30 +340,31 @@ func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *disco
 // operator, and an unresolvable target is refused rather than assumed
 // ordinary. Bots and the actor themselves are refused outright, since
 // neither is a moderation decision.
-func (p *Plugin) checkTarget(ctx context.Context, i *discordgo.InteractionCreate, userID string) (*discordgo.Member, error) {
+//
+// present reports whether the target is in the server. Somebody who left
+// still has a sheet, and a warning or a ban about them is a legitimate
+// thing to record, so the rank check runs on an empty role set (which still
+// refuses the bootstrap operator and DB-listed admins) and the caller
+// decides whether its action makes sense for an absent member.
+func (p *Plugin) checkTarget(_ context.Context, i *discordgo.InteractionCreate, userID string) (member *discordgo.Member, present bool, err error) {
 	if userID == actorID(i) {
-		return nil, errors.New("you cannot put an entry on your own sheet")
+		return nil, false, errors.New("you cannot put an entry on your own sheet")
 	}
 	if u := resolvedUser(i, userID); u != nil && u.Bot {
-		return nil, errors.New("that is a bot")
+		return nil, false, errors.New("that is a bot")
 	}
-	member, err := p.ops(i.GuildID).GuildMember(i.GuildID, userID)
+	member, err = p.ops(i.GuildID).GuildMember(i.GuildID, userID)
+	present = err == nil
 	if err != nil {
-		if core.IsUnknownResource(err) {
-			// Not in the server. Their sheet still exists and a note or a
-			// warning about somebody who left is a legitimate thing to
-			// record, so the rank check runs on an empty role set: it still
-			// refuses the bootstrap operator and DB-listed admins.
-			member = &discordgo.Member{User: &discordgo.User{ID: userID}}
-		} else {
-			return nil, fmt.Errorf("look up member: %w", err)
+		if !core.IsUnknownResource(err) {
+			return nil, false, fmt.Errorf("look up member: %w", err)
 		}
+		member = &discordgo.Member{User: &discordgo.User{ID: userID}}
 	}
-	_ = ctx
 	if err := p.perms.CanModerate(i.GuildID, i.Member, userID, member.Roles); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return member, nil
+	return member, present, nil
 }
 
 func (p *Plugin) handleWarn(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -341,7 +381,7 @@ func (p *Plugin) handleWarn(ctx context.Context, s *discordgo.Session, i *discor
 		p.log.Error("rapsheet: defer warn", "err", err)
 		return
 	}
-	if _, err := p.checkTarget(ctx, i, userID); err != nil {
+	if _, _, err := p.checkTarget(ctx, i, userID); err != nil {
 		_ = core.FollowUpErr(s, i, "Warn", err)
 		return
 	}
@@ -470,6 +510,9 @@ func (p *Plugin) handleVoid(ctx context.Context, s *discordgo.Session, i *discor
 		return
 	}
 	now := p.now()
+	// Read before the entry is marked voided below: a voided entry is by
+	// definition not standing, and the consequence still is.
+	wasStanding := e.Standing(now)
 	if err := p.store.Void(ctx, i.GuildID, e.ID, actorID(i), reason, now); err != nil {
 		_ = core.FollowUpErr(s, i, "Void", err)
 		return
@@ -481,8 +524,18 @@ func (p *Plugin) handleVoid(ctx context.Context, s *discordgo.Session, i *discor
 		p.log.Error("rapsheet: audit void", "guild", i.GuildID, "err", err)
 	}
 	msg := fmt.Sprintf("Case #%d voided. It stays on the sheet, struck through, and counts for nothing.", e.ID)
-	if e.Kind == KindJail && e.Standing(p.now()) {
+	switch {
+	case e.Kind == KindJail && wasStanding:
 		msg += " The jail itself is still in force; `/roles release` ends it."
+	case e.Kind == KindTimeout && wasStanding:
+		// A timeout is this plugin's own to lift, so voiding its record
+		// lifts it: a struck-through timeout that stays in force would be
+		// the sheet saying one thing and Discord doing another.
+		if err := p.ops(i.GuildID).GuildMemberTimeout(i.GuildID, e.UserID, nil); err != nil {
+			msg += fmt.Sprintf(" The timeout itself could not be lifted (%v); clear it by hand.", err)
+		} else {
+			msg += " The timeout was lifted."
+		}
 	}
 	_ = core.FollowUpOK(s, i, "Voided", msg)
 }
@@ -570,6 +623,18 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		if cfg.EscalationMode != ModeOff {
 			warn = true
 		}
+	}
+	switch ok, err := p.auditLogPermission(i.GuildID); {
+	case err != nil:
+		fmt.Fprintf(&b, "**Discord's own bans and kicks:** could not check View Audit Log (%v)\n", err)
+	case ok:
+		b.WriteString("**Discord's own bans and kicks:** recorded (View Audit Log held)\n")
+	default:
+		b.WriteString("⚠️ merlin does not hold View Audit Log, so bans, kicks and timeouts done through Discord itself are not recorded. Re-invite with the rapsheet link in the README.\n")
+		warn = true
+	}
+	if n, err := p.store.CountPendingBans(ctx, i.GuildID); err == nil && n > 0 {
+		fmt.Fprintf(&b, "**Temporary bans pending:** %d\n", n)
 	}
 	if cfg.ForumChannelID != "" {
 		fmt.Fprintf(&b, "**Case files:** %s\n", core.MentionChannel(cfg.ForumChannelID))

@@ -429,6 +429,12 @@ type fakeOps struct {
 	edits         []*discordgo.MessageEdit
 	threadsOpened int
 
+	roles    []*discordgo.Role
+	timeouts map[string]*time.Time // userID -> until (nil = cleared)
+	bans     map[string]string     // userID -> reason
+	kicked   []string
+	unbanned []string
+
 	memberErr   error
 	dmErr       error
 	sendErr     error
@@ -436,6 +442,10 @@ type fakeOps struct {
 	createErr   error
 	threadErr   error
 	editErr     error
+	timeoutErr  error
+	banErr      error
+	unbanErr    error
+	kickErr     error
 }
 
 func newFakeOps() *fakeOps {
@@ -444,7 +454,64 @@ func newFakeOps() *fakeOps {
 		users:    map[string]*discordgo.User{},
 		sent:     map[string][]*discordgo.MessageSend{},
 		channels: map[string]*discordgo.Channel{},
+		timeouts: map[string]*time.Time{},
+		bans:     map[string]string{},
 	}
+}
+
+func (f *fakeOps) GuildMemberTimeout(_, userID string, until *time.Time, _ ...discordgo.RequestOption) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.timeoutErr != nil {
+		return f.timeoutErr
+	}
+	f.timeouts[userID] = until
+	return nil
+}
+
+func (f *fakeOps) GuildBanCreateWithReason(_, userID, reason string, _ int, _ ...discordgo.RequestOption) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.banErr != nil {
+		return f.banErr
+	}
+	f.bans[userID] = reason
+	delete(f.members, userID)
+	return nil
+}
+
+func (f *fakeOps) GuildBanDelete(_, userID string, _ ...discordgo.RequestOption) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.unbanErr != nil {
+		return f.unbanErr
+	}
+	if _, ok := f.bans[userID]; !ok {
+		return unknownErr(discordgo.ErrCodeUnknownBan)
+	}
+	delete(f.bans, userID)
+	f.unbanned = append(f.unbanned, userID)
+	return nil
+}
+
+func (f *fakeOps) GuildMemberDeleteWithReason(_, userID, _ string, _ ...discordgo.RequestOption) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.kickErr != nil {
+		return f.kickErr
+	}
+	if _, ok := f.members[userID]; !ok {
+		return unknownMemberErr()
+	}
+	delete(f.members, userID)
+	f.kicked = append(f.kicked, userID)
+	return nil
+}
+
+func (f *fakeOps) GuildRoles(_ string, _ ...discordgo.RequestOption) ([]*discordgo.Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roles, nil
 }
 
 // addForum registers an existing forum channel.
@@ -591,6 +658,55 @@ func (f *fakeOps) sentTo(channelID string) []*discordgo.MessageSend {
 	return append([]*discordgo.MessageSend(nil), f.sent[channelID]...)
 }
 
+// fakeSched records registrations so the "a job exists only where it has
+// work" rule can be asserted directly.
+type fakeSched struct {
+	mu   sync.Mutex
+	jobs map[string]func(context.Context) error
+}
+
+func newFakeSched() *fakeSched { return &fakeSched{jobs: map[string]func(context.Context) error{}} }
+
+func (f *fakeSched) Register(key string, _ core.CronSpec, fn func(context.Context) error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, dup := f.jobs[key]; dup {
+		return errors.New("duplicate job key")
+	}
+	f.jobs[key] = fn
+	return nil
+}
+
+func (f *fakeSched) Unregister(key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.jobs, key)
+	return nil
+}
+
+func (f *fakeSched) RunNow(ctx context.Context, key string) error {
+	f.mu.Lock()
+	fn := f.jobs[key]
+	f.mu.Unlock()
+	if fn == nil {
+		return errors.New("no such job")
+	}
+	return fn(ctx)
+}
+
+func (f *fakeSched) Seed(context.Context, string, time.Time) error { return nil }
+
+func (f *fakeSched) NextDue(context.Context, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
+func (f *fakeSched) has(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.jobs[key]
+	return ok
+}
+
 // --- permissions --------------------------------------------------------------
 
 // fakeRanker stands in for *core.Permissions. admins are admin-equivalent
@@ -686,6 +802,7 @@ type harness struct {
 	audit  *fakeAudit
 	voice  *fixedVoice
 	bus    *core.EventBus
+	sched  *fakeSched
 }
 
 func newHarness() *harness {
@@ -696,12 +813,15 @@ func newHarness() *harness {
 		audit:  &fakeAudit{},
 		voice:  &fixedVoice{line: "a line"},
 		bus:    core.NewEventBus(quietLog()),
+		sched:  newFakeSched(),
 	}
 	h.p = New(h.store, func(string) DiscordOps { return h.ops }, fakeModRoles{"mod-role"}, h.voice)
 	h.p.audit = h.audit
 	h.p.log = quietLog()
 	h.p.perms = h.ranker
 	h.p.bus = h.bus
+	h.p.sched = h.sched
+	h.p.botID = "merlin-1"
 	h.p.now = func() time.Time { return testNow }
 	h.p.synchronous = true
 	h.p.subscribe()
@@ -843,6 +963,10 @@ func intOpt(name string, v int) *discordgo.ApplicationCommandInteractionDataOpti
 	// Discord sends numbers as float64 over JSON, and IntValue asserts
 	// exactly that.
 	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionInteger, Value: float64(v)}
+}
+
+func boolOpt(name string, v bool) *discordgo.ApplicationCommandInteractionDataOption {
+	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionBoolean, Value: v}
 }
 
 func componentClick(userID, customID string) *discordgo.InteractionCreate {
