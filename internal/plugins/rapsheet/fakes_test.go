@@ -281,6 +281,22 @@ func (f *fakeStore) RecentActioned(_ context.Context, guildID string, since time
 	return out, nil
 }
 
+func (f *fakeStore) GuildEntries(_ context.Context, guildID string, since time.Time, limit int) ([]Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Entry
+	for _, e := range f.entries {
+		if e.GuildID == guildID && e.CreatedAt.After(since) {
+			out = append(out, e)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (f *fakeStore) CaseFile(_ context.Context, guildID, userID string) (CaseFile, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -210,6 +210,9 @@ type Store interface {
 	// RecentActioned lists jail, ban and kick entries since `since`, for the
 	// "joined right after their ban" alt signal.
 	RecentActioned(ctx context.Context, guildID string, since time.Time) ([]Entry, error)
+	// GuildEntries lists every entry in the guild since `since`, newest
+	// first, for the weekly review.
+	GuildEntries(ctx context.Context, guildID string, since time.Time, limit int) ([]Entry, error)
 
 	CaseFile(ctx context.Context, guildID, userID string) (CaseFile, bool, error)
 	// UpsertCaseFile creates the row or refreshes its identity snapshot;
@@ -571,6 +574,28 @@ func (s *pgStore) RecentActioned(ctx context.Context, guildID string, since time
 		e, err := scanEntry(rows)
 		if err != nil {
 			return nil, fmt.Errorf("rapsheet store: recent actioned: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) GuildEntries(ctx context.Context, guildID string, since time.Time, limit int) ([]Entry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+entryCols+` FROM rapsheet_entries
+		WHERE guild_id = $1 AND created_at > $2
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3
+	`, guildID, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("rapsheet store: guild entries: %w", err)
+	}
+	defer rows.Close()
+	var out []Entry
+	for rows.Next() {
+		e, err := scanEntry(rows)
+		if err != nil {
+			return nil, fmt.Errorf("rapsheet store: guild entries: %w", err)
 		}
 		out = append(out, e)
 	}

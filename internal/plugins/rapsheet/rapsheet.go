@@ -86,6 +86,10 @@ type Plugin struct {
 	// jailer is optional: the roles plugin, when wired, so jail bands can be
 	// applied. Nil means they cannot, and say so.
 	jailer Jailer
+	// reviewer is optional: aimod's model, when wired, for summaries, the
+	// weekly review and alt opinions. Nil means every one of those degrades
+	// to its plain form.
+	reviewer Reviewer
 
 	// gate answers "is rapsheet enabled in this guild" for the paths the
 	// CommandRouter's own check never sees: bus events and gateway handlers.
@@ -110,9 +114,10 @@ type Plugin struct {
 	// command or roles' sweep.
 	synchronous bool
 
-	mu              sync.Mutex
-	botID           string
-	sweepRegistered map[string]bool
+	mu               sync.Mutex
+	botID            string
+	sweepRegistered  map[string]bool
+	reviewRegistered map[string]bool
 	// applying holds the suggestions being applied right now, so two mods
 	// clicking Apply together produce one consequence.
 	applying map[int64]bool
@@ -127,8 +132,9 @@ func New(store Store, opsFor OpsProvider, modRoles ModRoles, speaker voice.Sourc
 		speaker:  speaker,
 		now:      time.Now,
 
-		sweepRegistered: make(map[string]bool),
-		applying:        make(map[int64]bool),
+		sweepRegistered:  make(map[string]bool),
+		reviewRegistered: make(map[string]bool),
+		applying:         make(map[int64]bool),
 	}
 }
 
@@ -169,6 +175,7 @@ func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.reconcileSweepJob(ctx, guildID)
+	p.reconcileReviewJob(ctx, guildID)
 }
 
 // ForgetGuild drops bookkeeping when merlin leaves a guild. The rows stay:
@@ -180,6 +187,12 @@ func (p *Plugin) ForgetGuild(guildID string) {
 		delete(p.sweepRegistered, guildID)
 		if err := p.sched.Unregister(sweepKey(guildID)); err != nil {
 			p.log.Error("rapsheet: unregister sweep job", "guild", guildID, "err", err)
+		}
+	}
+	if p.reviewRegistered[guildID] {
+		delete(p.reviewRegistered, guildID)
+		if err := p.sched.Unregister(reviewKey(guildID)); err != nil {
+			p.log.Error("rapsheet: unregister review job", "guild", guildID, "err", err)
 		}
 	}
 }

@@ -119,6 +119,11 @@ func (p *Plugin) registerCommands() {
 				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to unban."), reasonOpt(true)},
 			},
 			{
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "summary",
+				Description: "A short written summary of a member's record, from the guild's AI moderation model.",
+				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Whose record to summarise.")},
+			},
+			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "link",
 				Description: "Say two accounts are the same person. They share one sheet and one score from then on.",
 				Options: []*discordgo.ApplicationCommandOption{
@@ -243,6 +248,7 @@ func (p *Plugin) registerCommands() {
 	// mods to hold it lowers the bar on purpose with set-tier.
 	p.commands.Handle("rapsheet", "ban", core.PermSpec{Tier: core.TierAdmin, Action: actionBan}, p.handleBan)
 	p.commands.Handle("rapsheet", "unban", core.PermSpec{Tier: core.TierAdmin, Action: actionUnban}, p.handleUnban)
+	p.commands.Handle("rapsheet", "summary", core.PermSpec{Tier: core.TierMod, Action: actionSummary}, p.handleSummary)
 	linkSpec := core.PermSpec{Tier: core.TierMod, Action: actionLink}
 	p.commands.Handle("rapsheet", "link", linkSpec, p.handleLink)
 	p.commands.Handle("rapsheet", "unlink", linkSpec, p.handleUnlink)
@@ -749,6 +755,14 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	if n, err := p.store.CountPendingBans(ctx, i.GuildID); err == nil && n > 0 {
 		fmt.Fprintf(&b, "**Temporary bans pending:** %d\n", n)
 	}
+	switch {
+	case p.reviewer == nil:
+		b.WriteString("**Model:** none in this build; summaries and the weekly review are off.\n")
+	case p.reviewRegistered[i.GuildID]:
+		b.WriteString("**Weekly review:** Mondays 09:00 UTC, in the mod channel, on the AI moderation model and budget.\n")
+	default:
+		b.WriteString("**Weekly review:** not running (needs a mode other than off and a mod channel). `/rapsheet summary` still works if AI moderation has a key.\n")
+	}
 	if cfg.ForumChannelID != "" {
 		fmt.Fprintf(&b, "**Case files:** %s\n", core.MentionChannel(cfg.ForumChannelID))
 		if n, err := p.store.CountUnmirrored(ctx, i.GuildID); err == nil && n > 0 {
@@ -880,6 +894,9 @@ func (p *Plugin) handleConfigureMode(ctx context.Context, s *discordgo.Session, 
 	old := cfg.EscalationMode
 	cfg.EscalationMode = mode
 	p.setConfig(ctx, s, i, cfg, "mode", string(old), string(mode))
+	p.mu.Lock()
+	p.reconcileReviewJob(ctx, i.GuildID)
+	p.mu.Unlock()
 	msg := map[Mode]string{
 		ModeOff:     "The ladder is off. Entries are recorded and scored; nothing is suggested or applied.",
 		ModeSuggest: "When a record crosses a band, merlin posts the recommendation to the mod channel with an Apply button.",
@@ -899,6 +916,9 @@ func (p *Plugin) handleConfigureModChannel(ctx context.Context, s *discordgo.Ses
 	old := cfg.ModChannelID
 	cfg.ModChannelID = channelID
 	p.setConfig(ctx, s, i, cfg, "mod_channel", core.MentionChannel(old), core.MentionChannel(channelID))
+	p.mu.Lock()
+	p.reconcileReviewJob(ctx, i.GuildID)
+	p.mu.Unlock()
 	core.RespondOK(s, i, "Mod channel", fmt.Sprintf("Ladder suggestions and alt hints go to %s. Make sure only staff can see it: a suggestion names the member and what they are up for.", core.MentionChannel(channelID)))
 }
 

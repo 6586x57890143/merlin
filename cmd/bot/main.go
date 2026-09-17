@@ -263,6 +263,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// package imports the other.
 	rapsheetPlugin.WithJailer(rolesPlugin)
 	aimodPlugin.WithHistory(rapsheetPlugin)
+	// Summaries, the weekly consistency review and alt second opinions run
+	// on aimod's model, key and budget through one Complete call; a guild
+	// with no key gets the plain versions.
+	rapsheetPlugin.WithReviewer(aimodPlugin)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)

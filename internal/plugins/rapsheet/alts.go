@@ -180,6 +180,16 @@ func (p *Plugin) HandleMemberJoin(_ context.Context, guildID string, m *discordg
 		if best.Score < altNoticeThreshold || cfg.ModChannelID == "" {
 			return
 		}
+		for _, c := range candidates {
+			if c.UserID == best.CandidateID {
+				if op := p.altOpinion(ctx, cfg, joiner, joinedAt, best, c); op != "" {
+					best.Opinion = op
+					if err := p.store.UpsertHint(ctx, best); err != nil {
+						p.log.Error("rapsheet: store alt opinion", "guild", guildID, "err", err)
+					}
+				}
+			}
+		}
 		p.postAltNotice(ctx, cfg, joiner, best)
 	})
 }
