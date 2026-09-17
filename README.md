@@ -108,6 +108,23 @@ Every action is explained to the member in a DM, recorded in the audit log, and
 reversible with `/aimod undo` while the evidence window lasts. Start with
 `/aimod configure mode flag` and watch it for a week before letting it act.
 
+**Rapsheets.** Every warning, jail, timeout, kick, ban and AI removal a member
+collects lands on one per-member record with a case number, whoever or whatever
+decided it, including bans your mods place from Discord's own menus.
+`/rapsheet view @someone` is the sheet; `/rapsheet me` shows a member their own,
+with the moderators anonymised. Entries carry points that fade over a half-life
+you set, and the score they add up to drives a ladder: cross a band and merlin
+posts the recommended consequence to your mod channel with an Apply button, or,
+if you tell it to, applies it (never against staff, never permanently, never on
+top of a moderator's own command). `/rapsheet warn`, `timeout`, `kick` and
+`ban 7d` are the commands; temporary bans lift themselves. Each member on
+record gets a thread in a mod-only forum so there is somewhere to talk next to
+the facts, a moderator can `link` two accounts that are the same person so they
+share one score, and merlin flags a joiner who looks like a return (same avatar,
+same name, minutes after a ban) for a mod to confirm; it never links anyone by
+itself. With AI moderation configured, `/rapsheet summary` writes a paragraph
+from the record and a Monday review points out inconsistent sentencing.
+
 ## Adding it to a server
 
 Invite link (a server admin has to click it):
@@ -409,6 +426,7 @@ event bus.
 | `internal/plugins/roles` | jail and timed role grants |
 | `internal/plugins/aimod` | the AI moderation ladder, its policy files and the tip jar |
 | `internal/plugins/contest` | contests: phases, the entry forum, the prize ledger |
+| `internal/plugins/rapsheet` | the per-member moderation ledger, the escalation ladder, bans, case files, alt hints |
 | `internal/plugins/statistics` | hourly activity and membership counts, `/statistics` |
 | `internal/plugins/adminconfig` | the `/config` command tree |
 | `internal/plugins/ping` | reference plugin, exercises the full lifecycle |

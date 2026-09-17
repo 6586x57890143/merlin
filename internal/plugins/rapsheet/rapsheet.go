@@ -1,5 +1,5 @@
 // Package rapsheet is merlin's per-member moderation ledger (spec.MD §9,
-// Milestone 12).
+// Milestone 13).
 //
 // Every warning, jail, timeout, kick, ban and aimod removal a member collects
 // in a guild lands here as one entry with a case number, whoever or whatever

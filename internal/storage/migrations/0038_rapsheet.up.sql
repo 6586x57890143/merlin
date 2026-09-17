@@ -1,4 +1,4 @@
--- Milestone 12: rapsheets.
+-- Milestone 13: rapsheets.
 --
 -- A per-member moderation ledger. Until now merlin had no moderation history
 -- at all: role_jails is current state and its row is deleted on release,

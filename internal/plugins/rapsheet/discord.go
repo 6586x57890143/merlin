@@ -32,7 +32,7 @@ import (
 
 // HandleAuditLogEntry is called from cmd/bot/main.go for every audit-log
 // entry Discord delivers. botUserID is merlin's own id.
-func (p *Plugin) HandleAuditLogEntry(ctx context.Context, botUserID string, e *discordgo.GuildAuditLogEntryCreate) {
+func (p *Plugin) HandleAuditLogEntry(_ context.Context, botUserID string, e *discordgo.GuildAuditLogEntryCreate) {
 	if e == nil || e.AuditLogEntry == nil || e.ActionType == nil || e.GuildID == "" || e.TargetID == "" || !p.enabled(e.GuildID) {
 		return
 	}
@@ -65,7 +65,6 @@ func (p *Plugin) HandleAuditLogEntry(ctx context.Context, botUserID string, e *d
 			p.mu.Unlock()
 		}
 	})
-	_ = ctx
 }
 
 // auditEntryToEntry translates the audit-log actions this plugin cares

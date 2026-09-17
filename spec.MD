@@ -407,7 +407,7 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 
 | 6 | Audit/Admin | Whatever isn't already covered by `/config` (§4a) — e.g. a richer `/config status`/health-check dashboard command, historical audit-log search/export |
 
-| 7 | Reporting | Human-triage report routing |
+| 7 | Reporting | Human-triage report routing. The "suggest, a human clicks" half is delivered by Milestone 13's ladder in suggest mode; what remains is routing member-filed reports |
 
 | 8 | Export (future) | Archived channel export to JSON/HTML before deletion, if still wanted |
 
@@ -420,6 +420,8 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 | 11 | Contests (delivered ahead of Factions/Reporting) | `internal/plugins/contest` — announce, submit, vote and results phases on one per-guild Scheduler tick, with entries arriving as posts in a Discord forum channel merlin creates per contest (so Discord's own CDN hosts every file for free and the bot stores none of them), gated by mirroring the view permissions of a channel the guild already gates the way it wants rather than by a role list this bot would then have to keep in step, a prize ledger whose redeemable codes are sealed at rest with `internal/secret` and DMed to the winner then wiped, and a Cloudflare Worker serving the gallery and the ballot. merlin stays outbound-only: it pushes a full snapshot and asks for a tally, and the Worker cannot make it do anything |
 
 | 12 | Whisper (withdrawn) | Shipped, then removed: letting a Discord-restricted account post through the bot works around a Discord-imposed restriction and is against Discord's Terms of Service. The code is preserved at git tag `whisper-final`; `settings.Store.DefaultOff` and migration 0034 (`enabled_plugins`) stay, as the opt-in mechanism any later member-facing plugin will need. |
+
+| 13 | Rapsheets (delivered ahead of Factions/Reporting) | `internal/plugins/rapsheet` \- a per-member moderation ledger every warning, jail, timeout, kick, ban and aimod removal lands in, with case numbers, points that decay over a guild-set half-life, and a band ladder that suggests (default) or applies the next consequence, never against staff and never a permanent ban. roles and aimod report to it over `core.EventBus`; aimod's own ladder counts priors from it. Temporary bans lifted by a per-guild sweep; bans, kicks and timeouts done through Discord's own client ingested from `GUILD_AUDIT_LOG_ENTRY_CREATE`; a mod-only forum with one post per member on record; moderator-confirmed account links with join-time alt hints that never link by themselves; and, on aimod's model and budget, per-member summaries, a weekly consistency review and a second opinion on hints |
 
 
 
