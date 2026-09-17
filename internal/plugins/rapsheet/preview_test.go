@@ -20,7 +20,7 @@ import (
 // for a Discord-style renderer to draw and a reviewer to look at.
 //
 // Not a test of anything on its own. It is the input to the visual review
-// pass (scripts/rapsheet-preview/), and skips unless RAPSHEET_PREVIEW_DIR
+// pass (scripts/rapsheet-preview.sh), and skips unless RAPSHEET_PREVIEW_DIR
 // says where to write, so `go test ./...` is unaffected.
 
 type previewScene struct {
