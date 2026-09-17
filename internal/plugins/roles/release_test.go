@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // fakeTimers stands in for time.AfterFunc: it records each armed delay and
@@ -200,7 +202,7 @@ func TestClaimedRowIsLeftToTheFirstCaller(t *testing.T) {
 	if !p.claim(jailKey("g1", "u1")) {
 		t.Fatal("first claim should succeed")
 	}
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec); !errors.Is(err, errReleaseInProgress) {
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); !errors.Is(err, errReleaseInProgress) {
 		t.Fatalf("second caller should report the row as in progress, got %v", err)
 	}
 	if len(ops.memberEditCalls["u1"]) != 0 {
@@ -210,7 +212,7 @@ func TestClaimedRowIsLeftToTheFirstCaller(t *testing.T) {
 		t.Fatal("second caller must not untrack the row the first is working on")
 	}
 	p.unclaim(jailKey("g1", "u1"))
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec); err != nil {
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail after unclaim: %v", err)
 	}
 	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {

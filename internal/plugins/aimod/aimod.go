@@ -150,6 +150,10 @@ type Plugin struct {
 	// and any build without one run as, and the plugin is otherwise
 	// unaffected. See calibrate.go.
 	sched core.Scheduler
+	// bus carries every removal and reversal out to whoever keeps a ledger
+	// (the rapsheet plugin), without this package knowing who. Nil in tests
+	// that do not care, and publish tolerates that.
+	bus *core.EventBus
 	log   *slog.Logger
 	now   func() time.Time
 
@@ -356,6 +360,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.commands = deps.Commands
 	p.privilege = deps.Perms
 	p.sched = deps.Scheduler
+	p.bus = deps.Bus
 
 	p.registerCommands()
 	return nil

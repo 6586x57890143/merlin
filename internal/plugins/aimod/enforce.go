@@ -102,7 +102,8 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 		inc.Content = c.Content
 		inc.Replacement = v.Rewrite
 	}
-	if _, err := p.store.RecordIncident(ctx, inc); err != nil {
+	incidentID, err := p.store.RecordIncident(ctx, inc)
+	if err != nil {
 		p.log.Error("aimod: record incident, taking no action",
 			"guild", cfg.GuildID, "channel", c.ChannelID, "message", c.MessageID, "err", err)
 		return
@@ -116,7 +117,6 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 		return
 	}
 
-	var err error
 	switch action {
 	case ActionRemove:
 		err = p.removeMessage(ctx, cfg.GuildID, c)
@@ -129,6 +129,7 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	switch {
 	case err == nil:
 		p.audit(ctx, cfg.GuildID, auditAction, c, bucket, v)
+		p.publishRemoval(ctx, cfg.GuildID, incidentID, c, action, bucket, v)
 		p.notifyAuthor(ctx, cfg, c, action, v)
 		// Only after the message was actually dealt with. Jailing somebody
 		// over a removal that failed would punish them for something still

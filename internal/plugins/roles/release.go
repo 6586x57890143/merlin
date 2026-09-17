@@ -139,7 +139,7 @@ func (p *Plugin) fireJailRelease(guildID, userID string) {
 	if p.dryRun(guildID) {
 		return
 	}
-	if err := p.releaseJail(ctx, guildID, userID, rec); err != nil && !discordguard.Skipped(err) && !errors.Is(err, errReleaseInProgress) {
+	if err := p.releaseJail(ctx, guildID, userID, rec, core.ActorSystem); err != nil && !discordguard.Skipped(err) && !errors.Is(err, errReleaseInProgress) {
 		p.log.Error("roles: release timer: release failed, sweep will retry", "guild", guildID, "user", userID, "err", err)
 	}
 }

@@ -3,6 +3,7 @@ package roles
 import (
 	"context"
 	"errors"
+	"github.com/6586x57890143/merlin/internal/core"
 	"strings"
 	"testing"
 	"time"
@@ -87,7 +88,7 @@ func TestAFailedDMDoesNotFailTheRelease(t *testing.T) {
 	ops.setMember("g1", "u1", []string{"jail-role"})
 	store.jails[jailKey("g1", "u1")] = rec
 
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec); err != nil {
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
 		t.Fatalf("a member with DMs closed made the release fail: %v", err)
 	}
 	if _, ok := store.jails[jailKey("g1", "u1")]; ok {

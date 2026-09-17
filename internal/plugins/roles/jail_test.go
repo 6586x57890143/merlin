@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // TestReleaseJailRestoresSnapshotFilteredToExistingRoles verifies release
@@ -26,7 +28,7 @@ func TestReleaseJailRestoresSnapshotFilteredToExistingRoles(t *testing.T) {
 		SnapshotRoleIDs: []string{"role-a", "role-b"},
 		JailRoleID:      "jail-role",
 	}
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec); err != nil {
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
 
@@ -50,7 +52,7 @@ func TestReleaseJailConfusedDeputyRescue(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	rec := JailRecord{GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a"}, JailRoleID: "jail-role"}
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec); err != nil {
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
 
@@ -71,7 +73,7 @@ func TestReleaseJailMemberGoneCleansUpRecord(t *testing.T) {
 	_ = p.store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role"})
 
 	rec, _, _ := p.store.GetJail(context.Background(), "g1", "u1")
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec); err != nil {
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
 	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
@@ -163,7 +165,7 @@ func TestReleaseJailKeepsTrackingOnTransientFetchFailure(t *testing.T) {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec); err == nil {
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err == nil {
 		t.Fatal("expected releaseJail to report the transient fetch failure")
 	}
 	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); !ok {
@@ -172,7 +174,7 @@ func TestReleaseJailKeepsTrackingOnTransientFetchFailure(t *testing.T) {
 
 	// Discord recovers: the next sweep releases them properly.
 	ops.memberFetchErr = nil
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec); err != nil {
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
 		t.Fatalf("retry releaseJail: %v", err)
 	}
 	m, _ := ops.GuildMember("g1", "u1")

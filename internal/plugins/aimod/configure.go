@@ -514,6 +514,23 @@ func (p *Plugin) handleUndo(ctx context.Context, s *discordgo.Session, i *discor
 		_ = core.FollowUpErr(s, i, "Could not undo it", err)
 		return
 	}
+	// The sanction that followed the removal is a separate row under
+	// <message>:sanction, and it used to stay live after an undo: the
+	// message came back and the jail behind it went on counting as a prior
+	// against every future sentence. Reversing the offence reverses the
+	// record of its consequence too.
+	if sanc, err := p.store.IncidentByMessage(ctx, i.GuildID, messageID+":sanction"); err == nil && !sanc.Undone {
+		if err := p.store.MarkUndone(ctx, sanc.ID); err != nil {
+			p.log.Error("aimod: mark sanction undone", "guild", i.GuildID, "incident", sanc.ID, "err", err)
+		}
+	} else if err != nil && !errors.Is(err, ErrNoIncident) {
+		p.log.Error("aimod: look up sanction for undo", "guild", i.GuildID, "message", messageID, "err", err)
+	}
+	undoneBy := ""
+	if i.Member != nil && i.Member.User != nil {
+		undoneBy = i.Member.User.ID
+	}
+	p.publishReversed(ctx, i.GuildID, inc.ID, undoneBy)
 	p.auditConfig(ctx, i, "aimod.undone", messageID, string(inc.Bucket)+" in "+core.MentionChannel(inc.ChannelID))
 
 	if err := core.FollowUpOK(s, i, "Undone",

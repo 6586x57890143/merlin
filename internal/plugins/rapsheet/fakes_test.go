@@ -582,6 +582,10 @@ func (v *fixedVoice) Line(_ context.Context, _ string, k voice.Key, _ map[string
 	return v.line
 }
 
+type fakeGate struct{ disabled map[string]bool }
+
+func (g fakeGate) PluginEnabled(guildID, _ string) bool { return !g.disabled[guildID] }
+
 type fakeModRoles []string
 
 func (m fakeModRoles) ModRoleIDs(string) []string { return m }
@@ -613,6 +617,8 @@ func newHarness() *harness {
 	h.p.perms = h.ranker
 	h.p.bus = h.bus
 	h.p.now = func() time.Time { return testNow }
+	h.p.syncIngest = true
+	h.p.subscribe()
 	return h
 }
 

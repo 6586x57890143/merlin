@@ -65,8 +65,8 @@ type fakeOps struct {
 	guildErr error
 	// guildOwner is Guild's OwnerID, for the owner-or-operator gate.
 	guildOwner string
-	dmErr    error
-	dmSends  []sentDM
+	dmErr      error
+	dmSends    []sentDM
 
 	roleAddCalls    []string // "guildID:userID:roleID"
 	roleRemoveCalls []string

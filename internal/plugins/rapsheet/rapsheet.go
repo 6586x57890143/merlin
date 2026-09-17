@@ -85,6 +85,11 @@ type Plugin struct {
 	// mirroring the Scheduler's own hook.
 	now func() time.Time
 
+	// syncIngest makes bus-driven writes happen on the publisher's goroutine
+	// instead of a detached one. Tests only: production leaves it false so a
+	// slow forum post never holds roles' sweep.
+	syncIngest bool
+
 	mu    sync.Mutex
 	botID string
 }
@@ -122,6 +127,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 		p.botID = deps.Session.State.User.ID
 	}
 	p.registerCommands()
+	p.subscribe()
 	return nil
 }
 

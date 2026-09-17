@@ -99,5 +99,6 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 		return fmt.Errorf("roles: extend jail: %w", err)
 	}
 	p.armJailRelease(guildID, userID, releaseAt)
+	p.publishResentenced(ctx, guildID, userID, core.ActorSystem, reason, duration)
 	return nil
 }
