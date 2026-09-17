@@ -162,7 +162,7 @@ func TestWritePreviews(t *testing.T) {
 	fromSend("DM to the member: warned", "dm", h.ops.sentTo("dm-u1"))
 	fromSend("Case file: the mirrored entry", "thread", h.ops.sentTo("t-1"))
 
-	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "u6", CandidateID: "u1", Signals: []string{"same avatar", "joined 12 minutes after being jailed 8h"}, Score: 5})
+	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "1417880000000000000", CandidateID: "u1", Signals: []string{"same avatar", "joined 12 minutes after " + core.MentionUser("u1") + " was jailed 8h"}, Score: 5})
 	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "u1", GroupID: "u1", LinkedBy: modID})
 	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "u5", GroupID: "u1", LinkedBy: modID, Reason: "admitted it"})
 
@@ -277,10 +277,12 @@ func TestWritePreviews(t *testing.T) {
 	// 8. Alt hints and links.
 	h.ops.addMember("u6")
 	h.ops.users["u6"] = &discordgo.User{ID: "u6", Username: "danak2", Avatar: "abc123"}
-	hint := AltHint{GuildID: testGuild, UserID: "u6", CandidateID: "u1", Signals: []string{"same avatar", "joined 12 minutes after being jailed 8h"}, Score: 5}
-	embed, comps := altNoticeEmbed(h.ops.users["u6"], hint, h.p.altContext(ctx, cfg, hint), "", false)
+	newcomer := "1417880000000000000" // a snowflake, so the account-age line renders
+	h.ops.users[newcomer] = &discordgo.User{ID: newcomer, Username: "danak2", Avatar: "abc123"}
+	hint := AltHint{GuildID: testGuild, UserID: newcomer, CandidateID: "u1", Signals: []string{"same avatar", "joined 12 minutes after " + core.MentionUser("u1") + " was jailed 8h"}, Score: 5}
+	embed, comps := altNoticeEmbed(h.ops.users[newcomer], hint, h.p.altContext(ctx, cfg, hint), "", false)
 	add("Mod channel: a possible alt on join", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
-	embed, comps = altNoticeEmbed(h.ops.users["u6"], hint, "", "Linked by "+core.MentionUser(modID)+". They now share one sheet.", true)
+	embed, comps = altNoticeEmbed(h.ops.users[newcomer], hint, "", "Linked by "+core.MentionUser(modID)+". They now share one sheet.", true)
 	add("Mod channel: the same notice after Link", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
 	s, rt = stubSession()
 	h.p.handleLink(ctx, s, interaction("link", userOpt("user", "u6"), userOpt("other", "u1"), strOpt("reason", "same avatar, rejoined minutes after the ban")))
@@ -291,6 +293,26 @@ func TestWritePreviews(t *testing.T) {
 	s, rt = stubSession()
 	h.p.handleConfigureAltHints(ctx, s, interaction("configure/alt-hints", boolOpt("enabled", false)))
 	fromRT("/rapsheet configure alt-hints off", rt)
+
+	// 9. The model surfaces, with a scripted reviewer.
+	rev := &fakeReviewer{out: "Dana has four scored entries in the last six weeks: a spam warning in early August, an automatic hate speech removal twelve days ago that carried an eight hour jail, and a server rule warning today for arguing with moderators. One threats warning was voided as a misread. The pattern is escalating in frequency rather than severity, with the last two inside a fortnight. At 67 points the record sits in the jail 2h band."}
+	h.p.reviewer = rev
+	s, rt = stubSession()
+	h.p.handleSummary(ctx, s, withResolved(interaction("summary", userOpt("user", "u1")), dana))
+	fromRT("/rapsheet summary: written by the model", rt)
+	h.p.reviewer = &fakeReviewer{err: noModel{"aimod: the daily model budget for this guild is spent"}}
+	s, rt = stubSession()
+	h.p.handleSummary(ctx, s, withResolved(interaction("summary", userOpt("user", "u1")), dana))
+	fromRT("/rapsheet summary: model unavailable, the sheet instead", rt)
+	h.p.reviewer = &fakeReviewer{out: "Spam was handled three ways this month: a 10 point warning (#1), a 60 point warning (#9) and nothing at all where the ladder reached jail 2h for a second member. Two entries carry no reason beyond a single word. Voids are spread across moderators and days. Otherwise the month reads consistently."}
+	h.p.SyncGuild(ctx, testGuild)
+	if err := h.sched.RunNow(ctx, reviewKey(testGuild)); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	fromSend("Mod channel: the Monday review", "channel", h.ops.sentTo("mods"))
+	hint.Opinion = "Strong. An identical uploaded avatar is the best signal a bot can see, and joining twelve minutes after the jail fits a return. Worth checking whether they pick up the same conversations."
+	embed, comps = altNoticeEmbed(h.ops.users[newcomer], hint, h.p.altContext(ctx, cfg, hint), "", false)
+	add("Mod channel: a possible alt, with the model's second opinion", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

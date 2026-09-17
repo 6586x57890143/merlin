@@ -81,7 +81,7 @@ func altSignals(joiner *discordgo.User, joinedAt time.Time, candidate CaseFile, 
 	}
 	if recentAction != nil && !joinedAt.IsZero() {
 		if d := joinedAt.Sub(recentAction.CreatedAt); d >= 0 && d < joinedAfterAction {
-			signals, score = append(signals, fmt.Sprintf("joined %s after being %s", humanGap(d), kindWords(*recentAction))), score+2
+			signals, score = append(signals, fmt.Sprintf("joined %s after %s was %s", humanGap(d), core.MentionUser(candidate.UserID), kindWords(*recentAction))), score+2
 		}
 	}
 	return signals, score
@@ -235,7 +235,7 @@ func altNoticeEmbed(joiner *discordgo.User, h AltHint, context, note string, set
 		desc += "\n\n" + context
 	}
 	if h.Opinion != "" {
-		desc += "\n\n**Second opinion:** " + h.Opinion
+		desc += "\n\n**A model's read:** " + h.Opinion
 	}
 	if !settled {
 		desc += "\n\nLinking them puts both accounts on one sheet with one score. If this is a coincidence, dismiss it; nothing happens either way until somebody clicks."

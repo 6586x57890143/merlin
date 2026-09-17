@@ -98,7 +98,7 @@ func writeHeader(b *strings.Builder, v sheetView) {
 		if v.Sheet.Rec.Action != ActionNone {
 			fmt.Fprintf(b, " · **Band:** %s", recWords(v.Sheet.Rec))
 		}
-		fmt.Fprintf(b, " · %d entries · half-life %s", len(v.Sheet.Entries), core.FormatDuration(v.Config.HalfLife))
+		fmt.Fprintf(b, " · %s · half-life %s", plural(len(v.Sheet.Entries), "entry", "entries"), core.FormatDuration(v.Config.HalfLife))
 	}
 	b.WriteString("\n")
 	if v.ForMember && v.Sheet.Rec.Action != ActionNone {
@@ -201,6 +201,13 @@ const (
 	maxReasonShown     = 150
 	maxVoidReasonShown = 100
 )
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
 
 func clip(s string, n int) string {
 	if len(s) <= n {

@@ -51,7 +51,7 @@ func TestAltSignalsScoreEachCueSeparately(t *testing.T) {
 		}
 	}
 	// The join-after signal names the sanction and the gap, never a template.
-	if signals, _ := altSignals(&discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "zed"}, join, onFile, at(join.Add(-5*time.Minute))); len(signals) != 1 || signals[0] != "joined 5 minutes after being banned 7d" {
+	if signals, _ := altSignals(&discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "zed"}, join, onFile, at(join.Add(-5*time.Minute))); len(signals) != 1 || signals[0] != "joined 5 minutes after <@"+onFile.UserID+"> was banned 7d" {
 		t.Errorf("signal text = %v", signals)
 	}
 	// An empty avatar on file never matches an empty one on the joiner.

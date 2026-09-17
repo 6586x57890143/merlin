@@ -67,7 +67,7 @@ func TestSummaryDegradesToTheSheetWithoutAModel(t *testing.T) {
 	h.p.reviewer = &fakeReviewer{err: noModel{"aimod: no gateway key configured for this guild"}}
 	s2, rt2 := stubSession()
 	h.p.handleSummary(context.Background(), s2, interaction("summary", userOpt("user", "u1")))
-	if !strings.Contains(rt2.said(), "no gateway key") || !strings.Contains(rt2.said(), "#1 warned") {
+	if !strings.Contains(rt2.said(), "no model key is configured") || strings.Contains(rt2.said(), "aimod:") || !strings.Contains(rt2.said(), "#1 warned") {
 		t.Errorf("got %s", rt2.said())
 	}
 
@@ -155,7 +155,7 @@ func TestAltNoticeCarriesASecondOpinionWhenThereIsAModel(t *testing.T) {
 	h.p.HandleMemberJoin(context.Background(), testGuild, &discordgo.Member{
 		User: &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "danak2", Avatar: "abc123"}, JoinedAt: testNow.Add(2 * time.Minute)})
 	posts := h.ops.sentTo("mods")
-	if len(posts) != 1 || !strings.Contains(posts[0].Embeds[0].Description, "Second opinion") || !strings.Contains(posts[0].Embeds[0].Description, "Strong:") {
+	if len(posts) != 1 || !strings.Contains(posts[0].Embeds[0].Description, "A model's read") || !strings.Contains(posts[0].Embeds[0].Description, "Strong:") {
 		t.Fatalf("posts = %+v", posts)
 	}
 	if strings.Contains(rev.lastUsr, "<@") {
@@ -169,7 +169,7 @@ func TestAltNoticeCarriesASecondOpinionWhenThereIsAModel(t *testing.T) {
 	rev.err = errors.New("exploded")
 	h.p.HandleMemberJoin(context.Background(), testGuild, &discordgo.Member{
 		User: &discordgo.User{ID: snowflakeAt(base.Add(72 * time.Hour)), Username: "danak3", Avatar: "abc123"}, JoinedAt: testNow.Add(3 * time.Minute)})
-	if posts := h.ops.sentTo("mods"); len(posts) != 2 || strings.Contains(posts[1].Embeds[0].Description, "Second opinion") {
+	if posts := h.ops.sentTo("mods"); len(posts) != 2 || strings.Contains(posts[1].Embeds[0].Description, "A model's read") {
 		t.Errorf("second notice = %+v", posts)
 	}
 }

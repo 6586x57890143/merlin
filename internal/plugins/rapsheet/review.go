@@ -167,7 +167,7 @@ func (p *Plugin) handleSummary(ctx context.Context, s *discordgo.Session, i *dis
 	out, err := p.reviewer.Complete(cctx, i.GuildID, summarySystem, user)
 	if err != nil {
 		if unavailable(err) {
-			p.plainInsteadOfSummary(ctx, s, i, cfg, userID, name, err.Error())
+			p.plainInsteadOfSummary(ctx, s, i, cfg, userID, name, unavailableWords(err))
 			return
 		}
 		_ = core.FollowUpErr(s, i, "Summary", fmt.Errorf("the model did not answer: %w", err))
@@ -175,11 +175,41 @@ func (p *Plugin) handleSummary(ctx context.Context, s *discordgo.Session, i *dis
 	}
 	embed := core.NewEmbed(core.ColorInfo, "Summary: "+name, core.TruncateEmbedDescription(strings.TrimSpace(out)),
 		&discordgo.MessageEmbedField{Name: "Score", Value: fmt.Sprintf("%.0f (%s)", sh.Score, recWords(sh.Rec)), Inline: true},
-		&discordgo.MessageEmbedField{Name: "Entries", Value: fmt.Sprintf("%d", len(sh.Entries)), Inline: true},
-		&discordgo.MessageEmbedField{Name: "Written by", Value: "a model, from the record above; `/rapsheet view` is the record itself"})
+		&discordgo.MessageEmbedField{Name: "Entries", Value: entryCountWords(sh.Entries), Inline: true},
+		&discordgo.MessageEmbedField{Name: "Written by", Value: "a model, from this member's record; `/rapsheet view` is the record itself"})
 	if err := core.FollowUpEmbed(s, i, embed); err != nil {
 		p.log.Error("rapsheet: summary follow-up", "err", err)
 	}
+}
+
+// unavailableWords turns the reviewer's "cannot run" error into a sentence
+// for the screen. The error text is a Go error with a package prefix, which
+// is right for a log and wrong for a moderator.
+func unavailableWords(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "budget"):
+		return "the daily model budget for this server is spent; it resets at midnight UTC."
+	case strings.Contains(msg, "key"):
+		return "no model key is configured for this server; `/aimod configure key` sets one."
+	}
+	return "the model is not available for this server right now."
+}
+
+// entryCountWords is the Entries field: scored offences apart from the
+// rest, since a mod reads "9 entries" as nine offences and three of them
+// may be a note, a void and a ladder row.
+func entryCountWords(entries []Entry) string {
+	scored := 0
+	for _, e := range entries {
+		if e.Points > 0 && !e.Voided() {
+			scored++
+		}
+	}
+	if scored == len(entries) {
+		return fmt.Sprintf("%d", len(entries))
+	}
+	return fmt.Sprintf("%d (%d scored)", len(entries), scored)
 }
 
 // plainInsteadOfSummary renders the sheet the ordinary way with a line
@@ -266,12 +296,12 @@ func (p *Plugin) weeklyReview(ctx context.Context, guildID string) error {
 		return fmt.Errorf("rapsheet review: %w", err)
 	}
 	out = strings.TrimSpace(out)
-	if len(out) > reviewMaxChars {
-		out = out[:reviewMaxChars-3] + "..."
+	if r := []rune(out); len(r) > reviewMaxChars {
+		out = string(r[:reviewMaxChars-3]) + "..."
 	}
-	embed := core.NewEmbed(core.ColorInfo, "Weekly rapsheet review",
-		fmt.Sprintf("%d entries in the last 30 days. What a model reading them noticed:\n\n%s\n\n"+
-			"Read it as a prompt to look, not a verdict; `/rapsheet view` is the record.", len(entries), out))
+	embed := core.NewEmbed(core.ColorInfo, "Weekly rapsheet review: the last 30 days",
+		fmt.Sprintf("%d entries in the last 30 days, so most of this week's post overlaps last week's on purpose: a pattern is a month long, not a week. What a model reading them noticed:\n\n%s\n\n"+
+			"Read it as a prompt to look, not a verdict. `/rapsheet view` is the record, and a case number is the entry's line on the sheet and in the case-file thread.", len(entries), out))
 	if _, err := p.ops(guildID).ChannelMessageSendComplex(cfg.ModChannelID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{embed}, Files: core.EmbedFiles(embed),
 	}); err != nil {
@@ -290,8 +320,11 @@ func (p *Plugin) altOpinion(ctx context.Context, cfg Config, joiner *discordgo.U
 	if p.reviewer == nil {
 		return ""
 	}
+	// The signal text names the account on record by mention for the mod
+	// channel; the model gets the same fact without the id.
+	signals := strings.ReplaceAll(strings.Join(h.Signals, "; "), core.MentionUser(candidate.UserID), "the account on record")
 	var b strings.Builder
-	fmt.Fprintf(&b, "Signals the bot found: %s (score %d).\n", strings.Join(h.Signals, "; "), h.Score)
+	fmt.Fprintf(&b, "Signals the bot found: %s (score %d).\n", signals, h.Score)
 	if made, err := discordgo.SnowflakeTimestamp(joiner.ID); err == nil {
 		fmt.Fprintf(&b, "Joiner's account was created %s and joined %s.\n", agoWords(joinedAt.Sub(made)), agoWords(p.now().Sub(joinedAt)))
 	}
