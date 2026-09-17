@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -61,12 +63,12 @@ func TestFinalizeRejectsSubcommandWithNoHandler(t *testing.T) {
 func TestFinalizePassesForFullyWiredTree(t *testing.T) {
 	r, _ := newTestRouter()
 	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{
-		Name: "foo",
+		Name: "foo", Description: "a test command",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "grp",
+				Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "grp", Description: "a group",
 				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf"},
+					{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf", Description: "a leaf"},
 				},
 			},
 		},
@@ -264,4 +266,47 @@ func TestModalValuesReadsEveryFieldAndToleratesJunk(t *testing.T) {
 	if _, ok := got["not-a-field"]; ok {
 		t.Error("a non-text component was read as a field")
 	}
+}
+
+// Discord rejects a whole BulkOverwrite over one bad definition, and the
+// guild silently keeps its old command set. Finalize refuses those at
+// startup instead. Each case is one thing Discord would 400 on.
+func TestFinalizeRefusesWhatDiscordWouldReject(t *testing.T) {
+	long := strings.Repeat("x", 101)
+	cases := map[string]*discordgo.ApplicationCommand{
+		"empty description": {Name: "foo", Description: ""},
+		"long description":  {Name: "foo", Description: long},
+		"uppercase name":    {Name: "Foo", Description: "d"},
+		"long option desc":  {Name: "foo", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf", Description: long}}},
+		"too many choices":  {Name: "foo", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionString, Name: "pick", Description: "d", Choices: make26()}}}}},
+		"long choice name":  {Name: "foo", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionString, Name: "pick", Description: "d", Choices: []*discordgo.ApplicationCommandOptionChoice{{Name: long, Value: "v"}}}}}}},
+		"too many options":  {Name: "foo", Description: "d", Options: make26Subcommands()},
+	}
+	for name, cmd := range cases {
+		r, _ := newTestRouter()
+		r.RegisterCommand("testplugin", cmd)
+		noop := func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {}
+		for _, path := range leafPaths(cmd) {
+			r.Handle("foo", path, PermSpec{Tier: TierPublic}, noop)
+		}
+		if err := r.Finalize(); err == nil {
+			t.Errorf("%s: Finalize accepted a command Discord would reject", name)
+		}
+	}
+}
+
+func make26() []*discordgo.ApplicationCommandOptionChoice {
+	out := make([]*discordgo.ApplicationCommandOptionChoice, 26)
+	for i := range out {
+		out[i] = &discordgo.ApplicationCommandOptionChoice{Name: fmt.Sprintf("c%d", i), Value: fmt.Sprintf("v%d", i)}
+	}
+	return out
+}
+
+func make26Subcommands() []*discordgo.ApplicationCommandOption {
+	out := make([]*discordgo.ApplicationCommandOption, 26)
+	for i := range out {
+		out[i] = &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionSubCommand, Name: fmt.Sprintf("s%d", i), Description: "d"}
+	}
+	return out
 }
