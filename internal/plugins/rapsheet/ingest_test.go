@@ -125,7 +125,7 @@ func TestTheSubscriptionIsMadeAtInit(t *testing.T) {
 	if err := fresh.Init(core.Deps{Bus: bus, Commands: router, Logger: quietLog(), Audit: h.audit}); err != nil {
 		t.Fatal(err)
 	}
-	fresh.syncIngest = true
+	fresh.synchronous = true
 	bus.Publish(context.Background(), core.Event{Type: core.EventModerationAction, GuildID: testGuild,
 		Payload: core.ModerationActionPayload{UserID: "u1", Kind: "jail", ActorID: modID, Source: "roles"}})
 	if n := len(h.store.all()); n != 1 {

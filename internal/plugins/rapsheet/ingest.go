@@ -120,11 +120,12 @@ func (p *Plugin) handleModerationReversed(_ context.Context, ev core.Event) {
 		if reason == "" {
 			reason = "reversed"
 		}
-		if err := p.store.Void(ctx, ev.GuildID, e.ID, by, reason, p.now()); err != nil {
+		now := p.now()
+		if err := p.store.Void(ctx, ev.GuildID, e.ID, by, reason, now); err != nil {
 			p.log.Error("rapsheet: void reversed entry", "guild", ev.GuildID, "case", e.ID, "err", err)
 			return
 		}
-		e.VoidedBy, e.VoidReason = by, reason
+		e.VoidedAt, e.VoidedBy, e.VoidReason = &now, by, reason
 		p.afterAmend(ctx, e)
 	})
 }
@@ -143,7 +144,7 @@ func (p *Plugin) detached(fn func(ctx context.Context)) {
 		defer cancel()
 		fn(ctx)
 	}
-	if p.syncIngest {
+	if p.synchronous {
 		run()
 		return
 	}

@@ -105,6 +105,25 @@ func (p *Plugin) registerCommands() {
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "status",
 				Description: "How rapsheets are set up in this server.",
 			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "configure",
+				Description: "Set up rapsheets for this server.",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "forum",
+						Description: "Where case files live. Pick an existing forum, or leave it out and merlin creates #rapsheets for the mod roles.",
+						Options: []*discordgo.ApplicationCommandOption{{
+							Type: discordgo.ApplicationCommandOptionChannel, Name: "channel",
+							Description:  "An existing forum channel. Its permissions are left exactly as they are.",
+							ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildForum},
+						}},
+					},
+					{
+						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "show",
+						Description: "The current configuration.",
+					},
+				},
+			},
 		},
 	}
 	p.commands.RegisterCommand(p.Name(), cmd)
@@ -119,6 +138,9 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("rapsheet", "list/categories", view, p.handleListCategories)
 	p.commands.Handle("rapsheet", "list/bands", view, p.handleListBands)
 	p.commands.Handle("rapsheet", "status", view, p.handleStatus)
+	admin := core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}
+	p.commands.Handle("rapsheet", "configure/forum", admin, p.handleConfigureForum)
+	p.commands.Handle("rapsheet", "configure/show", admin, p.handleConfigureShow)
 
 	p.commands.HandleComponent(p.Name(), viewPrefix, view, p.handleViewPage)
 	p.commands.HandleComponent(p.Name(), mePrefix, core.PermSpec{Tier: core.TierPublic, Action: actionMe}, p.handleMePage)
@@ -447,11 +469,12 @@ func (p *Plugin) handleVoid(ctx context.Context, s *discordgo.Session, i *discor
 		_ = core.FollowUpErr(s, i, "Void", fmt.Errorf("case #%d is a ban still in force; unban first", e.ID))
 		return
 	}
-	if err := p.store.Void(ctx, i.GuildID, e.ID, actorID(i), reason, p.now()); err != nil {
+	now := p.now()
+	if err := p.store.Void(ctx, i.GuildID, e.ID, actorID(i), reason, now); err != nil {
 		_ = core.FollowUpErr(s, i, "Void", err)
 		return
 	}
-	e.VoidedBy, e.VoidReason = actorID(i), reason
+	e.VoidedAt, e.VoidedBy, e.VoidReason = &now, actorID(i), reason
 	p.afterAmend(ctx, e)
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.void", "",
 		fmt.Sprintf("case #%d user=%s was %s reason=%q", e.ID, core.MentionUser(e.UserID), kindWords(e), reason)); err != nil {
@@ -496,11 +519,9 @@ func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discor
 }
 
 // afterAmend is everything that follows a void or edit and must not fail
-// it. Filled in by the case-file slice: the mirrored message is edited in
-// place rather than posted again.
+// it: the mirrored message is edited in place rather than posted again.
 func (p *Plugin) afterAmend(ctx context.Context, e Entry) {
-	_ = ctx
-	_ = e
+	p.remirror(p.config(ctx, e.GuildID), e)
 }
 
 // --- list / status ----------------------------------------------------------
@@ -564,4 +585,87 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		return
 	}
 	core.RespondInfo(s, i, "Rapsheet status", b.String())
+}
+
+// --- configure --------------------------------------------------------------
+
+// handleConfigureForum points case files at a forum, creating one when none
+// is given. Choosing an existing forum changes nothing about its
+// permissions, exactly as /config setup's pickers do: if it is visible to
+// @everyone, the sheet is public, and the response says so.
+func (p *Plugin) handleConfigureForum(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if err := core.DeferResponse(s, i); err != nil {
+		p.log.Error("rapsheet: defer configure forum", "err", err)
+		return
+	}
+	cfg := p.config(ctx, i.GuildID)
+	var (
+		forum *discordgo.Channel
+		err   error
+		made  bool
+	)
+	if a, ok := core.LeafArgs(i)["channel"]; ok {
+		forum, err = p.ops(i.GuildID).Channel(a.Value.(string))
+		if err == nil && forum.Type != discordgo.ChannelTypeGuildForum {
+			err = fmt.Errorf("%s is not a forum channel", core.MentionChannel(forum.ID))
+		}
+	} else {
+		forum, err = p.createForum(i.GuildID)
+		made = true
+	}
+	if err != nil {
+		_ = core.FollowUpErr(s, i, "Case files", err)
+		return
+	}
+	old := cfg.ForumChannelID
+	cfg.ForumChannelID = forum.ID
+	if err := p.store.SetConfig(ctx, cfg); err != nil {
+		_ = core.FollowUpErr(s, i, "Case files", err)
+		return
+	}
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.configured",
+		core.MentionChannel(old), "forum="+core.MentionChannel(forum.ID)); err != nil {
+		p.log.Error("rapsheet: audit configure forum", "guild", i.GuildID, "err", err)
+	}
+	msg := fmt.Sprintf("Case files will be kept in %s. Each member gets a post the first time they are on record.", core.MentionChannel(forum.ID))
+	if made {
+		msg += " It is hidden from @everyone and readable by the mod roles."
+	} else {
+		msg += " Its permissions were left as they are: make sure only staff can see it."
+	}
+	if n, err := p.store.CountUnmirrored(ctx, i.GuildID); err == nil && n > 0 {
+		msg += fmt.Sprintf("\n\n%d existing entries are not mirrored; they will be, the next time each is edited or voided.", n)
+	}
+	_ = core.FollowUpOK(s, i, "Case files", msg)
+}
+
+func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	cfg := p.config(ctx, i.GuildID)
+	var b strings.Builder
+	fmt.Fprintf(&b, "**Escalation:** %s\n**Half-life:** %s\n", cfg.EscalationMode, core.FormatDuration(cfg.HalfLife))
+	fmt.Fprintf(&b, "**Mod channel:** %s\n", orUnset(core.MentionChannel(cfg.ModChannelID)))
+	fmt.Fprintf(&b, "**Case-file forum:** %s\n", orUnset(core.MentionChannel(cfg.ForumChannelID)))
+	fmt.Fprintf(&b, "**Alt hints:** %v\n", cfg.AltHints)
+	if len(cfg.CategoryPoints) > 0 {
+		b.WriteString("**Tuned points:**")
+		for _, c := range categories {
+			if v, ok := cfg.CategoryPoints[c]; ok {
+				fmt.Fprintf(&b, " %s=%d", c, v)
+			}
+		}
+		b.WriteString("\n")
+	}
+	if len(cfg.Bands) > 0 {
+		b.WriteString("**Bands:** custom (`/rapsheet list bands`)\n")
+	} else {
+		b.WriteString("**Bands:** defaults\n")
+	}
+	core.RespondInfo(s, i, "Rapsheet configuration", b.String())
+}
+
+func orUnset(s string) string {
+	if s == "" {
+		return "not set"
+	}
+	return s
 }

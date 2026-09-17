@@ -58,6 +58,12 @@ var opCaps = map[string]int{
 	// Discord's own timeout, applied automatically only by aimod's abuse
 	// ceiling, which is itself rate limited per member.
 	opMemberTimeout: 60,
+	// Rapsheet's case-file mirror: one forum post per member the first time
+	// they are on file, one edit per void or reason change. A guild opening
+	// more case files than this in an hour is under something the mirror
+	// should not be the thing keeping up with.
+	opThreadCreate: 60,
+	opMessageEdit:  120,
 }
 
 const (
@@ -76,6 +82,8 @@ const (
 	opWebhookCreate      = "webhook.create"
 	opWebhookExecute     = "webhook.execute"
 	opMemberTimeout      = "member.timeout"
+	opThreadCreate       = "thread.create"
+	opMessageEdit        = "message.edit"
 )
 
 // capWindow is the period each cap is denominated over. Buckets refill

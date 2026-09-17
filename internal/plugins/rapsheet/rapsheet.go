@@ -39,6 +39,13 @@ type DiscordOps interface {
 	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
 	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	// The case-file forum (casefile.go): finding or creating it, opening a
+	// post per member, and editing a mirrored entry in place.
+	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
+	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
+	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
+	ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error)
+	ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
 }
 
 // OpsProvider hands back the guild-bound Discord view. Mirrors
@@ -85,10 +92,11 @@ type Plugin struct {
 	// mirroring the Scheduler's own hook.
 	now func() time.Time
 
-	// syncIngest makes bus-driven writes happen on the publisher's goroutine
-	// instead of a detached one. Tests only: production leaves it false so a
-	// slow forum post never holds roles' sweep.
-	syncIngest bool
+	// synchronous makes the detached work (bus-driven writes, the case-file
+	// mirror) happen on the caller's goroutine instead of its own. Tests
+	// only: production leaves it false so a slow forum post never holds a
+	// command or roles' sweep.
+	synchronous bool
 
 	mu    sync.Mutex
 	botID string

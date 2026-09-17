@@ -424,16 +424,42 @@ type fakeOps struct {
 	sent    map[string][]*discordgo.MessageSend // channelID -> sends
 	dmOpen  int
 
-	memberErr error
-	dmErr     error
-	sendErr   error
+	channels      map[string]*discordgo.Channel
+	created       []discordgo.GuildChannelCreateData
+	edits         []*discordgo.MessageEdit
+	threadsOpened int
+
+	memberErr   error
+	dmErr       error
+	sendErr     error
+	channelsErr error
+	createErr   error
+	threadErr   error
+	editErr     error
 }
 
 func newFakeOps() *fakeOps {
 	return &fakeOps{
-		members: map[string]*discordgo.Member{},
-		users:   map[string]*discordgo.User{},
-		sent:    map[string][]*discordgo.MessageSend{},
+		members:  map[string]*discordgo.Member{},
+		users:    map[string]*discordgo.User{},
+		sent:     map[string][]*discordgo.MessageSend{},
+		channels: map[string]*discordgo.Channel{},
+	}
+}
+
+// addForum registers an existing forum channel.
+func (f *fakeOps) addForum(id string) *discordgo.Channel {
+	ch := &discordgo.Channel{ID: id, Name: "forum-" + id, Type: discordgo.ChannelTypeGuildForum}
+	f.mu.Lock()
+	f.channels[id] = ch
+	f.mu.Unlock()
+	return ch
+}
+
+func unknownErr(code int) error {
+	return &discordgo.RESTError{
+		Response: &http.Response{StatusCode: http.StatusNotFound},
+		Message:  &discordgo.APIErrorMessage{Code: code, Message: "Unknown"},
 	}
 }
 
@@ -446,12 +472,7 @@ func (f *fakeOps) addMember(id string, roles ...string) *discordgo.Member {
 	return m
 }
 
-func unknownMemberErr() error {
-	return &discordgo.RESTError{
-		Response: &http.Response{StatusCode: http.StatusNotFound},
-		Message:  &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownMember, Message: "Unknown Member"},
-	}
-}
+func unknownMemberErr() error { return unknownErr(discordgo.ErrCodeUnknownMember) }
 
 func (f *fakeOps) Guild(guildID string, _ ...discordgo.RequestOption) (*discordgo.Guild, error) {
 	return &discordgo.Guild{ID: guildID, Name: "Test Guild"}, nil
@@ -495,8 +516,73 @@ func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.Me
 	if f.sendErr != nil {
 		return nil, f.sendErr
 	}
+	if !strings.HasPrefix(channelID, "dm-") {
+		if _, ok := f.channels[channelID]; !ok {
+			return nil, unknownErr(discordgo.ErrCodeUnknownChannel)
+		}
+	}
 	f.sent[channelID] = append(f.sent[channelID], data)
 	return &discordgo.Message{ID: fmt.Sprintf("m-%d", len(f.sent[channelID])), ChannelID: channelID}, nil
+}
+
+func (f *fakeOps) Channel(channelID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ch, ok := f.channels[channelID]; ok {
+		return ch, nil
+	}
+	return nil, unknownErr(discordgo.ErrCodeUnknownChannel)
+}
+
+func (f *fakeOps) GuildChannels(_ string, _ ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.channelsErr != nil {
+		return nil, f.channelsErr
+	}
+	out := make([]*discordgo.Channel, 0, len(f.channels))
+	for _, ch := range f.channels {
+		out = append(out, ch)
+	}
+	return out, nil
+}
+
+func (f *fakeOps) GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	ch := &discordgo.Channel{ID: fmt.Sprintf("ch-%d", len(f.channels)+1), GuildID: guildID, Name: data.Name, Type: data.Type, PermissionOverwrites: data.PermissionOverwrites}
+	f.channels[ch.ID] = ch
+	f.created = append(f.created, data)
+	return ch, nil
+}
+
+func (f *fakeOps) ForumThreadStartComplex(channelID string, th *discordgo.ThreadStart, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.threadErr != nil {
+		return nil, f.threadErr
+	}
+	if _, ok := f.channels[channelID]; !ok {
+		return nil, unknownErr(discordgo.ErrCodeUnknownChannel)
+	}
+	f.threadsOpened++
+	id := fmt.Sprintf("t-%d", f.threadsOpened)
+	f.channels[id] = &discordgo.Channel{ID: id, Name: th.Name, ParentID: channelID, Type: discordgo.ChannelTypeGuildPublicThread}
+	f.sent[id] = append(f.sent[id], data)
+	return f.channels[id], nil
+}
+
+func (f *fakeOps) ChannelMessageEditComplex(m *discordgo.MessageEdit, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.editErr != nil {
+		return nil, f.editErr
+	}
+	f.edits = append(f.edits, m)
+	return &discordgo.Message{ID: m.ID, ChannelID: m.Channel}, nil
 }
 
 func (f *fakeOps) sentTo(channelID string) []*discordgo.MessageSend {
@@ -617,7 +703,7 @@ func newHarness() *harness {
 	h.p.perms = h.ranker
 	h.p.bus = h.bus
 	h.p.now = func() time.Time { return testNow }
-	h.p.syncIngest = true
+	h.p.synchronous = true
 	h.p.subscribe()
 	return h
 }

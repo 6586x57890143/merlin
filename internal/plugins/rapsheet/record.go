@@ -90,11 +90,10 @@ func (p *Plugin) record(ctx context.Context, cfg Config, in newEntry) (Entry, bo
 }
 
 // afterRecord is everything that follows a written entry and must never
-// fail it. Filled in by later slices: the forum mirror and the ladder.
+// fail it: the forum mirror, and (a later slice) the ladder.
 func (p *Plugin) afterRecord(ctx context.Context, cfg Config, e Entry) {
 	_ = ctx
-	_ = cfg
-	_ = e
+	p.mirror(cfg, e)
 }
 
 // ensureCaseFile makes sure the member is on file and refreshes the

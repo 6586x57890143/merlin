@@ -76,6 +76,8 @@ type Session interface {
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
+	ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error
 	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
@@ -359,6 +361,42 @@ func (o *GuildOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.Me
 	}
 	jid := o.beginJournal(opMessageSend, channelID)
 	v, err := o.guard.session.ChannelMessageSendEmbed(channelID, embed, options...)
+	return v, o.record(jid, err)
+}
+
+// ChannelMessageEditComplex edits one of merlin's own messages in place.
+// Rapsheet's case-file mirror uses it to strike a voided entry through
+// rather than posting a second message. AllowedMentions is zeroed for the
+// same reason it is on every send: an edit can introduce a mention as
+// easily as a send can.
+func (o *GuildOps) ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	if err := o.allow(opMessageEdit); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		m = &discordgo.MessageEdit{}
+	}
+	m.AllowedMentions = &discordgo.MessageAllowedMentions{}
+	jid := o.beginJournal(opMessageEdit, m.Channel)
+	v, err := o.guard.session.ChannelMessageEditComplex(m, options...)
+	return v, o.record(jid, err)
+}
+
+// ForumThreadStartComplex opens a forum post with its starter message.
+// Two writes in one call as far as Discord is concerned (a thread and a
+// message), gated once as a thread creation, since that is the scarce
+// half: a forum holds a bounded number of active threads and each one
+// stays for its archive window.
+func (o *GuildOps) ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	if err := o.allow(opThreadCreate); err != nil {
+		return nil, err
+	}
+	if messageData == nil {
+		messageData = &discordgo.MessageSend{}
+	}
+	messageData.AllowedMentions = &discordgo.MessageAllowedMentions{}
+	jid := o.beginJournal(opThreadCreate, channelID)
+	v, err := o.guard.session.ForumThreadStartComplex(channelID, threadData, messageData, options...)
 	return v, o.record(jid, err)
 }
 

@@ -188,6 +188,16 @@ func (f *fakeSession) GuildMemberTimeout(string, string, *time.Time, ...discordg
 	return nil
 }
 
+func (f *fakeSession) ChannelMessageEditComplex(*discordgo.MessageEdit, ...discordgo.RequestOption) (*discordgo.Message, error) {
+	f.writes++
+	return &discordgo.Message{}, nil
+}
+
+func (f *fakeSession) ForumThreadStartComplex(string, *discordgo.ThreadStart, *discordgo.MessageSend, ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	f.writes++
+	return &discordgo.Channel{}, nil
+}
+
 type fakeGate struct {
 	paused map[string]bool
 	dryRun map[string]bool
@@ -225,6 +235,10 @@ func callEveryWrite(o *GuildOps) []error {
 	errs = append(errs, err)
 	errs = append(errs, o.WebhookExecute("w", "t", &discordgo.WebhookParams{}))
 	errs = append(errs, o.GuildMemberTimeout("g", "u", nil))
+	_, err = o.ChannelMessageEditComplex(&discordgo.MessageEdit{Channel: "c", ID: "m"})
+	errs = append(errs, err)
+	_, err = o.ForumThreadStartComplex("c", &discordgo.ThreadStart{}, &discordgo.MessageSend{})
+	errs = append(errs, err)
 	return errs
 }
 
