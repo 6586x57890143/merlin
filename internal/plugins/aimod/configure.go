@@ -475,9 +475,8 @@ func (p *Plugin) handleWhy(ctx context.Context, s *discordgo.Session, i *discord
 	// under a synthetic message ID nobody would ever think to look up, so
 	// without this line the escalation ladder is invisible to the one person
 	// deciding whether it got the length right.
-	if n, err := p.store.CountSanctions(ctx, i.GuildID, inc.AuthorID, p.now().Add(-repeatWindow)); err != nil {
-		p.log.Error("aimod: count prior sanctions", "guild", i.GuildID, "err", err)
-	} else {
+	{
+		n := p.priors(ctx, i.GuildID, inc.AuthorID)
 		prior := fmt.Sprintf("%d in the last 30 days", n)
 		if n > 1 {
 			prior += "\nTheir next one would be " + core.FormatDuration(sanctionFor(p.severityOf(inc.Bucket), n))
@@ -514,11 +513,49 @@ func (p *Plugin) handleUndo(ctx context.Context, s *discordgo.Session, i *discor
 		_ = core.FollowUpErr(s, i, "Could not undo it", err)
 		return
 	}
+	// The sanction that followed the removal is a separate row under
+	// <message>:sanction, and it used to stay live after an undo: the
+	// message came back and the jail behind it went on counting as a prior
+	// against every future sentence. Reversing the offence reverses the
+	// record of its consequence too.
+	if sanc, err := p.store.IncidentByMessage(ctx, i.GuildID, messageID+":sanction"); err == nil && !sanc.Undone {
+		if err := p.store.MarkUndone(ctx, sanc.ID); err != nil {
+			p.log.Error("aimod: mark sanction undone", "guild", i.GuildID, "incident", sanc.ID, "err", err)
+		}
+	} else if err != nil && !errors.Is(err, ErrNoIncident) {
+		p.log.Error("aimod: look up sanction for undo", "guild", i.GuildID, "message", messageID, "err", err)
+	}
+	undoneBy := ""
+	if i.Member != nil && i.Member.User != nil {
+		undoneBy = i.Member.User.ID
+	}
+	p.publishReversed(ctx, i.GuildID, inc.ID, undoneBy)
 	p.auditConfig(ctx, i, "aimod.undone", messageID, string(inc.Bucket)+" in "+core.MentionChannel(inc.ChannelID))
+
+	// The jail that followed the removal, if it was the only reason the
+	// member is jailed. A false positive that left somebody in jail until
+	// the sweep was the visible half of this bug; the invisible half was
+	// fixed above. Only when no other sanction of theirs still stands,
+	// because a member with two removals this week was jailed for both.
+	released := ""
+	if p.jailer != nil {
+		if n, err := p.store.CountSanctions(ctx, i.GuildID, inc.AuthorID, p.now().Add(-repeatWindow)); err != nil {
+			p.log.Error("aimod: count sanctions after undo", "guild", i.GuildID, "err", err)
+		} else if n == 0 {
+			if err := p.jailer.ReleaseAutomatic(ctx, i.GuildID, inc.AuthorID, "aimod undo: the message behind the jail was restored"); err != nil {
+				p.log.Warn("aimod: release jail after undo", "guild", i.GuildID, "user", inc.AuthorID, "err", err)
+				released = "\n\nTheir jail could not be released automatically; `/roles release` will."
+			} else {
+				released = "\n\nIf they were jailed for this, that jail has been released."
+			}
+		} else {
+			released = "\n\nThey have another standing sanction, so any jail stays."
+		}
+	}
 
 	if err := core.FollowUpOK(s, i, "Undone",
 		fmt.Sprintf("Reposted %s's message in %s under their own name, and marked the incident reversed.\n\n"+
-			"Discord has no way to restore the original, so this is a repost rather than a true undelete.",
+			"Discord has no way to restore the original, so this is a repost rather than a true undelete."+released,
 			core.MentionUser(inc.AuthorID), core.MentionChannel(inc.ChannelID))); err != nil {
 		p.log.Error("aimod: respond undo", "guild", i.GuildID, "err", err)
 	}

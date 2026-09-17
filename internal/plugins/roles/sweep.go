@@ -67,7 +67,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 			p.armJailRelease(guildID, rec.UserID, *rec.ReleaseAt)
 			continue
 		}
-		if err := p.releaseJail(ctx, guildID, rec.UserID, rec); err != nil && !errors.Is(err, errReleaseInProgress) {
+		if err := p.releaseJail(ctx, guildID, rec.UserID, rec, core.ActorSystem); err != nil && !errors.Is(err, errReleaseInProgress) {
 			p.log.Error("roles sweep: release jail failed", "guild", guildID, "user", rec.UserID, "err", err)
 			if firstErr == nil {
 				firstErr = err

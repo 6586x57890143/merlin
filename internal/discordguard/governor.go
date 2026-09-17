@@ -58,6 +58,19 @@ var opCaps = map[string]int{
 	// Discord's own timeout, applied automatically only by aimod's abuse
 	// ceiling, which is itself rate limited per member.
 	opMemberTimeout: 60,
+	// Rapsheet's case-file mirror: one forum post per member the first time
+	// they are on file, one edit per void or reason change. A guild opening
+	// more case files than this in an hour is under something the mirror
+	// should not be the thing keeping up with.
+	opThreadCreate: 60,
+	opMessageEdit:  120,
+	// Rapsheet's bans and kicks, by command or by the ladder. Thirty bans an
+	// hour is a raid being handled; anything past that is the bot doing the
+	// raiding, and the sweep's unbans share the same footing so a batch of
+	// expiring bans cannot lift more than a batch of mistakes could make.
+	opMemberBan:   30,
+	opMemberUnban: 30,
+	opMemberKick:  60,
 }
 
 const (
@@ -76,6 +89,11 @@ const (
 	opWebhookCreate      = "webhook.create"
 	opWebhookExecute     = "webhook.execute"
 	opMemberTimeout      = "member.timeout"
+	opThreadCreate       = "thread.create"
+	opMessageEdit        = "message.edit"
+	opMemberBan          = "member.ban"
+	opMemberUnban        = "member.unban"
+	opMemberKick         = "member.kick"
 )
 
 // capWindow is the period each cap is denominated over. Buckets refill

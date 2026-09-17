@@ -47,7 +47,11 @@ type Plugin struct {
 	log               *slog.Logger
 	sched             core.Scheduler
 	commands          *core.CommandRouter
-	now               func() time.Time
+	// bus carries every jail, re-sentence and release out to whoever keeps
+	// a ledger (the rapsheet plugin), without this package knowing who. Nil
+	// in tests that do not care, and publish tolerates that.
+	bus *core.EventBus
+	now func() time.Time
 	// voice supplies the DM wording sent to a jailed or released member.
 	// An interface, not the concrete catalog, so a generator can replace it
 	// later without this plugin knowing (see internal/voice).
@@ -124,6 +128,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.log = deps.Logger
 	p.sched = deps.Scheduler
 	p.commands = deps.Commands
+	p.bus = deps.Bus
 
 	p.registerCommands()
 	return nil

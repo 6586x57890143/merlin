@@ -55,6 +55,84 @@ moderation.release:
 # has to carry either, which is also why nothing here speculates about what
 # they did.
 
+moderation.warn:
+  # warm
+  - "quick note from the mods in {guild}: this is a warning. nothing has been taken away and you are not in any trouble beyond this message. the reason is below."
+  - "a moderator in {guild} has given you a warning. it goes on your record, and that is all that has happened. the why is below, and if you want to talk it through, the mods are reachable."
+  - "heads up: you have a warning in {guild}. no roles lost, no time out, just a note that something crossed a line. the reason is below."
+  # plain
+  - "a moderator in {guild} has given you a warning. it is on record, and nothing else has happened. the reason is below."
+  - "you have been warned in {guild}. this is a record of it, with the reason below, and nothing further has been done."
+  - "this is a warning from the moderators of {guild}. it is noted on your record. the category and reason are below."
+  # matter of fact
+  - "warning issued in {guild}. on record, no other consequence. reason below."
+  - "a warning has been added to your record in {guild}. the moderator's reason is below."
+
+moderation.timeout:
+  # warm
+  - "you've been timed out in {guild}. you can still read everything, you just can't post for a bit. it ends {until}, and the reason is below."
+  - "a moderator in {guild} has put you on a timeout. nothing is removed and no roles are touched; you're on read-only until {until}. the why is below."
+  - "quick one: you're timed out in {guild} until {until}. reading is fine, posting isn't, and it lifts on its own. the reason is below."
+  # plain
+  - "you have been timed out in {guild}. you can read but not post, and it ends {until}. the reason is below."
+  - "a timeout has been applied to you in {guild}. it lifts {until}. the moderator's reason is below."
+  - "you're on a timeout in {guild} until {until}. it ends by itself; nothing else has been done."
+  # matter of fact
+  - "timed out in {guild}, ending {until}. reason below."
+  - "timeout in {guild}. read-only until {until}. the reason given is below."
+
+moderation.kick:
+  # warm
+  - "you've been removed from {guild}. this isn't a ban: you can come back with an invite whenever you like. the reason is below."
+  - "a moderator in {guild} has removed you from the server. your record there is kept, and you're free to rejoin. the why is below."
+  - "heads up: you were kicked from {guild}. it's not a ban, and an invite gets you back in. the reason is below."
+  # plain
+  - "you have been removed from {guild}. this is not a ban: you can rejoin with an invite. the reason is below."
+  - "you were kicked from {guild}. nothing stops you rejoining. the moderator's reason is below."
+  - "a moderator has removed you from {guild}. this is a kick, not a ban. the reason given is below."
+  # matter of fact
+  - "kicked from {guild}. not a ban; rejoining is allowed. reason below."
+  - "removed from {guild} by a moderator. the reason is below."
+
+moderation.ban:
+  # warm
+  - "you've been banned from {guild}, for now. it's temporary and lifts on its own {until}. the reason is below."
+  - "a moderator in {guild} has banned you until {until}. after that you can come back with an invite. the why is below."
+  - "this is a temporary ban from {guild}. it ends {until}, and nothing needs doing on your end. the reason is below."
+  # plain
+  - "you have been banned from {guild}. the ban is temporary and lifts {until}. the reason is below."
+  - "you are banned from {guild} until {until}. it lifts by itself. the moderator's reason is below."
+  - "a temporary ban has been applied to you in {guild}, ending {until}. the reason given is below."
+  # matter of fact
+  - "banned from {guild} until {until}. it lifts automatically. reason below."
+  - "temporary ban from {guild}, ending {until}. the reason is below."
+
+moderation.ban_permanent:
+  # warm
+  - "you've been banned from {guild}. this one doesn't lift on its own. the reason is below."
+  - "a moderator in {guild} has banned you. there's no end date on it. the why is below."
+  - "this is a ban from {guild}, and it stands until a moderator says otherwise. the reason is below."
+  # plain
+  - "you have been banned from {guild}. the reason is below."
+  - "you are banned from {guild}. this ban has no end date. the moderator's reason is below."
+  - "a moderator has banned you from {guild}. the reason given is below."
+  # matter of fact
+  - "banned from {guild}. no end date. reason below."
+  - "permanent ban from {guild}. the reason is below."
+
+moderation.strike_notice:
+  # warm
+  - "a note from {guild}: your record there has built up a bit. no consequence yet, and none if it stops here. this is just the heads-up before it would. `/rapsheet me` in the server shows what is on it."
+  - "quick heads-up from {guild}: a few things have gone on your record recently, and the next one would carry a consequence. this message is the warning before that, not the consequence. `/rapsheet me` in the server shows the record."
+  - "this is a friendly one from {guild}. your moderation record has reached the point where merlin is supposed to say something, so: something. no consequence yet, and it is in your hands whether there is one. `/rapsheet me` in the server shows what is there."
+  # plain
+  - "a note from {guild}: your moderation record there has built up to the point where the next thing on it carries a consequence. no consequence yet. this is the heads-up. `/rapsheet me` in the server shows the record."
+  - "your record in {guild} has reached the first line on the server's ladder. no consequence yet; the next entry would carry one. `/rapsheet me` in the server shows what is on it."
+  - "from {guild}: several things have been recorded against you recently, and one more would mean a consequence. this is the notice that comes first. `/rapsheet me` in the server shows the record."
+  # matter of fact
+  - "notice from {guild}: your record has reached the point where the next entry carries a consequence. no consequence yet. `/rapsheet me` in the server shows the record."
+  - "record notice, {guild}. no consequence yet; the next entry would carry one. `/rapsheet me` in the server shows what is on it."
+
 moderation.aimod_removed:
   # warm
   - "a message you posted in {guild} was taken down automatically. it matched one of Discord's own rules, and no moderator was involved. the reason is below, and your text is there too so nothing is lost."

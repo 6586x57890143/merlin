@@ -76,12 +76,17 @@ type Session interface {
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
+	ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error)
 	ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error
 	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
 	WebhookExecute(webhookID, token string, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	WebhookMessageDelete(webhookID, token, messageID string, options ...discordgo.RequestOption) error
 	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
+	GuildBanCreateWithReason(guildID, userID, reason string, days int, options ...discordgo.RequestOption) error
+	GuildBanDelete(guildID, userID string, options ...discordgo.RequestOption) error
+	GuildMemberDeleteWithReason(guildID, userID, reason string, options ...discordgo.RequestOption) error
 	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
 	ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error
 	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
@@ -359,6 +364,72 @@ func (o *GuildOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.Me
 	}
 	jid := o.beginJournal(opMessageSend, channelID)
 	v, err := o.guard.session.ChannelMessageSendEmbed(channelID, embed, options...)
+	return v, o.record(jid, err)
+}
+
+// GuildBanCreateWithReason bans a member. The reason lands in Discord's own
+// audit log next to merlin's name, which is how a moderator reading that
+// log rather than /rapsheet still learns why. days is how many days of the
+// member's messages Discord deletes with the ban.
+func (o *GuildOps) GuildBanCreateWithReason(guildID, userID, reason string, days int, options ...discordgo.RequestOption) error {
+	if err := o.allow(opMemberBan); err != nil {
+		return err
+	}
+	jid := o.beginJournal(opMemberBan, userID)
+	return o.record(jid, o.guard.session.GuildBanCreateWithReason(guildID, userID, reason, days, options...))
+}
+
+// GuildBanDelete lifts a ban.
+func (o *GuildOps) GuildBanDelete(guildID, userID string, options ...discordgo.RequestOption) error {
+	if err := o.allow(opMemberUnban); err != nil {
+		return err
+	}
+	jid := o.beginJournal(opMemberUnban, userID)
+	return o.record(jid, o.guard.session.GuildBanDelete(guildID, userID, options...))
+}
+
+// GuildMemberDeleteWithReason kicks a member.
+func (o *GuildOps) GuildMemberDeleteWithReason(guildID, userID, reason string, options ...discordgo.RequestOption) error {
+	if err := o.allow(opMemberKick); err != nil {
+		return err
+	}
+	jid := o.beginJournal(opMemberKick, userID)
+	return o.record(jid, o.guard.session.GuildMemberDeleteWithReason(guildID, userID, reason, options...))
+}
+
+// ChannelMessageEditComplex edits one of merlin's own messages in place.
+// Rapsheet's case-file mirror uses it to strike a voided entry through
+// rather than posting a second message. AllowedMentions is zeroed for the
+// same reason it is on every send: an edit can introduce a mention as
+// easily as a send can.
+func (o *GuildOps) ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	if err := o.allow(opMessageEdit); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		m = &discordgo.MessageEdit{}
+	}
+	m.AllowedMentions = &discordgo.MessageAllowedMentions{}
+	jid := o.beginJournal(opMessageEdit, m.Channel)
+	v, err := o.guard.session.ChannelMessageEditComplex(m, options...)
+	return v, o.record(jid, err)
+}
+
+// ForumThreadStartComplex opens a forum post with its starter message.
+// Two writes in one call as far as Discord is concerned (a thread and a
+// message), gated once as a thread creation, since that is the scarce
+// half: a forum holds a bounded number of active threads and each one
+// stays for its archive window.
+func (o *GuildOps) ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
+	if err := o.allow(opThreadCreate); err != nil {
+		return nil, err
+	}
+	if messageData == nil {
+		messageData = &discordgo.MessageSend{}
+	}
+	messageData.AllowedMentions = &discordgo.MessageAllowedMentions{}
+	jid := o.beginJournal(opThreadCreate, channelID)
+	v, err := o.guard.session.ForumThreadStartComplex(channelID, threadData, messageData, options...)
 	return v, o.record(jid, err)
 }
 

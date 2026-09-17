@@ -36,6 +36,27 @@ import (
 // release date earlier is them exercising judgement; an automated caller
 // doing it would mean a member could shorten their own jail by committing
 // another offence, which inverts the entire point.
+// ReleaseAutomatic ends userID's jail early on behalf of another plugin
+// (aimod, after an undo). Not jailed is not an error: the caller is
+// reporting that a reason for a jail has gone away, not asserting that one
+// exists. The same confused-deputy re-check as every other release applies,
+// through releaseJail. reason is logged only; a release carries no reason
+// on Discord's side.
+func (p *Plugin) ReleaseAutomatic(ctx context.Context, guildID, userID, reason string) error {
+	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
+	if err != nil {
+		return fmt.Errorf("roles: look up jail for automatic release: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+	p.log.Info("roles: automatic release", "guild", guildID, "user", userID, "reason", reason)
+	if err := p.releaseJail(ctx, guildID, userID, rec, core.ActorSystem); err != nil && !errors.Is(err, errReleaseInProgress) {
+		return err
+	}
+	return nil
+}
+
 func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, duration time.Duration, reason string, targetConsented bool) error {
 	if duration <= 0 {
 		return errors.New("roles: automatic jail needs a positive duration")
@@ -99,5 +120,6 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 		return fmt.Errorf("roles: extend jail: %w", err)
 	}
 	p.armJailRelease(guildID, userID, releaseAt)
+	p.publishResentenced(ctx, guildID, userID, core.ActorSystem, reason, duration)
 	return nil
 }

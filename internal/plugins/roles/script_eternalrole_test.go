@@ -376,7 +376,7 @@ func TestScriptsListShowsStateAndDefinitions(t *testing.T) {
 	f := newEternalFixture(t)
 	s, rt := handlerSession(t)
 	f.p.handleScriptsList(context.Background(), s, scriptsInteraction("admin", "list"))
-	if !rt.said("`eternal-role`: on: <@"+etUser+"> keeps <@&"+etRole+">") {
+	if !rt.said("`eternal-role`: on: <@" + etUser + "> keeps <@&" + etRole + ">") {
 		t.Fatalf("got %v", rt.bodies)
 	}
 	f.scripts.err = errors.New("db down")

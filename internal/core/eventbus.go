@@ -24,12 +24,54 @@ const (
 	// in-process subscribers can react, and to document that this is a
 	// known, accepted limitation of rotation (spec.MD §6).
 	EventChannelRotated EventType = "channel.rotated"
+
+	// EventModerationAction is published after a plugin has acted on a
+	// member: a jail applied or released, a message removed. Payload is
+	// ModerationActionPayload. It exists so the rapsheet plugin can keep a
+	// ledger of every action without the acting plugin importing it or even
+	// knowing it exists, and it is published after the action succeeded and
+	// beside the audit write, on the same log-and-continue footing: nothing
+	// a subscriber does can fail the action.
+	EventModerationAction EventType = "moderation.action"
+
+	// EventModerationReversed is published when a plugin takes one of its
+	// own actions back (an aimod undo). Payload is ModerationReversedPayload,
+	// naming the original by the same Source and Ref the action carried.
+	EventModerationReversed EventType = "moderation.reversed"
 )
 
 // ChannelRotatedPayload is the Event.Payload for EventChannelRotated.
 type ChannelRotatedPayload struct {
 	OldChannelID string
 	NewChannelID string
+}
+
+// ModerationActionPayload is the Event.Payload for EventModerationAction.
+//
+// Kind is the publisher's own word for what it did (jail, release, removal,
+// note); Category, where the publisher knows one, is a rapsheet category
+// name and may be left empty. Source names the publishing plugin and Ref is
+// its own id for the event (an incident id), which together let a
+// subscriber recognise the same event delivered twice. Actor is a user
+// snowflake or ActorSystem.
+type ModerationActionPayload struct {
+	UserID   string
+	Kind     string
+	Category string
+	ActorID  string
+	Reason   string
+	Duration time.Duration
+	EndsAt   *time.Time
+	Source   string
+	Ref      string
+}
+
+// ModerationReversedPayload is the Event.Payload for EventModerationReversed.
+type ModerationReversedPayload struct {
+	Source  string
+	Ref     string
+	ActorID string
+	Reason  string
 }
 
 // Event is the envelope delivered to every subscriber of its Type. Payload's

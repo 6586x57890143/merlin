@@ -134,6 +134,10 @@ type Plugin struct {
 	// jailer is optional. Nil means no roles plugin is wired into this
 	// build, and the sanction ladder falls back to Discord's own timeout.
 	jailer Jailer
+	// history is optional: the rapsheet plugin, when wired, so the ladder's
+	// prior count covers what moderators did by hand as well as what this
+	// plugin did. See History.
+	history History
 	// traffic is optional too: the statistics plugin, when wired, so a
 	// cost projection with no receipts yet can use the server's real
 	// volume instead of a guess.
@@ -150,6 +154,10 @@ type Plugin struct {
 	// and any build without one run as, and the plugin is otherwise
 	// unaffected. See calibrate.go.
 	sched core.Scheduler
+	// bus carries every removal and reversal out to whoever keeps a ledger
+	// (the rapsheet plugin), without this package knowing who. Nil in tests
+	// that do not care, and publish tolerates that.
+	bus *core.EventBus
 	log   *slog.Logger
 	now   func() time.Time
 
@@ -356,6 +364,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.commands = deps.Commands
 	p.privilege = deps.Perms
 	p.sched = deps.Scheduler
+	p.bus = deps.Bus
 
 	p.registerCommands()
 	return nil

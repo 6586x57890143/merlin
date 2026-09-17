@@ -41,6 +41,25 @@ const (
 	KeyJailNotice    Key = "moderation.jail"
 	KeyReleaseNotice Key = "moderation.release"
 
+	// KeyWarnNotice is the DM behind /rapsheet warn. Plain register: a
+	// warning is the lightest thing on the ladder and the whole point of it
+	// is to be understood, so the wording explains that this is on record
+	// and nothing else has happened. The category and the moderator's reason
+	// ride as embed fields.
+	KeyWarnNotice Key = "moderation.warn"
+	// KeyTimeoutNotice, KeyKickNotice, KeyBanNotice and KeyBanPermanentNotice
+	// are the DMs behind the corresponding /rapsheet leaves. The ban ones
+	// have to be sent before the ban lands: a banned member shares no server
+	// with the bot and Discord refuses the DM. Plain register throughout.
+	KeyTimeoutNotice      Key = "moderation.timeout"
+	KeyKickNotice         Key = "moderation.kick"
+	KeyBanNotice          Key = "moderation.ban"
+	KeyBanPermanentNotice Key = "moderation.ban_permanent"
+	// KeyStrikeNotice is the ladder's first rung: a member's record has
+	// reached the notice band. No consequence beyond being told, which is
+	// the point; it exists so the next rung is never the first they hear.
+	KeyStrikeNotice Key = "moderation.strike_notice"
+
 	// KeyAIModRemoved and KeyAIModRewritten are DMs to the member whose
 	// message the AI moderation plugin acted on. Plain register, like the
 	// jail notices above and for the same reason, with one thing on top:
@@ -247,6 +266,42 @@ var specs = map[Key]spec{
 		required: []string{"guild"},
 		maxLen:   maxEmbedDescription,
 		fallback: "you are out. your roles in {guild} have been restored.",
+	},
+	KeyWarnNotice: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "a moderator in {guild} has given you a warning. it is on record, and nothing else has happened. the reason is below.",
+	},
+	KeyTimeoutNotice: {
+		register: RegisterPlain,
+		required: []string{"guild", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been timed out in {guild}. you can read but not post, and it ends {until}. the reason is below.",
+	},
+	KeyKickNotice: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been removed from {guild}. this is not a ban: you can rejoin with an invite. the reason is below.",
+	},
+	KeyBanNotice: {
+		register: RegisterPlain,
+		required: []string{"guild", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been banned from {guild}. the ban is temporary and lifts {until}. the reason is below.",
+	},
+	KeyBanPermanentNotice: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been banned from {guild}. the reason is below.",
+	},
+	KeyStrikeNotice: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "a note from {guild}: your moderation record there has built up to the point where the next thing on it carries a consequence. no consequence yet. this is the heads-up. `/rapsheet me` in the server shows the record.",
 	},
 
 	KeyAIModRemoved: {

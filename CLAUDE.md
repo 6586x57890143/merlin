@@ -238,7 +238,11 @@ status` rather than appearing to work.
   for this) is reached through the narrow `aimod.Jailer` interface wired in
   `cmd/bot/main.go`, so this package never imports `roles`. Duration scales
   with the policy file's own `severity` and doubles per prior sanction in
-  `repeatWindow`, capped. A timeout is the fallback for when jail is genuinely
+  `repeatWindow`, capped. **The prior count comes from the rapsheet** when one
+  is wired (`aimod.History`, `p.priors`): scored offences across the member's
+  link group, so a mod's manual jail counts too. It falls back to this
+  package's own `CountSanctions` when the rapsheet has no opinion or fails,
+  never to zero. A timeout is the fallback for when jail is genuinely
   unavailable. The sanction row is written **whether or not the jail lands**,
   because it is what the next offence counts; losing it to a brief Discord
   outage would quietly reset somebody's history. Reversed incidents do not
@@ -962,6 +966,129 @@ keycaps, tags) and drops what is neither (CJK); `TestTwemojiKeys` pins the
 file-name convention, including the rule that U+FE0F is dropped unless a
 joiner is present. A symbol the face *can* draw (©) stays text unless
 U+FE0F asks for the emoji.
+
+### Rapsheets (`internal/plugins/rapsheet`)
+
+Milestone 13. A per-member moderation ledger, the escalation ladder that
+reads it, and the consequences (timeout, kick, temporary ban) the ledger
+applies itself. Before it, merlin had no moderation history at all:
+`role_jails` is current state deleted on release, an aimod sanction's length
+and prior count lived inside a reason string, and `audit_log` has no target
+column and no read path. Bernard's rapsheet is the bar it was built against:
+case IDs, warn/note/tempban, an additive score over a fixed two-week window
+with thresholds that cannot be changed.
+
+- **`rapsheet_entries` is the record and everything else is a view of it.**
+  One row per warning, jail, timeout, kick, ban, aimod removal, note or
+  ladder suggestion, with a case number (`#123`, global `BIGSERIAL`), a
+  category (the ten aimod policy buckets plus `server_rule` and `other`),
+  points, who decided it, and a void that strikes an entry without deleting
+  it. Every write goes through `record()`, whatever produced it, so nothing
+  downstream can tell a mod's warning from an aimod removal. **Points are
+  frozen at write time**: retuning a category must not re-weight decisions
+  already taken. `pointsFor` gives an *automatic consequence* (a jail aimod
+  or the ladder applied, actor `core.ActorSystem`) zero points, because the
+  offence behind it already scored; a ladder row scores zero whoever clicked
+  Apply, or the ladder would walk itself up.
+- **The score decays, it does not window.** `Decayed` is points times
+  2^(-age/half-life), default half-life 30 days, guild-configurable. An
+  entry from three weeks ago counts for something and one from three months
+  ago for almost nothing, and there is no cliff a member can wait out to the
+  day. `Ladder` maps the sum onto guild-configurable bands; `ValidateBands`
+  refuses a ban band with no duration, which is what makes a permanent ban
+  unreachable by automation. The defaults are 25 notice, 50 jail 2h, 100
+  jail 1d, 200 ban 7d, 400 ban 30d.
+- **Ingestion is the bus, not an injected interface.** roles publishes every
+  jail, re-sentence and release and aimod every removal, rewrite and undo as
+  `core.EventModerationAction` / `EventModerationReversed`, because the
+  publisher must not care whether a ledger exists or is enabled: the jail
+  already happened and there is nothing it could do with an error. The
+  subscriber checks the guild's plugin toggle, dedupes on the publisher's
+  `(source, ref)` through a partial unique index, drops jails carrying its
+  own `ladderReasonPrefix` (they come back over the bus like any other), and
+  writes on a detached goroutine so a slow write never holds roles' sweep.
+  Two bugs came out on the way in: `/roles release` audited every release as
+  `system` and now takes the actor, and `/aimod undo` left the
+  `<message>:sanction` row counting as a prior and now reverses it, and
+  releases the jail behind a member's only standing sanction via
+  `Jailer.ReleaseAutomatic`.
+- **aimod keeps its own per-incident ladder; only its prior count moved.**
+  `aimod.History` (`rapsheet.Priors`: scored offences across the member's
+  link group) is wired in `main.go`, so a mod's `/roles jail` last week is
+  visible to the escalation deciding this week's sentence. aimod falls back
+  to `CountSanctions` when the rapsheet has no opinion or fails, never to
+  zero. The rapsheet's band ladder does cumulative escalation on top, and
+  `covers` stops it suggesting a 24h jail over the 24h jail aimod just
+  applied.
+- **Suggest by default, and auto never acts on a moderator's own command.**
+  `escalation_mode` is off/suggest/auto. In auto, only an entry whose
+  source is `aimod` or `discord` is applied; a `command` entry gets a
+  suggestion even in auto, because a mod who just typed `/rapsheet warn`
+  decided that offence cost a warning and a bot jailing on top of it is the
+  surprise the rule exists to prevent. `applyLadder` refuses the bootstrap
+  operator and anyone `CanModerate` (nil actor) calls staff. Idempotency
+  lives in the ledger: a suggestion and an applied consequence are rows
+  carrying the band they were for, so "already suggested at this band"
+  survives restarts and shows in the case file; a dismissed suggestion does
+  not count, and a suggestion whose tipping entry is later voided is
+  withdrawn (`withdrawStaleSuggestions`), since it would otherwise sit open
+  asking for a jail nobody is owed and silence every lower band for a
+  half-life. Nothing is recorded when there is no mod channel to post in,
+  for the same reason. The Apply button re-derives everything on the click,
+  claims the suggestion against a second mod clicking at once, and raises
+  the bar to `TierAdmin` for a ban however the component was registered.
+- **Consequences follow `roles.applyJail`'s ordering**: entry written, member
+  told, Discord asked, and a refusal voids the entry with the error. Told
+  *before* asked for a kick or a ban, because afterwards the member shares no
+  server with the bot and the DM fails. Voiding a standing timeout lifts it.
+  `rapsheet-sweep` (1 minute, registered only where a temporary ban is
+  pending) lifts served bans and **only untracks on "gone"**: Unknown Ban
+  means a human already lifted it and the audit-log ingestion recorded
+  theirs; any other failure waits for the next tick and is returned so the
+  Scheduler's backoff sees it.
+- **Bans, kicks and timeouts done through Discord's own client** arrive as
+  `GUILD_AUDIT_LOG_ENTRY_CREATE` under the always-on `IntentsGuildBans`
+  (what Discord now calls GUILD_MODERATION), already attributed and with
+  the reason the mod typed, so there is no race against the audit log being
+  written. merlin's own actions are told apart by the actor and skipped.
+  Discord delivers nothing without View Audit Log, so `/rapsheet status`
+  checks for it; the README's third invite link grants it. The timeout
+  parser compares against the plugin's injected clock, not the wall clock.
+- **Case files are a view, lazily created.** `configure forum` points at a
+  forum or creates `#rapsheets` (hidden from @everyone, readable by the mod
+  roles). A member's post is opened on their first entry, never on join, so
+  five thousand members do not become five thousand empty threads; every
+  later entry is one message, and a void or edit rewrites the mirrored
+  message in place (`ChannelMessageEditComplex`, attachments replaced) rather
+  than posting again. Best effort throughout: detached goroutine, never fails
+  the entry, `/rapsheet status` counts the unmirrored. A thread Discord says
+  is gone is reopened once; a forum that is gone unsets itself.
+- **Alt hints never link.** On `GUILD_MEMBER_ADD` the joiner is compared with
+  the members on file (the case-file identity snapshot, so no REST call per
+  candidate and it survives the candidate being banned) on four cheap
+  signals: identical avatar hash (3), same name letters-only (2, prefix 1),
+  account created within 10 minutes of one on file (2), joined within 15
+  minutes of somebody's jail/ban/kick (2). Stored at 2, posted to the mod
+  channel with a Link button at 3, with the candidate's score and the
+  joiner's account age beside it. A wrongly merged stranger inherits somebody
+  else's record, which is worse than an alt getting a head start. Linked
+  accounts share one sheet and one score.
+- **The model reads, it does not decide.** `/rapsheet summary`, the Monday
+  consistency review and the alt second opinion all go through
+  `aimod.Complete` (the guild's key, budget, ZDR and provider rules, no
+  schema, temperature zero) via the narrow `rapsheet.Reviewer` seam. A guild
+  with no key or no budget gets an error that reports itself `Unavailable()`
+  through an anonymous interface, so the rapsheet degrades to the plain sheet
+  without importing aimod. Prompts carry ledger text only: kinds, categories,
+  points, ages, durations, mod-typed reasons, and actor *class*; never a user
+  id, never message content. The tests grep for both.
+- **Two audiences, one renderer.** `/rapsheet me` shows a member what was
+  done to them: no notes, no voided entries, no ladder rows, no linked
+  accounts, moderators as "a moderator", and the band explained in a
+  sentence. Every user-facing surface was rendered Discord-style and read by
+  a reviewer before this shipped (`preview_test.go` writes the scenes when
+  `RAPSHEET_PREVIEW_DIR` is set); the sheet pages by eight and clips reasons
+  so ten long ones cannot push a description past Discord's 4096 bytes.
 
 ### Rotation disclosure modes
 

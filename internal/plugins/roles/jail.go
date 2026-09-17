@@ -257,6 +257,7 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 		return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
 	}
 	p.armJailRelease(guildID, userID, releaseAt)
+	p.publishJailed(ctx, guildID, userID, actor, reason, duration, releaseAt)
 	return unmanageable, nil
 }
 
@@ -603,7 +604,7 @@ func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *dis
 		return
 	}
 
-	if err := p.releaseJail(ctx, i.GuildID, userID, rec); err != nil {
+	if err := p.releaseJail(ctx, i.GuildID, userID, rec, actorID(i)); err != nil {
 		if errors.Is(err, errReleaseInProgress) {
 			core.RespondErr(s, i, "Release in progress", fmt.Errorf("<@%s> is being released right now; check `/roles list` in a moment", userID))
 			return
@@ -627,7 +628,12 @@ func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *dis
 // the member's roles (marker gone), that's treated as an implicit "already
 // handled": stop tracking, don't fight the manual override, matching
 // rotation.sweepOne's rescue-hatch precedent.
-func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec JailRecord) error {
+//
+// actor is who is releasing: the invoking mod from handleRelease, or
+// core.ActorSystem from the timer and the sweep. It used to be hardcoded to
+// the system sentinel, so a mod releasing somebody early was audited as an
+// automatic release and the decision had no owner.
+func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec JailRecord, actor string) error {
 	// The timer and the sweep can both arrive at a row that has just come
 	// due; the second one finds it claimed and leaves it to the first.
 	key := jailKey(guildID, userID)
@@ -680,9 +686,10 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 		p.log.Warn("roles: failed to clear member-level jail overwrites", "guild", guildID, "user", userID, "err", err)
 	}
 
-	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.release", "", fmt.Sprintf("user=%s restored=%v", core.MentionUser(userID), restore)); err != nil {
+	if err := p.audit.Record(ctx, guildID, actor, "roles.release", "", fmt.Sprintf("user=%s restored=%v", core.MentionUser(userID), restore)); err != nil {
 		p.log.Error("roles: audit release failed", "guild", guildID, "user", userID, "err", err)
 	}
+	p.publishReleased(ctx, guildID, userID, actor)
 
 	// Every release notifies, including the automatic ones, and unlike jail
 	// this does not skip batches. Releases arrive spread over time as each

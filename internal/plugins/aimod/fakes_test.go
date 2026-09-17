@@ -691,6 +691,7 @@ func (f *fakeAudit) actions() []string {
 type fakeJailer struct {
 	mu        sync.Mutex
 	calls     []jailCall
+	released  []string
 	err       error
 	refuseAll bool
 }
@@ -711,6 +712,13 @@ func (f *fakeJailer) JailAutomatic(_ context.Context, _, userID string, d time.D
 		return f.err
 	}
 	f.calls = append(f.calls, jailCall{userID: userID, duration: d, consented: consented})
+	return nil
+}
+
+func (f *fakeJailer) ReleaseAutomatic(_ context.Context, _, userID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, userID)
 	return nil
 }
 

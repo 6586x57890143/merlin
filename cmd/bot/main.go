@@ -24,6 +24,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
+	"github.com/6586x57890143/merlin/internal/plugins/rapsheet"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
 	"github.com/6586x57890143/merlin/internal/plugins/statistics"
@@ -241,6 +242,31 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		cfg.ContestWorkerURL, cfg.ContestWorkerToken, cfg.ContestLinkKey,
 	)
 
+	// Rapsheets. The ledger every moderation action lands in, whoever or
+	// whatever decided it. Reads its mod roles off settings for the case-file
+	// forum's overwrites and nothing else from it; everything guild-scoped it
+	// owns lives in its own tables.
+	rapsheetPlugin := rapsheet.New(
+		rapsheet.NewPostgresStore(db.Pool),
+		func(guildID string) rapsheet.DiscordOps { return guard.For(guildID) },
+		settingsStore,
+		speaker,
+	)
+	// /config plugins set rapsheet false has to stop the ledger growing too,
+	// not just the commands: bus events and gateway handlers are the entry
+	// points the CommandRouter's own gate check never sees.
+	rapsheetPlugin.WithGate(settingsStore)
+	// The ladder's jail band goes through roles, the same seam aimod's
+	// sanction uses; and aimod's own ladder now counts priors from the
+	// rapsheet, so a mod's /roles jail last week is not invisible to the
+	// escalation deciding this week's sentence. Both structural, neither
+	// package imports the other.
+	rapsheetPlugin.WithJailer(rolesPlugin)
+	aimodPlugin.WithHistory(rapsheetPlugin)
+	// Summaries, the weekly consistency review and alt second opinions run
+	// on aimod's model, key and budget through one Complete call; a guild
+	// with no key gets the plain versions.
+	rapsheetPlugin.WithReviewer(aimodPlugin)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
@@ -250,6 +276,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
 	registry.Register(aimodPlugin)
 	registry.Register(contestPlugin)
+	registry.Register(rapsheetPlugin)
 	// Channel names come off the gateway cache, the only piece of
 	// session.State this plugin reads; the counting itself is wired below.
 	statisticsPlugin := statistics.New(statistics.NewPostgresStore(db.Pool), settingsStore, func(guildID, channelID string) string {
@@ -329,6 +356,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// settingsLoaded: a guild whose settings refresh failed still gets
 		// its running contest ticked on to the next phase.
 		contestPlugin.SyncGuild(guildCtx, gc.ID)
+		rapsheetPlugin.SyncGuild(guildCtx, gc.ID)
 		statisticsPlugin.SyncGuild(guildCtx, gc.ID)
 		// Whoever is in voice as the guild arrives starts their clock now;
 		// GUILD_VOICE_STATES is always requested, so this list is complete.
@@ -383,6 +411,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			joinCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			rolesPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.User.ID)
+			// Compared with the members on record for a possible alt; a hint
+			// for a mod, never a link. Takes the whole member: the avatar
+			// hash, the names and the join time are the signals.
+			rapsheetPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.Member)
 		})
 		// Counted, and nothing else: see the note on GuildRoleDelete below for
 		// why roles deliberately has no handler here.
@@ -474,6 +506,19 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// The plugin then reads that one starter message over REST. contest
 	// deliberately does not join aimod on the gateway firehose.
 	session.AddHandler(contestPlugin.HandleThreadCreate)
+	// Bans, kicks and timeouts done through the Discord client, not through
+	// merlin, so the rapsheet does not lie by omission. Arrives under the
+	// always-on GUILD_MODERATION intent, but only if the bot holds View
+	// Audit Log in the guild; /rapsheet status says when it does not.
+	session.AddHandler(func(s *discordgo.Session, e *discordgo.GuildAuditLogEntryCreate) {
+		botID := ""
+		if s.State != nil && s.State.User != nil {
+			botID = s.State.User.ID
+		}
+		entryCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		rapsheetPlugin.HandleAuditLogEntry(entryCtx, botID, e)
+	})
 
 	// A deleted role is invisible to this bot otherwise, and it leaves two
 	// distinct traces: entries in the guild's settings that name a role
@@ -536,6 +581,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		rolesPlugin.ForgetGuild(gd.ID)
 		aimodPlugin.ForgetGuild(gd.ID)
 		contestPlugin.ForgetGuild(gd.ID)
+		rapsheetPlugin.ForgetGuild(gd.ID)
 		statisticsPlugin.ForgetGuild(gd.ID)
 		settingsStore.Forget(gd.ID)
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
