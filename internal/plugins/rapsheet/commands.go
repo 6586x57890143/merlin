@@ -165,7 +165,7 @@ func (p *Plugin) registerCommands() {
 				Options: []*discordgo.ApplicationCommandOption{
 					{
 						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "forum",
-						Description: "Where case files live. Pick an existing forum, or leave it out and merlin creates #rapsheets for the mod roles.",
+						Description: "Where case files live: an existing forum, or leave it out and merlin creates #rapsheets.",
 						Options: []*discordgo.ApplicationCommandOption{{
 							Type: discordgo.ApplicationCommandOptionChannel, Name: "channel",
 							Description:  "An existing forum channel. Its permissions are left exactly as they are.",
@@ -181,7 +181,7 @@ func (p *Plugin) registerCommands() {
 						Description: "What the ladder does when a record crosses a band.",
 						Options: []*discordgo.ApplicationCommandOption{{
 							Type: discordgo.ApplicationCommandOptionString, Name: "mode", Required: true,
-							Description: "off: ledger only. suggest: post to the mod channel with an Apply button. auto: act, never against staff.",
+							Description: "off: ledger only. suggest: post to the mod channel with an Apply button. auto: act.",
 							Choices: []*discordgo.ApplicationCommandOptionChoice{
 								{Name: "off", Value: string(ModeOff)},
 								{Name: "suggest (default)", Value: string(ModeSuggest)},
@@ -216,7 +216,7 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "alt-hints",
-						Description: "Whether joins are compared with members on record and possible alts flagged for a mod.",
+						Description: "Compare joins with members on record and flag possible alts for a mod.",
 						Options: []*discordgo.ApplicationCommandOption{{
 							Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled", Required: true,
 							Description: "On by default. Nothing is ever linked without a moderator.",

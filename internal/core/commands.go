@@ -255,6 +255,75 @@ func (r *CommandRouter) Finalize() error {
 				return fmt.Errorf("core: command %q has no registered handler (call Handle)", key)
 			}
 		}
+		if err := validateCommandShape(cmd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Discord's limits on a command definition. Checked here because of how
+// they fail in production: RegisterGuild is one BulkOverwrite of the
+// guild's whole command set, so one option description a few characters
+// over the limit makes Discord reject the entire request, the guild keeps
+// whatever set it had before, every other command goes on working, and the
+// new one simply never appears. That is the quietest possible failure, it
+// is logged once per guild on a host nobody is watching, and it happened:
+// /rapsheet shipped with two descriptions over 100 characters and was
+// invisible in every guild until somebody asked where it was. Refusing to
+// boot is the honest version.
+const (
+	maxCommandNameLen        = 32
+	maxCommandDescriptionLen = 100
+	maxCommandOptions        = 25
+	maxOptionChoices         = 25
+	maxChoiceNameLen         = 100
+	maxChoiceStringValueLen  = 100
+)
+
+func validateCommandShape(cmd *discordgo.ApplicationCommand) error {
+	if err := validateNameAndDescription(cmd.Name, cmd.Name, cmd.Description); err != nil {
+		return err
+	}
+	return validateOptions(cmd.Name, cmd.Options)
+}
+
+func validateNameAndDescription(path, name, description string) error {
+	if n := len(name); n == 0 || n > maxCommandNameLen {
+		return fmt.Errorf("core: command %q: name %q is %d characters; Discord allows 1-%d", path, name, n, maxCommandNameLen)
+	}
+	if name != strings.ToLower(name) {
+		return fmt.Errorf("core: command %q: name %q must be lowercase", path, name)
+	}
+	if n := len(description); n == 0 || n > maxCommandDescriptionLen {
+		return fmt.Errorf("core: command %q: description is %d characters; Discord allows 1-%d: %q", path, n, maxCommandDescriptionLen, description)
+	}
+	return nil
+}
+
+func validateOptions(path string, opts []*discordgo.ApplicationCommandOption) error {
+	if len(opts) > maxCommandOptions {
+		return fmt.Errorf("core: command %q has %d options; Discord allows %d", path, len(opts), maxCommandOptions)
+	}
+	for _, o := range opts {
+		p := path + "/" + o.Name
+		if err := validateNameAndDescription(p, o.Name, o.Description); err != nil {
+			return err
+		}
+		if len(o.Choices) > maxOptionChoices {
+			return fmt.Errorf("core: option %q has %d choices; Discord allows %d", p, len(o.Choices), maxOptionChoices)
+		}
+		for _, c := range o.Choices {
+			if n := len(c.Name); n == 0 || n > maxChoiceNameLen {
+				return fmt.Errorf("core: option %q: choice name %q is %d characters; Discord allows 1-%d", p, c.Name, n, maxChoiceNameLen)
+			}
+			if v, ok := c.Value.(string); ok && len(v) > maxChoiceStringValueLen {
+				return fmt.Errorf("core: option %q: choice value %q is over %d characters", p, v, maxChoiceStringValueLen)
+			}
+		}
+		if err := validateOptions(p, o.Options); err != nil {
+			return err
+		}
 	}
 	return nil
 }
