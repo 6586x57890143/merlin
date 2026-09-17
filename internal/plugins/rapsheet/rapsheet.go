@@ -83,6 +83,10 @@ type Plugin struct {
 	speaker  voice.Source
 	modRoles ModRoles
 
+	// jailer is optional: the roles plugin, when wired, so jail bands can be
+	// applied. Nil means they cannot, and say so.
+	jailer Jailer
+
 	// gate answers "is rapsheet enabled in this guild" for the paths the
 	// CommandRouter's own check never sees: bus events and gateway handlers.
 	// Nil means always enabled, which is what tests want and production
@@ -109,6 +113,9 @@ type Plugin struct {
 	mu              sync.Mutex
 	botID           string
 	sweepRegistered map[string]bool
+	// applying holds the suggestions being applied right now, so two mods
+	// clicking Apply together produce one consequence.
+	applying map[int64]bool
 }
 
 // New builds the plugin.
@@ -121,6 +128,7 @@ func New(store Store, opsFor OpsProvider, modRoles ModRoles, speaker voice.Sourc
 		now:      time.Now,
 
 		sweepRegistered: make(map[string]bool),
+		applying:        make(map[int64]bool),
 	}
 }
 

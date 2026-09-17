@@ -35,6 +35,60 @@ type Jailer interface {
 	// list, which only the member themselves (or the bootstrap operator) can
 	// put them on. See optin.go.
 	JailAutomatic(ctx context.Context, guildID, userID string, duration time.Duration, reason string, targetConsented bool) error
+	// ReleaseAutomatic ends a jail early. /aimod undo calls it when the
+	// offence behind a member's only standing sanction is reversed: the
+	// message is back, and a jail for a message that is back is a jail for
+	// nothing. A member who is not jailed is not an error.
+	ReleaseAutomatic(ctx context.Context, guildID, userID, reason string) error
+}
+
+// History is the narrow slice of the rapsheet plugin this one consults for
+// a member's prior record. Nil means aimod's own count, which sees only
+// what aimod itself did.
+//
+// Declared here and satisfied structurally by *rapsheet.Plugin, wired in
+// cmd/bot/main.go, the same seam as Jailer. The ladder itself does not
+// change: a first offence still costs what severityBase says. What changes
+// is what counts as a prior. Before this, a mod's /roles jail last week was
+// invisible to the escalation that decided this week's sentence, and the
+// whole point of a ledger is that nothing a member did is invisible to it.
+type History interface {
+	// Priors counts the member's scored offences since `since`, across every
+	// account linked to them. ok is false when the rapsheet has no opinion
+	// (disabled in this guild), in which case the caller falls back to its
+	// own count rather than to zero.
+	Priors(ctx context.Context, guildID, userID string, since time.Time) (n int, ok bool, err error)
+}
+
+// WithHistory attaches the unified prior count.
+func (p *Plugin) WithHistory(h History) *Plugin {
+	p.history = h
+	return p
+}
+
+// priors is the one place the ladder's prior count is read. The rapsheet's
+// answer when it has one, aimod's own count otherwise, and on any failure
+// the known count rather than zero: an unreadable history is not evidence
+// of a clean one, and it is not evidence of a long one either, so the
+// fallback is whichever source can still answer.
+func (p *Plugin) priors(ctx context.Context, guildID, userID string) int {
+	since := p.now().Add(-repeatWindow)
+	if p.history != nil {
+		n, ok, err := p.history.Priors(ctx, guildID, userID, since)
+		if err != nil {
+			p.log.Error("aimod: read priors from the rapsheet, falling back to own count", "guild", guildID, "user", userID, "err", err)
+		} else if ok {
+			return n
+		}
+	}
+	n, err := p.store.CountSanctions(ctx, guildID, userID, since)
+	if err != nil {
+		// Not fatal, but it must fail toward leniency: an unreadable history
+		// is not evidence of a history.
+		p.log.Error("aimod: count prior sanctions", "guild", guildID, "user", userID, "err", err)
+		return 0
+	}
+	return n
 }
 
 // Base sentences by how serious the policy area is.
@@ -127,13 +181,7 @@ func (p *Plugin) sanction(ctx context.Context, cfg Config, c candidate, bucket B
 		return
 	}
 
-	priors, err := p.store.CountSanctions(ctx, cfg.GuildID, c.AuthorID, p.now().Add(-repeatWindow))
-	if err != nil {
-		// Not fatal, but it must fail toward leniency: an unreadable history
-		// is not evidence of a history.
-		p.log.Error("aimod: count prior sanctions", "guild", cfg.GuildID, "err", err)
-		priors = 0
-	}
+	priors := p.priors(ctx, cfg.GuildID, c.AuthorID)
 	duration := sanctionFor(p.severityOf(bucket), priors)
 
 	p.applySanction(ctx, cfg, c, bucket, duration, priors, fmt.Sprintf(
@@ -156,11 +204,7 @@ func (p *Plugin) sanction(ctx context.Context, cfg Config, c candidate, bucket B
 // while the member was over the ceiling are collected and acted on together,
 // with the jail, in one pass.
 func (p *Plugin) sanctionForAbuse(ctx context.Context, cfg Config, c candidate) {
-	priors, err := p.store.CountSanctions(ctx, cfg.GuildID, c.AuthorID, p.now().Add(-repeatWindow))
-	if err != nil {
-		p.log.Error("aimod: count prior sanctions", "guild", cfg.GuildID, "err", err)
-		priors = 0
-	}
+	priors := p.priors(ctx, cfg.GuildID, c.AuthorID)
 	p.clearPendingFlags(ctx, cfg, c.AuthorID)
 	// BucketSpam, which is where Discord's own platform-manipulation rules
 	// live, and the closest honest label for "generating flagged content

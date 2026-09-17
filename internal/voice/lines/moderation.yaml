@@ -120,6 +120,19 @@ moderation.ban_permanent:
   - "banned from {guild}. no end date. reason below."
   - "permanent ban from {guild}. the reason is below."
 
+moderation.strike_notice:
+  # warm
+  - "a note from {guild}: your record there has built up a bit. nothing has happened, and nothing will if it stops here. this is just the heads-up before it would."
+  - "quick heads-up from {guild}: a few things have gone on your record recently, and the next one would carry a consequence. this message is the warning before that, not the consequence."
+  - "this is a friendly one from {guild}. your moderation record has reached the point where merlin is supposed to say something, so: something. nothing has been done, and it is entirely in your hands whether anything is."
+  # plain
+  - "a note from {guild}: your moderation record there has built up to the point where the next thing on it carries a consequence. nothing has happened yet. this is the heads-up."
+  - "your record in {guild} has reached the first line on the server's ladder. no action has been taken. the next entry would carry one."
+  - "from {guild}: several things have been recorded against you recently, and one more would mean a consequence. this is the notice that comes first."
+  # matter of fact
+  - "notice from {guild}: your record has reached the point where the next entry carries a consequence. nothing has happened yet."
+  - "record notice, {guild}. no action taken. the next entry would carry one."
+
 moderation.aimod_removed:
   # warm
   - "a message you posted in {guild} was taken down automatically. it matched one of Discord's own rules, and no moderator was involved. the reason is below, and your text is there too so nothing is lost."

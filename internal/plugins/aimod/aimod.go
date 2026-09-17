@@ -134,6 +134,10 @@ type Plugin struct {
 	// jailer is optional. Nil means no roles plugin is wired into this
 	// build, and the sanction ladder falls back to Discord's own timeout.
 	jailer Jailer
+	// history is optional: the rapsheet plugin, when wired, so the ladder's
+	// prior count covers what moderators did by hand as well as what this
+	// plugin did. See History.
+	history History
 	// traffic is optional too: the statistics plugin, when wired, so a
 	// cost projection with no receipts yet can use the server's real
 	// volume instead of a guess.

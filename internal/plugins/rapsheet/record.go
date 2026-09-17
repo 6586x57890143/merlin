@@ -55,11 +55,14 @@ func (p *Plugin) record(ctx context.Context, cfg Config, in newEntry) (Entry, bo
 	}
 	now := p.now()
 	e := Entry{
-		GuildID:   in.GuildID,
-		UserID:    in.UserID,
-		Kind:      in.Kind,
-		Category:  in.Category,
-		Points:    pointsFor(cfg, in.Kind, in.Category, in.ActorID, in.PointsOverride),
+		GuildID:  in.GuildID,
+		UserID:   in.UserID,
+		Kind:     in.Kind,
+		Category: in.Category,
+		Points:   pointsFor(cfg, in.Kind, in.Category, in.ActorID, in.PointsOverride),
+		// A ladder row never scores, whoever clicked Apply: it is the
+		// consequence of offences already on the sheet, and points on it
+		// would charge the member twice and walk the ladder up on its own.
 		Band:      in.Band,
 		ActorID:   in.ActorID,
 		Reason:    in.Reason,
@@ -68,6 +71,9 @@ func (p *Plugin) record(ctx context.Context, cfg Config, in newEntry) (Entry, bo
 		Source:    in.Source,
 		Ref:       in.Ref,
 		CreatedAt: now,
+	}
+	if in.Source == SourceLadder {
+		e.Points = 0
 	}
 
 	// The case file first, so the member is on file even if the entry
@@ -90,10 +96,10 @@ func (p *Plugin) record(ctx context.Context, cfg Config, in newEntry) (Entry, bo
 }
 
 // afterRecord is everything that follows a written entry and must never
-// fail it: the forum mirror, and (a later slice) the ladder.
+// fail it: the forum mirror, then the ladder.
 func (p *Plugin) afterRecord(ctx context.Context, cfg Config, e Entry) {
-	_ = ctx
 	p.mirror(cfg, e)
+	p.escalate(ctx, cfg, e)
 }
 
 // ensureCaseFile makes sure the member is on file and refreshes the

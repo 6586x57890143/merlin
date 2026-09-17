@@ -55,6 +55,10 @@ const (
 	KeyKickNotice         Key = "moderation.kick"
 	KeyBanNotice          Key = "moderation.ban"
 	KeyBanPermanentNotice Key = "moderation.ban_permanent"
+	// KeyStrikeNotice is the ladder's first rung: a member's record has
+	// reached the notice band. No consequence beyond being told, which is
+	// the point; it exists so the next rung is never the first they hear.
+	KeyStrikeNotice Key = "moderation.strike_notice"
 
 	// KeyAIModRemoved and KeyAIModRewritten are DMs to the member whose
 	// message the AI moderation plugin acted on. Plain register, like the
@@ -292,6 +296,12 @@ var specs = map[Key]spec{
 		required: []string{"guild"},
 		maxLen:   maxEmbedDescription,
 		fallback: "you have been banned from {guild}. the reason is below.",
+	},
+	KeyStrikeNotice: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "a note from {guild}: your moderation record there has built up to the point where the next thing on it carries a consequence. nothing has happened yet. this is the heads-up.",
 	},
 
 	KeyAIModRemoved: {

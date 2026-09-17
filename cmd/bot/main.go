@@ -256,6 +256,13 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// not just the commands: bus events and gateway handlers are the entry
 	// points the CommandRouter's own gate check never sees.
 	rapsheetPlugin.WithGate(settingsStore)
+	// The ladder's jail band goes through roles, the same seam aimod's
+	// sanction uses; and aimod's own ladder now counts priors from the
+	// rapsheet, so a mod's /roles jail last week is not invisible to the
+	// escalation deciding this week's sentence. Both structural, neither
+	// package imports the other.
+	rapsheetPlugin.WithJailer(rolesPlugin)
+	aimodPlugin.WithHistory(rapsheetPlugin)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)

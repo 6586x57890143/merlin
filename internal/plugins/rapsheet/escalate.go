@@ -1,0 +1,449 @@
+package rapsheet
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordguard"
+	"github.com/6586x57890143/merlin/internal/voice"
+)
+
+// The ladder: what a record adds up to, and what happens when it crosses a
+// line.
+//
+// Every scored entry re-reads the member's whole sheet (their link group's,
+// if they have one), sums the decayed points, and asks Ladder which band
+// that reaches. Crossing into a band the member has not been actioned at
+// inside a half-life owes that band's consequence. In suggest mode the
+// consequence is posted to the mod channel with an Apply button; in auto
+// mode it is applied, with two exceptions that are the whole safety
+// argument. It is never applied against staff (CanModerate with a nil
+// actor, the same rule as roles.JailAutomatic), and it is never applied on
+// the back of a moderator's own command: a mod who just typed /rapsheet
+// warn decided the consequence for that offence was a warning, and a bot
+// jailing on top of it is the surprise this rule exists to prevent. They
+// get a suggestion instead, one click away.
+//
+// Idempotency lives in the ledger, not in memory. A suggestion is an entry
+// (kind suggestion, source ladder, the band it was for) and so is a
+// consequence the ladder applied, so "already suggested or actioned at this
+// band" is a read of the sheet, survives restarts, and shows in the case
+// file. A standing consequence at least as strong as the recommendation
+// also satisfies it: the ladder never suggests a 24h jail over the 24h jail
+// aimod just applied, or over a mod's longer one.
+
+// Jailer is the narrow slice of internal/plugins/roles this plugin needs,
+// the same seam aimod uses. Satisfied structurally by *roles.Plugin and
+// wired in cmd/bot/main.go. Nil means jail bands cannot be applied and say
+// so.
+type Jailer interface {
+	JailAutomatic(ctx context.Context, guildID, userID string, duration time.Duration, reason string, targetConsented bool) error
+}
+
+// WithJailer attaches the jail mechanism jail bands are applied through.
+func (p *Plugin) WithJailer(j Jailer) *Plugin {
+	p.jailer = j
+	return p
+}
+
+const (
+	actionApply = "rapsheet.apply"
+
+	suggestPrefix        = "rapsheet:sugg:"
+	suggestApplyPrefix   = suggestPrefix + "apply:"
+	suggestDismissPrefix = suggestPrefix + "dismiss:"
+)
+
+// Priors implements aimod.History: the member's scored offences (across
+// their link group) since `since`. ok is false when the rapsheet is
+// disabled in the guild, so aimod falls back to its own count rather than
+// reading a switched-off ledger as a clean record.
+func (p *Plugin) Priors(ctx context.Context, guildID, userID string, since time.Time) (int, bool, error) {
+	if !p.enabled(guildID) {
+		return 0, false, nil
+	}
+	n, err := p.store.CountScored(ctx, guildID, p.group(ctx, guildID, userID), since)
+	if err != nil {
+		return 0, true, err
+	}
+	return n, true, nil
+}
+
+// escalate runs after every recorded entry and decides whether the ladder
+// owes anything. Never returns an error: nothing here may fail the entry.
+func (p *Plugin) escalate(ctx context.Context, cfg Config, e Entry) {
+	switch {
+	case cfg.EscalationMode == ModeOff:
+		return
+	case e.Voided(), e.Points == 0, e.Source == SourceLadder:
+		return
+	}
+	switch e.Kind {
+	case KindNote, KindUnban, KindRelease, KindSuggestion:
+		return
+	}
+
+	sh, err := p.loadSheet(ctx, cfg, e.GuildID, e.UserID)
+	if err != nil {
+		p.log.Error("rapsheet: load sheet for escalation", "guild", e.GuildID, "user", e.UserID, "err", err)
+		return
+	}
+	rec := sh.Rec
+	if rec.Action == ActionNone {
+		return
+	}
+	now := p.now()
+	if rec.Band <= maxLadderBand(sh.Entries, now.Add(-cfg.HalfLife)) {
+		return
+	}
+	if st, ok := standing(sh.Entries, now); ok && covers(st, rec, now) {
+		return
+	}
+
+	switch {
+	case cfg.EscalationMode == ModeAuto && (e.Source == SourceAIMod || e.Source == SourceDiscord):
+		if _, err := p.applyLadder(ctx, cfg, e.UserID, rec, sh.Score, core.ActorSystem); err != nil {
+			// Refused (staff, unresolvable) or failed. Either way the
+			// consequence row is voided with the reason, so the sheet shows
+			// what was tried, and the next crossing tries again.
+			p.log.Warn("rapsheet: automatic escalation not applied", "guild", e.GuildID, "user", e.UserID, "action", rec.Action, "err", err)
+		}
+	default:
+		p.suggest(ctx, cfg, e.UserID, rec, sh.Score)
+	}
+}
+
+// maxLadderBand is the highest band the ladder has suggested or applied
+// for this record since `since`, or -1 for none. Voided rows do not count:
+// a dismissed suggestion is a mod saying "not this time", and a later
+// crossing of the same band, after more offences, is a different time.
+func maxLadderBand(entries []Entry, since time.Time) int {
+	best := -1
+	for _, e := range entries {
+		if e.Source != SourceLadder || e.Voided() || e.CreatedAt.Before(since) {
+			continue
+		}
+		if e.Band > best {
+			best = e.Band
+		}
+	}
+	return best
+}
+
+// covers reports whether a standing consequence already does at least what
+// the recommendation asks: as strong an action, lasting at least as long.
+func covers(st Entry, rec Recommendation, now time.Time) bool {
+	if kindStrength(st.Kind) < rec.Action.Strength() {
+		return false
+	}
+	if st.EndsAt == nil {
+		return true
+	}
+	return !st.EndsAt.Before(now.Add(rec.Duration))
+}
+
+// suggest records the recommendation and posts it for a moderator.
+//
+// Nothing is recorded when there is nowhere to post: a suggestion nobody
+// can see would still satisfy the idempotency check and silence the band
+// for a half-life, so a guild that sets its mod channel later would hear
+// nothing about the members who crossed a line before it did.
+func (p *Plugin) suggest(ctx context.Context, cfg Config, userID string, rec Recommendation, score float64) {
+	if cfg.ModChannelID == "" {
+		p.log.Warn("rapsheet: ladder has a suggestion and no mod channel to post it in; set one with /rapsheet configure mod-channel",
+			"guild", cfg.GuildID, "user", userID, "action", rec.Action)
+		return
+	}
+	e, written, err := p.record(ctx, cfg, newEntry{
+		GuildID: cfg.GuildID, UserID: userID, Kind: KindSuggestion, Category: CategoryServerRule,
+		ActorID: core.ActorSystem, Reason: fmt.Sprintf("score %.0f: %s", score, recWords(rec)),
+		Duration: rec.Duration, Source: SourceLadder, Band: rec.Band,
+	})
+	if err != nil || !written {
+		p.log.Error("rapsheet: record suggestion", "guild", cfg.GuildID, "user", userID, "err", err)
+		return
+	}
+	embed, components := suggestionEmbed(e, rec, score, "", false)
+	if _, err := p.ops(cfg.GuildID).ChannelMessageSendComplex(cfg.ModChannelID, &discordgo.MessageSend{
+		Embeds:     []*discordgo.MessageEmbed{embed},
+		Components: components,
+		Files:      core.EmbedFiles(embed),
+	}); err != nil {
+		p.log.Error("rapsheet: post suggestion", "guild", cfg.GuildID, "channel", cfg.ModChannelID, "err", err)
+	}
+}
+
+// suggestionEmbed is the mod-channel post. note is appended when there is
+// something to say; settled drops the buttons, which happens once the
+// suggestion has been applied or dismissed and never for a note that leaves
+// it open (a mod without the rank to apply a ban, for instance).
+func suggestionEmbed(e Entry, rec Recommendation, score float64, note string, settled bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	desc := fmt.Sprintf("%s's record has reached **%.0f points**, which puts them at **%s** on the ladder.\n\n"+
+		"Apply it, or dismiss it; either way it is case #%d on their sheet. `/rapsheet view` shows what got them here.",
+		core.MentionUser(e.UserID), score, recWords(rec), e.ID)
+	color := core.ColorWarning
+	if note != "" {
+		desc += "\n\n" + note
+	}
+	if settled {
+		color = core.ColorInfo
+	}
+	embed := core.NewEmbed(color, "Ladder: "+recWords(rec), desc)
+	if settled {
+		return embed, nil
+	}
+	id := strconv.FormatInt(e.ID, 10)
+	return embed, []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+		discordgo.Button{Label: "Apply " + recWords(rec), Style: discordgo.DangerButton, CustomID: suggestApplyPrefix + id},
+		discordgo.Button{Label: "Dismiss", Style: discordgo.SecondaryButton, CustomID: suggestDismissPrefix + id},
+	}}}
+}
+
+// handleSuggestion is both buttons. Everything is re-derived from the
+// ledger on the click: the suggestion may have been dismissed or applied
+// by another mod, the band may have been reconfigured, and a click on a
+// week-old message is still a click.
+func (p *Plugin) handleSuggestion(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+	apply := strings.HasPrefix(customID, suggestApplyPrefix)
+	idStr := strings.TrimPrefix(strings.TrimPrefix(customID, suggestApplyPrefix), suggestDismissPrefix)
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		p.log.Error("rapsheet: parse suggestion id", "custom_id", customID, "err", err)
+		return
+	}
+	if err := core.DeferUpdate(s, i); err != nil {
+		p.log.Error("rapsheet: defer suggestion click", "err", err)
+		return
+	}
+	cfg := p.config(ctx, i.GuildID)
+	sug, err := p.store.Entry(ctx, i.GuildID, id)
+	if err != nil || sug.Kind != KindSuggestion {
+		p.log.Error("rapsheet: suggestion click on a missing case", "guild", i.GuildID, "case", id, "err", err)
+		return
+	}
+	rec, ok := bandRecommendation(cfg, sug.Band)
+	if !ok {
+		p.settle(s, i, sug, rec, "The ladder has been reconfigured since; this band no longer exists.", true)
+		return
+	}
+	if sug.Voided() {
+		p.settle(s, i, sug, rec, fmt.Sprintf("Already dismissed by %s.", actorWords(sug.VoidedBy, false)), true)
+		return
+	}
+
+	if !apply {
+		now := p.now()
+		if err := p.store.Void(ctx, i.GuildID, sug.ID, actorID(i), "dismissed", now); err != nil {
+			p.log.Error("rapsheet: dismiss suggestion", "guild", i.GuildID, "case", sug.ID, "err", err)
+			return
+		}
+		sug.VoidedAt, sug.VoidedBy, sug.VoidReason = &now, actorID(i), "dismissed"
+		p.afterAmend(ctx, sug)
+		if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.suggestion_dismissed", "",
+			fmt.Sprintf("case #%d user=%s %s", sug.ID, core.MentionUser(sug.UserID), recWords(rec))); err != nil {
+			p.log.Error("rapsheet: audit dismiss", "guild", i.GuildID, "err", err)
+		}
+		p.settle(s, i, sug, rec, fmt.Sprintf("Dismissed by %s.", core.MentionUser(actorID(i))), true)
+		return
+	}
+
+	// A ban is TierAdmin however the button was registered. The component
+	// itself is TierMod so a mod can apply a jail, and the bar is raised
+	// here for the one action that would otherwise let a button do what the
+	// command refuses.
+	if rec.Action == ActionBan {
+		if err := p.perms.Authorize(i, core.PermSpec{Tier: core.TierAdmin, Action: actionBan}); err != nil {
+			// Still open: the buttons stay for an admin.
+			p.settle(s, i, sug, rec, fmt.Sprintf("%s tried to apply this, but a ban needs an admin.", core.MentionUser(actorID(i))), false)
+			return
+		}
+	}
+	// Somebody else may have applied it between the post and this click,
+	// or two mods may be clicking at once.
+	sh, err := p.loadSheet(ctx, cfg, i.GuildID, sug.UserID)
+	if err != nil {
+		p.log.Error("rapsheet: load sheet on apply", "guild", i.GuildID, "err", err)
+		return
+	}
+	if maxAppliedBand(sh.Entries, sug.CreatedAt) >= sug.Band {
+		p.settle(s, i, sug, rec, "Already applied.", true)
+		return
+	}
+	if !p.claim(sug.ID) {
+		return
+	}
+	defer p.unclaim(sug.ID)
+
+	outcome, err := p.applyLadder(ctx, cfg, sug.UserID, rec, sh.Score, actorID(i))
+	if err != nil {
+		// Still open: a transient failure (Discord down, jail role missing)
+		// is something an admin may fix and retry.
+		p.settle(s, i, sug, rec, fmt.Sprintf("%s tried to apply this and it failed: %v", core.MentionUser(actorID(i)), err), false)
+		return
+	}
+	p.settle(s, i, sug, rec, fmt.Sprintf("Applied by %s: %s.", core.MentionUser(actorID(i)), outcome), true)
+}
+
+// bandRecommendation looks a stored band index up in the current ladder.
+func bandRecommendation(cfg Config, band int) (Recommendation, bool) {
+	bands := cfg.Bands
+	if len(bands) == 0 {
+		bands = defaultBands
+	}
+	if band < 0 || band >= len(bands) {
+		return Recommendation{}, false
+	}
+	b := bands[band]
+	return Recommendation{Band: band, Action: b.Action, Duration: b.Duration}, true
+}
+
+// maxAppliedBand is the highest band a ladder *consequence* (not a
+// suggestion) has been recorded for since `since`.
+func maxAppliedBand(entries []Entry, since time.Time) int {
+	best := -1
+	for _, e := range entries {
+		if e.Source != SourceLadder || e.Kind == KindSuggestion || e.Voided() || e.CreatedAt.Before(since) {
+			continue
+		}
+		if e.Band > best {
+			best = e.Band
+		}
+	}
+	return best
+}
+
+func (p *Plugin) settle(s *discordgo.Session, i *discordgo.InteractionCreate, sug Entry, rec Recommendation, outcome string, settled bool) {
+	score := 0.0
+	if _, after, ok := strings.Cut(sug.Reason, "score "); ok {
+		if n, _, ok := strings.Cut(after, ":"); ok {
+			score, _ = strconv.ParseFloat(n, 64)
+		}
+	}
+	embed, components := suggestionEmbed(sug, rec, score, outcome, settled)
+	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
+		p.log.Error("rapsheet: update suggestion message", "guild", i.GuildID, "err", err)
+	}
+}
+
+func (p *Plugin) claim(id int64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.applying[id] {
+		return false
+	}
+	p.applying[id] = true
+	return true
+}
+
+func (p *Plugin) unclaim(id int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.applying, id)
+}
+
+// applyLadder carries out a recommendation against userID. actor is who
+// decided it: core.ActorSystem for auto mode, the clicking mod for a
+// suggestion.
+//
+// Refusals come first and cost nothing: the bootstrap operator, anyone
+// CanModerate says is staff, anyone whose rank cannot be resolved. Then the
+// consequence entry is written, then Discord (or roles) is asked, and a
+// refusal voids the entry with the reason, exactly as the command leaves
+// do. The reason handed to roles carries ladderReasonPrefix so the jail
+// coming back over the bus is recognised as this one.
+func (p *Plugin) applyLadder(ctx context.Context, cfg Config, userID string, rec Recommendation, score float64, actor string) (string, error) {
+	if p.perms.IsBootstrapAdmin(userID) {
+		return "", errors.New("the bootstrap operator cannot be actioned automatically")
+	}
+	member, err := p.ops(cfg.GuildID).GuildMember(cfg.GuildID, userID)
+	present := err == nil
+	if err != nil {
+		if !core.IsUnknownResource(err) {
+			return "", fmt.Errorf("look up member: %w", err)
+		}
+		member = &discordgo.Member{User: &discordgo.User{ID: userID}}
+	}
+	if err := p.perms.CanModerate(cfg.GuildID, nil, userID, member.Roles); err != nil {
+		return "", fmt.Errorf("refused: %w", err)
+	}
+	if !present && rec.Action != ActionBan {
+		return "", fmt.Errorf("%s is not in the server", core.MentionUser(userID))
+	}
+
+	kind := KindNote
+	switch rec.Action {
+	case ActionJail:
+		kind = KindJail
+	case ActionTimeout:
+		kind = KindTimeout
+	case ActionBan:
+		kind = KindBan
+	}
+	in := newEntry{
+		GuildID: cfg.GuildID, UserID: userID, Kind: kind, Category: CategoryServerRule, ActorID: actor,
+		Reason: fmt.Sprintf("ladder: score %.0f reached %s", score, recWords(rec)), Source: SourceLadder, Band: rec.Band,
+	}
+	if rec.Duration > 0 {
+		until := p.now().Add(rec.Duration)
+		in.Duration, in.EndsAt = rec.Duration, &until
+	}
+	e, _, err := p.record(ctx, cfg, in)
+	if err != nil {
+		return "", err
+	}
+	reason := fmt.Sprintf("%s%d: score %.0f reached %s", ladderReasonPrefix, e.ID, score, recWords(rec))
+	guild := p.guildName(cfg.GuildID)
+
+	var applyErr error
+	outcome := recWords(rec)
+	switch rec.Action {
+	case ActionNotice:
+		p.dm(ctx, cfg.GuildID, userID, voice.KeyStrikeNotice, "A note about your record", core.ColorWarning,
+			map[string]string{"guild": guild})
+		outcome = "notice sent"
+	case ActionJail:
+		if p.jailer == nil {
+			applyErr = errors.New("jail is not available in this build")
+		} else {
+			applyErr = p.jailer.JailAutomatic(ctx, cfg.GuildID, userID, rec.Duration, reason, false)
+		}
+	case ActionTimeout:
+		applyErr = p.ops(cfg.GuildID).GuildMemberTimeout(cfg.GuildID, userID, e.EndsAt)
+		if applyErr == nil {
+			p.dm(ctx, cfg.GuildID, userID, voice.KeyTimeoutNotice, "Timed out", core.ColorWarning,
+				map[string]string{"guild": guild, "until": relativeTimestamp(*e.EndsAt)}, reasonFields(CategoryServerRule, "your record reached "+recWords(rec))...)
+		}
+	case ActionBan:
+		p.dm(ctx, cfg.GuildID, userID, voice.KeyBanNotice, "Banned", core.ColorError,
+			map[string]string{"guild": guild, "until": relativeTimestamp(*e.EndsAt)}, reasonFields(CategoryServerRule, "your record reached "+recWords(rec))...)
+		applyErr = p.ops(cfg.GuildID).GuildBanCreateWithReason(cfg.GuildID, userID, reason, 0)
+	}
+
+	switch {
+	case applyErr == nil:
+	case discordguard.Skipped(applyErr):
+		p.voidFailed(ctx, e, errors.New("paused or dry-run"))
+		return "", applyErr
+	default:
+		p.voidFailed(ctx, e, applyErr)
+		return "", applyErr
+	}
+
+	if err := p.audit.Record(ctx, cfg.GuildID, actor, "rapsheet.escalated", "",
+		fmt.Sprintf("case #%d user=%s score=%.0f %s", e.ID, core.MentionUser(userID), score, recWords(rec))); err != nil {
+		p.log.Error("rapsheet: audit escalation", "guild", cfg.GuildID, "err", err)
+	}
+	if rec.Action == ActionBan {
+		p.mu.Lock()
+		p.reconcileSweepJob(ctx, cfg.GuildID)
+		p.mu.Unlock()
+	}
+	return outcome, nil
+}
