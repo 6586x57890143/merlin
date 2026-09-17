@@ -102,8 +102,12 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, e Entry) string {
 		return ""
 	}
 	now := p.now()
-	if rec.Band <= maxLadderBand(sh.Entries, now.Add(-cfg.HalfLife)) {
-		return fmt.Sprintf("Their record is in the %s band; the ladder has already suggested or applied it.", recWords(rec))
+	if prior, ok := ladderRowAtOrAbove(sh.Entries, rec.Band, now.Add(-cfg.HalfLife)); ok {
+		verb := "applied"
+		if prior.Kind == KindSuggestion {
+			verb = "suggested"
+		}
+		return fmt.Sprintf("Their record is in the %s band; the ladder already %s it (case #%d).", recWords(rec), verb, prior.ID)
 	}
 	if st, ok := standing(sh.Entries, now); ok && covers(st, rec, now) {
 		return ""
@@ -124,21 +128,18 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, e Entry) string {
 	}
 }
 
-// maxLadderBand is the highest band the ladder has suggested or applied
-// for this record since `since`, or -1 for none. Voided rows do not count:
-// a dismissed suggestion is a mod saying "not this time", and a later
+// ladderRowAtOrAbove is the ladder's most recent live suggestion or
+// consequence at band or above since `since`. Voided rows do not count: a
+// dismissed suggestion is a mod saying "not this time", and a later
 // crossing of the same band, after more offences, is a different time.
-func maxLadderBand(entries []Entry, since time.Time) int {
-	best := -1
+func ladderRowAtOrAbove(entries []Entry, band int, since time.Time) (Entry, bool) {
 	for _, e := range entries {
-		if e.Source != SourceLadder || e.Voided() || e.CreatedAt.Before(since) {
+		if e.Source != SourceLadder || e.Voided() || e.CreatedAt.Before(since) || e.Band < band {
 			continue
 		}
-		if e.Band > best {
-			best = e.Band
-		}
+		return e, true
 	}
-	return best
+	return Entry{}, false
 }
 
 // covers reports whether a standing consequence already does at least what
@@ -182,7 +183,7 @@ func (p *Plugin) suggest(ctx context.Context, cfg Config, trigger Entry, rec Rec
 	if st, ok := standing(sh.Entries, p.now()); ok {
 		standingLine = "Already " + standingWords(st) + " (#" + strconv.FormatInt(st.ID, 10) + ")."
 	}
-	embed, components := suggestionEmbed(e, rec, sh.Score, &trigger, standingLine, "", false)
+	embed, components := suggestionEmbed(e, rec, sh.Score, tippedLine(trigger, p.now(), cfg.HalfLife), standingLine, "", false)
 	if _, err := p.ops(cfg.GuildID).ChannelMessageSendComplex(cfg.ModChannelID, &discordgo.MessageSend{
 		Embeds:     []*discordgo.MessageEmbed{embed},
 		Components: components,
@@ -194,24 +195,32 @@ func (p *Plugin) suggest(ctx context.Context, cfg Config, trigger Entry, rec Rec
 	return fmt.Sprintf("The ladder suggested %s in %s.", recWords(rec), core.MentionChannel(cfg.ModChannelID))
 }
 
-// suggestionEmbed is the mod-channel post. trigger is the entry that tipped
-// the score (nil once settled, when it is read back off the suggestion's
-// reason instead); standingLine says what the member is already under, the
-// main reason a mod dismisses. note is appended when there is something to
-// say; settled drops the buttons and the invitation to click them, which
-// happens once the suggestion has been applied or dismissed and never for a
-// note that leaves it open (a mod without the rank to apply a ban).
-func suggestionEmbed(e Entry, rec Recommendation, score float64, trigger *Entry, standingLine, note string, settled bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+// tippedLine is the "what tipped it" block of a suggestion: the entry in
+// the sheet's own format, with what it counts for now.
+func tippedLine(trigger Entry, now time.Time, halfLife time.Duration) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**Tipped by:** #%d %s", trigger.ID, kindWords(trigger))
+	if trigger.Points > 0 {
+		fmt.Fprintf(&b, " · %s · %d pts (%.0f now)", categoryLabel(trigger.Category), trigger.Points, Decayed(trigger.Points, now.Sub(trigger.CreatedAt), halfLife))
+	}
+	if trigger.Reason != "" {
+		b.WriteString("\n> " + clip(oneLine(trigger.Reason), maxReasonShown))
+	}
+	return b.String()
+}
+
+// suggestionEmbed is the mod-channel post. tipped is tippedLine's block
+// (empty once settled and read back off the suggestion's reason instead);
+// standingLine says what the member is already under, the main reason a
+// mod dismisses. note is appended when there is something to say; settled
+// drops the buttons and the invitation to click them, which happens once
+// the suggestion has been applied or dismissed and never for a note that
+// leaves it open (a mod without the rank to apply a ban).
+func suggestionEmbed(e Entry, rec Recommendation, score float64, tipped, standingLine, note string, settled bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s's record has reached **%.0f points**, which puts them at **%s** on the ladder.", core.MentionUser(e.UserID), score, recWords(rec))
-	if trigger != nil {
-		fmt.Fprintf(&b, "\n\n**Tipped by:** #%d %s", trigger.ID, kindWords(*trigger))
-		if trigger.Points > 0 {
-			fmt.Fprintf(&b, " · %s · %d pts", categoryLabel(trigger.Category), trigger.Points)
-		}
-		if trigger.Reason != "" {
-			b.WriteString("\n> " + oneLine(trigger.Reason))
-		}
+	if tipped != "" {
+		b.WriteString("\n\n" + tipped)
 	} else if _, after, ok := strings.Cut(e.Reason, "after #"); ok {
 		if n, _, ok := strings.Cut(after, ":"); ok {
 			fmt.Fprintf(&b, "\n\n**Tipped by:** case #%s", n)
@@ -366,7 +375,19 @@ func maxAppliedBand(entries []Entry, since time.Time) int {
 func (p *Plugin) settle(s *discordgo.Session, i *discordgo.InteractionCreate, sug Entry, rec Recommendation, outcome string, settled bool) {
 	var score float64
 	_, _ = fmt.Sscanf(sug.Reason, "score %f", &score)
-	embed, components := suggestionEmbed(sug, rec, score, nil, "", outcome, settled)
+	// Settled from the stored suggestion alone; the tipping entry is
+	// re-read so the settled message still says why.
+	tipped := ""
+	if _, after, ok := strings.Cut(sug.Reason, "after #"); ok {
+		if n, _, ok := strings.Cut(after, ":"); ok {
+			if id, err := strconv.ParseInt(n, 10, 64); err == nil {
+				if trig, err := p.store.Entry(context.Background(), sug.GuildID, id); err == nil {
+					tipped = tippedLine(trig, p.now(), p.config(context.Background(), sug.GuildID).HalfLife)
+				}
+			}
+		}
+	}
+	embed, components := suggestionEmbed(sug, rec, score, tipped, "", outcome, settled)
 	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
 		p.log.Error("rapsheet: update suggestion message", "guild", i.GuildID, "err", err)
 	}

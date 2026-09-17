@@ -38,6 +38,20 @@ type previewScene struct {
 func lastResponse(rt *recordingTransport) (embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent, content string, ephemeral bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	// A follow-up inherits the ephemerality of the deferral it replaces,
+	// which is on the earlier call, not on the follow-up's own body.
+	deferredEphemeral := false
+	for _, c := range rt.calls {
+		var d struct {
+			Type int `json:"type"`
+			Data struct {
+				Flags int `json:"flags"`
+			} `json:"data"`
+		}
+		if json.Unmarshal([]byte(c.body), &d) == nil && d.Type == 5 && d.Data.Flags&64 != 0 {
+			deferredEphemeral = true
+		}
+	}
 	for i := len(rt.calls) - 1; i >= 0; i-- {
 		body := rt.calls[i].body
 		if body == "" {
@@ -73,7 +87,7 @@ func lastResponse(rt *recordingTransport) (embeds []*discordgo.MessageEmbed, com
 				comps = append(comps, row)
 			}
 		}
-		return data.Embeds, comps, data.Content, data.Flags&64 != 0
+		return data.Embeds, comps, data.Content, data.Flags&64 != 0 || deferredEphemeral
 	}
 	return nil, nil, "", false
 }
@@ -148,7 +162,7 @@ func TestWritePreviews(t *testing.T) {
 	fromSend("DM to the member: warned", "dm", h.ops.sentTo("dm-u1"))
 	fromSend("Case file: the mirrored entry", "thread", h.ops.sentTo("t-1"))
 
-	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "u6", CandidateID: "u1", Signals: []string{"same avatar", "joined right after their jail/ban"}, Score: 5})
+	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "u6", CandidateID: "u1", Signals: []string{"same avatar", "joined 12 minutes after being jailed 8h"}, Score: 5})
 	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "u1", GroupID: "u1", LinkedBy: modID})
 	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "u5", GroupID: "u1", LinkedBy: modID, Reason: "admitted it"})
 
@@ -176,6 +190,17 @@ func TestWritePreviews(t *testing.T) {
 	fromSend("Mod channel: a ladder suggestion, open", "channel", posts)
 	sug := suggestions(h)[len(suggestions(h))-1]
 	applyID := suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
+	s, rt = stubSession()
+	h.p.handleSuggestion(ctx, s, componentClick(modID, applyID), applyID)
+	fromRT("Mod channel: that suggestion clicked after #6 was voided (withdrawn)", rt)
+	// A clean apply, on a member whose sheet was not amended underneath it.
+	h.ops.addMember("u7")
+	h.ops.users["u7"] = &discordgo.User{ID: "u7", Username: "rowdy", GlobalName: "Rowdy"}
+	s, _ = stubSession()
+	h.p.handleWarn(ctx, s, withResolved(interaction("warn", userOpt("user", "u7"), strOpt("category", "hate_speech"), strOpt("reason", "slur in voice chat, several people heard it"), intOpt("points", 60)), h.ops.users["u7"]))
+	fromSend("Mod channel: a suggestion for a second member, open", "channel", h.ops.sentTo("mods"))
+	sug = suggestions(h)[len(suggestions(h))-1]
+	applyID = suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
 	s, rt = stubSession()
 	h.p.handleSuggestion(ctx, s, componentClick(modID, applyID), applyID)
 	fromRT("Mod channel: the same suggestion after Apply", rt)
@@ -252,10 +277,10 @@ func TestWritePreviews(t *testing.T) {
 	// 8. Alt hints and links.
 	h.ops.addMember("u6")
 	h.ops.users["u6"] = &discordgo.User{ID: "u6", Username: "danak2", Avatar: "abc123"}
-	hint := AltHint{GuildID: testGuild, UserID: "u6", CandidateID: "u1", Signals: []string{"same avatar", "joined right after their jail/ban"}, Score: 5}
-	embed, comps := altNoticeEmbed(h.ops.users["u6"], hint, "", false)
+	hint := AltHint{GuildID: testGuild, UserID: "u6", CandidateID: "u1", Signals: []string{"same avatar", "joined 12 minutes after being jailed 8h"}, Score: 5}
+	embed, comps := altNoticeEmbed(h.ops.users["u6"], hint, h.p.altContext(ctx, cfg, hint), "", false)
 	add("Mod channel: a possible alt on join", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
-	embed, comps = altNoticeEmbed(h.ops.users["u6"], hint, "Linked by "+core.MentionUser(modID)+". They now share one sheet.", true)
+	embed, comps = altNoticeEmbed(h.ops.users["u6"], hint, "", "Linked by "+core.MentionUser(modID)+". They now share one sheet.", true)
 	add("Mod channel: the same notice after Link", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
 	s, rt = stubSession()
 	h.p.handleLink(ctx, s, interaction("link", userOpt("user", "u6"), userOpt("other", "u1"), strOpt("reason", "same avatar, rejoined minutes after the ban")))

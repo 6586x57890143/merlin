@@ -123,7 +123,7 @@ func writeHeader(b *strings.Builder, v sheetView) {
 				others = append(others, core.MentionUser(id))
 			}
 		}
-		fmt.Fprintf(b, "**Linked accounts:** %s (one shared score)\n", strings.Join(others, ", "))
+		fmt.Fprintf(b, "**Linked accounts:** %s\n", strings.Join(others, ", "))
 	}
 	if len(v.Hints) > 0 {
 		var parts []string

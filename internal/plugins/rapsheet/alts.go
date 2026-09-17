@@ -59,7 +59,7 @@ const (
 // altSignals scores one joiner against one member on file. recentAction is
 // the candidate's latest jail, ban or kick, if any, and joinedAt the
 // joiner's join time. Pure, so the whole table can be tested.
-func altSignals(joiner *discordgo.User, joinedAt time.Time, candidate CaseFile, recentAction *time.Time) (signals []string, score int) {
+func altSignals(joiner *discordgo.User, joinedAt time.Time, candidate CaseFile, recentAction *Entry) (signals []string, score int) {
 	if joiner == nil || joiner.ID == candidate.UserID {
 		return nil, 0
 	}
@@ -80,11 +80,19 @@ func altSignals(joiner *discordgo.User, joinedAt time.Time, candidate CaseFile, 
 		}
 	}
 	if recentAction != nil && !joinedAt.IsZero() {
-		if d := joinedAt.Sub(*recentAction); d >= 0 && d < joinedAfterAction {
-			signals, score = append(signals, "joined right after their jail/ban"), score+2
+		if d := joinedAt.Sub(recentAction.CreatedAt); d >= 0 && d < joinedAfterAction {
+			signals, score = append(signals, fmt.Sprintf("joined %s after being %s", humanGap(d), kindWords(*recentAction))), score+2
 		}
 	}
 	return signals, score
+}
+
+// humanGap is a short gap in words: "40 seconds", "12 minutes".
+func humanGap(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%d seconds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%d minutes", int(d.Round(time.Minute).Minutes()))
 }
 
 // nameMatch compares every name the joiner has with every name on file,
@@ -144,11 +152,11 @@ func (p *Plugin) HandleMemberJoin(_ context.Context, guildID string, m *discordg
 			p.log.Error("rapsheet: list recent actions for alt hints", "guild", guildID, "err", err)
 			recent = nil
 		}
-		latest := map[string]*time.Time{}
-		for _, e := range recent {
-			t := e.CreatedAt
-			if cur := latest[e.UserID]; cur == nil || t.After(*cur) {
-				latest[e.UserID] = &t
+		latest := map[string]*Entry{}
+		for i := range recent {
+			e := &recent[i]
+			if cur := latest[e.UserID]; cur == nil || e.CreatedAt.After(cur.CreatedAt) {
+				latest[e.UserID] = e
 			}
 		}
 
@@ -177,21 +185,50 @@ func (p *Plugin) HandleMemberJoin(_ context.Context, guildID string, m *discordg
 }
 
 func (p *Plugin) postAltNotice(ctx context.Context, cfg Config, joiner *discordgo.User, h AltHint) {
-	embed, components := altNoticeEmbed(joiner, h, "", false)
+	embed, components := altNoticeEmbed(joiner, h, p.altContext(ctx, cfg, h), "", false)
 	if _, err := p.ops(cfg.GuildID).ChannelMessageSendComplex(cfg.ModChannelID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{embed}, Components: components, Files: core.EmbedFiles(embed),
 	}); err != nil {
 		p.log.Error("rapsheet: post alt notice", "guild", cfg.GuildID, "err", err)
 	}
-	_ = ctx
 }
 
-func altNoticeEmbed(joiner *discordgo.User, h AltHint, note string, settled bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
-	desc := fmt.Sprintf("%s just joined and looks like they might be %s, who is on record here.\n\n**Why:** %s.\n\n"+
-		"Linking them puts both accounts on one sheet with one score. If this is a coincidence, dismiss it; nothing happens either way until somebody clicks.",
+// altContext is what a mod wants next to a hint before clicking: how bad
+// the record they would be linking to is, and how new the joiner's account
+// is. Both are cheap (one sheet read, one snowflake), and both are left out
+// rather than guessed when they cannot be had.
+func (p *Plugin) altContext(ctx context.Context, cfg Config, h AltHint) string {
+	var lines []string
+	if sh, err := p.loadSheet(ctx, cfg, cfg.GuildID, h.CandidateID); err == nil {
+		line := fmt.Sprintf("**%s:** score %.0f", core.MentionUser(h.CandidateID), sh.Score)
+		if sh.Rec.Action != ActionNone {
+			line += ", " + recWords(sh.Rec) + " band"
+		}
+		if st, ok := standing(sh.Entries, p.now()); ok {
+			line += ", " + standingWords(st)
+		}
+		lines = append(lines, line)
+	}
+	if made, err := discordgo.SnowflakeTimestamp(h.UserID); err == nil {
+		lines = append(lines, fmt.Sprintf("**%s:** account made %s", core.MentionUser(h.UserID), relativeTimestamp(made)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// altNoticeEmbed is the mod-channel post. context is altContext's block;
+// note is appended when there is something to say; settled drops the
+// buttons and the invitation to click them.
+func altNoticeEmbed(joiner *discordgo.User, h AltHint, context, note string, settled bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	desc := fmt.Sprintf("%s just joined and looks like they might be %s, who is on record here.\n\n**Why:** %s.",
 		core.MentionUser(joiner.ID), core.MentionUser(h.CandidateID), strings.Join(h.Signals, ", "))
+	if context != "" {
+		desc += "\n\n" + context
+	}
 	if h.Opinion != "" {
 		desc += "\n\n**Second opinion:** " + h.Opinion
+	}
+	if !settled {
+		desc += "\n\nLinking them puts both accounts on one sheet with one score. If this is a coincidence, dismiss it; nothing happens either way until somebody clicks."
 	}
 	if note != "" {
 		desc += "\n\n" + note
@@ -200,7 +237,7 @@ func altNoticeEmbed(joiner *discordgo.User, h AltHint, note string, settled bool
 	if settled {
 		color = core.ColorInfo
 	}
-	embed := core.NewEmbed(color, "Possible alt", desc)
+	embed := core.NewEmbed(color, "Possible alt", core.TruncateEmbedDescription(desc))
 	if settled {
 		return embed, nil
 	}
@@ -233,18 +270,18 @@ func (p *Plugin) handleAltButton(ctx context.Context, s *discordgo.Session, i *d
 	joiner := &discordgo.User{ID: userID}
 	if link {
 		if err := p.link(ctx, i.GuildID, userID, candidateID, actorID(i), "alt notice: "+strings.Join(h.Signals, ", ")); err != nil {
-			embed, comps := altNoticeEmbed(joiner, h, fmt.Sprintf("%s tried to link them and it failed: %v", core.MentionUser(actorID(i)), err), false)
+			embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("%s tried to link them and it failed: %v", core.MentionUser(actorID(i)), err), false)
 			_ = core.UpdateEmbedWithComponents(s, i, embed, comps)
 			return
 		}
-		embed, comps := altNoticeEmbed(joiner, h, fmt.Sprintf("Linked by %s. They now share one sheet.", core.MentionUser(actorID(i))), true)
+		embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("Linked by %s. They now share one sheet.", core.MentionUser(actorID(i))), true)
 		_ = core.UpdateEmbedWithComponents(s, i, embed, comps)
 		return
 	}
 	if err := p.store.DeleteHint(ctx, i.GuildID, userID, candidateID); err != nil {
 		p.log.Error("rapsheet: dismiss alt hint", "guild", i.GuildID, "err", err)
 	}
-	embed, comps := altNoticeEmbed(joiner, h, fmt.Sprintf("Dismissed by %s.", core.MentionUser(actorID(i))), true)
+	embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("Dismissed by %s.", core.MentionUser(actorID(i))), true)
 	_ = core.UpdateEmbedWithComponents(s, i, embed, comps)
 }
 
@@ -325,7 +362,7 @@ func (p *Plugin) handleUnlink(ctx context.Context, s *discordgo.Session, i *disc
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.unlinked", "", "user="+core.MentionUser(userID)); err != nil {
 		p.log.Error("rapsheet: audit unlink", "guild", i.GuildID, "err", err)
 	}
-	core.RespondOK(s, i, "Unlinked", fmt.Sprintf("%s is on their own sheet again. Entries stay where they were recorded.", core.MentionUser(userID)))
+	core.RespondOK(s, i, "Unlinked", fmt.Sprintf("%s is on their own sheet again, with the entries recorded against them; the rest of the group keeps theirs.", core.MentionUser(userID)))
 }
 
 func (p *Plugin) handleConfigureAltHints(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {

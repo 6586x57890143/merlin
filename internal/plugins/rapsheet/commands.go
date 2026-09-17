@@ -446,7 +446,10 @@ func (p *Plugin) checkTarget(_ context.Context, i *discordgo.InteractionCreate, 
 	if err := p.perms.CanModerate(i.GuildID, i.Member, userID, member.Roles); err != nil {
 		var forbidden core.ErrForbidden
 		if errors.As(err, &forbidden) {
-			return nil, false, fmt.Errorf("%s outranks you (%s), so nothing was recorded", core.MentionUser(userID), forbidden.Reason)
+			if strings.Contains(forbidden.Reason, "bootstrap") {
+				return nil, false, fmt.Errorf("%s is the bootstrap operator and cannot be actioned; nothing was recorded", core.MentionUser(userID))
+			}
+			return nil, false, fmt.Errorf("%s outranks you; nothing was recorded", core.MentionUser(userID))
 		}
 		return nil, false, err
 	}

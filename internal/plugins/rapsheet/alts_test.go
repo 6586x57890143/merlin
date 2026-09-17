@@ -21,10 +21,14 @@ func TestAltSignalsScoreEachCueSeparately(t *testing.T) {
 	onFile := CaseFile{UserID: snowflakeAt(base), Username: "dana_k", GlobalName: "Dana", AvatarHash: "abc123"}
 	join := testNow
 
+	at := func(t time.Time) *Entry {
+		ends := t.Add(7 * 24 * time.Hour)
+		return &Entry{Kind: KindBan, Duration: 7 * 24 * time.Hour, EndsAt: &ends, CreatedAt: t}
+	}
 	cases := []struct {
 		name    string
 		joiner  *discordgo.User
-		action  *time.Time
+		action  *Entry
 		signals int
 		score   int
 	}{
@@ -34,9 +38,9 @@ func TestAltSignalsScoreEachCueSeparately(t *testing.T) {
 		{"name prefix", &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "danakreturns"}, nil, 1, 1},
 		{"short prefix does not count", &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "dan"}, nil, 0, 0},
 		{"created minutes apart", &discordgo.User{ID: snowflakeAt(base.Add(4 * time.Minute)), Username: "zed"}, nil, 1, 2},
-		{"joined right after their ban", &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "zed"}, ptr(join.Add(-5 * time.Minute)), 1, 2},
-		{"joined long after their ban", &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "zed"}, ptr(join.Add(-5 * time.Hour)), 0, 0},
-		{"everything", &discordgo.User{ID: snowflakeAt(base.Add(time.Minute)), Username: "dana_k", Avatar: "abc123"}, ptr(join.Add(-time.Minute)), 4, 9},
+		{"joined right after their ban", &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "zed"}, at(join.Add(-5 * time.Minute)), 1, 2},
+		{"joined long after their ban", &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "zed"}, at(join.Add(-5 * time.Hour)), 0, 0},
+		{"everything", &discordgo.User{ID: snowflakeAt(base.Add(time.Minute)), Username: "dana_k", Avatar: "abc123"}, at(join.Add(-time.Minute)), 4, 9},
 		{"the same account", &discordgo.User{ID: onFile.UserID, Username: "dana_k", Avatar: "abc123"}, nil, 0, 0},
 		{"no default avatar match", &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "zed", Avatar: ""}, nil, 0, 0},
 	}
@@ -45,6 +49,10 @@ func TestAltSignalsScoreEachCueSeparately(t *testing.T) {
 		if len(signals) != tc.signals || score != tc.score {
 			t.Errorf("%s: signals %v score %d, want %d signals scoring %d", tc.name, signals, score, tc.signals, tc.score)
 		}
+	}
+	// The join-after signal names the sanction and the gap, never a template.
+	if signals, _ := altSignals(&discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "zed"}, join, onFile, at(join.Add(-5*time.Minute))); len(signals) != 1 || signals[0] != "joined 5 minutes after being banned 7d" {
+		t.Errorf("signal text = %v", signals)
 	}
 	// An empty avatar on file never matches an empty one on the joiner.
 	if signals, _ := altSignals(&discordgo.User{ID: "1", Avatar: ""}, join, CaseFile{UserID: "2", AvatarHash: ""}, nil); strings.Contains(strings.Join(signals, ","), "avatar") {
