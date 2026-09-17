@@ -24,6 +24,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
+	"github.com/6586x57890143/merlin/internal/plugins/rapsheet"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
 	"github.com/6586x57890143/merlin/internal/plugins/statistics"
@@ -241,6 +242,20 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		cfg.ContestWorkerURL, cfg.ContestWorkerToken, cfg.ContestLinkKey,
 	)
 
+	// Rapsheets. The ledger every moderation action lands in, whoever or
+	// whatever decided it. Reads its mod roles off settings for the case-file
+	// forum's overwrites and nothing else from it; everything guild-scoped it
+	// owns lives in its own tables.
+	rapsheetPlugin := rapsheet.New(
+		rapsheet.NewPostgresStore(db.Pool),
+		func(guildID string) rapsheet.DiscordOps { return guard.For(guildID) },
+		settingsStore,
+		speaker,
+	)
+	// /config plugins set rapsheet false has to stop the ledger growing too,
+	// not just the commands: bus events and gateway handlers are the entry
+	// points the CommandRouter's own gate check never sees.
+	rapsheetPlugin.WithGate(settingsStore)
 
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
@@ -250,6 +265,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
 	registry.Register(aimodPlugin)
 	registry.Register(contestPlugin)
+	registry.Register(rapsheetPlugin)
 	// Channel names come off the gateway cache, the only piece of
 	// session.State this plugin reads; the counting itself is wired below.
 	statisticsPlugin := statistics.New(statistics.NewPostgresStore(db.Pool), settingsStore, func(guildID, channelID string) string {
@@ -329,6 +345,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// settingsLoaded: a guild whose settings refresh failed still gets
 		// its running contest ticked on to the next phase.
 		contestPlugin.SyncGuild(guildCtx, gc.ID)
+		rapsheetPlugin.SyncGuild(guildCtx, gc.ID)
 		statisticsPlugin.SyncGuild(guildCtx, gc.ID)
 		// Whoever is in voice as the guild arrives starts their clock now;
 		// GUILD_VOICE_STATES is always requested, so this list is complete.
@@ -536,6 +553,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		rolesPlugin.ForgetGuild(gd.ID)
 		aimodPlugin.ForgetGuild(gd.ID)
 		contestPlugin.ForgetGuild(gd.ID)
+		rapsheetPlugin.ForgetGuild(gd.ID)
 		statisticsPlugin.ForgetGuild(gd.ID)
 		settingsStore.Forget(gd.ID)
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)

@@ -41,6 +41,13 @@ const (
 	KeyJailNotice    Key = "moderation.jail"
 	KeyReleaseNotice Key = "moderation.release"
 
+	// KeyWarnNotice is the DM behind /rapsheet warn. Plain register: a
+	// warning is the lightest thing on the ladder and the whole point of it
+	// is to be understood, so the wording explains that this is on record
+	// and nothing else has happened. The category and the moderator's reason
+	// ride as embed fields.
+	KeyWarnNotice Key = "moderation.warn"
+
 	// KeyAIModRemoved and KeyAIModRewritten are DMs to the member whose
 	// message the AI moderation plugin acted on. Plain register, like the
 	// jail notices above and for the same reason, with one thing on top:
@@ -247,6 +254,12 @@ var specs = map[Key]spec{
 		required: []string{"guild"},
 		maxLen:   maxEmbedDescription,
 		fallback: "you are out. your roles in {guild} have been restored.",
+	},
+	KeyWarnNotice: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "a moderator in {guild} has given you a warning. it is on record, and nothing else has happened. the reason is below.",
 	},
 
 	KeyAIModRemoved: {

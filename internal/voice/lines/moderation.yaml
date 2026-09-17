@@ -55,6 +55,19 @@ moderation.release:
 # has to carry either, which is also why nothing here speculates about what
 # they did.
 
+moderation.warn:
+  # warm
+  - "quick note from the mods in {guild}: this is a warning. nothing has been taken away and you are not in any trouble beyond this message. the reason is below."
+  - "a moderator in {guild} has given you a warning. it goes on your record, and that is all that has happened. the why is below, and if you want to talk it through, the mods are reachable."
+  - "heads up: you have a warning in {guild}. no roles lost, no time out, just a note that something crossed a line. the reason is below."
+  # plain
+  - "a moderator in {guild} has given you a warning. it is on record, and nothing else has happened. the reason is below."
+  - "you have been warned in {guild}. this is a record of it, with the reason below, and nothing further has been done."
+  - "this is a warning from the moderators of {guild}. it is noted on your record. the category and reason are below."
+  # matter of fact
+  - "warning issued in {guild}. on record, no other consequence. reason below."
+  - "a warning has been added to your record in {guild}. the moderator's reason is below."
+
 moderation.aimod_removed:
   # warm
   - "a message you posted in {guild} was taken down automatically. it matched one of Discord's own rules, and no moderator was involved. the reason is below, and your text is there too so nothing is lost."
