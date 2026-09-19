@@ -32,6 +32,10 @@ var testNow = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 // source, ref), and the predicate behind the ban-due index.
 type fakeStore struct {
 	mu      sync.Mutex
+	// now is the clock ActiveBan judges expiry by, wired to the plugin's own
+	// so a 1d ban cut at testNow does not expire on the wall clock a day after
+	// the test was written, which is precisely how it took CI down once.
+	now     func() time.Time
 	nextID  int64
 	configs map[string]Config
 	entries []Entry
@@ -49,6 +53,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{
 		configs: map[string]Config{},
 		cases:   map[string]CaseFile{},
+		now:     func() time.Time { return testNow },
 		links:   map[string]Link{},
 		hints:   map[string]AltHint{},
 	}
@@ -260,7 +265,7 @@ func (f *fakeStore) ActiveBan(_ context.Context, guildID, userID string) (Entry,
 	found := false
 	for _, e := range f.entries {
 		if e.GuildID == guildID && e.UserID == userID && e.Kind == KindBan && e.LiftedAt == nil && e.VoidedAt == nil &&
-			(e.EndsAt == nil || e.EndsAt.After(time.Now())) {
+			(e.EndsAt == nil || e.EndsAt.After(f.now())) {
 			if !found || e.CreatedAt.After(best.CreatedAt) {
 				best, found = e, true
 			}
@@ -851,6 +856,7 @@ func newHarness() *harness {
 	h.p.sched = h.sched
 	h.p.botID = "merlin-1"
 	h.p.now = func() time.Time { return testNow }
+	h.store.now = func() time.Time { return h.p.now() }
 	h.p.synchronous = true
 	h.p.subscribe()
 	return h
