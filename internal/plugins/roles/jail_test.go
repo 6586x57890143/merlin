@@ -386,3 +386,28 @@ func TestApplyJailForgetsCachedRoleOnlyWhenTheRoleIsGone(t *testing.T) {
 		})
 	}
 }
+
+// TestReleaseJailKeepsRolesGainedWhileJailed pins the live failure: a member
+// who picked up a role the bot can't manage (booster, or one above the bot)
+// while jailed. Writing the snapshot alone would remove it, Discord 403s
+// the whole edit, and the sweep retries the same 403 until someone notices.
+// Release only ever removes the marker.
+func TestReleaseJailKeepsRolesGainedWhileJailed(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMember("g1", "u1", []string{"jail-role", "booster"})
+	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "moved-up"}, {ID: "jail-role"}, {ID: "booster"}}
+	perms := newFakePerms()
+	perms.unmanageable["booster"] = true
+	perms.unmanageable["moved-up"] = true // manageable when jailed, not any more
+
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), perms, newFakeScheduler())
+
+	rec := JailRecord{GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a", "moved-up"}, JailRoleID: "jail-role"}
+	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
+		t.Fatalf("releaseJail: %v", err)
+	}
+	m, _ := ops.GuildMember("g1", "u1")
+	if len(m.Roles) != 2 || m.Roles[0] != "booster" || m.Roles[1] != "role-a" {
+		t.Fatalf("expected [booster role-a] (marker gone, unmanageable snapshot role skipped), got %v", m.Roles)
+	}
+}

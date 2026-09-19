@@ -672,11 +672,30 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 	for _, r := range guildRoles {
 		valid[r.ID] = true
 	}
-	restore := make([]string, 0, len(rec.SnapshotRoleIDs))
-	for _, id := range rec.SnapshotRoleIDs {
-		if valid[id] {
+	// Release removes the marker and puts the snapshot back; it never
+	// removes anything else. GuildMemberEdit replaces the whole role set,
+	// and Discord refuses the edit if any role in the diff is one the bot
+	// can't manage. Writing the snapshot alone would strip whatever the
+	// member gained while jailed, and a booster role or a role above the
+	// bot's own made that a 403 on every retry, with the member stuck in
+	// jail past their release. Same guard on the roles being put back:
+	// one moved above the bot since jailing is skipped and logged rather
+	// than failing the release forever.
+	restore := make([]string, 0, len(member.Roles)+len(rec.SnapshotRoleIDs))
+	for _, id := range member.Roles {
+		if id != rec.JailRoleID {
 			restore = append(restore, id)
 		}
+	}
+	for _, id := range rec.SnapshotRoleIDs {
+		if !valid[id] || slices.Contains(restore, id) {
+			continue
+		}
+		if err := p.perms.CanManageRole(guildID, id); err != nil {
+			p.log.Warn("roles: not restoring role the bot can no longer manage", "guild", guildID, "user", userID, "role", id, "err", err)
+			continue
+		}
+		restore = append(restore, id)
 	}
 
 	if _, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &restore}); err != nil {
