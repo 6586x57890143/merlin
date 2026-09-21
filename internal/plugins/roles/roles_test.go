@@ -94,7 +94,7 @@ func TestResolveJailRoleCreatesWhenMissing(t *testing.T) {
 	if id == "" {
 		t.Fatal("expected a non-empty role ID")
 	}
-	roles, _ := ops.GuildRoles("g1")
+	roles := ops.roles["g1"]
 	if len(roles) != 1 || roles[0].Name != jailRoleName {
 		t.Fatalf("expected exactly one %q role created, got %+v", jailRoleName, roles)
 	}

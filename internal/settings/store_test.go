@@ -442,9 +442,33 @@ func TestVacationRoleRoundTrip(t *testing.T) {
 	}
 }
 
+// The member role: one more single-setter column, cleared by
+// PruneDeletedRole when the role goes.
+func TestMemberRoleRoundTrip(t *testing.T) {
+	store, _, guildID := setupStore(t)
+	ctx := context.Background()
+
+	if got := store.MemberRoleID(guildID); got != "" {
+		t.Fatalf("MemberRoleID before any set = %q, want empty", got)
+	}
+	if err := store.SetMemberRole(ctx, guildID, "role-m"); err != nil {
+		t.Fatalf("SetMemberRole: %v", err)
+	}
+	if got := store.MemberRoleID(guildID); got != "role-m" {
+		t.Fatalf("MemberRoleID after set = %q, want role-m", got)
+	}
+	removed, err := store.PruneDeletedRole(ctx, guildID, "role-m")
+	if err != nil {
+		t.Fatalf("PruneDeletedRole: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "member role" || store.MemberRoleID(guildID) != "" {
+		t.Fatalf("expected the member role pruned, got %v / %q", removed, store.MemberRoleID(guildID))
+	}
+}
+
 // GrantOverride and DenyOverride take roleID and userID together, with an
-// empty string meaning "leave this column alone" (the CASE WHEN $3 = ''
-// SQL). Granting a role, then separately granting a user for the same
+// empty string meaning "leave this column alone" (the CASE WHEN on an
+// empty $3 in the SQL). Granting a role, then separately granting a user for the same
 // action, has to land both without either overwriting the other -- the one
 // case in that SQL that has never run against real Postgres before.
 func TestOverrideGrantDenyRoundTrip(t *testing.T) {

@@ -462,10 +462,10 @@ func (p *Plugin) syncAllVacationOverwrites(guildID string) error {
 	return p.syncAllVisibility(guildID, p.vacationMarker(guildID, roleID))
 }
 
-func (p *Plugin) syncVacationChannel(guildID, channelID string) error {
+func (p *Plugin) syncVacationChannel(guildID, channelID string) (withheld int64, err error) {
 	roleID := p.configuredVacationRole(guildID)
 	if roleID == "" {
-		return nil
+		return 0, nil
 	}
 	return p.syncChannelVisibility(guildID, p.vacationMarker(guildID, roleID), channelID)
 }
@@ -476,13 +476,14 @@ func (p *Plugin) handleVacationAllowChannel(ctx context.Context, s *discordgo.Se
 		core.RespondErr(s, i, "Failed to save", err)
 		return
 	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "vacation_allow="+core.MentionChannel(channelID)); err != nil {
-		p.log.Error("roles: audit vacation-allow-channel failed", "guild", i.GuildID, "err", err)
-	}
-	if err := p.syncVacationChannel(i.GuildID, channelID); err != nil {
+	withheld, err := p.syncVacationChannel(i.GuildID, channelID)
+	if err != nil {
 		p.log.Error("roles: sync vacation channel failed", "guild", i.GuildID, "channel", channelID, "err", err)
 	}
-	core.RespondOK(s, i, "Channel allowed", fmt.Sprintf("<#%s> will stay visible to members on vacation.", channelID))
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "vacation_allow="+core.MentionChannel(channelID)+withheldDetail(withheld)); err != nil {
+		p.log.Error("roles: audit vacation-allow-channel failed", "guild", i.GuildID, "err", err)
+	}
+	p.respondAllowed(s, i, "members on vacation", channelID, withheld)
 }
 
 func (p *Plugin) handleVacationDisallowChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -494,7 +495,7 @@ func (p *Plugin) handleVacationDisallowChannel(ctx context.Context, s *discordgo
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "vacation_allow="+core.MentionChannel(channelID), ""); err != nil {
 		p.log.Error("roles: audit vacation-disallow-channel failed", "guild", i.GuildID, "err", err)
 	}
-	if err := p.syncVacationChannel(i.GuildID, channelID); err != nil {
+	if _, err := p.syncVacationChannel(i.GuildID, channelID); err != nil {
 		p.log.Error("roles: sync vacation channel failed", "guild", i.GuildID, "channel", channelID, "err", err)
 	}
 	core.RespondOK(s, i, "Channel hidden", fmt.Sprintf("<#%s> is hidden from members on vacation again.", channelID))

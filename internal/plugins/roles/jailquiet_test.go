@@ -98,13 +98,13 @@ func TestSyncJailChannelOverwriteSkipsAnAlreadyCorrectChannel(t *testing.T) {
 	ops.channel["text1"] = &discordgo.Channel{ID: "text1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if err := p.syncJailChannelOverwrite("g1", "jail-role", "text1"); err != nil {
+	if _, err := p.syncJailChannelOverwrite("g1", "jail-role", "text1"); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 	if ops.permSetCalls != 1 {
 		t.Fatalf("expected one write to establish the deny, got %d", ops.permSetCalls)
 	}
-	if err := p.syncJailChannelOverwrite("g1", "jail-role", "text1"); err != nil {
+	if _, err := p.syncJailChannelOverwrite("g1", "jail-role", "text1"); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
 	if ops.permSetCalls != 1 {

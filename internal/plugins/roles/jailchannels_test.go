@@ -2,6 +2,8 @@ package roles
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,7 +124,7 @@ func TestSyncJailChannelOverwriteSingleChannel(t *testing.T) {
 
 	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if err := p.syncJailChannelOverwrite("g1", "jail-role", "ch1"); err != nil {
+	if _, err := p.syncJailChannelOverwrite("g1", "jail-role", "ch1"); err != nil {
 		t.Fatalf("syncJailChannelOverwrite: %v", err)
 	}
 	if _, ok := ops.overwrites[overwriteKey{"ch1", "jail-role"}]; !ok {
@@ -130,7 +132,7 @@ func TestSyncJailChannelOverwriteSingleChannel(t *testing.T) {
 	}
 
 	settings.allowed["g1"] = []string{"ch1"}
-	if err := p.syncJailChannelOverwrite("g1", "jail-role", "ch1"); err != nil {
+	if _, err := p.syncJailChannelOverwrite("g1", "jail-role", "ch1"); err != nil {
 		t.Fatalf("syncJailChannelOverwrite (allowed): %v", err)
 	}
 	ow, ok := ops.overwrites[overwriteKey{"ch1", "jail-role"}]
@@ -379,5 +381,218 @@ func TestHandleMemberUpdateSetsMemberOverwriteOnConflictingAccessRoleChannel(t *
 	}
 	if ow.deny&int64(discordgo.PermissionViewChannel) == 0 {
 		t.Fatalf("expected ViewChannel denied for the member, got deny=%d", ow.deny)
+	}
+}
+
+// The baseline: a marker role is never allowed more on an allowlisted
+// channel than an ordinary member (@everyone plus the configured member
+// role) can do there, and what it is refused goes into its own deny so the
+// cap holds however the room was locked.
+
+func lockedRoom(id string, typ discordgo.ChannelType, overwrites ...*discordgo.PermissionOverwrite) *discordgo.Channel {
+	return &discordgo.Channel{ID: id, GuildID: "g1", Type: typ, PermissionOverwrites: overwrites}
+}
+
+func TestMemberBaselineResolvesLikeDiscord(t *testing.T) {
+	view, send := int64(discordgo.PermissionViewChannel), int64(discordgo.PermissionSendMessages)
+	roles := []*discordgo.Role{
+		{ID: "g1", Permissions: view},            // @everyone: can see, cannot talk
+		{ID: "melted", Permissions: view | send}, // members: can talk
+		{ID: "admin", Permissions: discordgo.PermissionAdministrator},
+	}
+	plain := lockedRoom("c", discordgo.ChannelTypeGuildText)
+	if got := memberBaseline("g1", "", plain, roles); got != view {
+		t.Fatalf("@everyone alone = %d, want view", got)
+	}
+	if got := memberBaseline("g1", "melted", plain, roles); got != view|send {
+		t.Fatalf("with member role = %d, want view|send", got)
+	}
+	// An announcements room: @everyone denied Send at channel level beats
+	// the member role's guild-level Send.
+	announce := lockedRoom("a", discordgo.ChannelTypeGuildText, &discordgo.PermissionOverwrite{ID: "g1", Type: discordgo.PermissionOverwriteTypeRole, Deny: send})
+	if got := memberBaseline("g1", "melted", announce, roles); got != view {
+		t.Fatalf("channel deny on @everyone = %d, want view", got)
+	}
+	// ...unless the member role's own overwrite gives it back.
+	announce.PermissionOverwrites = append(announce.PermissionOverwrites, &discordgo.PermissionOverwrite{ID: "melted", Type: discordgo.PermissionOverwriteTypeRole, Allow: send})
+	if got := memberBaseline("g1", "melted", announce, roles); got != view|send {
+		t.Fatalf("member role overwrite = %d, want view|send", got)
+	}
+	// A room locked only on the member role.
+	memberLocked := lockedRoom("m", discordgo.ChannelTypeGuildText, &discordgo.PermissionOverwrite{ID: "melted", Type: discordgo.PermissionOverwriteTypeRole, Deny: send})
+	if got := memberBaseline("g1", "melted", memberLocked, roles); got != view {
+		t.Fatalf("deny on member role = %d, want view", got)
+	}
+	if got := memberBaseline("g1", "admin", plain, roles); got != discordgo.PermissionAll {
+		t.Fatal("Administrator is everything")
+	}
+	if got := memberBaseline("g1", "gone", plain, roles); got != view {
+		t.Fatalf("a deleted member role contributes nothing, got %d", got)
+	}
+}
+
+func TestDesiredOverwriteWithholdsWhatMembersLack(t *testing.T) {
+	view, send, connect := int64(discordgo.PermissionViewChannel), int64(discordgo.PermissionSendMessages), int64(discordgo.PermissionVoiceConnect)
+
+	// Fresh overwrite on a read-only room: View granted, Send refused and
+	// denied outright, the ways out denied as always.
+	allow, deny, withheld, needed := desiredOverwrite(lockedRoom("a", discordgo.ChannelTypeGuildText), "jail", true, view)
+	if !needed || allow != view || deny != restrictedBits|send || withheld != send {
+		t.Fatalf("read-only room: allow=%d deny=%d withheld=%d", allow, deny, withheld)
+	}
+	// A room members cannot even see: nothing granted, View denied.
+	allow, deny, withheld, _ = desiredOverwrite(lockedRoom("h", discordgo.ChannelTypeGuildText), "jail", true, 0)
+	if allow != 0 || deny&view == 0 || deny&send == 0 || withheld != view|send {
+		t.Fatalf("hidden room: allow=%d deny=%d withheld=%d", allow, deny, withheld)
+	}
+	// A locked voice room withholds Connect.
+	_, deny, withheld, _ = desiredOverwrite(lockedRoom("v", discordgo.ChannelTypeGuildVoice), "jail", true, view)
+	if withheld != connect || deny&connect == 0 {
+		t.Fatalf("locked voice: deny=%d withheld=%d", deny, withheld)
+	}
+	// An escalation an earlier sync already wrote is repaired: Send comes
+	// out of allow and goes into deny, everything else the guild set stays.
+	escalated := lockedRoom("a", discordgo.ChannelTypeGuildText, &discordgo.PermissionOverwrite{ID: "jail", Type: discordgo.PermissionOverwriteTypeRole,
+		Allow: view | send | int64(discordgo.PermissionAddReactions), Deny: restrictedBits})
+	allow, deny, withheld, needed = desiredOverwrite(escalated, "jail", true, view)
+	if !needed || allow != view|int64(discordgo.PermissionAddReactions) || deny != restrictedBits|send || withheld != send {
+		t.Fatalf("repair: allow=%d deny=%d withheld=%d needed=%v", allow, deny, withheld, needed)
+	}
+	// And once repaired, nothing more to write.
+	escalated.PermissionOverwrites[0].Allow, escalated.PermissionOverwrites[0].Deny = allow, deny
+	if _, _, _, needed = desiredOverwrite(escalated, "jail", true, view); needed {
+		t.Fatal("a repaired overwrite must not be rewritten")
+	}
+	// Off the allowlist the baseline is irrelevant.
+	allow, deny, withheld, _ = desiredOverwrite(lockedRoom("o", discordgo.ChannelTypeGuildText), "jail", false, 0)
+	if allow != 0 || deny != view || withheld != 0 {
+		t.Fatalf("off-list: allow=%d deny=%d withheld=%d", allow, deny, withheld)
+	}
+	// A category is never capped: its overwrite is only the template a new
+	// channel inherits.
+	if _, _, withheld, _ = desiredOverwrite(lockedRoom("cat", discordgo.ChannelTypeGuildCategory), "jail", true, 0); withheld != 0 {
+		t.Fatal("categories carry no allow to withhold")
+	}
+}
+
+// TestAllowChannelWarnsWhenMembersCannotPost: the live bug. Allowlisting
+// an announcements room for the jail marker used to hand jailed members
+// Send there; now they get View, an explicit Send deny, a warning naming
+// it, and an audit line saying so.
+func TestAllowChannelWarnsWhenMembersCannotPost(t *testing.T) {
+	view, send := int64(discordgo.PermissionViewChannel), int64(discordgo.PermissionSendMessages)
+	p, ops, _, audit, _, settings := handlerFixture()
+	settings.memberRole["g1"] = "melted"
+	ops.roles["g1"] = append(ops.roles["g1"], &discordgo.Role{ID: "melted", Permissions: everyonePerms})
+	ops.channel["announce"] = lockedRoom("announce", discordgo.ChannelTypeGuildText,
+		&discordgo.PermissionOverwrite{ID: "g1", Type: discordgo.PermissionOverwriteTypeRole, Deny: send})
+	ops.channel["appeals"] = lockedRoom("appeals", discordgo.ChannelTypeGuildText)
+	p.jailRoleID["g1"] = "jail-role"
+	s, rt := handlerSession(t)
+
+	p.handleAllowChannel(context.Background(), s, rolesInteraction("configure", "allow-channel", channelArg("channel", "announce")))
+
+	ow := ops.overwrites[overwriteKey{"announce", "jail-role"}]
+	if ow.allow != view || ow.deny != restrictedBits|send {
+		t.Fatalf("expected view only with Send denied, got %+v", ow)
+	}
+	if !rt.said("Channel allowed, with limits") || !rt.said("no Send Messages there") || !rt.said("<@&melted>") {
+		t.Fatalf("expected the warning naming Send and the baseline role, got %v", rt.bodies)
+	}
+	if len(audit.records) != 1 || !strings.Contains(audit.records[0].newValue, "withheld=Send Messages") {
+		t.Fatalf("audit: %+v", audit.records)
+	}
+
+	// The appeals room is untouched by the cap: members can talk there.
+	p.handleAllowChannel(context.Background(), s, rolesInteraction("configure", "allow-channel", channelArg("channel", "appeals")))
+	if ow := ops.overwrites[overwriteKey{"appeals", "jail-role"}]; ow.allow != view|send {
+		t.Fatalf("expected view+send in the appeals room, got %+v", ow)
+	}
+	if !rt.said("<#appeals> will stay visible to jailed members.") {
+		t.Fatalf("expected a plain success, got %v", rt.bodies)
+	}
+}
+
+// TestAllowChannelWarnsWhenMembersCannotSee: a room ordinary members
+// cannot see at all is refused outright and the admin is told the entry
+// does nothing.
+func TestAllowChannelWarnsWhenMembersCannotSee(t *testing.T) {
+	view := int64(discordgo.PermissionViewChannel)
+	p, ops, _, _, _, _ := handlerFixture()
+	ops.channel["staff"] = lockedRoom("staff", discordgo.ChannelTypeGuildText,
+		&discordgo.PermissionOverwrite{ID: "g1", Type: discordgo.PermissionOverwriteTypeRole, Deny: view})
+	p.jailRoleID["g1"] = "jail-role"
+	s, rt := handlerSession(t)
+
+	p.handleAllowChannel(context.Background(), s, rolesInteraction("configure", "allow-channel", channelArg("channel", "staff")))
+
+	if ow := ops.overwrites[overwriteKey{"staff", "jail-role"}]; ow.allow != 0 || ow.deny&view == 0 {
+		t.Fatalf("expected the room kept hidden, got %+v", ow)
+	}
+	if !rt.said("Channel allowed, but hidden anyway") || !rt.said("@everyone") {
+		t.Fatalf("got %v", rt.bodies)
+	}
+}
+
+// TestMemberRoleChangeResyncsBothMarkers: the baseline moved everywhere,
+// so both markers are recomputed, and the room locked only on the member
+// role is now caught.
+func TestMemberRoleChangeResyncsBothMarkers(t *testing.T) {
+	view, send := int64(discordgo.PermissionViewChannel), int64(discordgo.PermissionSendMessages)
+	p, ops, _, audit, _, settings := handlerFixture()
+	// @everyone cannot talk anywhere; melted can, except in the locked room.
+	ops.roles["g1"] = append(ops.roles["g1"],
+		&discordgo.Role{ID: "g1", Permissions: view},
+		&discordgo.Role{ID: "melted", Permissions: view | send},
+		&discordgo.Role{ID: "island", Permissions: 0})
+	settings.allowed["g1"] = []string{"appeals", "locked"}
+	settings.vacationRole["g1"] = "island"
+	settings.vacationAllowed["g1"] = []string{"locked"}
+	ops.channel["appeals"] = lockedRoom("appeals", discordgo.ChannelTypeGuildText)
+	ops.channel["locked"] = lockedRoom("locked", discordgo.ChannelTypeGuildText,
+		&discordgo.PermissionOverwrite{ID: "melted", Type: discordgo.PermissionOverwriteTypeRole, Deny: send})
+	p.jailRoleID["g1"] = "jail-role"
+	s, rt := handlerSession(t)
+
+	p.handleMemberRole(context.Background(), s, rolesInteraction("configure", "member-role", roleArg("role", "melted")))
+
+	if settings.memberRole["g1"] != "melted" || !rt.said("Member role set") {
+		t.Fatalf("expected the role saved and confirmed, got %q / %v", settings.memberRole["g1"], rt.bodies)
+	}
+	if ow := ops.overwrites[overwriteKey{"appeals", "jail-role"}]; ow.allow != view|send {
+		t.Fatalf("melted can talk in the appeals room, so jail may too: %+v", ow)
+	}
+	if ow := ops.overwrites[overwriteKey{"locked", "jail-role"}]; ow.allow != view || ow.deny&send == 0 {
+		t.Fatalf("a room locked on the member role caps the jail marker: %+v", ow)
+	}
+	if ow := ops.overwrites[overwriteKey{"locked", "island"}]; ow.allow != view || ow.deny&send == 0 {
+		t.Fatalf("and the island's role alike: %+v", ow)
+	}
+	if got := auditActions(audit); !slices.Equal(got, []string{"roles.configure_jail_channels"}) {
+		t.Fatalf("audit: %v", got)
+	}
+
+	p.handleMemberRole(context.Background(), s, rolesInteraction("configure", "member-role"))
+	if settings.memberRole["g1"] != "" || !rt.said("Member role cleared") {
+		t.Fatalf("expected the role cleared, got %q / %v", settings.memberRole["g1"], rt.bodies)
+	}
+	// Back on @everyone alone, which cannot talk at all here: Send is
+	// withdrawn from the appeals room too.
+	if ow := ops.overwrites[overwriteKey{"appeals", "jail-role"}]; ow.allow != view || ow.deny&send == 0 {
+		t.Fatalf("with @everyone unable to talk, jail may not either: %+v", ow)
+	}
+}
+
+func TestListChannelsNamesTheBaseline(t *testing.T) {
+	p, _, _, _, _, settings := handlerFixture()
+	s, rt := handlerSession(t)
+	p.handleListChannels(context.Background(), s, rolesInteraction("configure", "list-channels"))
+	if !rt.said("Baseline for both: @everyone") {
+		t.Fatalf("got %v", rt.bodies)
+	}
+	settings.memberRole["g1"] = "melted"
+	p.handleListChannels(context.Background(), s, rolesInteraction("configure", "list-channels"))
+	if !rt.said("Baseline for both: <@&melted>") {
+		t.Fatalf("got %v", rt.bodies)
 	}
 }

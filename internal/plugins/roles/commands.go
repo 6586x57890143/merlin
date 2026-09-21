@@ -202,6 +202,12 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "member-role",
+						Description: "The plain member role; jailed/vacation members never get more than it has. Omit to clear.",
+						Options:     []*discordgo.ApplicationCommandOption{optionalRoleOpt("role", "The role a plain member holds besides @everyone")},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "vacation-role",
 						Description: "vacation script: the existing role a member on vacation holds (never created). Omit to clear.",
 						Options:     []*discordgo.ApplicationCommandOption{optionalRoleOpt("role", "The existing role a member on vacation holds")},
@@ -274,6 +280,7 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("roles", "configure/announce-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleAnnounceChannel)
 	p.commands.Handle("roles", "configure/list-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleListChannels)
 	p.commands.Handle("roles", "configure/marker-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMarkerRole)
+	p.commands.Handle("roles", "configure/member-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMemberRole)
 	p.commands.Handle("roles", "configure/vacation-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationRole)
 	p.commands.Handle("roles", "configure/vacation-allow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationAllowChannel)
 	p.commands.Handle("roles", "configure/vacation-disallow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationDisallowChannel)
@@ -364,6 +371,7 @@ func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i
 		core.RespondErr(s, i, "Failed to save", err)
 		return
 	}
+	var withheld int64
 	if newMarkerRole != "" {
 		// The marker role just changed in this same command, so the cache
 		// forgetJailRole just cleared means syncOneChannelBestEffort's direct
@@ -377,13 +385,46 @@ func (p *Plugin) handleAllowChannel(ctx context.Context, s *discordgo.Session, i
 		if err := p.syncAllJailChannelOverwrites(i.GuildID, newMarkerRole); err != nil {
 			p.log.Error("roles: failed to sync jail overwrites for configured role", "guild", i.GuildID, "role", newMarkerRole, "err", err)
 		}
+		withheld, _ = p.syncJailChannelOverwrite(i.GuildID, newMarkerRole, channelID)
 	} else {
-		p.syncOneChannelBestEffort(s, i, channelID)
+		withheld = p.syncOneChannelBestEffort(s, i, channelID)
 	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "allow="+core.MentionChannel(channelID)); err != nil {
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "allow="+core.MentionChannel(channelID)+withheldDetail(withheld)); err != nil {
 		p.log.Error("roles: audit allow-channel failed", "guild", i.GuildID, "err", err)
 	}
-	core.RespondOK(s, i, "Channel allowed", fmt.Sprintf("<#%s> will stay visible to jailed members.", channelID))
+	p.respondAllowed(s, i, "jailed members", channelID, withheld)
+}
+
+// respondAllowed answers an allow-channel leaf: a plain success, or a
+// warning naming what the marker was refused because an ordinary member
+// cannot do it in that channel either (memberBaseline). The warning is the
+// point of the check: an admin who allowlists an announcements room for
+// jailed members is told they can read it and not post in it, rather than
+// finding out from the post.
+func (p *Plugin) respondAllowed(s *discordgo.Session, i *discordgo.InteractionCreate, who, channelID string, withheld int64) {
+	if withheld == 0 {
+		core.RespondOK(s, i, "Channel allowed", fmt.Sprintf("<#%s> will stay visible to %s.", channelID, who))
+		return
+	}
+	baseline := "@everyone"
+	if id := p.jailChannelConfig.MemberRoleID(i.GuildID); id != "" {
+		baseline = core.MentionRole(id)
+	}
+	if withheld&discordgo.PermissionViewChannel != 0 {
+		core.RespondWarn(s, i, "Channel allowed, but hidden anyway",
+			fmt.Sprintf("<#%s> is on the allowlist, but ordinary members (%s) cannot see it, so %s are not allowed to either. The entry does nothing until that changes.", channelID, baseline, who))
+		return
+	}
+	core.RespondWarn(s, i, "Channel allowed, with limits",
+		fmt.Sprintf("<#%s> will stay visible to %s, but they get no %s there: ordinary members (%s) do not have it in that channel, and a marker role is never allowed more than they are.",
+			channelID, who, namePermissions(withheld), baseline))
+}
+
+func withheldDetail(withheld int64) string {
+	if withheld == 0 {
+		return ""
+	}
+	return " withheld=" + namePermissions(withheld)
 }
 
 func (p *Plugin) handleMarkerRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -435,16 +476,61 @@ func (p *Plugin) handleDisallowChannel(ctx context.Context, s *discordgo.Session
 // this guild (nobody has ever run /roles jail), there's nothing to sync.
 // The allowlist is still recorded and will apply once resolveJailRole
 // eventually creates the role and runs its own full sync.
-func (p *Plugin) syncOneChannelBestEffort(s *discordgo.Session, i *discordgo.InteractionCreate, channelID string) {
+func (p *Plugin) syncOneChannelBestEffort(s *discordgo.Session, i *discordgo.InteractionCreate, channelID string) (withheld int64) {
 	p.jailRoleMu.Lock()
 	jailRoleID, known := p.jailRoleID[i.GuildID]
 	p.jailRoleMu.Unlock()
 	if !known {
-		return
+		return 0
 	}
-	if err := p.syncJailChannelOverwrite(i.GuildID, jailRoleID, channelID); err != nil {
+	withheld, err := p.syncJailChannelOverwrite(i.GuildID, jailRoleID, channelID)
+	if err != nil {
 		p.log.Error("roles: sync single jail channel overwrite failed", "guild", i.GuildID, "channel", channelID, "err", err)
 	}
+	return withheld
+}
+
+// handleMemberRole sets, or with the option omitted clears, the ordinary
+// member role that memberBaseline caps both markers against. The baseline
+// just moved on every channel, so both markers are re-synced; that is
+// O(channels), hence the deferral.
+func (p *Plugin) handleMemberRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	roleID := ""
+	if opt, ok := core.LeafArgs(i)["role"]; ok {
+		roleID, _ = opt.Value.(string)
+	}
+	if err := core.DeferResponse(s, i); err != nil {
+		p.log.Error("roles: defer member-role response failed", "guild", i.GuildID, "err", err)
+		return
+	}
+	if err := p.jailChannelConfig.SetMemberRole(ctx, i.GuildID, roleID); err != nil {
+		_ = core.FollowUpErr(s, i, "Failed to save", err)
+		return
+	}
+	detail := "none"
+	if roleID != "" {
+		detail = core.MentionRole(roleID)
+	}
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "member_role="+detail); err != nil {
+		p.log.Error("roles: audit member-role failed", "guild", i.GuildID, "err", err)
+	}
+	p.jailRoleMu.Lock()
+	jailRoleID, known := p.jailRoleID[i.GuildID]
+	p.jailRoleMu.Unlock()
+	if known {
+		if err := p.syncAllJailChannelOverwrites(i.GuildID, jailRoleID); err != nil {
+			p.log.Error("roles: sync jail overwrites after member-role change", "guild", i.GuildID, "err", err)
+		}
+	}
+	if err := p.syncAllVacationOverwrites(i.GuildID); err != nil {
+		p.log.Error("roles: sync vacation overwrites after member-role change", "guild", i.GuildID, "err", err)
+	}
+	if roleID == "" {
+		_ = core.FollowUpOK(s, i, "Member role cleared", "Jailed and vacationing members are now capped at what @everyone can do in each allowlisted channel.")
+		return
+	}
+	_ = core.FollowUpOK(s, i, "Member role set",
+		fmt.Sprintf("Jailed and vacationing members are now capped at what %s can do in each allowlisted channel. Every channel has been re-synced against it.", core.MentionRole(roleID)))
 }
 
 // handleAnnounceChannel sets, or with the option omitted clears, the one
@@ -479,6 +565,10 @@ func (p *Plugin) handleListChannels(ctx context.Context, s *discordgo.Session, i
 	if id := p.jailChannelConfig.JailAnnounceChannelID(i.GuildID); id != "" {
 		announce = fmt.Sprintf("Announcements also go to <#%s>.", id)
 	}
+	baseline := "Baseline for both: @everyone (no member role configured; `/roles configure member-role`)."
+	if id := p.jailChannelConfig.MemberRoleID(i.GuildID); id != "" {
+		baseline = "Baseline for both: " + core.MentionRole(id) + ". A marker role is never allowed more than it has in a channel."
+	}
 	vacation := "Visible while on vacation: nothing configured."
 	if v := p.vacationAllowlist(i.GuildID); len(v) > 0 {
 		mentions := make([]string, len(v))
@@ -489,14 +579,14 @@ func (p *Plugin) handleListChannels(ctx context.Context, s *discordgo.Session, i
 	}
 	ids := p.jailChannelConfig.JailAllowedChannelIDs(i.GuildID)
 	if len(ids) == 0 {
-		core.RespondInfo(s, i, "No allowed channels", "No channels are configured to stay visible to jailed members, so jail currently hides every channel.\n\n"+announce+"\n"+vacation)
+		core.RespondInfo(s, i, "No allowed channels", "No channels are configured to stay visible to jailed members, so jail currently hides every channel.\n\n"+announce+"\n"+vacation+"\n"+baseline)
 		return
 	}
-	lines := make([]string, 0, len(ids)+3)
+	lines := make([]string, 0, len(ids)+4)
 	for _, id := range ids {
 		lines = append(lines, fmt.Sprintf("<#%s>", id))
 	}
-	lines = append(lines, "", announce, vacation)
+	lines = append(lines, "", announce, vacation, baseline)
 	core.RespondInfo(s, i, "Channels visible while jailed", strings.Join(lines, "\n"))
 }
 
