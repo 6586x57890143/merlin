@@ -17,7 +17,7 @@ func TestJailNoticeSaysWhereAndWhenItEnds(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	releaseAt := fixedNow.Add(3 * time.Hour)
-	p.notifyJailed(context.Background(), "g1", "u1", releaseAt, "")
+	p.notifyJailed(context.Background(), "g1", "u1", releaseAt, "", jailSentence)
 
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("DMs sent = %d, want 1", len(ops.dmSends))
@@ -50,7 +50,7 @@ func TestJailNoticeCarriesTheReasonSeparately(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.notifyJailed(context.Background(), "g1", "u1", fixedNow.Add(time.Hour), "spamming the same link")
+	p.notifyJailed(context.Background(), "g1", "u1", fixedNow.Add(time.Hour), "spamming the same link", jailSentence)
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("DMs sent = %d, want 1", len(ops.dmSends))
 	}
@@ -61,7 +61,7 @@ func TestJailNoticeCarriesTheReasonSeparately(t *testing.T) {
 
 	// With no reason there should be no empty field hanging off the embed.
 	ops.dmSends = nil
-	p.notifyJailed(context.Background(), "g1", "u2", fixedNow.Add(time.Hour), "")
+	p.notifyJailed(context.Background(), "g1", "u2", fixedNow.Add(time.Hour), "", jailSentence)
 	if got := len(ops.dmSends[0].data.Embed.Fields); got != 0 {
 		t.Errorf("fields = %d with no reason given, want 0", got)
 	}
@@ -106,7 +106,7 @@ func TestNoticeStillSendsWhenTheGuildNameIsUnavailable(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	ops.guildErr = errors.New("500 internal server error")
-	p.notifyReleased(context.Background(), "g1", "u1")
+	p.notifyReleased(context.Background(), "g1", "u1", jailSentence)
 
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("DMs sent = %d, want 1", len(ops.dmSends))

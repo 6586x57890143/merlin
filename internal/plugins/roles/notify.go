@@ -27,7 +27,7 @@ import (
 // ends. reason is attached as its own field when a mod gave one, rather
 // than being folded into the sentence: an optional placeholder would make
 // every line carrying it fall back on exactly the occasions it is missing.
-func (p *Plugin) notifyJailed(ctx context.Context, guildID, userID string, releaseAt time.Time, reason string) {
+func (p *Plugin) notifyJailed(ctx context.Context, guildID, userID string, releaseAt time.Time, reason string, sn sentence) {
 	vars := map[string]string{
 		"guild": p.guildName(guildID),
 		"until": relativeTimestamp(releaseAt),
@@ -39,13 +39,39 @@ func (p *Plugin) notifyJailed(ctx context.Context, guildID, userID string, relea
 			Value: core.TruncateEmbedField(reason),
 		})
 	}
-	p.dm(ctx, guildID, userID, voice.KeyJailNotice, "Jailed", core.ColorWarning, vars, fields...)
+	p.dm(ctx, guildID, userID, sn.noticeKey, capitalize(sn.verb), core.ColorWarning, vars, fields...)
 }
 
-// notifyReleased tells userID their roles are back.
-func (p *Plugin) notifyReleased(ctx context.Context, guildID, userID string) {
-	p.dm(ctx, guildID, userID, voice.KeyReleaseNotice, "Released", core.ColorSuccess,
+// notifyReleased tells userID their roles are back. sn is what they were
+// released from, since coming home from the island is worded differently
+// from getting out of the nest.
+func (p *Plugin) notifyReleased(ctx context.Context, guildID, userID string, sn sentence) {
+	p.dm(ctx, guildID, userID, sn.overKey, "Released", core.ColorSuccess,
 		map[string]string{"guild": p.guildName(guildID)})
+}
+
+// notifyMoved tells userID they have been transferred into sentence to
+// (script_vacation.go), and when it now ends. A nil releaseAt (a row that
+// predates timed jails) says so in words rather than sending nothing.
+func (p *Plugin) notifyMoved(ctx context.Context, guildID, userID string, releaseAt *time.Time, to sentence, reason string) {
+	vars := map[string]string{
+		"guild": p.guildName(guildID),
+		"until": untilText(releaseAt),
+	}
+	var fields []*discordgo.MessageEmbedField
+	if reason != "" {
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Reason given", Value: core.TruncateEmbedField(reason)})
+	}
+	p.dm(ctx, guildID, userID, to.intoKey, "Moved to "+to.name, core.ColorWarning, vars, fields...)
+}
+
+// untilText renders a release instant for {until}, or the honest words for
+// a sentence with no end.
+func untilText(t *time.Time) string {
+	if t == nil {
+		return "when a moderator decides"
+	}
+	return relativeTimestamp(*t)
 }
 
 func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, title string, color int, vars map[string]string, fields ...*discordgo.MessageEmbedField) {

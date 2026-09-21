@@ -81,6 +81,21 @@ const (
 	KeyJailAnnounce    Key = "roles.jail_announce"
 	KeyReleaseAnnounce Key = "roles.release_announce"
 
+	// The vacation script (roles/script_vacation.go): jail's shape in a
+	// tropical flavour. The same DM/channel split as above: *.notice, *.over,
+	// *.from_jail and *.to_jail are DMs to the member in the plain register,
+	// the *_announce keys are channel posts in the playful one. from_jail
+	// and to_jail are the transfers, jail to island and island to jail, in
+	// that order; they carry {until} because a transfer always re-dates.
+	KeyVacationNotice           Key = "vacation.notice"
+	KeyVacationOver             Key = "vacation.over"
+	KeyVacationAnnounce         Key = "vacation.announce"
+	KeyVacationOverAnnounce     Key = "vacation.over_announce"
+	KeyVacationFromJail         Key = "vacation.from_jail"
+	KeyVacationFromJailAnnounce Key = "vacation.from_jail_announce"
+	KeyVacationToJail           Key = "vacation.to_jail"
+	KeyVacationToJailAnnounce   Key = "vacation.to_jail_announce"
+
 	// The router's own refusals, which any member can trigger.
 	KeyDenied         Key = "system.denied"
 	KeyPluginDisabled Key = "system.plugin_disabled"
@@ -336,6 +351,55 @@ var specs = map[Key]spec{
 		required: []string{"members"},
 		maxLen:   maxMessageContent,
 		fallback: "{members} has been released.",
+	},
+
+	KeyVacationNotice: {
+		register: RegisterPlain,
+		required: []string{"guild", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been sent on vacation in {guild}. your roles are saved and come back {until}.",
+	},
+	KeyVacationOver: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "your vacation in {guild} is over. your roles have been restored.",
+	},
+	KeyVacationAnnounce: {
+		register: RegisterPlayful,
+		required: []string{"members", "until"},
+		maxLen:   maxMessageContent,
+		fallback: "{members} has been sent on vacation. back {until}.",
+	},
+	KeyVacationOverAnnounce: {
+		register: RegisterPlayful,
+		required: []string{"members"},
+		maxLen:   maxMessageContent,
+		fallback: "{members} is back from vacation.",
+	},
+	KeyVacationFromJail: {
+		register: RegisterPlain,
+		required: []string{"guild", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been moved from jail to vacation in {guild}. your roles are still saved and come back {until}.",
+	},
+	KeyVacationFromJailAnnounce: {
+		register: RegisterPlayful,
+		required: []string{"members", "until"},
+		maxLen:   maxMessageContent,
+		fallback: "{members} has been moved from jail to vacation. back {until}.",
+	},
+	KeyVacationToJail: {
+		register: RegisterPlain,
+		required: []string{"guild", "until"},
+		maxLen:   maxEmbedDescription,
+		fallback: "your vacation in {guild} is over early: you have been moved to jail. your roles are still saved and come back {until}.",
+	},
+	KeyVacationToJailAnnounce: {
+		register: RegisterPlayful,
+		required: []string{"members", "until"},
+		maxLen:   maxMessageContent,
+		fallback: "{members} has been moved from vacation to jail. back {until}.",
 	},
 
 	KeyDenied: {

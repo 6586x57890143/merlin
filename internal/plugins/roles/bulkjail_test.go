@@ -334,7 +334,7 @@ func TestSummaryAccountsForEveryNonJailedMember(t *testing.T) {
 		failed:       []string{"u4: boom"},
 		unmanageable: 1,
 	}
-	out := summarizeBulkJail(res, time.Hour)
+	out := summarizeBulkJail(res, time.Hour, jailSentence)
 	for _, want := range []string{"u1", "u2", "u3", "u4", "kept at least one role"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary omits %q, so its absence would go unnoticed:\n%s", want, out)
@@ -350,7 +350,7 @@ func TestSummaryStaysWithinDiscordsFieldLimit(t *testing.T) {
 	for i := range maxBulkJailTargets {
 		res.jailed = append(res.jailed, fmt.Sprintf("12345678901234567%d", i))
 	}
-	if got := len(summarizeBulkJail(res, time.Hour)); got > 1024 {
+	if got := len(summarizeBulkJail(res, time.Hour, jailSentence)); got > 1024 {
 		t.Errorf("summary is %d bytes; Discord rejects the entire message over 1024", got)
 	}
 }

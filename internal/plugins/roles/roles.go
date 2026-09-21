@@ -30,9 +30,17 @@ const sweepInterval = time.Minute
 // favor of.
 const jailRoleName = "birdjailed"
 
+// The Melting Pot's own markers. The jail one is preferred over creating
+// birdjailed; the vacation one is the island's role (script_vacation.go),
+// which merlin never creates, so without it or a configured role the script
+// has nowhere to send anyone there.
 const (
-	meltingPotGuildID           = "1459404984943644747"
-	meltingPotDefaultJailRoleID = "1495522090667737218"
+	meltingPotGuildID               = "1459404984943644747"
+	meltingPotDefaultJailRoleID     = "1495522090667737218"
+	meltingPotDefaultVacationRoleID = "1549908923731939380"
+	// The beach itself: the one channel a member on vacation there is
+	// left, when the guild has configured no allowlist of its own.
+	meltingPotDefaultVacationChannelID = "1549902953631195227"
 )
 
 // Plugin implements core.Plugin: temporary role management (jail + timed
@@ -78,8 +86,9 @@ type Plugin struct {
 	mu              sync.Mutex
 	sweepRegistered map[string]bool // guild ID -> sweep job registered
 
-	jailRoleMu sync.Mutex
-	jailRoleID map[string]string // guild ID -> resolved jail role ID, cached per process
+	jailRoleMu     sync.Mutex
+	jailRoleID     map[string]string // guild ID -> resolved jail role ID, cached per process
+	vacationRoleID map[string]string // guild ID -> resolved vacation role ID (script_vacation.go), same lifetime
 
 	// timers holds one pending release/expiry per jail or grant key, and
 	// inFlight the keys being released this instant. See release.go.
@@ -114,6 +123,7 @@ func New(store Store, jailChannelConfig JailChannelConfig, scriptStore scripts.S
 		now:               func() time.Time { return time.Now().UTC() },
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),
+		vacationRoleID:    make(map[string]string),
 		timers:            make(map[string]*time.Timer),
 		inFlight:          make(map[string]bool),
 		afterFunc:         time.AfterFunc,
@@ -173,6 +183,7 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	delete(p.sweepRegistered, guildID)
 	p.mu.Unlock()
 	p.forgetJailRole(guildID)
+	p.forgetVacationRole(guildID)
 	// A timer firing after the bot has left would ask Discord about a guild
 	// it can no longer see. releaseJail only drops a row on Unknown Member,
 	// never Unknown Guild, so the row would survive that anyway; this just
@@ -204,7 +215,14 @@ func (p *Plugin) HandleRoleDeleted(ctx context.Context, guildID, roleID string) 
 	}
 	p.jailRoleMu.Lock()
 	cached, known := p.jailRoleID[guildID]
+	vacation, vacationKnown := p.vacationRoleID[guildID]
 	p.jailRoleMu.Unlock()
+	if vacationKnown && vacation == roleID {
+		// The island's role is never recreated: the next /roles vacation
+		// re-resolves it and refuses if it is still gone.
+		p.forgetVacationRole(guildID)
+		p.log.Warn("roles: vacation role was deleted", "guild", guildID, "role", roleID)
+	}
 	if !known || cached != roleID {
 		return
 	}

@@ -32,7 +32,11 @@ import (
 // say so explicitly with /config permissions set-tier roles.jail_role, which
 // is a decision worth making on purpose rather than inheriting.
 const (
-	actionJail            = "roles.jail"
+	actionJail = "roles.jail"
+	// actionVacation is the vacation script's command (script_vacation.go):
+	// jail's shape, the island's marker, so it sits at jail's tier and gets
+	// its own action for a guild that wants the beach on a different key.
+	actionVacation        = "roles.vacation"
 	actionJailRole        = "roles.jail_role"
 	actionGrant           = "roles.grant"
 	actionList            = "roles.list"
@@ -52,7 +56,7 @@ const (
 // list on /roles scripts set. A compile-time set, so a plain Choices option
 // rather than autocomplete (spec.MD §4a's autocomplete rule is for values
 // that come from bot state).
-var pluginScripts = []string{scriptEternalRole}
+var pluginScripts = []string{scriptEternalRole, scriptVacation}
 
 func (p *Plugin) registerCommands() {
 	userOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
@@ -95,6 +99,20 @@ func (p *Plugin) registerCommands() {
 					userOpt("user", "The member to jail"),
 					durationOpt("duration", "How long before automatic release. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
 					optionalUserOpt("user2", "A second member, jailed with the same duration and reason"),
+					optionalUserOpt("user3", "A third member"),
+					optionalUserOpt("user4", "A fourth member"),
+					optionalUserOpt("user5", "A fifth member"),
+					reasonOpt,
+				},
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "vacation",
+				Description: "vacation script: strip up to 5 members to the island's role for a period, then restore them",
+				Options: []*discordgo.ApplicationCommandOption{
+					userOpt("user", "The member to send on vacation"),
+					durationOpt("duration", "How long before they come back. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
+					optionalUserOpt("user2", "A second member, same duration and reason"),
 					optionalUserOpt("user3", "A third member"),
 					optionalUserOpt("user4", "A fourth member"),
 					optionalUserOpt("user5", "A fifth member"),
@@ -184,8 +202,26 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "vacation-role",
+						Description: "vacation script: the existing role a member on vacation holds (never created). Omit to clear.",
+						Options:     []*discordgo.ApplicationCommandOption{optionalRoleOpt("role", "The existing role a member on vacation holds")},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "vacation-allow-channel",
+						Description: "vacation script: keep a channel visible to members on vacation (everything else is hidden)",
+						Options:     []*discordgo.ApplicationCommandOption{channelOpt("channel", "The channel to keep visible while on vacation")},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "vacation-disallow-channel",
+						Description: "vacation script: go back to hiding a channel from members on vacation",
+						Options:     []*discordgo.ApplicationCommandOption{channelOpt("channel", "The channel to hide from members on vacation again")},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "sync-channels",
-						Description: "Recompute every channel's jail visibility (e.g. after creating new channels)",
+						Description: "Recompute every channel's jail and vacation visibility (e.g. after creating new channels)",
 					},
 				},
 			},
@@ -227,6 +263,7 @@ func (p *Plugin) registerCommands() {
 
 	p.commands.RegisterCommand(p.Name(), cmd)
 	p.commands.Handle("roles", "jail", core.PermSpec{Tier: core.TierMod, Action: actionJail}, p.handleJail)
+	p.commands.Handle("roles", "vacation", core.PermSpec{Tier: core.TierMod, Action: actionVacation}, p.handleVacation)
 	p.commands.Handle("roles", "jail-role", core.PermSpec{Tier: core.TierAdmin, Action: actionJailRole}, p.handleJailRole)
 	p.commands.Handle("roles", "release", core.PermSpec{Tier: core.TierMod, Action: actionJail}, p.handleRelease)
 	p.commands.Handle("roles", "grant", core.PermSpec{Tier: core.TierAdmin, Action: actionGrant}, p.handleGrant)
@@ -237,6 +274,9 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("roles", "configure/announce-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleAnnounceChannel)
 	p.commands.Handle("roles", "configure/list-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleListChannels)
 	p.commands.Handle("roles", "configure/marker-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMarkerRole)
+	p.commands.Handle("roles", "configure/vacation-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationRole)
+	p.commands.Handle("roles", "configure/vacation-allow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationAllowChannel)
+	p.commands.Handle("roles", "configure/vacation-disallow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationDisallowChannel)
 	p.commands.Handle("roles", "configure/sync-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleSyncChannels)
 	p.commands.Handle("roles", "scripts/set", core.PermSpec{Tier: core.TierAdmin, Action: actionScripts}, p.handleScriptsSet)
 	p.commands.Handle("roles", "scripts/list", core.PermSpec{Tier: core.TierAdmin, Action: actionScripts}, p.handleScriptsList)
@@ -271,7 +311,11 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 		if rec.ReleaseAt != nil {
 			release = rec.ReleaseAt.Format(time.RFC3339)
 		}
-		lines = append(lines, fmt.Sprintf("**Jailed:** released at %s", release))
+		state := "Jailed"
+		if p.sentenceFor(i.GuildID, rec.JailRoleID) == vacationSentence {
+			state = "On vacation"
+		}
+		lines = append(lines, fmt.Sprintf("**%s:** released at %s", state, release))
 	}
 
 	grants, err := p.store.ListGrants(ctx, i.GuildID, userID)
@@ -435,16 +479,24 @@ func (p *Plugin) handleListChannels(ctx context.Context, s *discordgo.Session, i
 	if id := p.jailChannelConfig.JailAnnounceChannelID(i.GuildID); id != "" {
 		announce = fmt.Sprintf("Announcements also go to <#%s>.", id)
 	}
+	vacation := "Visible while on vacation: nothing configured."
+	if v := p.vacationAllowlist(i.GuildID); len(v) > 0 {
+		mentions := make([]string, len(v))
+		for k, id := range v {
+			mentions[k] = core.MentionChannel(id)
+		}
+		vacation = "Visible while on vacation: " + strings.Join(mentions, " ")
+	}
 	ids := p.jailChannelConfig.JailAllowedChannelIDs(i.GuildID)
 	if len(ids) == 0 {
-		core.RespondInfo(s, i, "No allowed channels", "No channels are configured to stay visible to jailed members, so jail currently hides every channel.\n\n"+announce)
+		core.RespondInfo(s, i, "No allowed channels", "No channels are configured to stay visible to jailed members, so jail currently hides every channel.\n\n"+announce+"\n"+vacation)
 		return
 	}
-	lines := make([]string, 0, len(ids)+2)
+	lines := make([]string, 0, len(ids)+3)
 	for _, id := range ids {
 		lines = append(lines, fmt.Sprintf("<#%s>", id))
 	}
-	lines = append(lines, "", announce)
+	lines = append(lines, "", announce, vacation)
 	core.RespondInfo(s, i, "Channels visible while jailed", strings.Join(lines, "\n"))
 }
 
@@ -464,10 +516,14 @@ func (p *Plugin) handleSyncChannels(ctx context.Context, s *discordgo.Session, i
 	case err != nil:
 		followUpErr = core.FollowUpErr(s, i, "Failed to resolve jail role", err)
 	default:
-		if syncErr := p.syncAllJailChannelOverwrites(i.GuildID, jailRoleID); syncErr != nil {
+		syncErr := p.syncAllJailChannelOverwrites(i.GuildID, jailRoleID)
+		if verr := p.syncAllVacationOverwrites(i.GuildID); verr != nil && syncErr == nil {
+			syncErr = verr
+		}
+		if syncErr != nil {
 			followUpErr = core.FollowUpErr(s, i, "Sync completed with errors", syncErr)
 		} else {
-			followUpErr = core.FollowUpOK(s, i, "Channels synced", "Every channel's jail visibility now matches the current allowlist.")
+			followUpErr = core.FollowUpOK(s, i, "Channels synced", "Every channel's jail and vacation visibility now matches the current allowlists.")
 		}
 	}
 	if followUpErr != nil {
@@ -505,12 +561,21 @@ func (p *Plugin) handleScriptsSet(ctx context.Context, s *discordgo.Session, i *
 		return
 	}
 	p.auditScript(ctx, i, "roles.script_enabled", name)
-	if err := p.enforceEternalRoles(ctx, i.GuildID); err != nil {
-		p.log.Error("roles: first enforcement after enabling script", "guild", i.GuildID, "script", name, "err", err)
+	switch name {
+	case scriptEternalRole:
+		if err := p.enforceEternalRoles(ctx, i.GuildID); err != nil {
+			p.log.Error("roles: first enforcement after enabling script", "guild", i.GuildID, "script", name, "err", err)
+		}
+	case scriptVacation:
+		// The one full sync the island gets on its own: turning the script
+		// on is the moment the admin opts into deny-by-default there.
+		if err := p.syncAllVacationOverwrites(i.GuildID); err != nil {
+			p.log.Error("roles: vacation sync after enabling script", "guild", i.GuildID, "err", err)
+		}
 	}
 	recs, _ := p.store.ListEternalRoles(ctx, i.GuildID)
 	_ = core.FollowUpEmbed(s, i, core.NewEmbed(core.ColorWarning, "Script on: "+name,
-		scripts.Warning+"\n\n"+scriptDescription(name, recs)+
+		scripts.Warning+"\n\n"+p.scriptDescription(i.GuildID, name, recs)+
 			fmt.Sprintf("\n\nTurn it off with `/roles scripts set script:%s enabled:false`.", name)))
 }
 
@@ -532,13 +597,16 @@ func (p *Plugin) handleScriptsList(ctx context.Context, s *discordgo.Session, i 
 			}
 		}
 		fmt.Fprintf(&b, "- `%s`: %s", name, status)
-		if name == scriptEternalRole {
+		switch name {
+		case scriptEternalRole:
 			recs, err := p.store.ListEternalRoles(ctx, i.GuildID)
 			if err != nil {
 				b.WriteString(" (definitions unreadable)")
 			} else {
 				b.WriteString(": " + eternalRolesLine(recs))
 			}
+		case scriptVacation:
+			b.WriteString(": " + p.vacationLine(i.GuildID))
 		}
 		b.WriteString("\n")
 	}
@@ -546,8 +614,16 @@ func (p *Plugin) handleScriptsList(ctx context.Context, s *discordgo.Session, i 
 }
 
 // scriptDescription is what an admin is told they just turned on.
-func scriptDescription(name string, recs []EternalRoleRecord) string {
+func (p *Plugin) scriptDescription(guildID, name string, recs []EternalRoleRecord) string {
 	switch name {
+	case scriptVacation:
+		return "**vacation**: " + p.vacationLine(guildID) + ". `/roles vacation` does what `/roles jail` does with that role " +
+			"as the marker instead of the jail one: roles snapshotted and stripped, restored on the timer or with `/roles release`, " +
+			"same evasion handling. merlin never creates the island's role; it hides every channel from it except " +
+			"the vacation allowlist (`/roles configure vacation-allow-channel`), moving only View/Connect and leaving " +
+			"the rest of each channel's overwrite as the server set it. " +
+			"`/roles jail` on somebody on vacation moves them to jail with the new duration, and the reverse; " +
+			"a mod swapping the two roles by hand is recognised and the sentence follows."
 	case scriptEternalRole:
 		return "**eternal-role**: " + eternalRolesLine(recs) + ". merlin keeps a copy of each role as it was when added. " +
 			"If it is removed from them it is given back; if it is deleted it is recreated from the copy; " +

@@ -11,7 +11,7 @@ func TestAnnounceJailPostsToInvokingChannel(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "spamming")
+	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "spamming", jailSentence)
 
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("expected one channel post, got %d", len(ops.dmSends))
@@ -32,7 +32,7 @@ func TestAnnounceJailReasonBecomesASubtextLine(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "spamming links")
+	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "spamming links", jailSentence)
 
 	content := ops.dmSends[0].data.Content
 	if !strings.Contains(content, "\n-# reason: spamming links") {
@@ -47,7 +47,7 @@ func TestAnnounceJailReasonNewlinesAreCollapsed(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "line one\nline two")
+	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "line one\nline two", jailSentence)
 
 	content := ops.dmSends[0].data.Content
 	if strings.Contains(content, "\n-# reason: line one\nline two") {
@@ -63,7 +63,7 @@ func TestAnnounceJailReasonIsTruncated(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	long := strings.Repeat("a", maxAnnounceReasonLen*2)
-	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, long)
+	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, long, jailSentence)
 
 	content := ops.dmSends[0].data.Content
 	if strings.Contains(content, long) {
@@ -78,7 +78,7 @@ func TestAnnounceJailOmitsReasonLineWhenNoneGiven(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "")
+	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "", jailSentence)
 
 	if strings.Contains(ops.dmSends[0].data.Content, "-#") {
 		t.Fatalf("expected no subtext line when no reason was given, got %q", ops.dmSends[0].data.Content)
@@ -89,7 +89,7 @@ func TestAnnounceJailNoOpWhenNobodyJailed(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.announceJail(context.Background(), "g1", "chan1", nil, time.Hour, "")
+	p.announceJail(context.Background(), "g1", "chan1", nil, time.Hour, "", jailSentence)
 
 	if len(ops.dmSends) != 0 {
 		t.Fatalf("expected no channel post for an empty jail batch, got %d", len(ops.dmSends))
@@ -100,7 +100,7 @@ func TestAnnounceReleasePostsToInvokingChannel(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.announceRelease(context.Background(), "g1", "chan1", []string{"u1"})
+	p.announceRelease(context.Background(), "g1", "chan1", []string{"u1"}, jailSentence)
 
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("expected one channel post, got %d", len(ops.dmSends))
@@ -118,7 +118,7 @@ func TestAnnounceReleaseNoOpWhenNobodyReleased(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.announceRelease(context.Background(), "g1", "chan1", nil)
+	p.announceRelease(context.Background(), "g1", "chan1", nil, jailSentence)
 
 	if len(ops.dmSends) != 0 {
 		t.Fatalf("expected no channel post for an empty release batch, got %d", len(ops.dmSends))
@@ -172,7 +172,7 @@ func TestAnnounceJailAlsoPostsToTheConfiguredAnnounceChannel(t *testing.T) {
 	settings.announce["g1"] = "jail-talk"
 	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "")
+	p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, time.Hour, "", jailSentence)
 
 	if len(ops.dmSends) != 2 {
 		t.Fatalf("expected the announcement posted to both the invoking channel and the announce channel, got %d sends", len(ops.dmSends))

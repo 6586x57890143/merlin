@@ -114,6 +114,23 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 	}
 	releaseAt := p.now().Add(duration)
 	if !releaseAt.After(*rec.ReleaseAt) {
+		releaseAt = *rec.ReleaseAt
+	}
+	if p.sentenceFor(guildID, rec.JailRoleID) == vacationSentence {
+		// On vacation (script_vacation.go). An automatic sanction is the
+		// stricter sentence, so the trip ends and the nest takes over, for
+		// the later of the two ends. Compared by sentence, not marker ID: a
+		// jail marker the guild has since reconfigured is still a jail.
+		if err := p.transferJail(ctx, guildID, userID, rec, jailRoleID, member.Roles, &releaseAt); err != nil {
+			return err
+		}
+		to := p.sentenceFor(guildID, jailRoleID)
+		p.publishTransferred(ctx, guildID, userID, core.ActorSystem, reason, p.sentenceFor(guildID, rec.JailRoleID), to, &releaseAt)
+		p.notifyMoved(ctx, guildID, userID, &releaseAt, to, reason)
+		p.announceMoved(ctx, guildID, "", []string{userID}, &releaseAt, to)
+		return nil
+	}
+	if releaseAt.Equal(*rec.ReleaseAt) {
 		return nil
 	}
 	if err := p.store.SetJailRelease(ctx, guildID, userID, &releaseAt); err != nil {

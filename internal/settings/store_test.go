@@ -403,6 +403,45 @@ func TestJailAnnounceChannelRoundTrip(t *testing.T) {
 	}
 }
 
+// The vacation role is the same single-setter shape as the announce
+// channel: empty clears, NULL reads back as "".
+func TestVacationRoleRoundTrip(t *testing.T) {
+	store, _, guildID := setupStore(t)
+	ctx := context.Background()
+
+	if got := store.VacationRoleID(guildID); got != "" {
+		t.Fatalf("VacationRoleID before any set = %q, want empty", got)
+	}
+	if err := store.SetVacationRole(ctx, guildID, "role-1"); err != nil {
+		t.Fatalf("SetVacationRole: %v", err)
+	}
+	if got := store.VacationRoleID(guildID); got != "role-1" {
+		t.Fatalf("VacationRoleID after set = %q, want role-1", got)
+	}
+	if err := store.SetVacationRole(ctx, guildID, ""); err != nil {
+		t.Fatalf("SetVacationRole(clear): %v", err)
+	}
+	if got := store.VacationRoleID(guildID); got != "" {
+		t.Errorf("VacationRoleID after clear = %q, want empty", got)
+	}
+
+	if err := store.AddVacationAllowedChannel(ctx, guildID, "chan-1"); err != nil {
+		t.Fatalf("AddVacationAllowedChannel: %v", err)
+	}
+	if err := store.AddVacationAllowedChannel(ctx, guildID, "chan-1"); err != nil {
+		t.Fatalf("AddVacationAllowedChannel(dup): %v", err)
+	}
+	if got := store.VacationAllowedChannelIDs(guildID); len(got) != 1 || got[0] != "chan-1" {
+		t.Fatalf("VacationAllowedChannelIDs = %v, want [chan-1]", got)
+	}
+	if err := store.RemoveVacationAllowedChannel(ctx, guildID, "chan-1"); err != nil {
+		t.Fatalf("RemoveVacationAllowedChannel: %v", err)
+	}
+	if got := store.VacationAllowedChannelIDs(guildID); len(got) != 0 {
+		t.Errorf("VacationAllowedChannelIDs after remove = %v, want empty", got)
+	}
+}
+
 // GrantOverride and DenyOverride take roleID and userID together, with an
 // empty string meaning "leave this column alone" (the CASE WHEN $3 = ''
 // SQL). Granting a role, then separately granting a user for the same

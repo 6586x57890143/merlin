@@ -183,8 +183,10 @@ func TestJailOverwriteForEachChannelKind(t *testing.T) {
 	}{
 		{"denied text", discordgo.ChannelTypeGuildText, false, 0, view},
 		{"denied voice", discordgo.ChannelTypeGuildVoice, false, 0, view | connect},
-		{"allowed text", discordgo.ChannelTypeGuildText, true, view | send, 0},
-		{"allowed voice", discordgo.ChannelTypeGuildVoice, true, view | connect, 0},
+		// Where they may go, the ways out of the room (threads, polls,
+		// invites, ...) are denied alongside.
+		{"allowed text", discordgo.ChannelTypeGuildText, true, view | send, restrictedBits},
+		{"allowed voice", discordgo.ChannelTypeGuildVoice, true, view | connect, restrictedBits},
 		// A category is never permission-checked directly; it carries the
 		// superset deny so a channel created under it later inherits it.
 		{"category", discordgo.ChannelTypeGuildCategory, false, 0, view | connect},

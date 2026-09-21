@@ -1,0 +1,145 @@
+# The vacation script (internal/plugins/roles/script_vacation.go): jail's
+# shape, sent somewhere warmer. A member on vacation is stripped to the
+# island's marker role exactly as a jailed member is stripped to the nest's,
+# and gets everything back on the same timer; what differs is where they can
+# go in the meantime, and how merlin talks about it.
+#
+# The same DM/channel split as moderation.yaml and roles.yaml, for the same
+# reasons. vacation.notice, vacation.over, vacation.from_jail and
+# vacation.to_jail are DMs to the person it happened to: plain register, a
+# range of warmth rather than wit, every line names the server, every line
+# with a timer names it. The *_announce keys are posted into the channel the
+# command was run in and read by whoever is sitting there: merlin's ordinary
+# playful voice, the bigger bird on the perch again, this time handing out
+# sunscreen. Lines run a full sentence or two so the joke lands before the
+# practical part.
+#
+# from_jail and to_jail are the transfers. A transfer always re-dates, so
+# both carry {until}; the one thing every to_jail line has to make clear is
+# that the trip is over early, since the person reading it thought they had
+# a beach until the weekend.
+#
+# {members} is plural-safe: written in direct address or without a
+# conjugated verb, so one line covers a single member and a batch alike.
+
+vacation.notice:
+  # warm
+  - "quick note: you've been sent on vacation in {guild}. your roles are kept exactly as they were and come back {until}. the island is yours until then."
+  - "you're on vacation in {guild} for a bit. nothing is lost, your roles are safe on the shelf and return {until}. enjoy the beach."
+  - "heads up: you've been booked onto the island in {guild}. your roles are held as they were and come back {until}."
+  # plain
+  - "you've been sent on vacation in {guild}. your roles are saved and you'll get them back {until}."
+  - "you're on vacation in {guild}. this isn't permanent, your roles return {until}."
+  - "a moderator in {guild} has sent you on vacation. your roles are stored exactly as they were and come back {until}."
+  # matter of fact
+  - "a moderator has sent you to the island in {guild}. nothing has been removed permanently, and your roles return {until}."
+  - "you're on vacation in {guild} for now. your roles are held exactly as they were and come back {until}."
+
+vacation.over:
+  # warm
+  - "welcome back. your vacation in {guild} is over and your roles are back where they were 🌴"
+  - "you're back from the island in {guild}, and your roles are back with you. hope the weather was good."
+  - "that's the trip done. your roles in {guild} are back."
+  # plain
+  - "vacation over. everything you had in {guild} has been restored."
+  - "you're back. roles in {guild} restored, nothing lost."
+  - "all clear. your vacation in {guild} has ended and your roles have been put back."
+  # matter of fact
+  - "your vacation in {guild} is over. everything you had is back where it was."
+  - "done. your roles in {guild} are restored, exactly as they were before the trip."
+
+vacation.announce:
+  # calm
+  - "well, {members} is off to the island now. nothing dramatic, just a little sun and sand until {until}, and the sky will still be here after"
+  - "{members} has been booked onto the beach for a while. back {until}, tan optional"
+  - "turns out the bigger bird also runs the travel agency. {members} is on vacation until {until}, no hard feelings, mostly"
+  - "{members} has been sent somewhere warmer to think it over. back {until}, and the main perch will keep"
+  # neutral
+  - "and there it is. {members} is on vacation until {until}, so whatever was about to be said can wait for the return flight"
+  - "{members} pushed their luck a little too far, so now they get a beach to sit on until {until}"
+  - "the view from the top perch is great, and {members} will be admiring the view from a hammock instead, until {until}"
+  - "{members} thought they had the run of the place. they have the run of the island until {until}, which is not the same thing"
+  # witty
+  - "{members} has officially been relocated to the bahamas, {until} minimum stay, all inclusive, no early checkout"
+  - "biggest bird in the room has spoken, and {members} gets until {until} to work on their tan and their attitude"
+  - "{members} really said that, in this economy. now there's {until} of island time to sit and regret it with a coconut"
+  - "{members} pressed every wrong button available, so the reward is a beach until {until} and some quiet"
+  # blunt
+  - "{members}, sent to the island, no appeal. back {until}. she packed the sunscreen herself"
+  - "{members} down, flying privileges swapped for a sun lounger until {until}, and yes, she is enjoying this a little 😏"
+  - "{members}, until {until}. talk a big game somewhere with a beach, the island does not negotiate"
+  # gg. the running bit from roles.jail_announce, same ratio, same scoping.
+  - "gg fuckin' ez. {members} has been sent to the island until {until}, and honestly it was not even close"
+  - "{members} is on vacation until {until}. gg fuckin' ez, thanks for playing, the resort thanks you for your custom"
+  - "that's {members} on the beach until {until}. gg fuckin' ez, she did not even have to try"
+  - "{members} lasted about as long as expected. off to the island until {until}. gg fuckin' ez"
+  - "gg fuckin' ez. {members} sits this one out on a sun lounger until {until}, and the rematch is not scheduled"
+
+vacation.over_announce:
+  # calm
+  - "{members} is back from the island. welcome home 🌴"
+  - "vacation over for {members}. everything's back where it was"
+  - "{members} is off the beach and free to go"
+  - "welcome back, {members}. hope the weather was good"
+  # neutral
+  - "that's {members} back from vacation. good to have them back"
+  - "{members} has done their time in the sun. all clear"
+  - "{members} is back. carry on"
+  - "and that's {members} back from the island. tan noted 🍹"
+  # matter of fact
+  - "{members} is back and free again 🕊️"
+  - "{members} is home. nothing lost, nothing held against them"
+
+vacation.from_jail:
+  # warm
+  - "good news: you've been moved from jail to vacation in {guild}. your roles are still safe and come back {until}. the island is a lot nicer than the nest."
+  - "you're out of the nest and onto the island in {guild}. same deal, your roles are held as they were and return {until}, but the view is better."
+  - "your jail in {guild} has been turned into a vacation. nothing is lost, your roles come back {until}."
+  # plain
+  - "you've been moved from jail to vacation in {guild}. your roles are saved and you'll get them back {until}."
+  - "a moderator in {guild} has moved you from jail to the island. your roles are stored exactly as they were and come back {until}."
+  - "you're on vacation in {guild} now instead of in jail. this isn't permanent, your roles return {until}."
+  # matter of fact
+  - "a moderator has transferred you from jail to vacation in {guild}. nothing has been removed permanently, and your roles return {until}."
+  - "your jail in {guild} is now a vacation. your roles are held exactly as they were and come back {until}."
+
+vacation.from_jail_announce:
+  # calm
+  - "{members} has been let out of the nest and onto the beach. same timer, better view, back {until}"
+  - "good behaviour, or a generous mood: {members} is off to the island instead of the nest, until {until}"
+  - "{members} traded the nest for a hammock. still away until {until}, just somewhere with a breeze"
+  # neutral
+  - "{members} has been transferred from jail to vacation. back {until}, and the sunscreen is on the house"
+  - "and that's {members} moved to the island. the sentence continues until {until}, the scenery does not"
+  - "{members} is out of jail and on the beach until {until}. it is still a timeout, it is just a warmer one"
+  # witty
+  - "{members} got an upgrade: nest to bahamas, until {until}. the bigger bird occasionally has a soft spot"
+  - "{members} has been paroled to the island until {until}. no early checkout, but the drinks have little umbrellas now"
+  - "from the nest to a sun lounger in one move. {members} is on vacation until {until}, and she expects a postcard"
+
+vacation.to_jail:
+  # warm
+  - "sorry to say it: your vacation in {guild} is over early, and you've been moved to jail. your roles are still safe and come back {until}."
+  - "the trip has been cut short. you're in jail in {guild} now rather than on the island, and your roles return {until}, exactly as they were."
+  - "your vacation in {guild} has been turned into a jail. nothing is lost, your roles are held and come back {until}."
+  # plain
+  - "you've been moved from vacation to jail in {guild}. your roles are saved and you'll get them back {until}."
+  - "a moderator in {guild} has moved you from the island to jail. your roles are stored exactly as they were and come back {until}."
+  - "you're in jail in {guild} now instead of on vacation. this isn't permanent, your roles return {until}."
+  # matter of fact
+  - "a moderator has transferred you from vacation to jail in {guild}. nothing has been removed permanently, and your roles return {until}."
+  - "your vacation in {guild} has ended early and become a jail. your roles are held exactly as they were and come back {until}."
+
+vacation.to_jail_announce:
+  # calm
+  - "{members} has been recalled from the island to the nest. trip over early, back {until}"
+  - "the vacation is cut short: {members} is in the nest now, until {until}. the island will still be there another time"
+  - "{members} traded the hammock for the nest. away until {until}, just somewhere quieter"
+  # neutral
+  - "{members} has been transferred from vacation to jail. back {until}, and the sunscreen goes back in the drawer"
+  - "and that's {members} moved off the beach. the sentence now runs until {until}, and the scenery got worse"
+  - "{members} is out of the sun and in the nest until {until}. it was a timeout before, it is a stricter one now"
+  # witty
+  - "{members} got a downgrade: bahamas to nest, until {until}. the bigger bird's soft spot has limits"
+  - "{members} managed to get thrown out of a beach. the nest has a room until {until}, no umbrellas in the drinks"
+  - "return flight booked early. {members} is back in the nest until {until}, and she is not refunding the resort"

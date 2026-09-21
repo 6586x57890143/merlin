@@ -42,10 +42,14 @@ var actions = map[string]meta{
 	"rotation.channel_deleted": {title: "Rotating channel deleted", color: core.ColorError},
 
 	// Restrictive or removing.
-	"roles.jail":             {title: "Member jailed", color: core.ColorWarning},
-	"roles.jail_bulk":        {title: "Members jailed", color: core.ColorWarning},
-	"roles.jail_reapplied":   {title: "Jail re-applied after a rejoin", color: core.ColorWarning},
-	"roles.jail_resentenced": {title: "Jail sentence moved", color: core.ColorWarning},
+	"roles.jail":                 {title: "Member jailed", color: core.ColorWarning},
+	"roles.jail_bulk":            {title: "Members jailed", color: core.ColorWarning},
+	"roles.jail_reapplied":       {title: "Jail re-applied after a rejoin", color: core.ColorWarning},
+	"roles.jail_resentenced":     {title: "Jail sentence moved", color: core.ColorWarning},
+	"roles.vacation":             {title: "Member sent on vacation", color: core.ColorWarning},
+	"roles.vacation_bulk":        {title: "Members sent on vacation", color: core.ColorWarning},
+	"roles.vacation_resentenced": {title: "Vacation moved", color: core.ColorWarning},
+	"roles.transferred":          {title: "Moved between jail and vacation", color: core.ColorWarning},
 
 	// internal/plugins/aimod. Colours track what actually happened to the
 	// message, not how serious the policy area was: a moderator scanning

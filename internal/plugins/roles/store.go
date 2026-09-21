@@ -78,6 +78,12 @@ type Store interface {
 	// Returns ErrNotJailed if no record exists rather than reporting success
 	// for an update that changed nothing.
 	SetJailRelease(ctx context.Context, guildID, userID string, releaseAt *time.Time) error
+	// TransferJail moves an existing jail onto a different marker role (jail
+	// to vacation or back, script_vacation.go) and re-dates it, touching
+	// nothing else: the snapshot is the member's real pre-jail roles and the
+	// only copy, exactly as for SetJailRelease. Returns ErrNotJailed if no
+	// record exists.
+	TransferJail(ctx context.Context, guildID, userID, jailRoleID string, releaseAt *time.Time) error
 	GetJail(ctx context.Context, guildID, userID string) (JailRecord, bool, error)
 	DeleteJail(ctx context.Context, guildID, userID string) error
 	DueJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
@@ -169,6 +175,19 @@ func (s *pgStore) SetJailRelease(ctx context.Context, guildID, userID string, re
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("roles store: set jail release for %s: %w", userID, ErrNotJailed)
+	}
+	return nil
+}
+
+func (s *pgStore) TransferJail(ctx context.Context, guildID, userID, jailRoleID string, releaseAt *time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE role_jails SET jail_role_id = $3, release_at = $4 WHERE guild_id = $1 AND user_id = $2
+	`, guildID, userID, jailRoleID, releaseAt)
+	if err != nil {
+		return fmt.Errorf("roles store: transfer jail: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("roles store: transfer jail for %s: %w", userID, ErrNotJailed)
 	}
 	return nil
 }
