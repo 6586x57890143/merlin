@@ -62,6 +62,11 @@ type GuildSettings struct {
 	// VacationRoleID on each and nothing more, never a deny anywhere else,
 	// which is the opposite of JailAllowedChannelIDs' deny-by-default.
 	VacationAllowedChannelIDs []string
+	// MemberRoleID is the ordinary member role, what a plain member holds
+	// besides @everyone. The roles plugin caps a marker role's allow on an
+	// allowlisted channel to what this role can do there. Empty means the
+	// baseline is @everyone alone.
+	MemberRoleID string
 	// ArchiveViewerRoleIDs is which extra roles can see rotation's archive
 	// channels, on top of ModRoleIDs and anyone holding Discord's own
 	// Administrator bit. Guild-scoped rather than per rotating channel
@@ -231,10 +236,10 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids, member_role_id
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-	var marker, announce, vacation sql.NullString
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs); err {
+	var marker, announce, vacation, member sql.NullString
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs, &member); err {
 	case nil, pgx.ErrNoRows:
 		if marker.Valid {
 			v := marker.String
@@ -244,6 +249,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		}
 		gc.settings.JailAnnounceChannelID = announce.String
 		gc.settings.VacationRoleID = vacation.String
+		gc.settings.MemberRoleID = member.String
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
 	}
@@ -649,6 +655,13 @@ func (s *Store) PruneDeletedRole(ctx context.Context, guildID, roleID string) ([
 		removed = append(removed, "archive viewer role")
 	}
 
+	if s.MemberRoleID(guildID) == roleID {
+		if err := s.SetMemberRole(ctx, guildID, ""); err != nil {
+			return removed, err
+		}
+		removed = append(removed, "member role")
+	}
+
 	for _, o := range s.Overrides(guildID) {
 		if slices.Contains(o.RoleIDs, roleID) {
 			if err := s.RevokeOverride(ctx, guildID, o.Action, roleID, ""); err != nil {
@@ -767,6 +780,29 @@ func (s *Store) SetJailAnnounceChannel(ctx context.Context, guildID, channelID s
 		ON CONFLICT (guild_id) DO UPDATE SET jail_announce_channel_id = NULLIF($2, ''), updated_at = now()`,
 		guildID, channelID); err != nil {
 		return fmt.Errorf("settings: set jail announce channel: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// MemberRoleID returns the guild's ordinary member role, or "" when the
+// baseline is @everyone alone.
+func (s *Store) MemberRoleID(guildID string) string {
+	return s.guild(guildID).settings.MemberRoleID
+}
+
+// SetMemberRole sets (or, with an empty roleID, clears) the ordinary member
+// role. Same single-setter shape as SetVacationRole.
+func (s *Store) SetMemberRole(ctx context.Context, guildID, roleID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, member_role_id, updated_at) VALUES ($1, NULLIF($2, ''), now())
+		ON CONFLICT (guild_id) DO UPDATE SET member_role_id = NULLIF($2, ''), updated_at = now()`,
+		guildID, roleID); err != nil {
+		return fmt.Errorf("settings: set member role: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		s.invalidate(guildID)

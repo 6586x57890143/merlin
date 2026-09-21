@@ -189,7 +189,7 @@ func TestFullyRefusedBatchCreatesNoJailRole(t *testing.T) {
 	if len(res.protected) != 1 {
 		t.Fatalf("protected = %v", res.protected)
 	}
-	if roles, _ := ops.GuildRoles("g1"); len(roles) != 0 {
+	if roles := ops.roles["g1"]; len(roles) != 0 {
 		t.Errorf("a fully-refused batch created guild roles: %v", roles)
 	}
 }

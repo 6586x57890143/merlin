@@ -37,6 +37,10 @@ what a jailed member can still see, so jailing costs one API call no matter how
 big the server is. They get their roles back automatically when the timer runs
 out, or when a mod runs `/roles release`. Leaving and rejoining doesn't shake it
 off. There's a bulk version and a `/roles jail-role` for when a raid shows up.
+A jailed member is never given more in an allowlisted channel than an ordinary
+member has there (`/roles configure member-role @melted` says who that is): allow
+an announcements room and they can read it, not post in it, and the command
+says so.
 
 **Vacation.** The same thing, somewhere nicer. `/roles vacation @someone 2d` is
 jail with a different marker role, one the server already has (the Melting

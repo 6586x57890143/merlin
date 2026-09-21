@@ -250,7 +250,7 @@ func TestJailRefusesProtectedTargetBeforeMutatingAnything(t *testing.T) {
 	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "admin-user"); ok {
 		t.Fatal("a refused jail left a jail record behind")
 	}
-	if roles, _ := ops.GuildRoles("g1"); len(roles) != 0 {
+	if roles := ops.roles["g1"]; len(roles) != 0 {
 		t.Fatalf("a refused jail created guild roles: %v", roles)
 	}
 }

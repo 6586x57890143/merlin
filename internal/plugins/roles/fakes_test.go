@@ -270,10 +270,25 @@ func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.Me
 	return &discordgo.Message{ID: "m1"}, nil
 }
 
+// everyonePerms is what the fake guild's @everyone role carries: a plain
+// member can see, talk, react and join voice, the ordinary Discord default.
+// memberBaseline caps a marker role against this, so a fixture that never
+// set up an @everyone role would otherwise withhold everything.
+const everyonePerms = int64(discordgo.PermissionViewChannel | discordgo.PermissionSendMessages |
+	discordgo.PermissionReadMessageHistory | discordgo.PermissionAddReactions |
+	discordgo.PermissionVoiceConnect | discordgo.PermissionVoiceSpeak)
+
 func (f *fakeOps) GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]*discordgo.Role(nil), f.roles[guildID]...), nil
+	out := append([]*discordgo.Role(nil), f.roles[guildID]...)
+	// Every real guild has its @everyone role, ID equal to the guild's.
+	// Fixtures list only the roles they care about, so it is synthesised
+	// here unless a test set its own (to lock the guild down, say).
+	if !slices.ContainsFunc(out, func(r *discordgo.Role) bool { return r.ID == guildID }) {
+		out = append(out, &discordgo.Role{ID: guildID, Name: "@everyone", Permissions: everyonePerms})
+	}
+	return out, nil
 }
 
 // deleteRole removes a role from the guild, standing in for a mod deleting
@@ -699,10 +714,11 @@ type fakeSettings struct {
 	announce        map[string]string   // guildID -> configured jail announcement channel ID
 	vacationRole    map[string]string   // guildID -> configured vacation marker role ID
 	vacationAllowed map[string][]string // guildID -> vacation allowlist
+	memberRole      map[string]string   // guildID -> ordinary member role
 }
 
 func newFakeSettings() *fakeSettings {
-	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string), vacationRole: make(map[string]string), vacationAllowed: make(map[string][]string)}
+	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string), vacationRole: make(map[string]string), vacationAllowed: make(map[string][]string), memberRole: make(map[string]string)}
 }
 
 func (f *fakeSettings) JailAnnounceChannelID(guildID string) string {
@@ -793,6 +809,23 @@ func (f *fakeSettings) RemoveVacationAllowedChannel(ctx context.Context, guildID
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.vacationAllowed[guildID] = slices.DeleteFunc(f.vacationAllowed[guildID], func(id string) bool { return id == channelID })
+	return nil
+}
+
+func (f *fakeSettings) MemberRoleID(guildID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.memberRole[guildID]
+}
+
+func (f *fakeSettings) SetMemberRole(ctx context.Context, guildID, roleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if roleID == "" {
+		delete(f.memberRole, guildID)
+		return nil
+	}
+	f.memberRole[guildID] = roleID
 	return nil
 }
 
