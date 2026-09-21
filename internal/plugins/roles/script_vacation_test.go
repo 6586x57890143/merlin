@@ -176,6 +176,38 @@ func TestJailOnAVacationerMovesThemToJail(t *testing.T) {
 	}
 }
 
+// TestCommandTransferIsAnnouncedOnce: the role edit behind a command
+// transfer fires Discord's own GUILD_MEMBER_UPDATE while the row still
+// names the old marker, and HandleMemberUpdate must not read that as a mod
+// swapping the roles by hand and voice the same move a second time.
+func TestCommandTransferIsAnnouncedOnce(t *testing.T) {
+	p, ops, store, audit, _, settings := vacationFixture()
+	settings.announce["g1"] = "chan"
+	ops.setMember("g1", "u1", []string{island})
+	end := fixedNow.Add(24 * time.Hour)
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
+	ops.onMemberEdit = func(guildID, userID string, roles []string) {
+		p.HandleMemberUpdate(context.Background(), guildID, userID, roles)
+	}
+	s, _ := handlerSession(t)
+
+	p.handleJail(context.Background(), s, rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "3h")))
+
+	if got := auditActions(audit); !slices.Equal(got, []string{"roles.transferred"}) {
+		t.Fatalf("one move, one audit entry, got %v", got)
+	}
+	if ann := sentTo(ops, "chan"); len(ann) != 1 {
+		t.Fatalf("one move, one announcement, got %v", ann)
+	}
+	if dm := sentTo(ops, "dm:u1"); len(dm) != 1 {
+		t.Fatalf("one move, one DM, got %v", dm)
+	}
+	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
+	if row.JailRoleID != "jail-role" || !row.ReleaseAt.Equal(fixedNow.Add(3*time.Hour)) {
+		t.Fatalf("the command's own transfer must still land, got %+v", row)
+	}
+}
+
 // TestVacationOnAJailedMemberParolesThemAndClearsTheHardening: the reverse
 // move, plus the one thing jail leaves behind that the island must not
 // inherit: a member-level deny from a hardened jail.

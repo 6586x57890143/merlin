@@ -54,6 +54,11 @@ type fakeOps struct {
 	memberFetchErrFor map[string]error
 	// memberEditErr does the same for GuildMemberEdit.
 	memberEditErr error
+	// onMemberEdit, when set, runs after a role edit lands with the roles
+	// just set, standing in for the GUILD_MEMBER_UPDATE Discord dispatches
+	// for the bot's own edit, which arrives while the caller is still
+	// mid-mutation.
+	onMemberEdit func(guildID, userID string, roles []string)
 	// memberListErr does the same for GuildMembers, standing in for a guild
 	// whose member list can't be paged (most realistically, the GUILD_MEMBERS
 	// intent not being granted).
@@ -229,6 +234,11 @@ func (f *fakeOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildM
 		f.memberEditCalls[userID] = append(f.memberEditCalls[userID], append([]string(nil), *data.Roles...)...)
 	}
 	cp := *m
+	if data.Roles != nil && f.onMemberEdit != nil {
+		f.mu.Unlock()
+		f.onMemberEdit(guildID, userID, append([]string(nil), *data.Roles...))
+		f.mu.Lock()
+	}
 	return &cp, nil
 }
 
