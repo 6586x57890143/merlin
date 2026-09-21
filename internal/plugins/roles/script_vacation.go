@@ -198,7 +198,19 @@ func (p *Plugin) counterpartMarker(guildID, markerRoleID string) (string, bool) 
 //
 // Leaving jail also clears any member-level denies a hardened jail wrote
 // (syncMemberJailOverwrites), or the beach would be as locked as the nest.
+//
+// The row is claimed for the duration, the same claim releaseJail takes.
+// Strip-first means there is a moment where the member wears the new
+// marker and the row still names the old one, and the role edit's own
+// GUILD_MEMBER_UPDATE lands inside it: HandleMemberUpdate read that as a
+// mod swapping the roles by hand and announced the same move a second
+// time. A caller that finds the row claimed leaves it to whoever holds it.
 func (p *Plugin) transferJail(ctx context.Context, guildID, userID string, from JailRecord, newMarker string, currentRoles []string, releaseAt *time.Time) error {
+	key := jailKey(guildID, userID)
+	if !p.claim(key) {
+		return errReleaseInProgress
+	}
+	defer p.unclaim(key)
 	expected, _ := jailRoles(p.perms, guildID, newMarker, currentRoles)
 	if !sameRoleSet(expected, currentRoles) {
 		if _, err := p.stripToJailRoles(guildID, userID, expected); err != nil {
@@ -240,8 +252,13 @@ func (p *Plugin) detectManualTransfer(ctx context.Context, guildID string, rec J
 		return false
 	}
 	if err := p.transferJail(ctx, guildID, rec.UserID, rec, other, roles, rec.ReleaseAt); err != nil {
-		p.log.Error("roles: record a hand transfer", "guild", guildID, "user", rec.UserID, "err", err)
-		return true // Handled as far as the caller is concerned: not a release.
+		if !errors.Is(err, errReleaseInProgress) {
+			p.log.Error("roles: record a hand transfer", "guild", guildID, "user", rec.UserID, "err", err)
+		}
+		// Handled as far as the caller is concerned: not a release. A claim
+		// miss is a command transfer mid-flight, which voices the move
+		// itself.
+		return true
 	}
 	to := p.sentenceFor(guildID, other)
 	p.log.Warn("roles: member moved by hand", "guild", guildID, "user", rec.UserID, "to", to.name)

@@ -92,30 +92,32 @@ vacation.over_announce:
 
 vacation.from_jail:
   # warm
-  - "good news: you've been moved from jail to vacation in {guild}. your roles are still safe and come back {until}. the island is a lot nicer than the nest."
-  - "you're out of the nest and onto the island in {guild}. same deal, your roles are held as they were and return {until}, but the view is better."
-  - "your jail in {guild} has been turned into a vacation. nothing is lost, your roles come back {until}."
+  - "good news: you've been moved from jail to vacation in {guild}. swap the nest for a hammock, the sea is warm. your roles are still safe and come back {until}."
+  - "you're out of the nest and onto the island in {guild}. same deal, your roles are held as they were and return {until}, but there are palm trees now."
+  - "your jail in {guild} has been turned into a vacation. sand, sun, a coconut if you want one. nothing is lost, your roles come back {until}."
   # plain
   - "you've been moved from jail to vacation in {guild}. your roles are saved and you'll get them back {until}."
   - "a moderator in {guild} has moved you from jail to the island. your roles are stored exactly as they were and come back {until}."
   - "you're on vacation in {guild} now instead of in jail. this isn't permanent, your roles return {until}."
   # matter of fact
   - "a moderator has transferred you from jail to vacation in {guild}. nothing has been removed permanently, and your roles return {until}."
-  - "your jail in {guild} is now a vacation. your roles are held exactly as they were and come back {until}."
+  - "your jail in {guild} is now a beach. your roles are held exactly as they were and come back {until}."
 
 vacation.from_jail_announce:
   # calm
-  - "{members} has been let out of the nest and onto the beach. same timer, better view, back {until}"
-  - "good behaviour, or a generous mood: {members} is off to the island instead of the nest, until {until}"
-  - "{members} traded the nest for a hammock. still away until {until}, just somewhere with a breeze"
+  - "{members} has been let out of the nest and onto the beach. same timer, better view, warmer sand. back {until}"
+  - "good behaviour, or a generous mood: {members} is off to the bahamas instead of the nest, until {until}. the water is lovely"
+  - "{members} traded the nest for a hammock between two palm trees. still away until {until}, just somewhere with a sea breeze"
   # neutral
-  - "{members} has been transferred from jail to vacation. back {until}, and the sunscreen is on the house"
-  - "and that's {members} moved to the island. the sentence continues until {until}, the scenery does not"
-  - "{members} is out of jail and on the beach until {until}. it is still a timeout, it is just a warmer one"
+  - "{members} has been transferred from jail to the island. back {until}, and the sunscreen is on the house"
+  - "and that's {members} moved to the beach. the sentence continues until {until}, the scenery got a lot bluer"
+  - "{members} is out of the nest and on the sand until {until}. it is still a timeout, it just comes with a coconut"
   # witty
-  - "{members} got an upgrade: nest to bahamas, until {until}. the bigger bird occasionally has a soft spot"
+  - "{members} got an upgrade: nest to bahamas, until {until}. the bigger bird occasionally has a soft spot for palm trees"
   - "{members} has been paroled to the island until {until}. no early checkout, but the drinks have little umbrellas now"
-  - "from the nest to a sun lounger in one move. {members} is on vacation until {until}, and she expects a postcard"
+  - "from the nest to a sun lounger in one move. {members} is on the beach until {until}, and she expects a postcard with a flamingo on it"
+  - "{members} is off to the bahamas until {until}. conch fritters are at the bar, the reef is that way, the exit is not"
+  - "boarding call for {members}: one way to the island, back {until}. she packed flip-flops in with the sentence"
 
 vacation.to_jail:
   # warm
