@@ -443,7 +443,7 @@ func TestVacationRoleRoundTrip(t *testing.T) {
 }
 
 // GrantOverride and DenyOverride take roleID and userID together, with an
-// empty string meaning "leave this column alone" (the CASE WHEN $3 = ”
+// empty string meaning "leave this column alone" (the CASE WHEN $3 = ''
 // SQL). Granting a role, then separately granting a user for the same
 // action, has to land both without either overwriting the other -- the one
 // case in that SQL that has never run against real Postgres before.
