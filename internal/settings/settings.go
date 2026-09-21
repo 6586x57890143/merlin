@@ -51,6 +51,17 @@ type GuildSettings struct {
 	// announcing a jail in all of them is noise. Empty means announcements
 	// stay in the invoking channel only.
 	JailAnnounceChannelID string
+	// VacationRoleID is the vacation script's marker role
+	// (internal/plugins/roles/script_vacation.go): what a member on vacation
+	// holds in place of the jail marker. Empty means none is configured.
+	// merlin never creates it and never touches the channel permissions it
+	// carries, which is what makes it different from JailMarkerRoleID.
+	VacationRoleID string
+	// VacationAllowedChannelIDs is which channels a member on vacation is
+	// additionally allowed into: merlin writes an allow overwrite for
+	// VacationRoleID on each and nothing more, never a deny anywhere else,
+	// which is the opposite of JailAllowedChannelIDs' deny-by-default.
+	VacationAllowedChannelIDs []string
 	// ArchiveViewerRoleIDs is which extra roles can see rotation's archive
 	// channels, on top of ModRoleIDs and anyone holding Discord's own
 	// Administrator bit. Guild-scoped rather than per rotating channel
@@ -220,10 +231,10 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-	var marker, announce sql.NullString
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins); err {
+	var marker, announce, vacation sql.NullString
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs); err {
 	case nil, pgx.ErrNoRows:
 		if marker.Valid {
 			v := marker.String
@@ -232,6 +243,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 			gc.settings.JailMarkerRoleID = nil
 		}
 		gc.settings.JailAnnounceChannelID = announce.String
+		gc.settings.VacationRoleID = vacation.String
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
 	}
@@ -755,6 +767,69 @@ func (s *Store) SetJailAnnounceChannel(ctx context.Context, guildID, channelID s
 		ON CONFLICT (guild_id) DO UPDATE SET jail_announce_channel_id = NULLIF($2, ''), updated_at = now()`,
 		guildID, channelID); err != nil {
 		return fmt.Errorf("settings: set jail announce channel: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// VacationAllowedChannelIDs is the vacation script's additive allowlist.
+func (s *Store) VacationAllowedChannelIDs(guildID string) []string {
+	return s.guild(guildID).settings.VacationAllowedChannelIDs
+}
+
+// AddVacationAllowedChannel and RemoveVacationAllowedChannel are the jail
+// allowlist's shape again, for the island.
+func (s *Store) AddVacationAllowedChannel(ctx context.Context, guildID, channelID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, vacation_allowed_channel_ids, updated_at) VALUES ($1, ARRAY[$2], now())
+		ON CONFLICT (guild_id) DO UPDATE SET
+			vacation_allowed_channel_ids = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.vacation_allowed_channel_ids || $2) AS r),
+			updated_at = now()`,
+		guildID, channelID); err != nil {
+		return fmt.Errorf("settings: add vacation allowed channel: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+func (s *Store) RemoveVacationAllowedChannel(ctx context.Context, guildID, channelID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_guild SET vacation_allowed_channel_ids = array_remove(vacation_allowed_channel_ids, $2), updated_at = now()
+		WHERE guild_id = $1`, guildID, channelID); err != nil {
+		return fmt.Errorf("settings: remove vacation allowed channel: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// VacationRoleID returns the guild's vacation marker role, or "" when none
+// is configured.
+func (s *Store) VacationRoleID(guildID string) string {
+	return s.guild(guildID).settings.VacationRoleID
+}
+
+// SetVacationRole sets (or, with an empty roleID, clears) the vacation
+// script's marker role. One setter like SetJailAnnounceChannel: there is
+// nothing to re-sync on clear, since merlin never writes this role's
+// channel permissions.
+func (s *Store) SetVacationRole(ctx context.Context, guildID, roleID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, vacation_role_id, updated_at) VALUES ($1, NULLIF($2, ''), now())
+		ON CONFLICT (guild_id) DO UPDATE SET vacation_role_id = NULLIF($2, ''), updated_at = now()`,
+		guildID, roleID); err != nil {
+		return fmt.Errorf("settings: set vacation role: %w", err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		s.invalidate(guildID)

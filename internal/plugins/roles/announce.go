@@ -7,8 +7,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
-
-	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // Telling the channel what just happened, not just the member concerned.
@@ -67,7 +65,7 @@ func truncateReason(s string) string {
 // matching notifyJailed's own reasoning: an optional placeholder would make
 // every catalog line carrying it fall back on exactly the occasions it is
 // missing.
-func (p *Plugin) announceJail(ctx context.Context, guildID, invokingChannelID string, jailedIDs []string, duration time.Duration, reason string) {
+func (p *Plugin) announceJail(ctx context.Context, guildID, invokingChannelID string, jailedIDs []string, duration time.Duration, reason string, sn sentence) {
 	if len(jailedIDs) == 0 {
 		return
 	}
@@ -75,7 +73,7 @@ func (p *Plugin) announceJail(ctx context.Context, guildID, invokingChannelID st
 		"members": mentionList(jailedIDs),
 		"until":   "**" + relativeTimestamp(p.now().Add(duration)) + "**",
 	}
-	body := p.voice.Line(ctx, guildID, voice.KeyJailAnnounce, vars)
+	body := p.voice.Line(ctx, guildID, sn.announceKey, vars)
 	if body == "" {
 		// Nothing renderable to say. Saying nothing beats posting a message
 		// with a visible placeholder in it.
@@ -98,13 +96,33 @@ func (p *Plugin) announceJail(ctx context.Context, guildID, invokingChannelID st
 // destinations as announceJail: the channel the command was run in, plus
 // the guild's configured announcement channel, since someone waiting there
 // benefits from knowing people do get let out.
-func (p *Plugin) announceRelease(ctx context.Context, guildID, invokingChannelID string, releasedIDs []string) {
+func (p *Plugin) announceRelease(ctx context.Context, guildID, invokingChannelID string, releasedIDs []string, sn sentence) {
 	if len(releasedIDs) == 0 {
 		return
 	}
-	body := p.voice.Line(ctx, guildID, voice.KeyReleaseAnnounce, map[string]string{"members": mentionList(releasedIDs)})
+	body := p.voice.Line(ctx, guildID, sn.overAnnKey, map[string]string{"members": mentionList(releasedIDs)})
 	if body == "" {
 		p.log.Error("roles: no line for release announcement", "guild", guildID)
+		return
+	}
+	p.broadcast(guildID, invokingChannelID, body)
+}
+
+// announceMoved posts that movedIDs were transferred into sentence to
+// (script_vacation.go): paroled to the island, or recalled to the nest.
+// invokingChannelID may be empty when the move was detected rather than
+// commanded (a mod swapping markers by hand), in which case only the
+// configured announcement channel hears it.
+func (p *Plugin) announceMoved(ctx context.Context, guildID, invokingChannelID string, movedIDs []string, releaseAt *time.Time, to sentence) {
+	if len(movedIDs) == 0 {
+		return
+	}
+	body := p.voice.Line(ctx, guildID, to.intoAnnKey, map[string]string{
+		"members": mentionList(movedIDs),
+		"until":   "**" + untilText(releaseAt) + "**",
+	})
+	if body == "" {
+		p.log.Error("roles: no line for transfer announcement", "guild", guildID)
 		return
 	}
 	p.broadcast(guildID, invokingChannelID, body)
@@ -139,7 +157,10 @@ func (p *Plugin) broadcast(guildID string, invokingChannelID, content string) {
 // first place, and a channel deleted afterwards just makes broadcast log a
 // failed send.
 func (p *Plugin) announceDestinations(guildID, invokingChannelID string) []string {
-	out := []string{invokingChannelID}
+	var out []string
+	if invokingChannelID != "" {
+		out = append(out, invokingChannelID)
+	}
 	if id := p.jailChannelConfig.JailAnnounceChannelID(guildID); id != "" && id != invokingChannelID {
 		out = append(out, id)
 	}

@@ -39,6 +39,35 @@ func (p *Plugin) publishResentenced(ctx context.Context, guildID, userID, actor,
 	})
 }
 
+// publishVacation reports a fresh vacation. A note, not a jail: it is the
+// lighter sentence and must not score on the escalation ladder, but it
+// belongs on the sheet, so the next moderator can see the beach was tried.
+func (p *Plugin) publishVacation(ctx context.Context, guildID, userID, actor, reason string, duration time.Duration) {
+	note := "sent on vacation for " + core.FormatDuration(duration)
+	if reason != "" {
+		note += ": " + reason
+	}
+	p.publish(ctx, guildID, core.ModerationActionPayload{
+		UserID: userID, Kind: "note", ActorID: actor, Reason: note, Source: p.Name(),
+	})
+}
+
+// publishTransferred reports a move between the nest and the island, in
+// either direction, as a note: the offence already scored when the first
+// sentence was handed out.
+func (p *Plugin) publishTransferred(ctx context.Context, guildID, userID, actor, reason string, from, to sentence, releaseAt *time.Time) {
+	note := "moved from " + from.name + " to " + to.name
+	if releaseAt != nil {
+		note += " until " + releaseAt.UTC().Format(time.RFC3339)
+	}
+	if reason != "" {
+		note += ": " + reason
+	}
+	p.publish(ctx, guildID, core.ModerationActionPayload{
+		UserID: userID, Kind: "note", ActorID: actor, Reason: note, Source: p.Name(),
+	})
+}
+
 // publishReleased reports a release, by a mod or by the clock.
 func (p *Plugin) publishReleased(ctx context.Context, guildID, userID, actor string) {
 	reason := "released early"

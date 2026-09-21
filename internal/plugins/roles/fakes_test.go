@@ -456,6 +456,9 @@ type fakeStore struct {
 	// setJailReleaseErr, when set, fails every SetJailRelease, for testing
 	// what a re-jail reports when the sentence can't be moved.
 	setJailReleaseErr error
+	// transferJailErr, when set, fails every TransferJail, for testing what
+	// a transfer leaves behind when the row cannot be moved.
+	transferJailErr error
 	// The read-side errors, one per query, for the paths that must fail
 	// closed (a timer or sweep that cannot read its row does nothing).
 	getJailErr     error
@@ -551,6 +554,23 @@ func (f *fakeStore) SetJailRelease(ctx context.Context, guildID, userID string, 
 	}
 	// Mirrors the real UPDATE: release_at only, never the snapshot.
 	rec.ReleaseAt = releaseAt
+	f.jails[key] = rec
+	return nil
+}
+
+func (f *fakeStore) TransferJail(ctx context.Context, guildID, userID, jailRoleID string, releaseAt *time.Time) error {
+	if f.transferJailErr != nil {
+		return f.transferJailErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := jailKey(guildID, userID)
+	rec, ok := f.jails[key]
+	if !ok {
+		return fmt.Errorf("fake store: transfer jail for %s: %w", userID, ErrNotJailed)
+	}
+	// Mirrors the real UPDATE: marker and release_at only, never the snapshot.
+	rec.JailRoleID, rec.ReleaseAt = jailRoleID, releaseAt
 	f.jails[key] = rec
 	return nil
 }
@@ -663,14 +683,16 @@ func (f *fakeStore) ListGrants(ctx context.Context, guildID, userID string) ([]G
 // --- fakeSettings: in-memory JailChannelConfig ---
 
 type fakeSettings struct {
-	mu         sync.Mutex
-	allowed    map[string][]string // guildID -> channel IDs
-	markerRole map[string]string   // guildID -> configured jail marker role ID
-	announce   map[string]string   // guildID -> configured jail announcement channel ID
+	mu              sync.Mutex
+	allowed         map[string][]string // guildID -> channel IDs
+	markerRole      map[string]string   // guildID -> configured jail marker role ID
+	announce        map[string]string   // guildID -> configured jail announcement channel ID
+	vacationRole    map[string]string   // guildID -> configured vacation marker role ID
+	vacationAllowed map[string][]string // guildID -> vacation allowlist
 }
 
 func newFakeSettings() *fakeSettings {
-	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string)}
+	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string), vacationRole: make(map[string]string), vacationAllowed: make(map[string][]string)}
 }
 
 func (f *fakeSettings) JailAnnounceChannelID(guildID string) string {
@@ -739,6 +761,45 @@ func (f *fakeSettings) ClearJailMarkerRole(ctx context.Context, guildID string) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.markerRole, guildID)
+	return nil
+}
+
+func (f *fakeSettings) VacationAllowedChannelIDs(guildID string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.vacationAllowed[guildID]...)
+}
+
+func (f *fakeSettings) AddVacationAllowedChannel(ctx context.Context, guildID, channelID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Contains(f.vacationAllowed[guildID], channelID) {
+		f.vacationAllowed[guildID] = append(f.vacationAllowed[guildID], channelID)
+	}
+	return nil
+}
+
+func (f *fakeSettings) RemoveVacationAllowedChannel(ctx context.Context, guildID, channelID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vacationAllowed[guildID] = slices.DeleteFunc(f.vacationAllowed[guildID], func(id string) bool { return id == channelID })
+	return nil
+}
+
+func (f *fakeSettings) VacationRoleID(guildID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.vacationRole[guildID]
+}
+
+func (f *fakeSettings) SetVacationRole(ctx context.Context, guildID, roleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if roleID == "" {
+		delete(f.vacationRole, guildID)
+		return nil
+	}
+	f.vacationRole[guildID] = roleID
 	return nil
 }
 

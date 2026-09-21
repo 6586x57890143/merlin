@@ -38,6 +38,20 @@ big the server is. They get their roles back automatically when the timer runs
 out, or when a mod runs `/roles release`. Leaving and rejoining doesn't shake it
 off. There's a bulk version and a `/roles jail-role` for when a raid shows up.
 
+**Vacation.** The same thing, somewhere nicer. `/roles vacation @someone 2d` is
+jail with a different marker role, one the server already has (the Melting
+Pot's island; elsewhere `/roles configure vacation-role`), hidden from every
+channel except its own allowlist (`/roles configure vacation-allow-channel`;
+the Melting Pot's beach by default). merlin never creates that role, and when
+it syncs a channel it moves only the visibility bits and leaves the rest of
+the overwrite as the server set it, so a beach built by hand keeps working.
+On both the jail room and the beach, threads, polls, invites and the like are
+off; talking and voice are not. Moving
+someone between the two is `/roles jail` or `/roles vacation` on them again,
+which takes the new duration; a mod swapping the two roles by hand is noticed
+and the sentence follows the role. It is a script, so it is off until
+`/roles scripts set script:vacation enabled:true`.
+
 **Timed role grants.** `/roles grant @someone @role 24h`, and it comes off by
 itself.
 

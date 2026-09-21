@@ -3,7 +3,6 @@ package roles
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sync"
 
 	"github.com/bwmarrin/discordgo"
@@ -71,6 +70,16 @@ type JailChannelConfig interface {
 	JailAnnounceChannelID(guildID string) string
 	SetJailAnnounceChannel(ctx context.Context, guildID, channelID string) error
 	ClearJailMarkerRole(ctx context.Context, guildID string) error
+	// The vacation script's marker role (script_vacation.go). Empty means
+	// none; an empty roleID passed to the setter clears it. Unlike the jail
+	// marker, merlin never creates this role and never syncs its overwrites.
+	VacationRoleID(guildID string) string
+	SetVacationRole(ctx context.Context, guildID, roleID string) error
+	// The island's additive allowlist: channels merlin writes an allow
+	// overwrite for the vacation role on. Never a deny anywhere.
+	VacationAllowedChannelIDs(guildID string) []string
+	AddVacationAllowedChannel(ctx context.Context, guildID, channelID string) error
+	RemoveVacationAllowedChannel(ctx context.Context, guildID, channelID string) error
 }
 
 // jailManagedChannelTypes are the channel kinds jail's deny-by-default
@@ -111,28 +120,106 @@ func jailDenyFor(t discordgo.ChannelType) int64 {
 	return deny
 }
 
-// jailOverwriteFor is the single source of truth for what the Jailed role
-// must carry on one channel: the (allow, deny) pair for a channel of type t,
-// given whether it is on the guild's visibility allowlist. Both the
-// single-channel path and the full resync compute it here, so the two can no
-// longer drift apart the way two copies of the same switch eventually do.
+// restrictedBits is what a marker role is denied on the channels it *can*
+// see: the ways out of a room that is supposed to be the whole server for
+// a while. Threads are a second room inside the first, a poll or an event
+// is a broadcast, an invite or an external app reaches past the guild.
+// Plain talk stays: send, react, attach, and in a voice room connect and
+// speak, since the beach and the appeal room are both meant to be talked
+// in. Denied on both the jail marker and the island's role, and merged
+// onto an allowlisted channel's overwrite without touching any other bit.
+const restrictedBits = int64(discordgo.PermissionCreatePublicThreads |
+	discordgo.PermissionCreatePrivateThreads |
+	discordgo.PermissionSendMessagesInThreads |
+	discordgo.PermissionSendPolls |
+	discordgo.PermissionCreateEvents |
+	discordgo.PermissionCreateInstantInvite |
+	discordgo.PermissionUseExternalApps |
+	discordgo.PermissionUseEmbeddedActivities |
+	discordgo.PermissionMentionEveryone)
+
+// jailOverwriteFor is the single source of truth for what a marker role
+// must carry on a channel with no overwrite of its own yet: the (allow,
+// deny) pair for a channel of type t, given whether it is on the role's
+// visibility allowlist. Both the single-channel path and the full resync
+// compute it here (through desiredOverwrite), so the two can no longer
+// drift apart the way two copies of the same switch eventually do.
 //
 // Allowlisted channels get an explicit view + send (or view + connect, in
-// voice) allow, so a jailed member can read and type in the appeal room; a
-// category gets voice's deny bits, the superset any child type could need,
-// since a category overwrite only ever matters as the template a
-// newly-created channel inherits (see jailManagedChannelType).
+// voice) allow, so a jailed member can read and type in the appeal room,
+// with restrictedBits denied; a category gets voice's deny bits, the
+// superset any child type could need, since a category overwrite only ever
+// matters as the template a newly-created channel inherits (see
+// jailManagedChannelType).
 func jailOverwriteFor(t discordgo.ChannelType, allowed bool) (allow, deny int64) {
 	switch {
 	case t == discordgo.ChannelTypeGuildCategory:
 		return 0, jailDenyFor(discordgo.ChannelTypeGuildVoice)
 	case allowed && (t == discordgo.ChannelTypeGuildVoice || t == discordgo.ChannelTypeGuildStageVoice):
-		return int64(discordgo.PermissionViewChannel | discordgo.PermissionVoiceConnect), 0
+		return int64(discordgo.PermissionViewChannel | discordgo.PermissionVoiceConnect), restrictedBits
 	case allowed:
-		return int64(discordgo.PermissionViewChannel | discordgo.PermissionSendMessages), 0
+		return int64(discordgo.PermissionViewChannel | discordgo.PermissionSendMessages), restrictedBits
 	default:
 		return 0, jailDenyFor(t)
 	}
+}
+
+// desiredOverwrite is what roleID's overwrite on ch should be, given
+// whether ch is on that role's allowlist, and whether a write is needed to
+// get there. A channel with no overwrite for the role gets exactly
+// jailOverwriteFor's pair. A channel that already has one is *merged*, not
+// replaced: only the visibility bits (jailDenyFor: View, plus Connect on
+// voice) are moved between allow and deny, restrictedBits are denied where
+// the channel is allowlisted, and every other bit the guild set on that
+// overwrite stays as it was. Two reasons, both learned from
+// the island. A channel the guild built by hand (the Melting Pot's beach,
+// with its own idea of who may speak, attach or react there) must keep
+// working the way it was set up, and a marker role's job is only to decide
+// whether the member can see it. And every permission write lands in the
+// guild's own Discord audit log, so rewriting an overwrite to a value that
+// differs only in bits this plugin has no opinion about buries a
+// moderator's real entries under one line per channel per sync.
+func desiredOverwrite(ch *discordgo.Channel, roleID string, allowed bool) (allow, deny int64, needed bool) {
+	wantAllow, wantDeny := jailOverwriteFor(ch.Type, allowed)
+	existing := findOverwrite(ch, roleID, discordgo.PermissionOverwriteTypeRole)
+	if existing == nil {
+		return wantAllow, wantDeny, true
+	}
+	if allowed {
+		// The room they may use: what jail has always granted there (view
+		// and send, or view and connect) goes on, restrictedBits go off,
+		// and the rest of the overwrite is the guild's.
+		allow, deny = existing.Allow|wantAllow&^wantDeny, existing.Deny&^wantAllow|wantDeny
+	} else {
+		// A room they may not see: only the visibility bits move.
+		allow, deny = existing.Allow&^wantDeny, existing.Deny|wantDeny
+	}
+	return allow, deny, allow != existing.Allow || deny != existing.Deny
+}
+
+// visibilityMarker is one role whose channel visibility this plugin
+// manages deny-by-default against an allowlist: the jail marker, or the
+// vacation script's island role. Same sync, different list.
+type visibilityMarker struct {
+	name    string
+	roleID  string
+	allowed map[string]bool
+}
+
+func (p *Plugin) jailMarker(guildID, roleID string) visibilityMarker {
+	return visibilityMarker{name: "jail", roleID: roleID, allowed: idSet(p.jailChannelConfig.JailAllowedChannelIDs(guildID))}
+}
+
+func (p *Plugin) vacationMarker(guildID, roleID string) visibilityMarker {
+	return visibilityMarker{name: "vacation", roleID: roleID, allowed: idSet(p.vacationAllowlist(guildID))}
+}
+
+func idSet(ids []string) map[string]bool {
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out
 }
 
 // overwriteMatches reports whether ch already carries exactly the overwrite
@@ -171,6 +258,11 @@ func findOverwrite(ch *discordgo.Channel, targetID string, kind discordgo.Permis
 // SendMessages permission while denying AttachFiles and EmbedLinks so a
 // jailed member can read history and type but cannot post images or embeds.
 func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string) error {
+	return p.syncChannelVisibility(guildID, p.jailMarker(guildID, jailRoleID), channelID)
+}
+
+// syncChannelVisibility is syncJailChannelOverwrite for either marker.
+func (p *Plugin) syncChannelVisibility(guildID string, m visibilityMarker, channelID string) error {
 	ch, err := p.ops(guildID).Channel(channelID)
 	if err != nil {
 		return fmt.Errorf("roles: fetch channel %s: %w", channelID, err)
@@ -178,14 +270,12 @@ func (p *Plugin) syncJailChannelOverwrite(guildID, jailRoleID, channelID string)
 	if !jailManagedChannelType(ch.Type) {
 		return nil
 	}
-
-	allowed := slices.Contains(p.jailChannelConfig.JailAllowedChannelIDs(guildID), channelID)
-	allowBits, denyBits := jailOverwriteFor(ch.Type, allowed)
-	if overwriteMatches(ch, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits) {
+	allowBits, denyBits, needed := desiredOverwrite(ch, m.roleID, m.allowed[channelID])
+	if !needed {
 		return nil
 	}
-	if err := p.ops(guildID).ChannelPermissionSet(channelID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits); err != nil {
-		return fmt.Errorf("roles: set jail overwrite on %s: %w", channelID, err)
+	if err := p.ops(guildID).ChannelPermissionSet(channelID, m.roleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits); err != nil {
+		return fmt.Errorf("roles: set %s overwrite on %s: %w", m.name, channelID, err)
 	}
 	return nil
 }
@@ -317,13 +407,14 @@ func (p *Plugin) clearMemberJailOverwrites(guildID, userID string) error {
 // One channel's failure is logged and doesn't abort the rest, matching
 // rotation.sweep's policy.
 func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error {
+	return p.syncAllVisibility(guildID, p.jailMarker(guildID, jailRoleID))
+}
+
+// syncAllVisibility is syncAllJailChannelOverwrites for either marker.
+func (p *Plugin) syncAllVisibility(guildID string, m visibilityMarker) error {
 	channels, err := p.ops(guildID).GuildChannels(guildID)
 	if err != nil {
 		return fmt.Errorf("roles: list guild channels: %w", err)
-	}
-	allowed := make(map[string]bool)
-	for _, id := range p.jailChannelConfig.JailAllowedChannelIDs(guildID) {
-		allowed[id] = true
 	}
 
 	var targets []*discordgo.Channel
@@ -340,12 +431,12 @@ func (p *Plugin) syncAllJailChannelOverwrites(guildID, jailRoleID string) error 
 		// under them with no overwrites of its own, so a channel created
 		// after this sync starts denied rather than visible until someone
 		// re-runs sync-channels.
-		allowBits, denyBits := jailOverwriteFor(ch.Type, allowed[ch.ID])
-		if overwriteMatches(ch, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits) {
+		allowBits, denyBits, needed := desiredOverwrite(ch, m.roleID, m.allowed[ch.ID])
+		if !needed {
 			return nil
 		}
-		return p.ops(guildID).ChannelPermissionSet(ch.ID, jailRoleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits)
+		return p.ops(guildID).ChannelPermissionSet(ch.ID, m.roleID, discordgo.PermissionOverwriteTypeRole, allowBits, denyBits)
 	}, func(ch *discordgo.Channel, err error) {
-		p.log.Error("roles: sync jail overwrite failed", "guild", guildID, "channel", ch.ID, "err", err)
+		p.log.Error("roles: sync overwrite failed", "guild", guildID, "marker", m.name, "channel", ch.ID, "err", err)
 	})
 }

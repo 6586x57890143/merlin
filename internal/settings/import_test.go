@@ -123,4 +123,3 @@ guilds:
 // written reliably. The no-transaction, no-rollback behavior itself is
 // already visible in ImportFromLegacyYAML's own doc comment and return
 // signature (importedGuilds is returned alongside a non-nil err).
-

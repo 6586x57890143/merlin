@@ -56,13 +56,14 @@ type jailTarget struct {
 type bulkJailResult struct {
 	jailed       []string
 	redated      []string // already jailed; sentence moved to the one just given
+	transferred  []string // already serving the *other* sentence; moved across and re-dated
 	protected    []string // CanModerate refused, target outranks the actor
 	failed       []string // "userID: reason"
 	unmanageable int      // members who kept at least one role the bot can't touch
 }
 
 func (r bulkJailResult) attempted() int {
-	return len(r.jailed) + len(r.redated) + len(r.protected) + len(r.failed)
+	return len(r.jailed) + len(r.redated) + len(r.transferred) + len(r.protected) + len(r.failed)
 }
 
 // merge folds another result into this one, so the outcomes collected before
@@ -71,6 +72,7 @@ func (r bulkJailResult) attempted() int {
 func (r bulkJailResult) merge(other bulkJailResult) bulkJailResult {
 	r.jailed = append(r.jailed, other.jailed...)
 	r.redated = append(r.redated, other.redated...)
+	r.transferred = append(r.transferred, other.transferred...)
 	r.protected = append(r.protected, other.protected...)
 	r.failed = append(r.failed, other.failed...)
 	r.unmanageable += other.unmanageable
@@ -98,16 +100,34 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 		unmanageable, err := p.applyJail(ctx, guildID, t.userID, jailRoleID, t.roles, duration, actorID, reason)
 		switch {
 		case errors.Is(err, ErrAlreadyJailed):
-			// Already serving a sentence, so re-jailing moves the end of it
-			// to the one just given (shortening it too, if that is what the
-			// mod asked for: how long someone is jailed is their call). The
+			releaseAt := p.now().Add(duration)
+			// Already serving a sentence. If it is the *other* one (in jail
+			// and being sent on vacation, or the reverse) this is a transfer:
+			// the marker swaps, the snapshot stays, and the duration just
+			// given is the new sentence, so a move always frees them from
+			// where they were (script_vacation.go). Compared by sentence,
+			// not marker ID, so a jail marker the guild reconfigured
+			// mid-sentence re-dates rather than "moves". An unreadable row
+			// is treated as the same sentence too: the safe wrong answer.
+			if existing, ok, gerr := p.store.GetJail(ctx, guildID, t.userID); gerr == nil && ok &&
+				p.sentenceFor(guildID, existing.JailRoleID) != p.sentenceFor(guildID, jailRoleID) {
+				if terr := p.transferJail(ctx, guildID, t.userID, existing, jailRoleID, t.roles, &releaseAt); terr != nil {
+					res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, terr))
+					continue
+				}
+				p.publishTransferred(ctx, guildID, t.userID, actorID, reason, p.sentenceFor(guildID, existing.JailRoleID), p.sentenceFor(guildID, jailRoleID), &releaseAt)
+				res.transferred = append(res.transferred, t.userID)
+				continue
+			}
+			// Same sentence, so re-jailing moves the end of it to the one
+			// just given (shortening it too, if that is what the mod asked
+			// for: how long someone is jailed is their call). The
 			// alternative a refusal left was releasing first and jailing
 			// again, which hands every stripped role back in between.
 			//
 			// Only release_at moves. The member is already stripped, and the
 			// snapshot on record is the only copy of what they held before
 			// that: re-recording it now would capture the marker role alone.
-			releaseAt := p.now().Add(duration)
 			if serr := p.store.SetJailRelease(ctx, guildID, t.userID, &releaseAt); serr != nil {
 				res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, serr))
 				continue
@@ -333,7 +353,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 	// overwrites on its way to refusing.
 	allowed, res := p.partitionByRank(i.GuildID, i.Member, targets)
 	if len(allowed) == 0 {
-		if ferr := core.FollowUpOK(s, i, "Nobody was jailed", summarizeBulkJail(res, duration)); ferr != nil {
+		if ferr := core.FollowUpOK(s, i, "Nobody was jailed", summarizeBulkJail(res, duration, jailSentence)); ferr != nil {
 			p.log.Error("roles: jail-role follow-up failed", "guild", i.GuildID, "err", ferr)
 		}
 		return
@@ -346,11 +366,12 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 	}
 
 	res = res.merge(p.jailMany(ctx, i.GuildID, jailRoleID, allowed, duration, actorID(i), reason))
-	p.announceJail(ctx, i.GuildID, i.ChannelID, res.jailed, duration, reason)
-	p.recordBulkAudit(ctx, i.GuildID, actorID(i), fmt.Sprintf("role=%s", roleID), duration, reason, res)
+	p.announceJail(ctx, i.GuildID, i.ChannelID, res.jailed, duration, reason, jailSentence)
+	p.announceMoved(ctx, i.GuildID, i.ChannelID, res.transferred, ptrTime(p.now().Add(duration)), jailSentence)
+	p.recordBulkAudit(ctx, i.GuildID, actorID(i), fmt.Sprintf("role=%s", roleID), duration, reason, res, jailSentence)
 
 	title := fmt.Sprintf("Jailed %d member(s) from role", len(res.jailed))
-	if ferr := core.FollowUpOK(s, i, title, summarizeBulkJail(res, duration)); ferr != nil {
+	if ferr := core.FollowUpOK(s, i, title, summarizeBulkJail(res, duration, jailSentence)); ferr != nil {
 		p.log.Error("roles: jail-role follow-up failed", "guild", i.GuildID, "err", ferr)
 	}
 }
@@ -381,7 +402,7 @@ func (p *Plugin) excludeSelfAndBot(targets []jailTarget, actorID string, s *disc
 // of the guild's hourly budget. One entry per command matches what actually
 // happened: a mod ran one action. Per-member state stays queryable in
 // role_jails via /roles list.
-func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope string, duration time.Duration, reason string, res bulkJailResult) {
+func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope string, duration time.Duration, reason string, res bulkJailResult, sn sentence) {
 	// Mentions rather than bare snowflakes: this is the single record of who
 	// a bulk jail hit, and it is read by somebody working out whether the
 	// right people were caught. A list of raw IDs makes that a lookup
@@ -391,11 +412,11 @@ func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope stri
 	for _, id := range res.jailed {
 		mentions = append(mentions, core.MentionUser(id))
 	}
-	detail := fmt.Sprintf("%s duration=%s reason=%q jailed=%d already_jailed=%d protected=%d failed=%d users=%s",
-		scope, core.FormatDuration(duration), reason,
-		len(res.jailed), len(res.redated), len(res.protected), len(res.failed),
+	detail := fmt.Sprintf("%s duration=%s reason=%q %s=%d already=%d moved=%d protected=%d failed=%d users=%s",
+		scope, core.FormatDuration(duration), reason, sn.name,
+		len(res.jailed), len(res.redated), len(res.transferred), len(res.protected), len(res.failed),
 		strings.Join(mentions, " "))
-	if err := p.audit.Record(ctx, guildID, actor, "roles.jail_bulk", "", detail); err != nil {
+	if err := p.audit.Record(ctx, guildID, actor, sn.auditBulk, "", detail); err != nil {
 		p.log.Error("roles: audit bulk jail failed", "guild", guildID, "err", err)
 	}
 }
@@ -403,9 +424,9 @@ func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope stri
 // summarizeBulkJail renders the outcome. Every non-empty category is shown,
 // including the ones a mod would rather not read: silently omitting the people
 // who were not jailed is how somebody ends up believing a raid was contained.
-func summarizeBulkJail(res bulkJailResult, duration time.Duration) string {
+func summarizeBulkJail(res bulkJailResult, duration time.Duration, sn sentence) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**Jailed %d** of %d considered, for %s.\n", len(res.jailed), res.attempted(), core.FormatDuration(duration))
+	fmt.Fprintf(&b, "**%s %d** of %d considered, for %s.\n", capitalize(sn.verb), len(res.jailed), res.attempted(), core.FormatDuration(duration))
 	if len(res.jailed) > 0 {
 		fmt.Fprintf(&b, "\n%s\n", mentionList(res.jailed))
 	}
@@ -413,7 +434,10 @@ func summarizeBulkJail(res bulkJailResult, duration time.Duration) string {
 		fmt.Fprintf(&b, "\n⚠️ %d of them kept at least one role merlin can't strip (positioned at/above her own top role).\n", res.unmanageable)
 	}
 	if len(res.redated) > 0 {
-		fmt.Fprintf(&b, "\n**Already jailed, sentence moved to this one (%d):** %s\n", len(res.redated), mentionList(res.redated))
+		fmt.Fprintf(&b, "\n**Already %s, sentence moved to this one (%d):** %s\n", sn.verb, len(res.redated), mentionList(res.redated))
+	}
+	if len(res.transferred) > 0 {
+		fmt.Fprintf(&b, "\n**Moved to %s from the other sentence (%d):** %s\n", sn.name, len(res.transferred), mentionList(res.transferred))
 	}
 	if len(res.protected) > 0 {
 		fmt.Fprintf(&b, "\n**Skipped, outranks you (%d):** %s\n", len(res.protected), mentionList(res.protected))
