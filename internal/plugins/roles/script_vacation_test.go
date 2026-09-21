@@ -10,6 +10,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // The vacation script: a jail row whose marker is the island's role. These
@@ -363,6 +364,15 @@ func TestVacationEvasionIsReappliedWithoutHardening(t *testing.T) {
 // the announcement and the audit detail say where they came back from.
 func TestReleaseFromVacationSaysSo(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
+	// The real catalog with a fixed pick, so the assertion below is about
+	// which key was used and not about which of its lines the dice chose:
+	// the first vacation.over line names the vacation, and no
+	// moderation.release line does.
+	sp, err := voice.New(testLogger(), voice.WithRand(func(int) int { return 0 }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.voice = sp
 	ops.setMember("g1", "u1", []string{island})
 	end := fixedNow.Add(time.Hour)
 	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
@@ -380,9 +390,7 @@ func TestReleaseFromVacationSaysSo(t *testing.T) {
 	if len(audit.records) != 1 || !strings.Contains(audit.records[0].newValue, "from=vacation") {
 		t.Fatalf("audit: %+v", audit.records)
 	}
-	// Every vacation.over line mentions the trip one way or another; no
-	// moderation.release line does.
-	if dm := sentTo(ops, "dm:u1"); len(dm) != 1 || !strings.Contains(dm[0], "vacation") && !strings.Contains(dm[0], "island") && !strings.Contains(dm[0], "trip") {
+	if dm := sentTo(ops, "dm:u1"); len(dm) != 1 || !strings.Contains(dm[0], "your vacation in The Melting Pot is over") {
 		t.Fatalf("expected the vacation-over DM, got %v", dm)
 	}
 	if !rt.said("released from vacation") {
