@@ -89,7 +89,7 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 		return err
 	}
 
-	_, err = p.applyJail(ctx, guildID, userID, jailRoleID, member.Roles, duration, core.ActorSystem, reason)
+	_, err = p.applyJail(ctx, guildID, jailRoleID, jailTarget{userID: userID, roles: member.Roles}, duration, core.ActorSystem, reason)
 	if !errors.Is(err, ErrAlreadyJailed) {
 		return err
 	}
@@ -121,7 +121,7 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 		// stricter sentence, so the trip ends and the nest takes over, for
 		// the later of the two ends. Compared by sentence, not marker ID: a
 		// jail marker the guild has since reconfigured is still a jail.
-		if err := p.transferJail(ctx, guildID, userID, rec, jailRoleID, member.Roles, &releaseAt); err != nil {
+		if err := p.transferJail(ctx, guildID, jailTarget{userID: userID, roles: member.Roles}, rec, jailRoleID, &releaseAt); err != nil {
 			return err
 		}
 		to := p.sentenceFor(guildID, jailRoleID)

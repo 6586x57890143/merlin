@@ -57,15 +57,13 @@ func TestConcurrentJailDoesNotOverwriteRoleSnapshot(t *testing.T) {
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	// First jail wins and records the member's real roles.
-	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role",
-		[]string{"role-a", "role-b"}, time.Hour, "mod1", "first"); err != nil {
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a", "role-b"}}, time.Hour, "mod1", "first"); err != nil {
 		t.Fatalf("first jail: %v", err)
 	}
 
 	// Second jail arrives after the first stripped them, so all it can see
 	// is the marker role.
-	_, err := p.applyJail(context.Background(), "g1", "u1", "jail-role",
-		[]string{"jail-role"}, time.Hour, "mod2", "second")
+	_, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"jail-role"}}, time.Hour, "mod2", "second")
 	if !errors.Is(err, ErrAlreadyJailed) {
 		t.Fatalf("second jail returned %v, want ErrAlreadyJailed", err)
 	}

@@ -48,7 +48,7 @@ func TestJailArmsReleaseAtDueInstant(t *testing.T) {
 	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "jail-role"}}
 	p, ft, now := newTimedPlugin(ops, newFakeStore())
 
-	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a"}, 5*time.Minute, "mod", ""); err != nil {
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, 5*time.Minute, "mod", ""); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
 	if len(ft.armed) != 1 || ft.armed[0].delay != 5*time.Minute {
@@ -76,7 +76,7 @@ func TestRedateOutrunsOldTimer(t *testing.T) {
 	ops.setMember("g1", "u1", []string{"role-a"})
 	p, ft, now := newTimedPlugin(ops, newFakeStore())
 
-	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a"}, 5*time.Minute, "mod", ""); err != nil {
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, 5*time.Minute, "mod", ""); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
 	// Re-jailed for an hour: the single-member path goes through jailMany.

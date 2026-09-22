@@ -161,6 +161,19 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 			// batch size: reversibility beats completeness.
 			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.now().Add(duration), reason, sn)
 		}
+		// Sentenced in absentia: its own action, for the same reason a
+		// re-sentence is. Nobody was stripped of anything, and a reader
+		// counting jails in the log would otherwise count a sentence that
+		// has not started and may never start. No DM and no channel
+		// announcement either: there is nobody in this server to tell, and
+		// announcing it would be telling the room about somebody who cannot
+		// read it and has not arrived.
+		if len(res.pending) == 1 {
+			if err := p.audit.Record(ctx, i.GuildID, actorID(i), sn.auditPending, "",
+				fmt.Sprintf("user=%s duration=%s reason=%q not in the server; applied on arrival", core.MentionUser(userIDs[0]), core.FormatDuration(duration), reason)); err != nil {
+				p.log.Error("roles: audit pending jail failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
+			}
+		}
 		// A moved sentence is its own audit action rather than a second
 		// roles.jail: nobody was jailed here, and a reader counting jails in
 		// the log would otherwise count this member twice. The DM is the same
@@ -243,6 +256,18 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
+	// Not in the server. Said plainly rather than as a success, because the
+	// two look identical from the command's side and only one of them has
+	// actually taken anybody's roles away.
+	if len(res.pending) > 0 {
+		if err := core.FollowUpOK(s, i, "Sentence recorded", fmt.Sprintf(
+			"<@%s> isn't in this server. merlin has checked the account exists and recorded the sentence: they'll be %s for %s the moment they join, and nothing happens if they never do.\n"+
+				"Cancel it with `/roles release`.", userID, sn.verb, core.FormatDuration(duration))); err != nil {
+			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+		}
+		return
+	}
+
 	msg := fmt.Sprintf("<@%s> %s for %s.", userID, sn.verb, core.FormatDuration(duration))
 	if res.unmanageable > 0 {
 		msg += " Some role(s) could not be stripped (positioned at/above merlin's own top role, or managed by an integration)."
@@ -272,15 +297,24 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 // roles are restored. A spurious row that cleans itself up beats a member
 // jailed indefinitely. The rollback below just makes that immediate instead
 // of eventual.
-func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID string, currentRoles []string, duration time.Duration, actor, reason string) ([]string, error) {
-	newRoles, unmanageable := jailRoles(p.perms, guildID, jailRoleID, currentRoles)
+//
+// A target who is not in the guild (t.absent) is recorded and nothing else.
+// There is no member to strip, and the record on its own is already the
+// whole mechanism: reapplyIfEvaded applies the marker the moment they
+// arrive, by the same JoinedAt-after-JailedAt test that catches an evader
+// coming back, so the sentence starts on arrival rather than being missed.
+// The snapshot is empty because they held nothing here, which is exactly
+// what release should hand back.
+func (p *Plugin) applyJail(ctx context.Context, guildID, jailRoleID string, t jailTarget, duration time.Duration, actor, reason string) ([]string, error) {
+	userID := t.userID
+	newRoles, unmanageable := jailRoles(p.perms, guildID, jailRoleID, t.roles)
 
 	now := p.now()
 	releaseAt := now.Add(duration)
 	if err := p.store.InsertJail(ctx, JailRecord{
 		GuildID:         guildID,
 		UserID:          userID,
-		SnapshotRoleIDs: currentRoles,
+		SnapshotRoleIDs: t.roles,
 		JailRoleID:      jailRoleID,
 		JailedAt:        now,
 		ReleaseAt:       &releaseAt,
@@ -290,12 +324,14 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, userID, jailRoleID stri
 		return nil, fmt.Errorf("roles: save jail record for %s: %w", userID, err)
 	}
 
-	if _, err := p.stripToJailRoles(guildID, userID, newRoles); err != nil {
-		if delErr := p.store.DeleteJail(ctx, guildID, userID); delErr != nil {
-			p.log.Error("roles: roll back jail record after failed role update",
-				"guild", guildID, "user", userID, "err", delErr)
+	if !t.absent {
+		if _, err := p.stripToJailRoles(guildID, userID, newRoles); err != nil {
+			if delErr := p.store.DeleteJail(ctx, guildID, userID); delErr != nil {
+				p.log.Error("roles: roll back jail record after failed role update",
+					"guild", guildID, "user", userID, "err", delErr)
+			}
+			return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
 		}
-		return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
 	}
 	p.armJailRelease(guildID, userID, releaseAt)
 	if p.sentenceFor(guildID, jailRoleID) == vacationSentence {
@@ -539,9 +575,15 @@ func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRe
 		}
 	}
 
+	// "joined" rather than "rejoined": the same JoinedAt-after-JailedAt test
+	// catches an evader coming back and an account sentenced before it ever
+	// arrived (resolveTargets' absent target), and nothing in the row tells
+	// the two apart. Wording that covered only the first would read as a
+	// plain falsehood in the second, to a mod deciding whether merlin got
+	// this right.
 	action, reason := "roles.jail_reasserted", "roles were regranted while jailed (server onboarding/screening)"
 	if rejoined {
-		action, reason = "roles.jail_reapplied", "left and rejoined while jailed"
+		action, reason = "roles.jail_reapplied", "joined while a sentence was in force"
 	}
 	p.log.Warn("roles: re-applied jail", "guild", guildID, "user", rec.UserID, "reason", reason,
 		"jailed_at", rec.JailedAt, "joined_at", member.JoinedAt)

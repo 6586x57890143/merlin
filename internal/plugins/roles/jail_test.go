@@ -279,7 +279,7 @@ func TestApplyJailNeverStripsRolesWithoutTrackingThem(t *testing.T) {
 
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a", "role-b"}, time.Hour, "mod", ""); err == nil {
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a", "role-b"}}, time.Hour, "mod", ""); err == nil {
 		t.Fatal("expected applyJail to report the failed record write")
 	}
 
@@ -302,7 +302,7 @@ func TestApplyJailRollsBackRecordWhenRoleUpdateFails(t *testing.T) {
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a"}, time.Hour, "mod", ""); err == nil {
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, time.Hour, "mod", ""); err == nil {
 		t.Fatal("expected applyJail to report the failed role update")
 	}
 	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
@@ -321,7 +321,7 @@ func TestApplyJailSucceedsAndTracks(t *testing.T) {
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), perms, newFakeScheduler())
 
-	unmanageable, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a", "untouchable"}, 2*time.Hour, "mod", "spam")
+	unmanageable, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a", "untouchable"}}, 2*time.Hour, "mod", "spam")
 	if err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestApplyJailForgetsCachedRoleOnlyWhenTheRoleIsGone(t *testing.T) {
 			p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 			p.jailRoleID["g1"] = "cached-jail-role"
 
-			if _, err := p.applyJail(context.Background(), "g1", "u1", "cached-jail-role", []string{"role-a"}, time.Hour, "mod", ""); err == nil {
+			if _, err := p.applyJail(context.Background(), "g1", "cached-jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, time.Hour, "mod", ""); err == nil {
 				t.Fatal("expected applyJail to fail")
 			}
 

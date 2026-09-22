@@ -19,7 +19,7 @@ func TestApplyJailDisconnectsFromVoice(t *testing.T) {
 	ops.setMember("g1", "u1", []string{"role-a"})
 
 	p := newEvasionPlugin(t, ops, newFakeStore())
-	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a"}, time.Hour, "mod1", "test"); err != nil {
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, time.Hour, "mod1", "test"); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestVoiceDisconnectFailureDoesNotFailJail(t *testing.T) {
 	ops.voiceKickErr = errors.New("missing Move Members permission")
 
 	p := newEvasionPlugin(t, ops, newFakeStore())
-	unmanageable, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a"}, time.Hour, "mod1", "test")
+	unmanageable, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, time.Hour, "mod1", "test")
 	if err != nil {
 		t.Fatalf("applyJail must succeed despite a failing voice kick: %v", err)
 	}
