@@ -40,7 +40,7 @@ func TestJailAndReleasePublishToTheLedger(t *testing.T) {
 	rec.record(bus)
 	p.bus = bus
 
-	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"role-a"}, 2*time.Hour, "mod-1", "spam"); err != nil {
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, 2*time.Hour, "mod-1", "spam"); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
 	jr, _, _ := p.store.GetJail(context.Background(), "g1", "u1")

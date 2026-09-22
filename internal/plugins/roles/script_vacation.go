@@ -68,11 +68,12 @@ type sentence struct {
 	announceKey voice.Key
 	overAnnKey  voice.Key
 	// The transfer *into* this sentence, DM and channel post.
-	intoKey    voice.Key
-	intoAnnKey voice.Key
-	audit      string // one member
-	auditBulk  string
-	auditMoved string // re-date
+	intoKey      voice.Key
+	intoAnnKey   voice.Key
+	audit        string // one member
+	auditBulk    string
+	auditMoved   string // re-date
+	auditPending string // recorded against somebody who is not in the guild
 }
 
 var (
@@ -82,6 +83,7 @@ var (
 		announceKey: voice.KeyJailAnnounce, overAnnKey: voice.KeyReleaseAnnounce,
 		intoKey: voice.KeyVacationToJail, intoAnnKey: voice.KeyVacationToJailAnnounce,
 		audit: "roles.jail", auditBulk: "roles.jail_bulk", auditMoved: "roles.jail_resentenced",
+		auditPending: "roles.jail_pending",
 	}
 	vacationSentence = sentence{
 		name: "vacation", title: "Member sent on vacation", verb: "sent on vacation",
@@ -89,6 +91,7 @@ var (
 		announceKey: voice.KeyVacationAnnounce, overAnnKey: voice.KeyVacationOverAnnounce,
 		intoKey: voice.KeyVacationFromJail, intoAnnKey: voice.KeyVacationFromJailAnnounce,
 		audit: "roles.vacation", auditBulk: "roles.vacation_bulk", auditMoved: "roles.vacation_resentenced",
+		auditPending: "roles.vacation_pending",
 	}
 )
 
@@ -205,14 +208,19 @@ func (p *Plugin) counterpartMarker(guildID, markerRoleID string) (string, bool) 
 // GUILD_MEMBER_UPDATE lands inside it: HandleMemberUpdate read that as a
 // mod swapping the roles by hand and announced the same move a second
 // time. A caller that finds the row claimed leaves it to whoever holds it.
-func (p *Plugin) transferJail(ctx context.Context, guildID, userID string, from JailRecord, newMarker string, currentRoles []string, releaseAt *time.Time) error {
+func (p *Plugin) transferJail(ctx context.Context, guildID string, t jailTarget, from JailRecord, newMarker string, releaseAt *time.Time) error {
+	userID := t.userID
 	key := jailKey(guildID, userID)
 	if !p.claim(key) {
 		return errReleaseInProgress
 	}
 	defer p.unclaim(key)
-	expected, _ := jailRoles(p.perms, guildID, newMarker, currentRoles)
-	if !sameRoleSet(expected, currentRoles) {
+	// An absent target has no roles to move; only the row does. The marker
+	// they end up wearing is whichever one the row names when they arrive,
+	// which reapplyIfEvaded reads fresh, so moving somebody between the nest
+	// and the island before they get here works with nothing stripped.
+	expected, _ := jailRoles(p.perms, guildID, newMarker, t.roles)
+	if !t.absent && !sameRoleSet(expected, t.roles) {
 		if _, err := p.stripToJailRoles(guildID, userID, expected); err != nil {
 			return fmt.Errorf("roles: move %s to %s marker: %w", userID, p.sentenceFor(guildID, newMarker).name, err)
 		}
@@ -251,7 +259,7 @@ func (p *Plugin) detectManualTransfer(ctx context.Context, guildID string, rec J
 	if !ok || !slices.Contains(roles, other) {
 		return false
 	}
-	if err := p.transferJail(ctx, guildID, rec.UserID, rec, other, roles, rec.ReleaseAt); err != nil {
+	if err := p.transferJail(ctx, guildID, jailTarget{userID: rec.UserID, roles: roles}, rec, other, rec.ReleaseAt); err != nil {
 		if !errors.Is(err, errReleaseInProgress) {
 			p.log.Error("roles: record a hand transfer", "guild", guildID, "user", rec.UserID, "err", err)
 		}

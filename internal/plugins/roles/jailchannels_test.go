@@ -314,7 +314,7 @@ func TestApplyJailDoesNotSetMemberOverwrites(t *testing.T) {
 	ops.setMember("g1", "u1", []string{"access-role"})
 
 	p := newEvasionPlugin(t, ops, newFakeStore())
-	if _, err := p.applyJail(context.Background(), "g1", "u1", "jail-role", []string{"access-role"}, time.Hour, "mod1", "test"); err != nil {
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"access-role"}}, time.Hour, "mod1", "test"); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
 

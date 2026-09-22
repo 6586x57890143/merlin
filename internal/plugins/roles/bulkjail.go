@@ -45,9 +45,17 @@ const (
 // jailTarget is a member about to be considered for jailing, carried with the
 // roles they held at enumeration time so the bulk path doesn't re-fetch every
 // member it already has in hand.
+//
+// absent marks a target who is not in the guild: a real Discord account
+// (resolveTargets confirms that much) with no member to strip. Their
+// sentence is recorded now and applied the moment they walk in, by the same
+// reapplyIfEvaded that catches an evader coming back, so an account somebody
+// is waiting on cannot buy a clean slate by joining later than the decision
+// to sentence it.
 type jailTarget struct {
 	userID string
 	roles  []string
+	absent bool
 }
 
 // bulkJailResult is what a batch actually did, per outcome. Everything is
@@ -55,6 +63,7 @@ type jailTarget struct {
 // would leave a mod believing people are jailed who are not.
 type bulkJailResult struct {
 	jailed       []string
+	pending      []string // not in the guild; recorded, applied on arrival
 	redated      []string // already jailed; sentence moved to the one just given
 	transferred  []string // already serving the *other* sentence; moved across and re-dated
 	protected    []string // CanModerate refused, target outranks the actor
@@ -63,7 +72,7 @@ type bulkJailResult struct {
 }
 
 func (r bulkJailResult) attempted() int {
-	return len(r.jailed) + len(r.redated) + len(r.transferred) + len(r.protected) + len(r.failed)
+	return len(r.jailed) + len(r.pending) + len(r.redated) + len(r.transferred) + len(r.protected) + len(r.failed)
 }
 
 // merge folds another result into this one, so the outcomes collected before
@@ -71,6 +80,7 @@ func (r bulkJailResult) attempted() int {
 // mutation itself end up in a single report.
 func (r bulkJailResult) merge(other bulkJailResult) bulkJailResult {
 	r.jailed = append(r.jailed, other.jailed...)
+	r.pending = append(r.pending, other.pending...)
 	r.redated = append(r.redated, other.redated...)
 	r.transferred = append(r.transferred, other.transferred...)
 	r.protected = append(r.protected, other.protected...)
@@ -97,7 +107,7 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 ) bulkJailResult {
 	var res bulkJailResult
 	for _, t := range targets {
-		unmanageable, err := p.applyJail(ctx, guildID, t.userID, jailRoleID, t.roles, duration, actorID, reason)
+		unmanageable, err := p.applyJail(ctx, guildID, jailRoleID, t, duration, actorID, reason)
 		switch {
 		case errors.Is(err, ErrAlreadyJailed):
 			releaseAt := p.now().Add(duration)
@@ -111,7 +121,7 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 			// is treated as the same sentence too: the safe wrong answer.
 			if existing, ok, gerr := p.store.GetJail(ctx, guildID, t.userID); gerr == nil && ok &&
 				p.sentenceFor(guildID, existing.JailRoleID) != p.sentenceFor(guildID, jailRoleID) {
-				if terr := p.transferJail(ctx, guildID, t.userID, existing, jailRoleID, t.roles, &releaseAt); terr != nil {
+				if terr := p.transferJail(ctx, guildID, t, existing, jailRoleID, &releaseAt); terr != nil {
 					res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, terr))
 					continue
 				}
@@ -137,6 +147,12 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 			res.redated = append(res.redated, t.userID)
 		case err != nil:
 			res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, err))
+		case t.absent:
+			// Recorded, nothing stripped, nobody to announce or DM: they are
+			// not here to read it. Reported as its own outcome rather than
+			// folded into jailed, or a mod would be told somebody is wearing
+			// a marker role they do not hold.
+			res.pending = append(res.pending, t.userID)
 		default:
 			res.jailed = append(res.jailed, t.userID)
 			if len(unmanageable) > 0 {
@@ -182,14 +198,35 @@ func (p *Plugin) partitionByRank(guildID string, actor *discordgo.Member, target
 // resolveTargets turns user IDs into jailTargets, fetching each member's
 // current roles. Used by the multi-user path, where the command gives us IDs
 // and nothing else; the role path already holds full members and skips this.
+//
+// A member fetch that comes back Unknown Member is not the end of it. That
+// one answer covers two very different cases and Discord words them
+// identically: an account that is real and simply somewhere else, and a
+// snowflake nobody has ever had. So the ID is put to GET /users/{id}, which
+// is guild-free and answers exactly that question, and only an account
+// Discord confirms exists becomes an absent target. A typo still fails, and
+// fails saying so, rather than as "unknown member", which is the one wording
+// that would let a mistyped digit read as "they must have left".
+//
+// Only Unknown Member takes that route. Any other failure (a rate limit, a
+// 5xx, an unknown *guild*) says nothing about whether the person is here,
+// and reading it as absence would record a sentence that strips nothing
+// against somebody standing in the room.
 func (p *Plugin) resolveTargets(guildID string, userIDs []string) (targets []jailTarget, failed []string) {
 	for _, id := range userIDs {
 		member, err := p.ops(guildID).GuildMember(guildID, id)
-		if err != nil {
+		switch {
+		case err == nil:
+			targets = append(targets, jailTarget{userID: id, roles: member.Roles})
+		case core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember):
+			if _, uerr := p.ops(guildID).User(id); uerr != nil {
+				failed = append(failed, fmt.Sprintf("%s: not in this server, and no Discord account with that ID: %v", id, uerr))
+				continue
+			}
+			targets = append(targets, jailTarget{userID: id, absent: true})
+		default:
 			failed = append(failed, fmt.Sprintf("%s: %v", id, err))
-			continue
 		}
-		targets = append(targets, jailTarget{userID: id, roles: member.Roles})
 	}
 	return targets, failed
 }
@@ -412,9 +449,9 @@ func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope stri
 	for _, id := range res.jailed {
 		mentions = append(mentions, core.MentionUser(id))
 	}
-	detail := fmt.Sprintf("%s duration=%s reason=%q %s=%d already=%d moved=%d protected=%d failed=%d users=%s",
+	detail := fmt.Sprintf("%s duration=%s reason=%q %s=%d pending=%d already=%d moved=%d protected=%d failed=%d users=%s",
 		scope, core.FormatDuration(duration), reason, sn.name,
-		len(res.jailed), len(res.redated), len(res.transferred), len(res.protected), len(res.failed),
+		len(res.jailed), len(res.pending), len(res.redated), len(res.transferred), len(res.protected), len(res.failed),
 		strings.Join(mentions, " "))
 	if err := p.audit.Record(ctx, guildID, actor, sn.auditBulk, "", detail); err != nil {
 		p.log.Error("roles: audit bulk jail failed", "guild", guildID, "err", err)
@@ -429,6 +466,9 @@ func summarizeBulkJail(res bulkJailResult, duration time.Duration, sn sentence) 
 	fmt.Fprintf(&b, "**%s %d** of %d considered, for %s.\n", capitalize(sn.verb), len(res.jailed), res.attempted(), core.FormatDuration(duration))
 	if len(res.jailed) > 0 {
 		fmt.Fprintf(&b, "\n%s\n", mentionList(res.jailed))
+	}
+	if len(res.pending) > 0 {
+		fmt.Fprintf(&b, "\n**Not in the server; %s on arrival (%d):** %s\n", sn.verb, len(res.pending), mentionList(res.pending))
 	}
 	if res.unmanageable > 0 {
 		fmt.Fprintf(&b, "\n⚠️ %d of them kept at least one role merlin can't strip (positioned at/above her own top role).\n", res.unmanageable)

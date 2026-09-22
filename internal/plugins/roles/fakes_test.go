@@ -95,6 +95,15 @@ type fakeOps struct {
 	// assert on these, not just on the resulting overwrites.
 	permSetCalls    int
 	permDeleteCalls int
+
+	// knownUsers are the accounts GET /users/{id} answers for, which is the
+	// only thing that separates a real account who is simply somewhere else
+	// from a mistyped snowflake. Nothing in members implies a user here:
+	// resolveTargets asks this exactly when the member fetch already said
+	// Unknown Member, so a test that wants an absent-but-real account
+	// registers the user without a member.
+	knownUsers map[string]bool
+	userCalls  []string
 }
 
 func newFakeOps() *fakeOps {
@@ -104,7 +113,30 @@ func newFakeOps() *fakeOps {
 		channel:         make(map[string]*discordgo.Channel),
 		overwrites:      make(map[overwriteKey]struct{ allow, deny int64 }),
 		memberEditCalls: make(map[string][]string),
+		knownUsers:      make(map[string]bool),
 	}
+}
+
+// setUser registers userID as a real Discord account, with no membership of
+// any guild.
+func (f *fakeOps) setUser(userID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.knownUsers[userID] = true
+}
+
+func (f *fakeOps) User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.userCalls = append(f.userCalls, userID)
+	if !f.knownUsers[userID] {
+		return nil, &discordgo.RESTError{
+			Response:     &http.Response{StatusCode: http.StatusNotFound},
+			ResponseBody: []byte(`{"code":10013,"message":"Unknown User"}`),
+			Message:      &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownUser, Message: "Unknown User"},
+		}
+	}
+	return &discordgo.User{ID: userID, Username: "absent-" + userID}, nil
 }
 
 func memberKey(guildID, userID string) string { return guildID + ":" + userID }

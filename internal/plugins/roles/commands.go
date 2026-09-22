@@ -96,7 +96,7 @@ func (p *Plugin) registerCommands() {
 				// optional User pickers rather than a free-text list of IDs.
 				// See collectJailUserIDs.
 				Options: []*discordgo.ApplicationCommandOption{
-					userOpt("user", "The member to jail"),
+					userOpt("user", "The member to jail; paste an ID to sentence an account that isn't here yet"),
 					durationOpt("duration", "How long before automatic release. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
 					optionalUserOpt("user2", "A second member, jailed with the same duration and reason"),
 					optionalUserOpt("user3", "A third member"),
@@ -110,7 +110,7 @@ func (p *Plugin) registerCommands() {
 				Name:        "vacation",
 				Description: "vacation script: strip up to 5 members to the island's role for a period, then restore them",
 				Options: []*discordgo.ApplicationCommandOption{
-					userOpt("user", "The member to send on vacation"),
+					userOpt("user", "The member to send on vacation; paste an ID for an account that isn't here yet"),
 					durationOpt("duration", "How long before they come back. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
 					optionalUserOpt("user2", "A second member, same duration and reason"),
 					optionalUserOpt("user3", "A third member"),
@@ -321,6 +321,16 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 		state := "Jailed"
 		if p.sentenceFor(i.GuildID, rec.JailRoleID) == vacationSentence {
 			state = "On vacation"
+		}
+		// Whether a sentence is in *effect* is a fact about Discord, not
+		// about the row, so it is read from Discord rather than stored
+		// beside it: a sentence recorded against somebody who is not here
+		// (bulkjail.go's absent target) becomes an ordinary one the moment
+		// they join, and a column saying "pending" would still say it.
+		// Anything other than a clean Unknown Member is left alone: a rate
+		// limit is not evidence that somebody is absent.
+		if _, err := p.ops(i.GuildID).GuildMember(i.GuildID, userID); core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
+			state += " (not in the server; applies on arrival)"
 		}
 		lines = append(lines, fmt.Sprintf("**%s:** released at %s", state, release))
 	}

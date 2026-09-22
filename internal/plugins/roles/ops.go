@@ -18,6 +18,13 @@ type DiscordMemberOps interface {
 	// anything, which is why /roles jail-role reports that plainly rather
 	// than silently finding nobody. See membersWithRole.
 	GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error)
+	// User is the guild-free account lookup, and it is what makes a
+	// sentence against somebody who is not here possible at all: a member
+	// fetch answers Unknown Member for a stranger and for a typo alike, so
+	// it cannot tell "not in this server" from "not a Discord account".
+	// This one can, which is the double-check resolveTargets runs before it
+	// records a sentence nobody is standing in front of.
+	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
 	GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error)
 	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
 	GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
