@@ -117,18 +117,19 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 		return
 	}
 
+	var repostID string
 	switch action {
 	case ActionRemove:
 		err = p.removeMessage(ctx, cfg.GuildID, c)
 	case ActionRewrite:
-		err = p.rewriteMessage(ctx, cfg.GuildID, c, v.Rewrite)
+		repostID, err = p.rewriteMessage(ctx, cfg.GuildID, c, v.Rewrite)
 	default:
 		return
 	}
 
 	switch {
 	case err == nil:
-		p.audit(ctx, cfg.GuildID, auditAction, c, bucket, v)
+		p.auditRepost(ctx, cfg.GuildID, auditAction, c, bucket, v, repostID)
 		p.publishRemoval(ctx, cfg.GuildID, incidentID, c, action, bucket, v)
 		p.notifyAuthor(ctx, cfg, c, action, v)
 		// Only after the message was actually dealt with. Jailing somebody
@@ -169,10 +170,13 @@ func (p *Plugin) removeMessage(ctx context.Context, guildID string, c candidate)
 // An empty replacement is treated as a removal. That is not a failure case:
 // the deep pass is explicitly told to return an empty string when nothing
 // publishable remains, and posting an empty message is not possible anyway.
-func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate, replacement string) error {
+//
+// It returns the repost's message ID, empty when the rewrite became a
+// removal, so the audit entry can link to what the channel now shows.
+func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate, replacement string) (string, error) {
 	replacement = strings.TrimSpace(replacement)
 	if replacement == "" {
-		return p.removeMessage(ctx, guildID, c)
+		return "", p.removeMessage(ctx, guildID, c)
 	}
 
 	// The webhook is resolved before the delete. Doing it the other way
@@ -181,22 +185,26 @@ func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate
 	// worst possible moment.
 	hook, err := p.resolveWebhook(ctx, guildID, c.ChannelID)
 	if err != nil {
-		return fmt.Errorf("aimod: resolve webhook: %w", err)
+		return "", fmt.Errorf("aimod: resolve webhook: %w", err)
 	}
 
 	author, err := p.ops(guildID).GuildMember(guildID, c.AuthorID)
 	if err != nil {
-		return fmt.Errorf("aimod: fetch author: %w", err)
+		return "", fmt.Errorf("aimod: fetch author: %w", err)
 	}
 
 	if err := p.removeMessage(ctx, guildID, c); err != nil {
-		return err
+		return "", err
 	}
-	return p.ops(guildID).WebhookExecute(hook.ID, hook.Token, &discordgo.WebhookParams{
+	msg, err := p.ops(guildID).WebhookExecuteWait(hook.ID, hook.Token, &discordgo.WebhookParams{
 		Content:   replacement + rewriteMarker,
 		Username:  displayName(author),
 		AvatarURL: author.AvatarURL(""),
 	})
+	if err != nil || msg == nil {
+		return "", err
+	}
+	return msg.ID, nil
 }
 
 func displayName(m *discordgo.Member) string {
@@ -354,34 +362,64 @@ func reasonOrPolicy(v deepVerdict) string {
 // retention window; copying it into the audit channel would put it somewhere
 // that window does not reach.
 func (p *Plugin) audit(ctx context.Context, guildID, action string, c candidate, bucket Bucket, v deepVerdict) {
-	detail := fmt.Sprintf("policy=%s user=%s channel=%s message=%q confidence=%.0f%% reason=%q",
-		bucket, core.MentionUser(c.AuthorID), core.MentionChannel(c.ChannelID),
-		messageFate(guildID, action, c, v), v.Confidence*100, reasonOrPolicy(v))
+	p.auditRepost(ctx, guildID, action, c, bucket, v, "")
+}
+
+// auditRepost records one aimod decision. The pair order is the embed's
+// grid order after the actor (member, channel, policy, confidence, message),
+// and the reason is lifted into the description by the audit renderer.
+func (p *Plugin) auditRepost(ctx context.Context, guildID, action string, c candidate, bucket Bucket, v deepVerdict, repostID string) {
+	detail := fmt.Sprintf("user=%s channel=%s policy=%q confidence=%q message=%q reason=%q",
+		core.MentionUser(c.AuthorID), core.MentionChannel(c.ChannelID), policyLabel(bucket),
+		confidenceMeter(v.Confidence), messageFate(guildID, action, c, v, repostID), reasonOrPolicy(v))
 	if err := p.auditWriter.Record(ctx, guildID, core.ActorSystem, action, "", detail); err != nil {
 		p.log.Error("aimod: audit record failed", "guild", guildID, "action", action, "err", err)
 	}
 }
 
-// messageFate is the audit line's link to the message, and what became of it.
+// policyLabel is "Hate speech" for hate_speech.
+func policyLabel(b Bucket) string {
+	s := strings.ReplaceAll(string(b), "_", " ")
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// confidenceMeter draws the deep pass's confidence as a ten-segment bar with
+// the figure beside it, so a column of entries can be scanned by shape.
+func confidenceMeter(c float64) string {
+	c = min(max(c, 0), 1)
+	// Floored, so a full bar means certain rather than "rounds to certain".
+	n := int(c * 10)
+	return strings.Repeat("▰", n) + strings.Repeat("▱", 10-n) + fmt.Sprintf(" %.0f%%", c*100)
+}
+
+// messageFate is the audit entry's link to the message, and what became of
+// it.
 //
 // It used to be the bare message ID in the Before column, which nobody could
-// click and which read as though the message had been replaced by a number.
-// A jump link to a message merlin has just deleted renders as "Unknown
-// message", so for those the link is struck through and the reason given:
-// the reader learns it is gone without clicking, and the ID still sits in the
-// URL for anyone searching the trail. A message somebody deletes later is not
-// tracked; that would mean editing past audit posts.
-func messageFate(guildID, action string, c candidate, v deepVerdict) string {
+// click. A jump link to a message merlin just deleted opens on "Unknown
+// message", so the word says it is deleted before anybody clicks, and a
+// rewrite links both halves: the deleted original, which still carries the
+// ID for anyone searching the trail, and the repost the channel now shows.
+// A message somebody deletes later is not tracked; that would mean editing
+// past audit posts.
+func messageFate(guildID, action string, c candidate, v deepVerdict, repostID string) string {
 	link := core.MessageLink(guildID, c.ChannelID, c.MessageID)
+	deleted := "🗑️ [Deleted](" + link + ")"
 	switch {
 	case action == "aimod.rewrite" && strings.TrimSpace(v.Rewrite) != "":
-		return "~~[original](" + link + ")~~ deleted and reposted, rewritten"
+		if repost := core.MessageLink(guildID, c.ChannelID, repostID); repost != "" {
+			return deleted + "\n✏️ [Reposted](" + repost + ")"
+		}
+		return deleted + "\n✏️ Reposted"
 	case action == "aimod.remove" || action == "aimod.rewrite":
 		// A rewrite with nothing left to publish is a removal
 		// (rewriteMessage), so it is reported as one.
-		return "~~[message](" + link + ")~~ deleted"
+		return deleted
 	default:
-		return "[Jump to message](" + link + ")"
+		return "🔗 [View message](" + link + ")"
 	}
 }
 

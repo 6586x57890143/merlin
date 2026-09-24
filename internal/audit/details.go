@@ -3,43 +3,51 @@ package audit
 import (
 	"strconv"
 	"strings"
+
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
-// readable lays a "key=value" audit detail out as one labelled line per pair.
+// item is one piece of a key=value detail: a pair, or (key "") a run of
+// prose words kept in its original position.
+type item struct{ key, val string }
+
+// parseDetail splits a "key=value" audit detail into items, or reports
+// ok=false when v is not in that format at all.
 //
 // Most call sites record details as `user=<@1> duration=10m reason="x"`,
 // which is the right shape for the durable row (greppable, and every
 // existing entry already has it) and the wrong one for a moderator reading
 // the channel: it wrapped into a single run-on line with the quoting and the
-// brackets left in. This is the render-time half of the same split
-// FormatActor makes, the row stays machine-shaped and the embed reads as
-// prose, so no call site and no stored row changes.
+// brackets left in. Parsing it at render time is the same split FormatActor
+// makes: the row stays machine-shaped and the embed reads as a layout, so no
+// stored row changes.
 //
 // It is deliberately forgiving: words that are not a pair stay as prose in
 // their original order, a quoted value that does not unquote is left as
 // words, and a value with no pairs at all, or one that already has its own
-// line breaks, comes back untouched.
-func readable(v string) string {
+// line breaks, is not this format.
+func parseDetail(v string) (items []item, ok bool) {
 	if !strings.Contains(v, "=") || strings.Contains(v, "\n") {
-		return v
+		return nil, false
 	}
-	var lines, prose []string
+	var prose []string
 	flush := func() {
 		if len(prose) > 0 {
-			lines = append(lines, strings.Join(prose, " "))
+			items = append(items, item{val: strings.Join(prose, " ")})
 			prose = nil
 		}
 	}
-	found := false
 	for rest := strings.TrimSpace(v); rest != ""; rest = strings.TrimLeft(rest, " ") {
-		key, val, n, ok := pair(rest)
-		if !ok {
+		key, val, n, isPair := pair(rest)
+		if !isPair {
 			word, after, _ := strings.Cut(rest, " ")
 			prose = append(prose, word)
 			rest = after
 			continue
 		}
-		found = true
+		ok = true
 		rest = rest[n:]
 		if val == "" {
 			// "role= user=<@1>": call sites with an either/or pair leave one
@@ -47,13 +55,58 @@ func readable(v string) string {
 			continue
 		}
 		flush()
-		lines = append(lines, "**"+label(key)+"** "+val)
+		items = append(items, item{key, val})
 	}
 	flush()
-	if !found {
+	return items, ok
+}
+
+// readable is parseDetail flattened to one labelled line per pair, for the
+// Before/After columns, where there is no room for a grid.
+func readable(v string) string {
+	items, ok := parseDetail(v)
+	if !ok {
 		return v
 	}
+	lines := make([]string, 0, len(items))
+	for _, it := range items {
+		if it.key == "" {
+			lines = append(lines, it.val)
+		} else {
+			lines = append(lines, "**"+label(it.key)+"** "+it.val)
+		}
+	}
 	return strings.Join(lines, "\n")
+}
+
+// maxColumnValue is the longest value that goes in a grid column. Past it a
+// value wraps into a tall narrow strip beside short neighbours, so it gets
+// the full width instead.
+const maxColumnValue = 80
+
+// gridLayout turns a detail into the embed's description and field grid.
+//
+// The reason is the sentence a moderator actually reads, so it leads, as a
+// quote in the description beside the mood icon; prose goes there too. Every
+// other pair becomes an inline field after the actor, which Discord lays out
+// three to a row, so the entry reads as a table rather than a paragraph.
+func gridLayout(items []item) (description string, fields []*discordgo.MessageEmbedField) {
+	var desc []string
+	for _, it := range items {
+		switch it.key {
+		case "":
+			desc = append(desc, it.val)
+		case "reason":
+			desc = append(desc, "> "+strings.ReplaceAll(it.val, "\n", "\n> "))
+		default:
+			fields = append(fields, &discordgo.MessageEmbedField{
+				Name:   label(it.key),
+				Value:  core.TruncateEmbedField(it.val),
+				Inline: len(it.val) <= maxColumnValue,
+			})
+		}
+	}
+	return core.TruncateEmbedDescription(strings.Join(desc, "\n")), fields
 }
 
 // pair reads one key=value token off the front of s, returning how many bytes
