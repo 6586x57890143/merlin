@@ -354,11 +354,34 @@ func reasonOrPolicy(v deepVerdict) string {
 // retention window; copying it into the audit channel would put it somewhere
 // that window does not reach.
 func (p *Plugin) audit(ctx context.Context, guildID, action string, c candidate, bucket Bucket, v deepVerdict) {
-	detail := fmt.Sprintf("%s in %s by %s (confidence %.0f%%): %s",
-		bucket, core.MentionChannel(c.ChannelID), core.MentionUser(c.AuthorID),
-		v.Confidence*100, reasonOrPolicy(v))
-	if err := p.auditWriter.Record(ctx, guildID, core.ActorSystem, action, c.MessageID, detail); err != nil {
+	detail := fmt.Sprintf("policy=%s user=%s channel=%s message=%q confidence=%.0f%% reason=%q",
+		bucket, core.MentionUser(c.AuthorID), core.MentionChannel(c.ChannelID),
+		messageFate(guildID, action, c, v), v.Confidence*100, reasonOrPolicy(v))
+	if err := p.auditWriter.Record(ctx, guildID, core.ActorSystem, action, "", detail); err != nil {
 		p.log.Error("aimod: audit record failed", "guild", guildID, "action", action, "err", err)
+	}
+}
+
+// messageFate is the audit line's link to the message, and what became of it.
+//
+// It used to be the bare message ID in the Before column, which nobody could
+// click and which read as though the message had been replaced by a number.
+// A jump link to a message merlin has just deleted renders as "Unknown
+// message", so for those the link is struck through and the reason given:
+// the reader learns it is gone without clicking, and the ID still sits in the
+// URL for anyone searching the trail. A message somebody deletes later is not
+// tracked; that would mean editing past audit posts.
+func messageFate(guildID, action string, c candidate, v deepVerdict) string {
+	link := core.MessageLink(guildID, c.ChannelID, c.MessageID)
+	switch {
+	case action == "aimod.rewrite" && strings.TrimSpace(v.Rewrite) != "":
+		return "~~[original](" + link + ")~~ deleted and reposted, rewritten"
+	case action == "aimod.remove" || action == "aimod.rewrite":
+		// A rewrite with nothing left to publish is a removal
+		// (rewriteMessage), so it is reported as one.
+		return "~~[message](" + link + ")~~ deleted"
+	default:
+		return "[Jump to message](" + link + ")"
 	}
 }
 

@@ -1,5 +1,7 @@
 package core
 
+import "strings"
+
 // Discord mention formatting, shared by every surface that reports which
 // user, channel, or role something happened to.
 //
@@ -53,6 +55,35 @@ func MentionRole(id string) string {
 		return ""
 	}
 	return "<@&" + id + ">"
+}
+
+// MentionRoles renders each id as a role mention, space separated, skipping
+// empties. A bare []string printed with %v was how role lists reached the
+// audit channel, as a bracketed run of snowflakes nobody could click.
+func MentionRoles(ids []string) string { return mentionAll(ids, MentionRole) }
+
+// MentionUsers is MentionRoles for users.
+func MentionUsers(ids []string) string { return mentionAll(ids, MentionUser) }
+
+func mentionAll(ids []string, mention func(string) string) string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if m := mention(id); m != "" {
+			out = append(out, m)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// MessageLink is the jump URL for a message. Discord renders it as a clickable
+// "#channel > message" pill, and as "Unknown message" once the message is
+// gone, so a caller that knows the message was deleted should say so rather
+// than leave the reader to find out by clicking. Empty if any part is.
+func MessageLink(guildID, channelID, messageID string) string {
+	if guildID == "" || channelID == "" || messageID == "" {
+		return ""
+	}
+	return "https://discord.com/channels/" + guildID + "/" + channelID + "/" + messageID
 }
 
 // FormatActor renders an audit actor for a human reader.

@@ -588,7 +588,7 @@ func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRe
 	p.log.Warn("roles: re-applied jail", "guild", guildID, "user", rec.UserID, "reason", reason,
 		"jailed_at", rec.JailedAt, "joined_at", member.JoinedAt)
 	if err := p.audit.Record(ctx, guildID, core.ActorSystem, action, core.MentionUser(rec.UserID),
-		fmt.Sprintf("%s; jail re-applied until %s unmanageable_roles=%v", reason, releaseAtText(rec), unmanageable)); err != nil {
+		fmt.Sprintf("%s; jail re-applied until %s unmanageable_roles=[%s]", reason, releaseAtText(rec), core.MentionRoles(unmanageable))); err != nil {
 		p.log.Error("roles: audit jail re-apply failed", "guild", guildID, "user", rec.UserID, "err", err)
 	}
 	return nil
@@ -692,8 +692,8 @@ func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string,
 	p.log.Warn("roles: roles regranted to a jailed member were stripped again", "guild", guildID, "user", userID,
 		"unmanageable_roles", unmanageable)
 	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.jail_reasserted", core.MentionUser(userID),
-		fmt.Sprintf("roles were regranted while jailed (server onboarding/screening); stripped again until %s unmanageable_roles=%v",
-			releaseAtText(rec), unmanageable)); err != nil {
+		fmt.Sprintf("roles were regranted while jailed (server onboarding/screening); stripped again until %s unmanageable_roles=[%s]",
+			releaseAtText(rec), core.MentionRoles(unmanageable))); err != nil {
 		p.log.Error("roles: audit jail reassert failed", "guild", guildID, "user", userID, "err", err)
 	}
 }
@@ -814,7 +814,7 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 	}
 
 	sn := p.sentenceFor(guildID, rec.JailRoleID)
-	if err := p.audit.Record(ctx, guildID, actor, "roles.release", "", fmt.Sprintf("user=%s from=%s restored=%v", core.MentionUser(userID), sn.name, restore)); err != nil {
+	if err := p.audit.Record(ctx, guildID, actor, "roles.release", "", fmt.Sprintf("user=%s from=%s restored=[%s]", core.MentionUser(userID), sn.name, core.MentionRoles(restore))); err != nil {
 		p.log.Error("roles: audit release failed", "guild", guildID, "user", userID, "err", err)
 	}
 	p.publishReleased(ctx, guildID, userID, actor)

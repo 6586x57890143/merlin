@@ -551,10 +551,19 @@ func permissionOverrideLines(overrides []settings.ActionOverride) []string {
 		if o.RequiredTier.IsSet() {
 			tier = o.RequiredTier.String()
 		}
-		lines = append(lines, fmt.Sprintf("`%s` · tier: %s, allow: roles=%v users=%v, block: roles=%v users=%v",
-			o.Action, tier, o.RoleIDs, o.UserIDs, o.DenyRoleIDs, o.DenyUserIDs))
+		lines = append(lines, fmt.Sprintf("`%s` · tier: %s, allow: %s, block: %s",
+			o.Action, tier, mentionsOrNone(o.RoleIDs, o.UserIDs), mentionsOrNone(o.DenyRoleIDs, o.DenyUserIDs)))
 	}
 	return lines
+}
+
+// mentionsOrNone renders an allow or block list as clickable role and user
+// mentions rather than %v's bracketed snowflakes.
+func mentionsOrNone(roleIDs, userIDs []string) string {
+	if s := strings.TrimSpace(core.MentionRoles(roleIDs) + " " + core.MentionUsers(userIDs)); s != "" {
+		return s
+	}
+	return "none"
 }
 
 func renderPermissionsPage(lines []string, page int) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {

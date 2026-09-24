@@ -302,3 +302,24 @@ func TestFollowUpReplacesAttachmentsOnEveryEdit(t *testing.T) {
 		t.Fatalf("edit must still carry this response's own thumbnail; body was:\n%s", body)
 	}
 }
+
+// The separator is what pins every embed to one width, and an image URL with
+// no matching upload renders as a broken frame, so both halves are asserted.
+func TestEveryEmbedCarriesTheRuleItReferences(t *testing.T) {
+	e := NewEmbed(ColorInfo, "t", "d")
+	if e.Image == nil || e.Image.URL != ruleAttachmentURL {
+		t.Fatalf("NewEmbed image = %+v, want the separator", e.Image)
+	}
+	var found bool
+	for _, f := range EmbedFiles(e) {
+		if f.Name == ruleAttachmentName {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the separator is referenced but not uploaded")
+	}
+	if l := NewLandmarkEmbed(ColorInfo, "t", "d"); l.Image.URL != bannerAttachmentURL {
+		t.Errorf("a landmark embed should show the banner, got %q", l.Image.URL)
+	}
+}

@@ -33,6 +33,18 @@ var avatarPNG []byte
 //go:embed assets/merlin_banner.png
 var bannerPNG []byte
 
+// rulePNG is the thin separator every NewEmbed carries as its image: a small
+// falcon over a barred line that fades out at both ends, transparent so it
+// sits on either theme. It is there for its width as much as its look.
+// Discord sizes an embed to its content, so a one-line confirmation and a
+// field-heavy audit entry used to render as boxes of every width down one
+// channel; an image as wide as the embed allows pins them all to the same
+// width. Drawn at 4x in pixel art to match the moods, 1040x32 and under a
+// kilobyte, so uploading it with every message costs nothing worth counting.
+//
+//go:embed assets/merlin_rule.png
+var rulePNG []byte
+
 // Attachment names/URLs for the two brand images above. Both are embedded
 // directly into the binary (go:embed) and sent as a message attachment on
 // every embed response, referenced via Discord's attachment:// scheme.
@@ -43,6 +55,8 @@ const (
 	avatarAttachmentURL  = "attachment://" + avatarAttachmentName
 	bannerAttachmentName = "merlin_banner.png"
 	bannerAttachmentURL  = "attachment://" + bannerAttachmentName
+	ruleAttachmentName   = "merlin_rule.png"
+	ruleAttachmentURL    = "attachment://" + ruleAttachmentName
 )
 
 // merlin's moods. One drawing of her per kind of thing a message can be,
@@ -189,8 +203,13 @@ func embedFiles(embed *discordgo.MessageEmbed) []*discordgo.File {
 			}
 		}
 	}
-	if embed.Image != nil && embed.Image.URL == bannerAttachmentURL {
-		files = append(files, bannerFile())
+	if embed.Image != nil {
+		switch embed.Image.URL {
+		case bannerAttachmentURL:
+			files = append(files, bannerFile())
+		case ruleAttachmentURL:
+			files = append(files, &discordgo.File{Name: ruleAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(rulePNG)})
+		}
 	}
 	return files
 }
@@ -240,6 +259,9 @@ func NewEmbed(color int, title, description string, fields ...*discordgo.Message
 		Description: description,
 		Color:       color,
 		Fields:      fields,
+		// Any caller that sets its own image (the landmark banner, a chart)
+		// simply replaces this; the width it pins comes along with theirs.
+		Image: &discordgo.MessageEmbedImage{URL: ruleAttachmentURL},
 	}
 	return WithMood(e, moodForColor(color))
 }
