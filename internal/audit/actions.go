@@ -252,9 +252,7 @@ func buildEmbed(actorID, action, oldValue, newValue string) *discordgo.MessageEm
 	// silently cost the guild its live audit notification for that action.
 	// The durable row is already written in full and is unaffected.
 	if items, ok := parseDetail(newValue); ok && oldValue == "" {
-		desc, grid := gridLayout(items)
-		embed.Description = desc
-		embed.Fields = append(embed.Fields, grid...)
+		embed.Description, embed.Fields = gridLayout(embed.Fields, items)
 		return embed
 	}
 	oldValue, newValue = readable(oldValue), readable(newValue)

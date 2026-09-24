@@ -1,8 +1,10 @@
 package audit
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -79,19 +81,44 @@ func readable(v string) string {
 	return strings.Join(lines, "\n")
 }
 
-// maxColumnValue is the longest value that goes in a grid column. Past it a
-// value wraps into a tall narrow strip beside short neighbours, so it gets
-// the full width instead.
-const maxColumnValue = 80
+// maxColumnText is the most visible text that fits a grid column on one
+// line. An audit embed with a thumbnail is about 400px wide on desktop, so a
+// third of it holds roughly this many characters; anything longer wraps into
+// a tall strip that drags its whole row out of line with the one above.
+const maxColumnText = 16
 
-// gridLayout turns a detail into the embed's description and field grid.
+// gridColumns is how many inline fields Discord puts in a row.
+const gridColumns = 3
+
+var (
+	maskedLink = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	mentionTag = regexp.MustCompile(`<(?:@&?|#)\d+>`)
+)
+
+// visibleLen estimates how wide a value renders: a masked link shows only
+// its text, and a mention shows as a pill of roughly a name's width.
+func visibleLen(v string) int {
+	v = maskedLink.ReplaceAllString(v, "$1")
+	v = mentionTag.ReplaceAllString(v, "@abcdefghij")
+	return utf8.RuneCountInString(v)
+}
+
+// gridLayout turns a detail into the embed's description and fields.
 //
 // The reason is the sentence a moderator actually reads, so it leads, as a
-// quote in the description beside the mood icon; prose goes there too. Every
-// other pair becomes an inline field after the actor, which Discord lays out
-// three to a row, so the entry reads as a table rather than a paragraph.
-func gridLayout(items []item) (description string, fields []*discordgo.MessageEmbedField) {
+// quote in the description beside the mood icon; prose goes there too. The
+// lead fields (the actor) and every short pair form a grid, padded to whole
+// rows: Discord divides each row by the number of inline fields in it, so a
+// row of two is split in halves under a row split in thirds and nothing
+// lines up. Values too wide for a column go underneath at full width, where
+// they read on one line and cannot pull the grid above out of line.
+func gridLayout(lead []*discordgo.MessageEmbedField, items []item) (description string, fields []*discordgo.MessageEmbedField) {
 	var desc []string
+	var wide []*discordgo.MessageEmbedField
+	grid := lead
+	for _, f := range grid {
+		f.Inline = true
+	}
 	for _, it := range items {
 		switch it.key {
 		case "":
@@ -99,14 +126,19 @@ func gridLayout(items []item) (description string, fields []*discordgo.MessageEm
 		case "reason":
 			desc = append(desc, "> "+strings.ReplaceAll(it.val, "\n", "\n> "))
 		default:
-			fields = append(fields, &discordgo.MessageEmbedField{
-				Name:   label(it.key),
-				Value:  core.TruncateEmbedField(it.val),
-				Inline: len(it.val) <= maxColumnValue,
-			})
+			f := &discordgo.MessageEmbedField{Name: label(it.key), Value: core.TruncateEmbedField(it.val)}
+			if visibleLen(it.val) <= maxColumnText && !strings.Contains(it.val, "\n") {
+				f.Inline = true
+				grid = append(grid, f)
+			} else {
+				wide = append(wide, f)
+			}
 		}
 	}
-	return core.TruncateEmbedDescription(strings.Join(desc, "\n")), fields
+	for len(grid)%gridColumns != 0 {
+		grid = append(grid, &discordgo.MessageEmbedField{Name: "\u200b", Value: "\u200b", Inline: true})
+	}
+	return core.TruncateEmbedDescription(strings.Join(desc, "\n")), append(grid, wide...)
 }
 
 // pair reads one key=value token off the front of s, returning how many bytes
