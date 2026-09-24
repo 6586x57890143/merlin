@@ -84,6 +84,7 @@ type DiscordOps interface {
 	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
 	WebhookExecute(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error
+	WebhookExecuteWait(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)
 	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
 	Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error)
