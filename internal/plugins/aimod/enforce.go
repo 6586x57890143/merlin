@@ -386,13 +386,15 @@ func policyLabel(b Bucket) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// confidenceMeter draws the deep pass's confidence as a ten-segment bar with
-// the figure beside it, so a column of entries can be scanned by shape.
+// confidenceMeter draws the deep pass's confidence as a five-segment bar with
+// the figure beside it, so a column of entries can be scanned by shape. Five,
+// not ten: the audit grid gives it a third of an embed, and ten segments
+// wrapped the figure onto a second line and pulled the row out of line.
 func confidenceMeter(c float64) string {
 	c = min(max(c, 0), 1)
 	// Floored, so a full bar means certain rather than "rounds to certain".
-	n := int(c * 10)
-	return strings.Repeat("▰", n) + strings.Repeat("▱", 10-n) + fmt.Sprintf(" %.0f%%", c*100)
+	n := int(c * 5)
+	return strings.Repeat("▰", n) + strings.Repeat("▱", 5-n) + fmt.Sprintf(" %.0f%%", c*100)
 }
 
 // messageFate is the audit entry's link to the message, and what became of
@@ -407,19 +409,21 @@ func confidenceMeter(c float64) string {
 // past audit posts.
 func messageFate(guildID, action string, c candidate, v deepVerdict, repostID string) string {
 	link := core.MessageLink(guildID, c.ChannelID, c.MessageID)
-	deleted := "🗑️ [Deleted](" + link + ")"
+	deleted := "[Deleted](" + link + ")"
 	switch {
 	case action == "aimod.rewrite" && strings.TrimSpace(v.Rewrite) != "":
+		// One line. Too wide for a grid column, so the audit renderer puts it
+		// under the grid at full width, where it reads as a sentence.
 		if repost := core.MessageLink(guildID, c.ChannelID, repostID); repost != "" {
-			return deleted + "\n✏️ [Reposted](" + repost + ")"
+			return deleted + " → [Reposted](" + repost + ")"
 		}
-		return deleted + "\n✏️ Reposted"
+		return deleted + " → Reposted"
 	case action == "aimod.remove" || action == "aimod.rewrite":
 		// A rewrite with nothing left to publish is a removal
 		// (rewriteMessage), so it is reported as one.
 		return deleted
 	default:
-		return "🔗 [View message](" + link + ")"
+		return "[Jump to message](" + link + ")"
 	}
 }
 

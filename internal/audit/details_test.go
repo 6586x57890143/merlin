@@ -37,21 +37,41 @@ func TestReadableLeavesOtherValuesAlone(t *testing.T) {
 	}
 }
 
-// The layout the screenshots asked for: the reason leads as a quote beside
-// the mood icon, and everything else is a column in a grid after the actor.
-func TestPairDetailsRenderAsAGrid(t *testing.T) {
+// The layout: the reason leads as a quote beside the mood icon, short pairs
+// form a grid of whole rows after the actor, and anything too wide for a
+// column goes underneath at full width. A live channel showed why the padding
+// matters: Discord splits each row by its own field count, so a short last
+// row sat in halves under a row in thirds and nothing lined up.
+func TestPairDetailsRenderAsAnAlignedGrid(t *testing.T) {
 	e := buildEmbed("system", "aimod.rewrite", "",
-		`user=<@1> channel=<#2> policy="Hate speech" confidence="x 95%" message="[Deleted](u)" reason="a slur"`)
+		`user=<@1> channel=<#2> policy="Hate speech" confidence="x 95%" message="[Deleted](https://discord.com/channels/1/2/3) → [Reposted](https://discord.com/channels/1/2/4)" reason="a slur"`)
 	if e.Description != "> a slur" {
 		t.Errorf("description = %q, want the reason as a quote", e.Description)
 	}
-	want := []string{"Actor", "Member", "Channel", "Policy", "Confidence", "Message"}
-	if len(e.Fields) != len(want) {
-		t.Fatalf("fields = %+v", e.Fields)
+	type want struct {
+		name   string
+		inline bool
+	}
+	wants := []want{
+		{"Actor", true}, {"Member", true}, {"Channel", true},
+		{"Policy", true}, {"Confidence", true}, {"\u200b", true},
+		{"Message", false},
+	}
+	if len(e.Fields) != len(wants) {
+		t.Fatalf("fields = %d, want %d", len(e.Fields), len(wants))
 	}
 	for i, f := range e.Fields {
-		if f.Name != want[i] || !f.Inline {
-			t.Errorf("field %d = %q inline=%v, want inline %q", i, f.Name, f.Inline, want[i])
+		if f.Name != wants[i].name || f.Inline != wants[i].inline {
+			t.Errorf("field %d = %q inline=%v, want %q inline=%v", i, f.Name, f.Inline, wants[i].name, wants[i].inline)
 		}
+	}
+}
+
+func TestVisibleLenCountsWhatRenders(t *testing.T) {
+	if got := visibleLen("[Deleted](https://discord.com/channels/1/2/3)"); got != 7 {
+		t.Errorf("a masked link counted %d, want its text only", got)
+	}
+	if got := visibleLen("<@&1517041177549869157>"); got > maxColumnText {
+		t.Errorf("one mention (%d) should fit a column", got)
 	}
 }

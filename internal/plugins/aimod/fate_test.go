@@ -14,14 +14,14 @@ func TestMessageFateSaysWhatHappenedToTheMessage(t *testing.T) {
 	cases := []struct {
 		action, rewrite, repostID, want string
 	}{
-		{"aimod.flagged", "", "", "🔗 [View message](" + orig + ")"},
-		{"aimod.dryrun", "", "", "🔗 [View message](" + orig + ")"},
-		{"aimod.remove", "", "", "🗑️ [Deleted](" + orig + ")"},
-		{"aimod.rewrite", "cleaned", "r", "🗑️ [Deleted](" + orig + ")\n✏️ [Reposted](" + repost + ")"},
+		{"aimod.flagged", "", "", "[Jump to message](" + orig + ")"},
+		{"aimod.dryrun", "", "", "[Jump to message](" + orig + ")"},
+		{"aimod.remove", "", "", "[Deleted](" + orig + ")"},
+		{"aimod.rewrite", "cleaned", "r", "[Deleted](" + orig + ") → [Reposted](" + repost + ")"},
 		// The repost landed but Discord did not say where: still say so.
-		{"aimod.rewrite", "cleaned", "", "🗑️ [Deleted](" + orig + ")\n✏️ Reposted"},
+		{"aimod.rewrite", "cleaned", "", "[Deleted](" + orig + ") → Reposted"},
 		// Nothing publishable left means rewriteMessage removed it.
-		{"aimod.rewrite", "  ", "", "🗑️ [Deleted](" + orig + ")"},
+		{"aimod.rewrite", "  ", "", "[Deleted](" + orig + ")"},
 	}
 	for _, tc := range cases {
 		got := messageFate("g", tc.action, c, deepVerdict{Rewrite: tc.rewrite}, tc.repostID)
@@ -46,10 +46,10 @@ func TestRewriteReturnsTheRepostID(t *testing.T) {
 
 func TestConfidenceMeterAndPolicyLabel(t *testing.T) {
 	for in, want := range map[float64]string{
-		0.95: "▰▰▰▰▰▰▰▰▰▱ 95%",
-		0.84: "▰▰▰▰▰▰▰▰▱▱ 84%",
-		0:    "▱▱▱▱▱▱▱▱▱▱ 0%",
-		1.7:  "▰▰▰▰▰▰▰▰▰▰ 100%",
+		0.95: "▰▰▰▰▱ 95%",
+		0.84: "▰▰▰▰▱ 84%",
+		0:    "▱▱▱▱▱ 0%",
+		1.7:  "▰▰▰▰▰ 100%",
 	} {
 		if got := confidenceMeter(in); got != want {
 			t.Errorf("confidenceMeter(%v) = %q, want %q", in, got, want)
