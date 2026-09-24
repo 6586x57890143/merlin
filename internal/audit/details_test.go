@@ -36,3 +36,22 @@ func TestReadableLeavesOtherValuesAlone(t *testing.T) {
 		}
 	}
 }
+
+// The layout the screenshots asked for: the reason leads as a quote beside
+// the mood icon, and everything else is a column in a grid after the actor.
+func TestPairDetailsRenderAsAGrid(t *testing.T) {
+	e := buildEmbed("system", "aimod.rewrite", "",
+		`user=<@1> channel=<#2> policy="Hate speech" confidence="x 95%" message="[Deleted](u)" reason="a slur"`)
+	if e.Description != "> a slur" {
+		t.Errorf("description = %q, want the reason as a quote", e.Description)
+	}
+	want := []string{"Actor", "Member", "Channel", "Policy", "Confidence", "Message"}
+	if len(e.Fields) != len(want) {
+		t.Fatalf("fields = %+v", e.Fields)
+	}
+	for i, f := range e.Fields {
+		if f.Name != want[i] || !f.Inline {
+			t.Errorf("field %d = %q inline=%v, want inline %q", i, f.Name, f.Inline, want[i])
+		}
+	}
+}

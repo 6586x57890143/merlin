@@ -552,11 +552,18 @@ func (o *GuildOps) WebhookCreate(channelID, name, avatar string, options ...disc
 // and a member who worked that out would have found a way to make merlin
 // mass-ping on their behalf.
 //
-// The signature drops discordgo's wait parameter and the returned message:
-// no caller wants either, and false is the cheaper call.
+// The signature drops discordgo's wait parameter and the returned message,
+// since false is the cheaper call; WebhookExecuteWait is for the caller that
+// needs to know where the post landed.
 func (o *GuildOps) WebhookExecute(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
 	_, err := o.webhookExecute(opWebhookExecute, false, webhookID, token, data, options...)
 	return err
+}
+
+// WebhookExecuteWait is WebhookExecute, returning the message it posted.
+// aimod's rewrite needs the repost's ID so the audit entry can link to it.
+func (o *GuildOps) WebhookExecuteWait(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	return o.webhookExecute(opWebhookExecute, true, webhookID, token, data, options...)
 }
 
 func (o *GuildOps) webhookExecute(op string, wait bool, webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {

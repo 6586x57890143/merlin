@@ -611,6 +611,13 @@ func (f *fakeOps) WebhookExecute(_, _ string, data *discordgo.WebhookParams, _ .
 	return nil
 }
 
+func (f *fakeOps) WebhookExecuteWait(id, token string, data *discordgo.WebhookParams, opts ...discordgo.RequestOption) (*discordgo.Message, error) {
+	if err := f.WebhookExecute(id, token, data, opts...); err != nil {
+		return nil, err
+	}
+	return &discordgo.Message{ID: "repost1"}, nil
+}
+
 func (f *fakeOps) GuildMember(_, userID string, _ ...discordgo.RequestOption) (*discordgo.Member, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
