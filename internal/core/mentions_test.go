@@ -85,3 +85,18 @@ func utf8ValidString(s string) bool {
 	}
 	return true
 }
+
+func TestMentionListsAndMessageLinks(t *testing.T) {
+	if got := MentionRoles([]string{"1", "", "2"}); got != "<@&1> <@&2>" {
+		t.Errorf("MentionRoles = %q", got)
+	}
+	if got := MentionUsers(nil); got != "" {
+		t.Errorf("MentionUsers(nil) = %q, want empty", got)
+	}
+	if got := MessageLink("g", "c", "m"); got != "https://discord.com/channels/g/c/m" {
+		t.Errorf("MessageLink = %q", got)
+	}
+	if got := MessageLink("g", "", "m"); got != "" {
+		t.Errorf("MessageLink with a missing part = %q, want empty", got)
+	}
+}

@@ -251,6 +251,7 @@ func buildEmbed(actorID, action, oldValue, newValue string) *discordgo.MessageEm
 	// listing many channel IDs, a rotation config with a long sticky) would
 	// silently cost the guild its live audit notification for that action.
 	// The durable row is already written in full and is unaffected.
+	oldValue, newValue = readable(oldValue), readable(newValue)
 	switch {
 	case oldValue != "" && newValue != "":
 		embed.Fields = append(embed.Fields,
