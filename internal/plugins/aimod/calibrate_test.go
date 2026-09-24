@@ -617,3 +617,35 @@ func TestCalibrationPromptDoesNotClearSlursAimedAtPeople(t *testing.T) {
 		t.Error("the reviewer is not told that a hypothetical frame does not clear a slur")
 	}
 }
+
+// Casual "nigga" kept being removed because the weekly review wrote examples
+// telling the filter to act on it, and calibration outranks the policy file.
+// Stored ones are dropped on the prompt path too, not only at review time.
+func TestCalibrationCannotTeachActingOnVernacular(t *testing.T) {
+	bad := CalibrationExample{Text: "whats good my nigga", Bucket: BucketHateSpeech, ShouldAct: true}
+	for _, ex := range []CalibrationExample{
+		bad,
+		{Text: "these niggas be like", Bucket: BucketHateSpeech, ShouldAct: true},
+	} {
+		if !actsOnVernacular(ex) {
+			t.Errorf("%q passed the guard", ex.Text)
+		}
+	}
+	for _, ex := range []CalibrationExample{
+		{Text: "whats good my nigga", Bucket: BucketHateSpeech, ShouldAct: false},
+		{Text: "a hard r slur aimed at someone", Bucket: BucketHateSpeech, ShouldAct: true},
+		{Text: "he gave a niggardly tip", Bucket: BucketHateSpeech, ShouldAct: true},
+	} {
+		if actsOnVernacular(ex) {
+			t.Errorf("%q was caught by the guard", ex.Text)
+		}
+	}
+
+	kept, problems := validateCalibration(calibratingConfig(), []CalibrationExample{bad})
+	if len(kept) != 0 || len(problems) != 1 {
+		t.Errorf("validateCalibration kept %v, problems %v", kept, problems)
+	}
+	if strings.Contains(calibrationBlock([]CalibrationExample{bad}), "nigga") {
+		t.Error("a stored example acting on vernacular still reaches the classifier prompt")
+	}
+}
