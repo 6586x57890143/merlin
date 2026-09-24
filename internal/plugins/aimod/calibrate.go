@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -125,6 +126,7 @@ The server is a blunt, high-free-speech internet community. Judge by what that k
 - Insults, profanity, mockery, hostile argument, dark humour and offensive opinions are ordinary here. They are not violations and the filter must not act on them.
 - Irony, sarcasm, hyperbole, trash talk and in-group banter are the DEFAULT reading of a heated line in a fast channel, not the exception. "I am going to kill you" after a lost match is a figure of speech. Read the surrounding messages before concluding that anything is sincere. The one exception is child_safety: Discord grants no humour exception there, so a joking or boasting delivery does not make a stated sexual interest in minors ordinary, and the filter acting on one is not a false positive.
 - Words with slur origins used as generic profanity about an idea, an object or one person's behaviour are ordinary here and must be left alone. "this is retarded", "that patch is gay" and "stop being autistic about it" are NOT violations on this server. Treat any incident where the filter acted on one of those as a clear false positive. That covers the word standing in for stupid or bad, aimed at what somebody said, made or did. It does NOT cover a slur used as a name for a person in a hostile message, which the hate_speech policy calls its clearest case rather than a borderline one, and it does not stop covering it because the slur sits inside a hypothetical or an example of what the speaker says. The filter acting on one of those is correct, and reporting it as a false positive would teach the filter to stop enforcing the policy at all.
+- The vernacular "nigga" used as address, a greeting or a stand-in for guy ("my nigga", "this nigga said", "niggas be like") is ordinary slang here, not the hard-R slur, and needs no visible reclaiming. The filter acting on it in a message that is not hostile toward somebody for their race is a clear false positive. Never return a should_act example for that usage; one is discarded unread.
 - What genuinely does breach Discord's Community Guidelines should be acted on almost every time: slurs aimed at people for a protected characteristic, credible threats against a real person, doxxing, sexual content involving minors or a stated sexual interest in them however it is framed, promotion of violent extremism, malware and phishing.
 
 The two mistakes are not equal, but both are real. Acting on ordinary speech drives away the members the server was built for; missing a genuine breach is what gets the whole server reported off the platform. Report both directions honestly.
@@ -415,6 +417,15 @@ func validateCalibration(cfg Config, in []CalibrationExample) (kept []Calibratio
 			problems = append(problems, "example telling the filter to stand down on "+string(ex.Bucket))
 			continue
 		}
+		if actsOnVernacular(ex) {
+			// The mirror image of the child_safety guard above, and for the
+			// same reason: the reviewer is told slurs aimed at people should
+			// be acted on, "my nigga" is literally aimed at a person, and one
+			// example saying so outranks the policy file in every prompt from
+			// then on. This is the route casual use kept getting removed by.
+			problems = append(problems, "example telling the filter to act on vernacular address")
+			continue
+		}
 		if EffectiveAction(cfg.BucketActions, ex.Bucket) == ActionOff {
 			// Not wrong, just pointless: a disabled bucket is sent to
 			// neither pass, so an example about it is prompt weight buying
@@ -441,6 +452,16 @@ func validateCalibration(cfg Config, in []CalibrationExample) (kept []Calibratio
 		}
 	}
 	return kept, problems
+}
+
+// vernacularNWord is the -a spelling hate_speech.yaml clears as ordinary
+// address. The hard-R form is rung 1's and cannot match this.
+var vernacularNWord = regexp.MustCompile(`(?i)\bn[i1!|*]gg+(a|uh)[sz]?\b`)
+
+// actsOnVernacular reports a calibration example telling the filter to act on
+// the vernacular form, which the policy file says is ordinary unless hostile.
+func actsOnVernacular(ex CalibrationExample) bool {
+	return ex.ShouldAct && ex.Bucket == BucketHateSpeech && vernacularNWord.MatchString(ex.Text)
 }
 
 // identifying reports whether s carries something pointing at a real person,
@@ -486,6 +507,10 @@ func renderCalibration(examples []CalibrationExample) string {
 // uncalibrated guild, which is what keeps those prompts byte-identical to
 // what they were before this feature existed.
 func calibrationBlock(examples []CalibrationExample) string {
+	// Filtered here as well as in validateCalibration, so an example stored
+	// before that guard existed stops reaching prompts on deploy rather than
+	// on whenever somebody next runs /aimod calibrate clear.
+	examples = slices.DeleteFunc(slices.Clone(examples), actsOnVernacular)
 	if len(examples) == 0 {
 		return ""
 	}
