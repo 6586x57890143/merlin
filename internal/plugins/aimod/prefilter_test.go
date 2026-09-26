@@ -452,6 +452,20 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
+			// The i moved behind the g, or dropped: what members tried
+			// once the swaps above were caught.
+			"transposed or missing letters do not get you past it",
+			"I hate all ngiers nggiers nggers ng1ers",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// The same letters inside ordinary words: the transposed entry
+			// only matches at the start of a word.
+			"transposed letters inside a word are not hits",
+			"stingier in Tangier, youngberry jam",
+			"", false, false,
+		},
+		{
 			"censoring bars do not either",
 			"f*ggot",
 			BucketHateSpeech, true, true,
@@ -641,7 +655,7 @@ func TestHiddenSlursReachTheModelSpelledOut(t *testing.T) {
 // a model call, since rung 1 cannot list every letter; ordinary words of the
 // same shape, and a single consonant (Niger), get neither.
 func TestLooseSlurSpellingsGetANote(t *testing.T) {
-	for _, s := range []string{"nizzer", "n y p p e r s", "n1dd3r", "nittur"} {
+	for _, s := range []string{"nizzer", "n y p p e r s", "n1dd3r", "nittur", "nigers", "nigor", "ngr"} {
 		if _, _, _, hit := hardHit(s); hit {
 			t.Errorf("fixture is wrong: rung 1 already catches %q", s)
 		}
@@ -650,7 +664,7 @@ func TestLooseSlurSpellingsGetANote(t *testing.T) {
 		}
 	}
 	for _, s := range []string{
-		"Niger", "the nippers are asleep", "a keen knitter", "nibblers",
+		"Niger", "the nippers are asleep", "a keen knitter", "nibblers", "a nicer nagger", "angry finger",
 		"dinner with Jennifer in Minnesota", "the spinner", "finish the innings",
 	} {
 		if n := slurNote(s); n != "" {

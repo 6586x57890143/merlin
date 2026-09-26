@@ -479,19 +479,28 @@ var hardSlurs = []struct {
 	// with. Any of them is publishable, which is what the switch below
 	// relies on.
 	subs []sub
+	// wordStart refuses a match glued onto the end of a longer word, for
+	// the entry whose letters also sit inside ordinary ones ("stingier",
+	// "Tangier"). It still takes a suffix.
+	wordStart bool
 }{
 	{
 		// The g is a class because swapping it is the evasion: "nibbers",
-		// "niqqers" and "nixxers" read as the word to everyone, and a spec that only took
-		// g published both. The casual "-a" ending is still not matched here.
+		// "niqqers" and "nixxers" read as the word to everyone, and a spec
+		// that only took g published all three. The casual "-a" ending is
+		// still not matched here.
 		pattern: slurRe(`ni[gbqx][gbqx]+er+(s|z)?`),
-		subs: []sub{
-			{"ninja", "ninjas"},
-			{"ninjago", "ninjagos"},
-			{"nice person", "nice people"},
-			{"night owl", "night owls"},
-			{"nintendo enjoyer", "nintendo enjoyers"},
-		},
+		subs:    nWordSubs,
+	},
+	{
+		// The same word with the i moved behind the g ("ngiers", "nggiers")
+		// or dropped ("nggers"), which members probed with once the plain
+		// swaps were caught. No English word starts this way (checked
+		// against a 370k word list), but some contain it ("stingier",
+		// "youngberry"), hence wordStart.
+		pattern:   slurRe(`n[gbqx]+([i1!|*]+[e3*]?|[e3*])r+(s|z)?`),
+		subs:      nWordSubs,
+		wordStart: true,
 	},
 	{
 		pattern: slurRe(`fagg+ot+(s|z)?`),
@@ -603,6 +612,14 @@ var hardSlurs = []struct {
 	},
 }
 
+var nWordSubs = []sub{
+	{"ninja", "ninjas"},
+	{"ninjago", "ninjagos"},
+	{"nice person", "nice people"},
+	{"night owl", "night owls"},
+	{"nintendo enjoyer", "nintendo enjoyers"},
+}
+
 // innocentCompounds are whole words that carry a slur's letters and are not
 // the slur. This is what stands where the anchors used to, and it is matched
 // against the entire word a hit landed in, so it spares "sniggered" and
@@ -647,7 +664,7 @@ func redactSlurs(content string) (string, bool) {
 				end -= size
 			}
 			ws, we := wordBounds(out, start, end)
-			if innocentCompounds.MatchString(out[ws:we]) {
+			if innocentCompounds.MatchString(out[ws:we]) || (s.wordStart && ws < start) {
 				continue
 			}
 			// Glued means the slur is only part of a longer word, and it
@@ -700,7 +717,9 @@ var squashLetters = map[rune]rune{
 func hiddenSlur(text string) string {
 	squashed := squash(text)
 	for _, s := range hardSlurs {
-		if s.notIf != nil && s.notIf.MatchString(text) {
+		// Squashing joins words, so a start-of-word entry has no word start
+		// to anchor to here; looseSlur checks its shape word by word.
+		if s.wordStart || (s.notIf != nil && s.notIf.MatchString(text)) {
 			continue
 		}
 		if loc := s.pattern.FindStringIndex(squashed); loc != nil {
@@ -741,16 +760,55 @@ func squash(text string) string {
 // consonants are out because Niger is a country. looseInnocent is matched
 // against the squashed hit, which is how "knitter" (squashed "nitter") and
 // "nippers" stay quiet.
+//
+// The second check is by sound, word by word: an n, the g (or a letter
+// standing for it), then an r, with only i/y and vowels between, in any order
+// ("nigers", "ngr", "nigor"). Anchored to the start of each word because
+// "stingier" and "finger" carry the same letters mid-word; against a 370k
+// word list it matches nothing but the slur and two obscure words, plus Niger,
+// which is spared by name. Letters spaced out one per word are joined first.
 func looseSlur(text string) string {
 	if w := looseNWord.FindString(squash(text)); w != "" && !looseInnocent.MatchString(w) {
 		return "nigger"
 	}
+	for _, w := range squashedWords(text) {
+		if looseNWordSound.MatchString(w) && w != "niger" {
+			return "nigger"
+		}
+	}
 	return ""
+}
+
+// squashedWords is text's words squashed one at a time, with a run of
+// single letters ("n g i e r s") joined back into the word it spells.
+func squashedWords(text string) []string {
+	var out []string
+	run := ""
+	for _, f := range strings.Fields(text) {
+		w := squash(f)
+		if len(w) == 1 {
+			run += w
+			continue
+		}
+		if run != "" {
+			out, run = append(out, run), ""
+		}
+		if w != "" {
+			out = append(out, w)
+		}
+	}
+	if run != "" {
+		out = append(out, run)
+	}
+	return out
 }
 
 var (
 	looseNWord    = regexp.MustCompile(`n+[iy]+(?:b{2,}|c{2,}|d{2,}|f{2,}|g{2,}|h{2,}|j{2,}|k{2,}|l{2,}|m{2,}|n{2,}|p{2,}|q{2,}|r{2,}|s{2,}|t{2,}|v{2,}|w{2,}|x{2,}|z{2,})[eaou]+r+[sz]?`)
 	looseInnocent = regexp.MustCompile(`^(?:nipper|nitter)[sz]?$`)
+	// looseNWordSound is anchored at both ends: it is matched against one
+	// squashed word, and a suffix is allowed only as a plural.
+	looseNWordSound = regexp.MustCompile(`^n+[iy]*[gbqx]+[iy]*[eaou]*r+[sz]*$`)
 )
 
 // slurNote is what the model rungs are told alongside a message whose

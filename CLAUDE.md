@@ -378,7 +378,13 @@ toward scanning:
   consonant in its shape ("nixxers", "nizzer") gets a "may be" note, since
   rung 1 can only rewrite spellings it names and that list never ends. A
   single consonant does not count (Niger), and `looseInnocent` spares
-  "nippers" and "knitter".
+  "nippers" and "knitter". It also matches by sound word by word (an n, a g or
+  stand-in, an r, any order of i and vowels between: "nigers", "ngr"),
+  anchored to the word start so "stingier" and "finger" stay quiet. Rung 1
+  itself rewrites the transposed and i-less forms ("ngiers", "nggers") via
+  a `wordStart` entry, since "stingier" and "youngberry" contain them
+  mid-word. Every one of these was checked against a 370k-word English list
+  before being added; do the same for any new entry.
 - `triagePosWeight` (12) is what stops the model collapsing to always-clean.
   About 1% of messages are flagged, so the loss is minimised by answering
   "clean" to everything, and that model is right 99% of the time while skipping
