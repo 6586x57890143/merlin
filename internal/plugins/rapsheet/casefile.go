@@ -296,6 +296,10 @@ func entryEmbed(e Entry) *discordgo.MessageEmbed {
 		desc = "(no reason given)"
 	}
 	embed := core.NewEmbed(color, title, core.TruncateEmbedDescription(desc), fields...)
+	// No divider. A forum shows a post's image as its preview in the post
+	// list, so the rule NewEmbed pins made every case file a grey line; with
+	// it gone the only upload is the mood icon, and that is what the list shows.
+	embed.Image = nil
 	if e.Voided() {
 		embed = core.WithMood(embed, core.MoodIdle)
 	}

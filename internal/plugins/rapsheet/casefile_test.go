@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 func withForum(h *harness) {
@@ -167,6 +169,11 @@ func TestEntryEmbedShapes(t *testing.T) {
 	em := entryEmbed(e)
 	if !strings.HasPrefix(em.Title, "#7 · banned 1h") || fieldValue(em, "Offence") != "threats · 100 pts" || fieldValue(em, "Until") == "" || fieldValue(em, "Source") != "" {
 		t.Errorf("embed = %+v", em)
+	}
+	// The forum previews the post's image: it must be the mood icon, the
+	// only file uploaded, never the divider.
+	if files := core.EmbedFiles(em); em.Image != nil || len(files) != 1 || !strings.HasPrefix(files[0].Name, "merlin_") {
+		t.Errorf("case-file post image = %+v, files = %d; want only the mood icon", em.Image, len(files))
 	}
 	e.Source = SourceDiscord
 	if fieldValue(entryEmbed(e), "Source") != "discord" {
