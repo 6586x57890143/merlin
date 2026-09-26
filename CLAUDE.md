@@ -384,7 +384,17 @@ toward scanning:
   itself rewrites the transposed and i-less forms ("ngiers", "nggers") via
   a `wordStart` entry, since "stingier" and "youngberry" contain them
   mid-word. Every one of these was checked against a 370k-word English list
-  before being added; do the same for any new entry.
+  before being added; do the same for any new entry. The broadest check,
+  `nearNWord`, is any word within two edits (optimal string alignment) of the
+  word or its plural, minus the casual "-a" ending and a named list of
+  ordinary words that land that close ("nicer", "nugget", "niggle").
+  **A message any of these point at goes to the deep pass whatever the fast
+  pass said** (`withSlurHints`): the small fast model is what cleared
+  "nibbers" and "ngiers" as nothing, so it does not get the last word on
+  them. The deep pass still has to confirm above `actThreshold`, so the
+  "nothing acts without rung 3" rule is intact, and `allowDeep` bounds the
+  cost. `similarSpam` yields to the same check, since cycling through
+  spellings of one word is exactly what near-copy spam looks like.
 - `triagePosWeight` (12) is what stops the model collapsing to always-clean.
   About 1% of messages are flagged, so the loss is minimised by answering
   "clean" to everything, and that model is right 99% of the time while skipping

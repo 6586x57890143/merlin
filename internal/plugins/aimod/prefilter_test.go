@@ -712,3 +712,31 @@ func TestFastPassIsToldWhatADisguisedSlurSpells(t *testing.T) {
 		}
 	}
 }
+
+// The broad check: anything within two edits of the word gets the note, the
+// casual ending and the ordinary words that land that close do not.
+func TestNearSpellingsOfTheWordGetANote(t *testing.T) {
+	for _, s := range []string{"nikker", "nigguh", "nigglet", "I hate all nikkers", "nuggers"} {
+		if slurNote(s) == "" {
+			t.Errorf("slurNote(%q) = nothing, want the note", s)
+		}
+	}
+	for _, s := range []string{"nicer", "chicken nuggets", "stop being so niggly", "Nigel", "Niger", "nigga", "my niggas", "nggias", "nagged"} {
+		if n := slurNote(s); n != "" {
+			t.Errorf("slurNote(%q) = %q, want nothing", s, n)
+		}
+	}
+	if editDistance("ngiers", "niggers") != 2 || editDistance("nigger", "nigger") != 0 || editDistance("ab", "ba") != 1 {
+		t.Error("editDistance is not the optimal string alignment distance")
+	}
+}
+
+// Whatever the fast pass let through, a message the slur check points at
+// still goes to the deep pass, and nothing already flagged is doubled.
+func TestSlurHintsAreEscalatedPastTheFastPass(t *testing.T) {
+	batch := []candidate{{Content: "hello there"}, {Content: "I hate all nikkers"}, {Content: "n g i e r s bro"}}
+	hits := withSlurHints(batch, []Verdict{{Index: 3, Bucket: BucketThreats, Confidence: 0.9}})
+	if len(hits) != 2 || hits[1].Index != 2 || hits[1].Bucket != BucketHateSpeech {
+		t.Errorf("hits = %+v, want the fast pass's own plus a hate_speech hit on message 2", hits)
+	}
+}

@@ -775,8 +775,60 @@ func looseSlur(text string) string {
 		if looseNWordSound.MatchString(w) && w != "niger" {
 			return "nigger"
 		}
+		if nearNWord(w) {
+			return "nigger"
+		}
 	}
 	return ""
+}
+
+// nearNWord is the broadest check: a word within two edits of the hard-R
+// word or its plural, counting a swap of neighbours as one edit, which
+// covers a letter added, dropped, replaced or moved ("nikker", "nigguh",
+// "nigglet"). Two edits from a six-letter word is wide on purpose; it is
+// the model that decides, and this only makes sure the model is asked and
+// told what to look for.
+//
+// The casual ending is left out, since the policy clears it and a note would
+// argue against the policy, and so are the ordinary words that land this
+// close ("nicer", "nugget", "niggle"), since a note on those is noise.
+func nearNWord(w string) bool {
+	if len(w) < 4 || len(w) > 9 || w[0] != 'n' || nearNWordCasual.MatchString(w) || nearNWordInnocent.MatchString(w) {
+		return false
+	}
+	return editDistance(w, "nigger") <= 2 || editDistance(w, "niggers") <= 2
+}
+
+var (
+	nearNWordCasual   = regexp.MustCompile(`a+[hsz]*$`)
+	nearNWordInnocent = regexp.MustCompile(`^(?:nicer|nag+(?:ed|er|ers)|nick(?:er|ers)|nigg(?:le|led|ler|lers|les|ly)|niggards?|nippers?|nuggets?|nudgers?|niters?|nigel|niger|nigh(?:er|ed|ter|ters)|neigher|nither|nogged|noggen)$`)
+)
+
+// editDistance is the optimal string alignment distance between two ASCII
+// strings: insertions, deletions, substitutions and adjacent swaps each
+// cost one.
+func editDistance(a, b string) int {
+	prev2 := make([]int, len(b)+1)
+	prev := make([]int, len(b)+1)
+	cur := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			if i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1] {
+				cur[j] = min(cur[j], prev2[j-2]+1)
+			}
+		}
+		prev2, prev, cur = prev, cur, prev2
+	}
+	return prev[len(b)]
 }
 
 // squashedWords is text's words squashed one at a time, with a run of

@@ -611,7 +611,10 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// same reason triage is: a verdict already reached on identical text is
 	// fact and this is a pattern. Yields to mustScan like every other skip,
 	// so repeating child-safety vocabulary is not a way to stop it being read.
-	if p.meter.similarSpam(cfg.GuildID, c.AuthorID, c.Content, p.now()) && !mustScan(c.Content) {
+	// A disguised slur is exempt too: cycling through spellings of one word
+	// is exactly what near-copy spam looks like, and dropping them here is
+	// how "ngiers", "nggiers", "nggers" went unread.
+	if p.meter.similarSpam(cfg.GuildID, c.AuthorID, c.Content, p.now()) && !mustScan(c.Content) && slurNote(c.Content) == "" {
 		return
 	}
 	// Rung 1.5. Ahead of the meter because a message this rung skips was
@@ -748,6 +751,7 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 			p.log.Error("aimod: fast pass", "guild", guildID, "messages", len(batch), "err", err)
 			return
 		}
+		hits = withSlurHints(batch, hits)
 
 		// Only what the fast pass cleared is remembered, so an identical
 		// repeat of a *flagged* message is scanned and flagged again rather
@@ -814,6 +818,31 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 		wg.Wait()
 	})
 }
+
+// withSlurHints adds a hate_speech hit for every message in batch whose
+// letters look like a disguised slur (slurNote) and that the fast pass let
+// through. The small fast model is exactly what cleared "nibbers" and
+// "ngiers" as nothing, so on these it does not get the last word: the deep
+// pass reads each one against the full policy and decides, and the rule
+// that nothing is acted on without the deep pass confirming still holds.
+// Its cost is bounded the way every escalation is, by userMeter.allowDeep.
+func withSlurHints(batch []candidate, hits []Verdict) []Verdict {
+	flagged := make(map[int]bool, len(hits))
+	for _, h := range hits {
+		flagged[h.Index] = true
+	}
+	for i, c := range batch {
+		if !flagged[i+1] && slurNote(c.Content) != "" {
+			hits = append(hits, Verdict{Index: i + 1, Bucket: BucketHateSpeech, Confidence: slurHintConfidence})
+		}
+	}
+	return hits
+}
+
+// slurHintConfidence is what a slur-hint escalation records as the first
+// pass's confidence, which is only ever shown if the guild is on flag and no
+// deep pass runs. Middling on purpose: it is a shape, not a judgement.
+const slurHintConfidence = 0.5
 
 // escalate runs rung 3 on one flagged message and acts on the result.
 //
