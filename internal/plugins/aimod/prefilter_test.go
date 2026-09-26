@@ -445,6 +445,13 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
+			// Swapping the g for a letter that reads the same is not a
+			// different word, and the doubling still takes separators.
+			"letter swaps do not get you past it",
+			"I h8 nibbers 🤖 niqqer nib'ber nixxers",
+			BucketHateSpeech, true, true,
+		},
+		{
 			"censoring bars do not either",
 			"f*ggot",
 			BucketHateSpeech, true, true,
@@ -455,7 +462,7 @@ func TestHardHit(t *testing.T) {
 			// spans a letter or a digit), and sniggered is, so it is on the
 			// innocentCompounds veto list.
 			"words that merely contain the letters are not hits",
-			"he sniggered at the niggardly tip",
+			"he sniggered at the niggardly tip in Niger, then nibbled the nib",
 			"", false, false,
 		},
 		{
@@ -626,6 +633,28 @@ func TestHiddenSlursReachTheModelSpelledOut(t *testing.T) {
 	} {
 		if w := hiddenSlur(s); w != "" {
 			t.Errorf("hiddenSlur(%q) = %q, a note on ordinary chat", s, w)
+		}
+	}
+}
+
+// Any doubled consonant in the hard-R word's shape gets a "may be" note and
+// a model call, since rung 1 cannot list every letter; ordinary words of the
+// same shape, and a single consonant (Niger), get neither.
+func TestLooseSlurSpellingsGetANote(t *testing.T) {
+	for _, s := range []string{"nizzer", "n y p p e r s", "n1dd3r", "nittur"} {
+		if _, _, _, hit := hardHit(s); hit {
+			t.Errorf("fixture is wrong: rung 1 already catches %q", s)
+		}
+		if !strings.Contains(slurNote(s), "may be a disguised spelling") {
+			t.Errorf("slurNote(%q) = %q, want the loose note", s, slurNote(s))
+		}
+	}
+	for _, s := range []string{
+		"Niger", "the nippers are asleep", "a keen knitter", "nibblers",
+		"dinner with Jennifer in Minnesota", "the spinner", "finish the innings",
+	} {
+		if n := slurNote(s); n != "" {
+			t.Errorf("slurNote(%q) = %q, a note on ordinary chat", s, n)
 		}
 	}
 }

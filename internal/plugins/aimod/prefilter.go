@@ -430,6 +430,14 @@ func slurRe(spec string) *regexp.Regexp {
 				panic("slurRe: unclosed group in " + spec)
 			}
 			atom, i = spec[i:i+j+1], i+j
+			// A class stands for one letter, so it repeats like one: "nib'ber"
+			// has to land exactly as "nig'ger" does.
+			if atom[0] == '[' {
+				atom = `(?:` + atom + `(?:` + slurSep + atom + `)*)`
+				if i+1 < len(spec) && spec[i+1] == '+' {
+					i++
+				}
+			}
 		default:
 			letter, ok := slurLetters[spec[i]]
 			if !ok {
@@ -473,7 +481,10 @@ var hardSlurs = []struct {
 	subs []sub
 }{
 	{
-		pattern: slurRe(`nigg+er+(s|z)?`),
+		// The g is a class because swapping it is the evasion: "nibbers",
+		// "niqqers" and "nixxers" read as the word to everyone, and a spec that only took
+		// g published both. The casual "-a" ending is still not matched here.
+		pattern: slurRe(`ni[gbqx][gbqx]+er+(s|z)?`),
 		subs: []sub{
 			{"ninja", "ninjas"},
 			{"ninjago", "ninjagos"},
@@ -687,6 +698,21 @@ var squashLetters = map[rune]rune{
 // that a false match did not need. innocentCompounds and notIf still apply,
 // so "he sniggered" and "a chink in the armour" never get as far as a note.
 func hiddenSlur(text string) string {
+	squashed := squash(text)
+	for _, s := range hardSlurs {
+		if s.notIf != nil && s.notIf.MatchString(text) {
+			continue
+		}
+		if loc := s.pattern.FindStringIndex(squashed); loc != nil {
+			return squashed[loc[0]:loc[1]]
+		}
+	}
+	return ""
+}
+
+// squash lowercases text, turns lookalikes back into letters and drops
+// everything else, skipping whole words innocentCompounds spares.
+func squash(text string) string {
 	var b strings.Builder
 	for _, w := range strings.Fields(strings.ToLower(text)) {
 		if innocentCompounds.MatchString(strings.Trim(w, `.,!?;:'"()`)) {
@@ -701,17 +727,31 @@ func hiddenSlur(text string) string {
 			}
 		}
 	}
-	squashed := b.String()
-	for _, s := range hardSlurs {
-		if s.notIf != nil && s.notIf.MatchString(text) {
-			continue
-		}
-		if loc := s.pattern.FindStringIndex(squashed); loc != nil {
-			return squashed[loc[0]:loc[1]]
-		}
+	return b.String()
+}
+
+// looseSlur is hiddenSlur with the spelling let go: the shape of the hard-R
+// word with any doubled consonant in the middle ("nixxers", "nippers",
+// "nizzer"). Rung 1 has to name every letter it will rewrite on sight, and
+// that list never ends, so this is where "any variation" is caught instead.
+//
+// It is looser than anything that may act, and says so: the note it feeds
+// reads "may be", and it only ever buys a model call and a hint. RE2 has no
+// backreference, so the doubling is written out per consonant, and single
+// consonants are out because Niger is a country. looseInnocent is matched
+// against the squashed hit, which is how "knitter" (squashed "nitter") and
+// "nippers" stay quiet.
+func looseSlur(text string) string {
+	if w := looseNWord.FindString(squash(text)); w != "" && !looseInnocent.MatchString(w) {
+		return "nigger"
 	}
 	return ""
 }
+
+var (
+	looseNWord    = regexp.MustCompile(`n+[iy]+(?:b{2,}|c{2,}|d{2,}|f{2,}|g{2,}|h{2,}|j{2,}|k{2,}|l{2,}|m{2,}|n{2,}|p{2,}|q{2,}|r{2,}|s{2,}|t{2,}|v{2,}|w{2,}|x{2,}|z{2,})[eaou]+r+[sz]?`)
+	looseInnocent = regexp.MustCompile(`^(?:nipper|nitter)[sz]?$`)
+)
 
 // slurNote is what the model rungs are told alongside a message whose
 // letters spell a hard slur that rung 1 did not match. A nano model reads
@@ -721,6 +761,9 @@ func hiddenSlur(text string) string {
 func slurNote(text string) string {
 	if w := hiddenSlur(text); w != "" {
 		return fmt.Sprintf(" [filter note: with spacing, symbols and lookalike letters removed this spells %q]", w)
+	}
+	if w := looseSlur(text); w != "" {
+		return fmt.Sprintf(" [filter note: this may be a disguised spelling of %q with other letters swapped in]", w)
 	}
 	return ""
 }

@@ -374,7 +374,11 @@ toward scanning:
   runs the slur table over what is left. Too loose to act on ("which ink"
   squashes to chink), so it only blocks the skip and adds a bracketed note to
   both model prompts saying what the letters spell, which `systemPreamble`
-  explains.
+  explains. `looseSlur` goes one step further for the hard-R word: any doubled
+  consonant in its shape ("nixxers", "nizzer") gets a "may be" note, since
+  rung 1 can only rewrite spellings it names and that list never ends. A
+  single consonant does not count (Niger), and `looseInnocent` spares
+  "nippers" and "knitter".
 - `triagePosWeight` (12) is what stops the model collapsing to always-clean.
   About 1% of messages are flagged, so the loss is minimised by answering
   "clean" to everything, and that model is right 99% of the time while skipping
