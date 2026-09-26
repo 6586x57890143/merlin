@@ -13,7 +13,7 @@ import (
 // What moderators do through the Discord client rather than through merlin.
 //
 // A ban placed from a member's context menu is as much a part of their
-// record as one placed with /rapsheet ban, and a sheet that only knew about
+// record as one placed with /ban, and a sheet that only knew about
 // merlin's own actions would be a sheet that lied by omission. Discord tells
 // the bot about these through GUILD_AUDIT_LOG_ENTRY_CREATE, one event per
 // audit-log entry, carrying the target, the actor and the reason the mod

@@ -30,6 +30,9 @@ const (
 )
 
 const (
+	cmdBan       = "ban"
+	cmdKick      = "kick"
+	cmdTimeout   = "timeout"
 	maxReasonLen = 500
 	// maxOptionChoices is Discord's ceiling on a Choices list.
 	maxOptionChoices = 25
@@ -85,33 +88,6 @@ func (p *Plugin) registerCommands() {
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "note",
 				Description: "Add a note to a member's sheet. Mods only, no points, no DM.",
 				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who the note is about."), reasonOpt(true)},
-			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "timeout",
-				Description: "Time a member out (Discord's own mute, up to 28 days). Goes on their sheet.",
-				Options: []*discordgo.ApplicationCommandOption{
-					userOpt("user", "Who to time out."),
-					{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Required: true, Description: "How long: 10m, 2h, 3d, up to 28d."},
-					categoryOption(),
-					reasonOpt(true),
-				},
-			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "kick",
-				Description: "Remove a member from the server. They can rejoin. Goes on their sheet.",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to kick."), categoryOption(), reasonOpt(true)},
-			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "ban",
-				Description: "Ban a member, for a while or for good. merlin lifts a temporary ban itself.",
-				Options: []*discordgo.ApplicationCommandOption{
-					userOpt("user", "Who to ban."),
-					categoryOption(),
-					reasonOpt(true),
-					{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Description: "How long: 7d, 30d, up to 365d. Leave out for a permanent ban, and say so."},
-					{Type: discordgo.ApplicationCommandOptionBoolean, Name: "permanent", Description: "A ban with no end date. Required if no duration is given."},
-					{Type: discordgo.ApplicationCommandOptionInteger, Name: "delete_message_days", Description: "Also delete their messages from the last N days (0-7).", MinValue: ptr(0.0), MaxValue: maxDeleteDays},
-				},
 			},
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "unban",
@@ -236,17 +212,50 @@ func (p *Plugin) registerCommands() {
 	}
 	p.commands.RegisterCommand(p.Name(), cmd)
 
+	// /ban, /kick and /timeout are top level rather than under /rapsheet because
+	// they are the three a moderator reaches for under pressure and types by
+	// name. They stay this plugin's (disabling rapsheet disables them) and
+	// keep their rapsheet.* action names, so a guild's existing tier, allow
+	// and deny settings still apply.
+	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+		Name:        cmdTimeout,
+		Description: "Time a member out (Discord's own mute, up to 28 days). Goes on their rapsheet.",
+		Options: []*discordgo.ApplicationCommandOption{
+			userOpt("user", "Who to time out."),
+			{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Required: true, Description: "How long: 10m, 2h, 3d, up to 28d."},
+			categoryOption(),
+			reasonOpt(true),
+		},
+	})
+	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+		Name:        cmdKick,
+		Description: "Remove a member from the server. They can rejoin. Goes on their rapsheet.",
+		Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to kick."), categoryOption(), reasonOpt(true)},
+	})
+	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+		Name:        cmdBan,
+		Description: "Ban a member, for a while or for good. merlin lifts a temporary ban itself.",
+		Options: []*discordgo.ApplicationCommandOption{
+			userOpt("user", "Who to ban."),
+			categoryOption(),
+			reasonOpt(true),
+			{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Description: "How long: 7d, 30d, up to 365d. Leave out for a permanent ban, and say so."},
+			{Type: discordgo.ApplicationCommandOptionBoolean, Name: "permanent", Description: "A ban with no end date. Required if no duration is given."},
+			{Type: discordgo.ApplicationCommandOptionInteger, Name: "delete_message_days", Description: "Also delete their messages from the last N days (0-7).", MinValue: ptr(0.0), MaxValue: maxDeleteDays},
+		},
+	})
+
 	view := core.PermSpec{Tier: core.TierMod, Action: actionView}
 	p.commands.Handle("rapsheet", "view", view, p.handleView)
 	p.commands.Handle("rapsheet", "me", core.PermSpec{Tier: core.TierPublic, Action: actionMe}, p.handleMe)
 	p.commands.Handle("rapsheet", "warn", core.PermSpec{Tier: core.TierMod, Action: actionWarn}, p.handleWarn)
 	p.commands.Handle("rapsheet", "note", core.PermSpec{Tier: core.TierMod, Action: actionNote}, p.handleNote)
-	p.commands.Handle("rapsheet", "timeout", core.PermSpec{Tier: core.TierMod, Action: actionTimeout}, p.handleTimeout)
-	p.commands.Handle("rapsheet", "kick", core.PermSpec{Tier: core.TierMod, Action: actionKick}, p.handleKick)
+	p.commands.Handle(cmdTimeout, "", core.PermSpec{Tier: core.TierMod, Action: actionTimeout}, p.handleTimeout)
+	p.commands.Handle(cmdKick, "", core.PermSpec{Tier: core.TierMod, Action: actionKick}, p.handleKick)
 	// Ban is TierAdmin by default: it is the one consequence here a member
 	// cannot see the end of from inside the server, and a guild that wants
 	// mods to hold it lowers the bar on purpose with set-tier.
-	p.commands.Handle("rapsheet", "ban", core.PermSpec{Tier: core.TierAdmin, Action: actionBan}, p.handleBan)
+	p.commands.Handle(cmdBan, "", core.PermSpec{Tier: core.TierAdmin, Action: actionBan}, p.handleBan)
 	p.commands.Handle("rapsheet", "unban", core.PermSpec{Tier: core.TierAdmin, Action: actionUnban}, p.handleUnban)
 	p.commands.Handle("rapsheet", "summary", core.PermSpec{Tier: core.TierMod, Action: actionSummary}, p.handleSummary)
 	linkSpec := core.PermSpec{Tier: core.TierMod, Action: actionLink}

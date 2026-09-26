@@ -48,7 +48,7 @@ const (
 	// ride as embed fields.
 	KeyWarnNotice Key = "moderation.warn"
 	// KeyTimeoutNotice, KeyKickNotice, KeyBanNotice and KeyBanPermanentNotice
-	// are the DMs behind the corresponding /rapsheet leaves. The ban ones
+	// are the DMs behind /timeout, /kick and /ban. The ban ones
 	// have to be sent before the ban lands: a banned member shares no server
 	// with the bot and Discord refuses the DM. Plain register throughout.
 	KeyTimeoutNotice      Key = "moderation.timeout"

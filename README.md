@@ -134,8 +134,8 @@ with the moderators anonymised. Entries carry points that fade over a half-life
 you set, and the score they add up to drives a ladder: cross a band and merlin
 posts the recommended consequence to your mod channel with an Apply button, or,
 if you tell it to, applies it (never against staff, never permanently, never on
-top of a moderator's own command). `/rapsheet warn`, `timeout`, `kick` and
-`ban 7d` are the commands; temporary bans lift themselves. Each member on
+top of a moderator's own command). `/rapsheet warn`, plus the top-level
+`/timeout`, `/kick` and `/ban 7d`, are the commands; temporary bans lift themselves. Each member on
 record gets a thread in a mod-only forum so there is somewhere to talk next to
 the facts, a moderator can `link` two accounts that are the same person so they
 share one score, and merlin flags a joiner who looks like a return (same avatar,
