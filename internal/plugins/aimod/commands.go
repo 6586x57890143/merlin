@@ -16,6 +16,7 @@ import (
 // server enforces, the other holds a spending credential.
 const (
 	actionRead      = "aimod.read"
+	actionWhy       = "aimod.why"
 	actionUndo      = "aimod.undo"
 	actionPolicy    = "aimod.policy"
 	actionConfigure = "aimod.configure"
@@ -65,8 +66,11 @@ func (p *Plugin) registerCommands() {
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "why",
-				Description: "Show why a message was removed, rewritten or flagged",
-				Options:     []*discordgo.ApplicationCommandOption{messageOpt},
+				Description: "Show why a message was rewritten, using the code under it",
+				Options: []*discordgo.ApplicationCommandOption{{
+					Type: discordgo.ApplicationCommandOptionString, Name: "id",
+					Description: "The code under a rewritten message (mods may also give a message ID)", Required: true,
+				}},
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
@@ -429,7 +433,10 @@ func (p *Plugin) registerCommands() {
 	// the message carrying the button was rendered for somebody allowed to
 	// see it. Same rule adminconfig's wizard follows.
 	p.commands.HandleComponent(p.Name(), statusPagePrefix, core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatusPage)
-	p.commands.Handle("aimod", "why", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleWhy)
+	// TierPublic: the code is printed under the repost for everybody in the
+	// channel, so answering it is the point. What a member is shown is cut
+	// down inside the handler; the moderator's view still needs actionRead.
+	p.commands.Handle("aimod", "why", core.PermSpec{Tier: core.TierPublic, Action: actionWhy}, p.handleWhy)
 	p.commands.Handle("aimod", "undo", core.PermSpec{Tier: core.TierMod, Action: actionUndo}, p.handleUndo)
 
 	// TierPublic: consenting to be moderated is not a privilege, and gating

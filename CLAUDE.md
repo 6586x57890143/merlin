@@ -307,7 +307,11 @@ status` rather than appearing to work.
   zeroes `AllowedMentions`, which matters more here than anywhere else in that
   file: the reposted text is member-authored and moments old. The
   "edited by merlin" marker is not optional; the repost carries somebody's name
-  and is not what they wrote.
+  and is not what they wrote. It carries a random code (`aimod_incidents.code`,
+  migration 0041) that `/aimod why` takes at `TierPublic`: a member gets the
+  policy and reason by code only, a mod gets the full record by code or
+  message ID. Random rather than the row or message ID, since either would let
+  any member probe whether a message had been quietly flagged.
 - **The incident is recorded before the message is touched** (same ordering
   argument as `roles.applyJail`): the other order leaves the message gone with
   no copy of it, nothing for `/aimod undo`, and nothing to show the member.

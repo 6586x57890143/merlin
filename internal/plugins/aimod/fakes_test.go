@@ -13,6 +13,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
@@ -332,6 +333,17 @@ func (f *fakeStore) IncidentByMessage(_ context.Context, g, messageID string) (I
 	defer f.mu.Unlock()
 	for _, inc := range f.incidents {
 		if inc.GuildID == g && inc.MessageID == messageID {
+			return inc, nil
+		}
+	}
+	return Incident{}, ErrNoIncident
+}
+
+func (f *fakeStore) IncidentByCode(_ context.Context, g, code string) (Incident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, inc := range f.incidents {
+		if inc.GuildID == g && inc.Code != "" && inc.Code == code {
 			return inc, nil
 		}
 	}
@@ -753,6 +765,15 @@ type fakePrivilege struct{ bootstrapID string }
 
 func (f fakePrivilege) IsBootstrapAdmin(userID string) bool {
 	return f.bootstrapID != "" && userID == f.bootstrapID
+}
+
+// Authorize passes the bootstrap identity and nobody else, which is all the
+// tests need to tell a moderator from a member.
+func (f fakePrivilege) Authorize(i *discordgo.InteractionCreate, _ core.PermSpec) error {
+	if i.Member != nil && i.Member.User != nil && f.IsBootstrapAdmin(i.Member.User.ID) {
+		return nil
+	}
+	return core.ErrForbidden{Reason: "not a mod"}
 }
 
 // testPlugin assembles a Plugin over the fakes above, with the real policy

@@ -430,10 +430,19 @@ func slurRe(spec string) *regexp.Regexp {
 			}
 			atom, i = spec[i:i+j+1], i+j
 		default:
-			if class, ok := slurLetters[spec[i]]; ok {
-				atom = class
-			} else {
-				atom = regexp.QuoteMeta(spec[i : i+1])
+			letter, ok := slurLetters[spec[i]]
+			if !ok {
+				letter = regexp.QuoteMeta(spec[i : i+1])
+			}
+			// Every letter may repeat, with the same slack between the
+			// repeats as between letters: "n'i'ig'ger" doubles an i with a
+			// quote in the middle, and a pattern that allowed only one of
+			// each read that as a different word and published it. The
+			// repeat is why a `+` in the spec is now redundant for a letter;
+			// it still means "at least one", which this already is.
+			atom = `(?:` + letter + `(?:` + slurSep + letter + `)*)`
+			if i+1 < len(spec) && spec[i+1] == '+' {
+				i++
 			}
 		}
 		// A trailing ? or + belongs to the atom it follows, never to the

@@ -438,6 +438,13 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
+			// A doubled letter with a separator inside the doubling: the
+			// spelling that reached a channel with one-of-each patterns.
+			"repeated letters do not get you past it",
+			"n'i'ig'ger niiiggggerrr f.a.a.g.g.o.t",
+			BucketHateSpeech, true, true,
+		},
+		{
 			"censoring bars do not either",
 			"f*ggot",
 			BucketHateSpeech, true, true,

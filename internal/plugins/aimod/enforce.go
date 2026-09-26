@@ -2,6 +2,8 @@ package aimod
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"strings"
@@ -29,7 +31,20 @@ const webhookName = "merlin message cleanup"
 // Everyone reading the channel is entitled to know that happened, and the
 // author is entitled to have it be obvious rather than deniable. If this
 // ever needs to be shorter, it does not need to be absent.
-const rewriteMarker = "\n-# edited by merlin - `/aimod why` for details"
+//
+// The code is what makes it answerable: the original is gone, so there is no
+// message ID left for anybody to copy, and /aimod why takes this instead.
+func rewriteMarker(code string) string {
+	return "\n-# edited by merlin - `/aimod why id:" + code + "` for details"
+}
+
+// newIncidentCode is eight random base32 characters: short enough to type,
+// and 40 bits is well past guessing one that was never published.
+func newIncidentCode() string {
+	b := make([]byte, 5)
+	_, _ = rand.Read(b)
+	return strings.ToLower(base32.StdEncoding.EncodeToString(b))
+}
 
 // enforce carries out one confirmed verdict.
 //
@@ -102,6 +117,11 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 		inc.Content = c.Content
 		inc.Replacement = v.Rewrite
 	}
+	// Only a rewrite that will actually be reposted gets a code, since the
+	// repost is the one place it is ever printed.
+	if action == ActionRewrite && cfg.Mode != ModeFlag {
+		inc.Code = newIncidentCode()
+	}
 	incidentID, err := p.store.RecordIncident(ctx, inc)
 	if err != nil {
 		p.log.Error("aimod: record incident, taking no action",
@@ -122,7 +142,7 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	case ActionRemove:
 		err = p.removeMessage(ctx, cfg.GuildID, c)
 	case ActionRewrite:
-		repostID, err = p.rewriteMessage(ctx, cfg.GuildID, c, v.Rewrite)
+		repostID, err = p.rewriteMessage(ctx, cfg.GuildID, c, v.Rewrite, inc.Code)
 	default:
 		return
 	}
@@ -173,7 +193,7 @@ func (p *Plugin) removeMessage(ctx context.Context, guildID string, c candidate)
 //
 // It returns the repost's message ID, empty when the rewrite became a
 // removal, so the audit entry can link to what the channel now shows.
-func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate, replacement string) (string, error) {
+func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate, replacement, code string) (string, error) {
 	replacement = strings.TrimSpace(replacement)
 	if replacement == "" {
 		return "", p.removeMessage(ctx, guildID, c)
@@ -197,7 +217,7 @@ func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate
 		return "", err
 	}
 	msg, err := p.ops(guildID).WebhookExecuteWait(hook.ID, hook.Token, &discordgo.WebhookParams{
-		Content:   replacement + rewriteMarker,
+		Content:   replacement + rewriteMarker(code),
 		Username:  displayName(author),
 		AvatarURL: author.AvatarURL(""),
 	})

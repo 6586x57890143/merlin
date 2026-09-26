@@ -112,6 +112,12 @@ func TestRewriteRepostsUnderTheAuthorWithAMarker(t *testing.T) {
 	if strings.Contains(posted[0].Content, "555-0100") {
 		t.Error("the removed text survived into the repost")
 	}
+	// The original is gone, so the code under the repost is the only handle
+	// anybody has on it, and it has to be the one the incident was saved under.
+	code := store.incidents[0].Code
+	if len(code) != 8 || !strings.Contains(posted[0].Content, "/aimod why id:"+code) {
+		t.Errorf("repost %q does not carry the incident's code %q", posted[0].Content, code)
+	}
 }
 
 // The deep pass is told to return an empty string when nothing publishable

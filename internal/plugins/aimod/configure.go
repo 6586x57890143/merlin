@@ -439,19 +439,46 @@ func (p *Plugin) handlePolicySet(ctx context.Context, s *discordgo.Session, i *d
 }
 
 func (p *Plugin) handleWhy(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	messageID := strings.TrimSpace(core.LeafArgs(i)["message_id"].Value.(string))
-	inc, err := p.store.IncidentByMessage(ctx, i.GuildID, messageID)
+	ref := strings.TrimSpace(core.LeafArgs(i)["id"].Value.(string))
+	// A member gets the code lookup and nothing else. A message ID would let
+	// them paste any message and learn whether the filter had quietly
+	// flagged it, and the full view below carries the original text, which
+	// for a rewrite is the very words that were taken out of the channel.
+	mod := p.privilege != nil && p.privilege.Authorize(i, core.PermSpec{Tier: core.TierMod, Action: actionRead}) == nil
+	inc, err := p.store.IncidentByCode(ctx, i.GuildID, strings.ToLower(ref))
+	if errors.Is(err, ErrNoIncident) && mod {
+		inc, err = p.store.IncidentByMessage(ctx, i.GuildID, ref)
+	}
 	if err != nil {
 		if errors.Is(err, ErrNoIncident) {
 			core.RespondInfo(s, i, "Nothing recorded",
-				"This bot has not acted on that message. If it disappeared, something else removed it.")
+				"This bot has no record under that. If a message disappeared, something else removed it.")
 			return
 		}
 		core.RespondErr(s, i, "Failed to look it up", err)
 		return
 	}
 
+	if !mod {
+		// The reason is model-written and may quote what it objected to, so
+		// it goes through the same redaction as the repost did.
+		reason, _ := redactSlurs(orNone([]string{inc.Reason}))
+		fields := []*discordgo.MessageEmbedField{
+			{Name: "Policy", Value: policyLabel(inc.Bucket), Inline: true},
+			{Name: "When", Value: fmt.Sprintf("<t:%d:R>", inc.CreatedAt.Unix()), Inline: true},
+			{Name: "Reason", Value: core.TruncateEmbedField(reason)},
+		}
+		if inc.Undone {
+			fields = append(fields, &discordgo.MessageEmbedField{Name: "Status", Value: "reversed by a moderator"})
+		}
+		if err := core.RespondEmbed(s, i, core.NewEmbed(core.ColorInfo, "Why that message was rewritten", "", fields...)); err != nil {
+			p.log.Error("aimod: respond why", "guild", i.GuildID, "err", err)
+		}
+		return
+	}
+
 	fields := []*discordgo.MessageEmbedField{
+		{Name: "Message ID", Value: "`" + inc.MessageID + "` (for `/aimod undo`)"},
 		{Name: "Policy", Value: string(inc.Bucket), Inline: true},
 		{Name: "Action", Value: string(inc.Action), Inline: true},
 		{Name: "Confidence", Value: fmt.Sprintf("%.0f%%", inc.Confidence*100), Inline: true},

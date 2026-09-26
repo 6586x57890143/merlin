@@ -224,6 +224,23 @@ func TestIncidentRoundTrip(t *testing.T) {
 	if inc.Undone {
 		t.Error("a fresh incident came back already reversed")
 	}
+	// No code for a row that was never reposted: stored as NULL, which is
+	// what keeps any number of them clear of the unique index.
+	if inc.Code != "" {
+		t.Errorf("code = %q for a removal", inc.Code)
+	}
+	if _, err := s.RecordIncident(ctx, Incident{
+		GuildID: "g1", ChannelID: "c1", MessageID: "m2", AuthorID: "u1",
+		Bucket: BucketHateSpeech, Action: ActionRewrite, Code: "abcd2345", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("RecordIncident with a code: %v", err)
+	}
+	if byCode, err := s.IncidentByCode(ctx, "g1", "abcd2345"); err != nil || byCode.MessageID != "m2" {
+		t.Errorf("IncidentByCode = %+v, %v; want m2", byCode, err)
+	}
+	if _, err := s.IncidentByCode(ctx, "g2", "abcd2345"); err != ErrNoIncident {
+		t.Errorf("a code answered in another guild: %v", err)
+	}
 
 	if err := s.MarkUndone(ctx, id); err != nil {
 		t.Fatalf("MarkUndone: %v", err)
