@@ -360,6 +360,12 @@ toward scanning:
   *before* the model is consulted so no amount of confidence routes around it.
   Deliberately over-inclusive: a false positive costs one call that would have
   happened anyway, and it is not a detector, since nothing acts on a match.
+  `hiddenSlur` is the same kind of veto for hard slurs rung 1 missed: it squashes
+  the whole message (spaces, symbols, digits and Cyrillic lookalikes out) and
+  runs the slur table over what is left. Too loose to act on ("which ink"
+  squashes to chink), so it only blocks the skip and adds a bracketed note to
+  both model prompts saying what the letters spell, which `systemPreamble`
+  explains.
 - `triagePosWeight` (12) is what stops the model collapsing to always-clean.
   About 1% of messages are flagged, so the loss is minimised by answering
   "clean" to everything, and that model is right 99% of the time while skipping

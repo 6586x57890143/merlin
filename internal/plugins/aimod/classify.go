@@ -196,7 +196,9 @@ When a message is ambiguous, or when it could plausibly fall under one of a poli
 
 Judge only the message text you are given. Do not infer intent that is not there, and do not report a message for the subject it discusses rather than for what it does.
 
-Judge what a message means, not how it is spelled. Misspellings, swapped or repeated letters, digits or symbols standing in for letters, and spaces or punctuation inserted mid-word are the ordinary ways of writing a word that would otherwise be caught, and they count as that word. A plain typo in a sentence that is not otherwise a violation is still not a violation.`
+Judge what a message means, not how it is spelled. Misspellings, swapped or repeated letters, digits or symbols standing in for letters, and spaces or punctuation inserted mid-word are the ordinary ways of writing a word that would otherwise be caught, and they count as that word. A plain typo in a sentence that is not otherwise a violation is still not a violation.
+
+A message may end with a bracketed filter note saying what its letters spell once spacing, symbols and lookalike letters are removed. The note is added by this filter, not written by the member. When the letters were plainly spaced out or disguised to write that word, judge the message as though the word were written plainly. When the note only comes from ordinary separate words running together, ignore it.`
 
 // fastPrompt builds the batch classifier's system message: one line per
 // enforced bucket, and nothing else.
@@ -273,10 +275,10 @@ func (p *Plugin) classifyFast(ctx context.Context, state budgetState, cfg Config
 		// off-by-one that silently actions the wrong person's message, and
 		// one-based indexing is what the model has seen most of.
 		if c.ReplyTo != "" {
-			fmt.Fprintf(&user, "%d. [replying to: %q] %s\n", i+1, c.ReplyTo, sanitizeForPrompt(c.Content))
+			fmt.Fprintf(&user, "%d. [replying to: %q] %s%s\n", i+1, c.ReplyTo, sanitizeForPrompt(c.Content), slurNote(c.Content))
 			continue
 		}
-		fmt.Fprintf(&user, "%d. %s\n", i+1, sanitizeForPrompt(c.Content))
+		fmt.Fprintf(&user, "%d. %s%s\n", i+1, sanitizeForPrompt(c.Content), slurNote(c.Content))
 	}
 
 	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
@@ -420,7 +422,7 @@ func (p *Plugin) classifyDeep(ctx context.Context, state budgetState, cfg Config
 		}
 		user.WriteString("\n")
 	}
-	fmt.Fprintf(&user, "The message to judge, written by %s:\n%s", self, sanitizeForPrompt(c.Content))
+	fmt.Fprintf(&user, "The message to judge, written by %s:\n%s%s", self, sanitizeForPrompt(c.Content), slurNote(c.Content))
 
 	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
 		spec:     state.Spec,

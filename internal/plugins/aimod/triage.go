@@ -480,6 +480,12 @@ func (p *Plugin) triageDecide(ctx context.Context, cfg Config, text string) tria
 	if mustScan(text) {
 		return triageDecision{}
 	}
+	// A slur rung 1 did not match is exactly what this model has had the
+	// least chance to learn: the disguise is what made it rare. See
+	// hiddenSlur for why that is a scan, never an action.
+	if hiddenSlur(text) != "" {
+		return triageDecision{}
+	}
 	feats := triageFeatures(text)
 	if len(feats) == 0 {
 		return triageDecision{}

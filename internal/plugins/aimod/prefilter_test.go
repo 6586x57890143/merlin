@@ -595,3 +595,77 @@ func TestCompoundSlursAreRewrittenIntoWords(t *testing.T) {
 		t.Error("the veto list is being used as an evasion")
 	}
 }
+
+// Past rung 1 is where the disguise works: three separators between letters,
+// or a Cyrillic letter a regexp does not read as Latin. These have to reach
+// the fast pass with what they spell spelled out, and never be skipped by
+// rung 1.5, or the nano model reads punctuation and moves on.
+func TestHiddenSlursReachTheModelSpelledOut(t *testing.T) {
+	for _, s := range []string{
+		"n - i - g - g - e - r",
+		"you absolute n...i...g...g...e...r",
+		"nіgger", // Cyrillic i
+		"f  .  a  .  g  .  g  .  o  .  t",
+	} {
+		if _, _, _, hit := hardHit(s); hit {
+			t.Errorf("fixture is wrong: rung 1 already catches %q", s)
+		}
+		if hiddenSlur(s) == "" {
+			t.Errorf("hiddenSlur(%q) = nothing, so the fast pass judges the disguise", s)
+		}
+	}
+
+	// And the loose reading does not follow ordinary writing around: the
+	// veto lists rung 1 uses still hold, and plain chat gets no note.
+	for _, s := range []string{
+		"he sniggered at the niggardly tip",
+		"there is a chink in the armour of that argument",
+		"the whole contract is gobbledygook to me",
+		"the new patch is out, go check the notes",
+		"lol that was a cunning plan",
+	} {
+		if w := hiddenSlur(s); w != "" {
+			t.Errorf("hiddenSlur(%q) = %q, a note on ordinary chat", s, w)
+		}
+	}
+}
+
+// The note has to reach the prompt the fast pass actually sends, and rung 1.5
+// must not skip the message on a guess.
+func TestFastPassIsToldWhatADisguisedSlurSpells(t *testing.T) {
+	client := &fakeClassifier{}
+	p := testPlugin(t, newFakeStore(), client, newFakeOps(), &fakeAudit{})
+	cfg := enforcingConfig()
+	cfg.BucketActions = map[Bucket]Action{BucketHateSpeech: ActionRewrite}
+
+	msg := "n - i - g - g - e - r"
+	if _, _, err := p.classifyFast(context.Background(), testState(), cfg, []candidate{{MessageID: "m1", Content: msg}}); err != nil {
+		t.Fatalf("classifyFast: %v", err)
+	}
+	user := client.lastFastReq.Messages[len(client.lastFastReq.Messages)-1].Content
+	if !strings.Contains(user, `spells "nigger"`) {
+		t.Errorf("the fast pass was not told what %q spells: %q", msg, user)
+	}
+	if !strings.Contains(client.lastFastReq.Messages[0].Content, "filter note") {
+		t.Error("the system prompt does not explain the note, so the model may read it as the member's")
+	}
+
+	// Trained to find it utterly ordinary, so only the veto can stop it.
+	tp, tcfg := triagePlugin(t, TriageOn)
+	m := tp.triageFor(context.Background(), tcfg.GuildID)
+	trainTriage(m, 80)
+	for r := 0; r < 40; r++ {
+		m.Learn(triageFeatures(msg), false)
+	}
+	if got := m.Score(triageFeatures(msg)); got >= triageSkipThreshold {
+		t.Fatalf("fixture is wrong: the model does not find %q clean (scored %.4f)", msg, got)
+	}
+	if d := tp.triageDecide(context.Background(), tcfg, msg); d.skip || d.wouldSkip {
+		t.Errorf("rung 1.5 was allowed to skip a disguised slur: %+v", d)
+	}
+	for _, s := range triageClean {
+		if w := hiddenSlur(s); w != "" {
+			t.Errorf("hiddenSlur(%q) = %q, so rung 1.5 loses ordinary traffic", s, w)
+		}
+	}
+}

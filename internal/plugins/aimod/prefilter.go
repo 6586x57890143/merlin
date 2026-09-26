@@ -1,6 +1,7 @@
 package aimod
 
 import (
+	"fmt"
 	"hash/fnv"
 	"math/rand/v2"
 	"regexp"
@@ -660,6 +661,68 @@ func redactSlurs(content string) (string, bool) {
 		out = b.String()
 	}
 	return out, hit
+}
+
+// squashLetters is what a disguise turns back into once it is taken off:
+// digits and symbols standing for letters, plus the Cyrillic lookalikes that
+// render identically to Latin ones and are the obvious move once the plain
+// letters are caught.
+var squashLetters = map[rune]rune{
+	'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't',
+	'@': 'a', '!': 'i', '|': 'i', '$': 's',
+	'а': 'a', 'е': 'e', 'і': 'i', 'о': 'o', 'с': 'c', 'р': 'p', 'к': 'k', 'у': 'y', 'х': 'x', 'ı': 'i',
+}
+
+// hiddenSlur is the hard slur a message spells once every space, symbol and
+// lookalike is taken out of it, or "" if there is none. It is what rung 1
+// declines to be certain about: "n - i - g - g - e - r" is three separators
+// past slurSep, and a Cyrillic i is not an i to a regexp.
+//
+// It never acts, and that is the whole reason it can be this loose.
+// Squashing a message end to end joins words, so "which ink" reads as the
+// chink entry and "go ok" as gook, and a rung 1 that deleted on that would
+// be the over-broad censor this package exists not to be. What it does
+// instead is tell the model rungs what the letters spell (see slurNote) and
+// stop rung 1.5 skipping the message, both of which cost at most one call
+// that a false match did not need. innocentCompounds and notIf still apply,
+// so "he sniggered" and "a chink in the armour" never get as far as a note.
+func hiddenSlur(text string) string {
+	var b strings.Builder
+	for _, w := range strings.Fields(strings.ToLower(text)) {
+		if innocentCompounds.MatchString(strings.Trim(w, `.,!?;:'"()`)) {
+			continue
+		}
+		for _, r := range w {
+			if m, ok := squashLetters[r]; ok {
+				r = m
+			}
+			if r >= 'a' && r <= 'z' {
+				b.WriteRune(r)
+			}
+		}
+	}
+	squashed := b.String()
+	for _, s := range hardSlurs {
+		if s.notIf != nil && s.notIf.MatchString(text) {
+			continue
+		}
+		if loc := s.pattern.FindStringIndex(squashed); loc != nil {
+			return squashed[loc[0]:loc[1]]
+		}
+	}
+	return ""
+}
+
+// slurNote is what the model rungs are told alongside a message whose
+// letters spell a hard slur that rung 1 did not match. A nano model reads
+// "n . i . g . g . e . r" as punctuation and moves on; told what it spells,
+// it judges the word the writer meant rather than the disguise, which
+// systemPreamble already asks of it and it cannot reliably do unaided.
+func slurNote(text string) string {
+	if w := hiddenSlur(text); w != "" {
+		return fmt.Sprintf(" [filter note: with spacing, symbols and lookalike letters removed this spells %q]", w)
+	}
+	return ""
 }
 
 // pickSub chooses one replacement at random, from the single-word ones when
