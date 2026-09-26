@@ -243,6 +243,15 @@ status` rather than appearing to work.
   fast one because the two cost two orders of magnitude apart. A member over
   the deep ceiling is still **recorded as flagged**, never silently dropped, or
   the ceiling itself becomes a way to bury a real violation inside a flood.
+  The fast rung's ceiling is ten windows at once (`scanCeilings`, 30s to 24h),
+  generous at the short end and tightening as the window grows: an argument is
+  fast but short, draining a budget has to be sustained. They are approximate
+  two-bucket counts, not timestamps, since a day's worth per member would be
+  thousands. Near-copy spam (`similarSpam`: a MinHash of letter shingles,
+  digits folded to 0, matched against the member's last two minutes) is
+  skipped after `spamRepeats` copies and never spends the ceiling. It yields to
+  `mustScan`, and a confirmed violation calls `forgetSimilar` so a run that
+  turned out to violate something is read again rather than waved through.
 - **Sanctions use jail, not Discord's timeout.** `roles.JailAutomatic` (added
   for this) is reached through the narrow `aimod.Jailer` interface wired in
   `cmd/bot/main.go`, so this package never imports `roles`. Duration scales

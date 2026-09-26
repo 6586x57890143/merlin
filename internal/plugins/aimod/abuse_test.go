@@ -2,8 +2,11 @@ package aimod
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 // The meters are what stop one member spending a server's whole daily
@@ -14,9 +17,9 @@ import (
 func TestScanCeilingStopsOneMemberEatingTheBudget(t *testing.T) {
 	m := newUserMeter()
 
-	for i := range maxUserScans {
+	for i := range maxBurstScans {
 		if !m.allowScan("g1", "u1", testNow) {
-			t.Fatalf("refused scan %d of an allowed %d", i+1, maxUserScans)
+			t.Fatalf("refused scan %d of an allowed %d", i+1, maxBurstScans)
 		}
 	}
 	if m.allowScan("g1", "u1", testNow) {
@@ -38,14 +41,101 @@ func TestScanCeilingStopsOneMemberEatingTheBudget(t *testing.T) {
 // quiet until the boundary and then bursts straight through it.
 func TestScanCeilingSlides(t *testing.T) {
 	m := newUserMeter()
-	for range maxUserScans {
+	for range maxBurstScans {
 		m.allowScan("g1", "u1", testNow)
 	}
-	if m.allowScan("g1", "u1", testNow.Add(meterWindow-time.Second)) {
-		t.Error("the window expired early")
+	if m.allowScan("g1", "u1", testNow.Add(time.Second)) {
+		t.Error("the burst window expired early")
 	}
-	if !m.allowScan("g1", "u1", testNow.Add(meterWindow+time.Second)) {
-		t.Error("the window never expired, so the member is blocked forever")
+	if !m.allowScan("g1", "u1", testNow.Add(time.Minute+time.Second)) {
+		t.Error("the burst window never eased, so the member is blocked forever")
+	}
+}
+
+// What the ten windows are for. A heated argument is fast and short and has
+// to stay scanned the whole way through: five minutes at a message every
+// four seconds, then another twenty five at one every ten. Every message is
+// distinct, as an argument's are.
+func TestAHeatedArgumentStaysScanned(t *testing.T) {
+	m := newUserMeter()
+	at := testNow
+	for i := 0; i < 75; i++ {
+		if !m.allowScan("g1", "u1", at) {
+			t.Fatalf("burst message %d refused at %s", i+1, at.Sub(testNow))
+		}
+		at = at.Add(4 * time.Second)
+	}
+	for i := 0; i < 150; i++ {
+		if !m.allowScan("g1", "u1", at) {
+			t.Fatalf("follow-up message %d refused at %s", i+1, at.Sub(testNow))
+		}
+		at = at.Add(10 * time.Second)
+	}
+}
+
+// And draining has to be sustained, which is what the long windows catch: a
+// message every ten seconds is under every short ceiling and still stops
+// being scanned well before three hours of it.
+func TestSustainedFeedingIsCutOffByTheLongWindows(t *testing.T) {
+	m := newUserMeter()
+	at := testNow
+	for m.allowScan("g1", "u1", at) {
+		at = at.Add(10 * time.Second)
+		if at.Sub(testNow) > 3*time.Hour {
+			t.Fatal("six messages a minute for three hours was never cut off")
+		}
+	}
+	if at.Sub(testNow) < time.Hour {
+		t.Errorf("cut off after %s, which an argument could reach", at.Sub(testNow))
+	}
+}
+
+// Similar-message spam: the first few copies are scanned, the rest are not,
+// and a confirmed violation reopens the run.
+func TestSimilarMessagesAreSpamAfterAFewCopies(t *testing.T) {
+	m := newUserMeter()
+	at := testNow
+	for i := range spamRepeats {
+		if m.similarSpam("g1", "u1", fmt.Sprintf("FREE nitro giveaway click discord-gift.example/%d now!!", i), at) {
+			t.Fatalf("copy %d called spam; the first %d must be scanned", i+1, spamRepeats)
+		}
+		at = at.Add(time.Second)
+	}
+	if !m.similarSpam("g1", "u1", "free NITRO giveaway, click discord-gift.example/99 now", at) {
+		t.Error("the next near-copy, number and punctuation changed, was not spam")
+	}
+	// Somebody else posting it is their own run.
+	if m.similarSpam("g1", "u2", "FREE nitro giveaway click discord-gift.example/1 now!!", at) {
+		t.Error("one member's run marked another member's first message as spam")
+	}
+	m.forgetSimilar("g1", "u1")
+	if m.similarSpam("g1", "u1", "FREE nitro giveaway click discord-gift.example/7 now!!", at) {
+		t.Error("a confirmed violation did not reopen the run")
+	}
+	// It is a run, not a grudge: past the window the same text is new again.
+	if m.similarSpam("g2", "u1", "FREE nitro giveaway click discord-gift.example/7 now!!", at.Add(spamWindow)) {
+		t.Error("a message in another guild was spam")
+	}
+}
+
+// An argument is not spam, even one where both sides keep coming back to
+// the same words.
+func TestAnArgumentIsNotSpam(t *testing.T) {
+	m := newUserMeter()
+	lines := []string{
+		"no that is not what the patch notes said at all",
+		"read the patch notes again, the nerf was to the shotgun",
+		"the shotgun was not nerfed, the smg was, look at the numbers",
+		"you are looking at last season's patch notes",
+		"i literally have the page open right now",
+		"then you can read, which is more than i thought",
+		"whatever, the smg is still the best gun in the game",
+		"it has been the worst gun in the game for two seasons",
+	}
+	for i, l := range lines {
+		if m.similarSpam("g1", "u1", l, testNow.Add(time.Duration(i)*5*time.Second)) {
+			t.Errorf("line %d of an argument was called spam: %q", i+1, l)
+		}
 	}
 }
 
@@ -86,8 +176,10 @@ func TestDeepCeilingFiresItsCrossingExactlyOnce(t *testing.T) {
 func TestDeepCeilingIsTighterThanTheScanCeiling(t *testing.T) {
 	// Not arbitrary trivia: if these ever invert, the expensive rung becomes
 	// the one with the loose limit.
-	if maxUserDeep >= maxUserScans {
-		t.Errorf("maxUserDeep (%d) is not below maxUserScans (%d)", maxUserDeep, maxUserScans)
+	for _, c := range scanCeilings {
+		if c.window == meterWindow && maxUserDeep >= c.max {
+			t.Errorf("maxUserDeep (%d) is not below the %s scan ceiling (%d)", maxUserDeep, meterWindow, c.max)
+		}
 	}
 }
 
@@ -177,7 +269,7 @@ func TestOverTheDeepCeilingStillRecordsAFlag(t *testing.T) {
 // mid-window against a membership that has since ended.
 func TestForgetGuildClearsMeters(t *testing.T) {
 	m := newUserMeter()
-	for range maxUserScans {
+	for range maxBurstScans {
 		m.allowScan("g1", "u1", testNow)
 	}
 	m.allowScan("g2", "u1", testNow)
@@ -272,5 +364,38 @@ func TestClearingSkipsWhatAModeratorReversed(t *testing.T) {
 
 	if deleted, _ := ops.snapshot(); len(deleted) != 0 {
 		t.Errorf("deleted %v, which a moderator had already restored", deleted)
+	}
+}
+
+// End to end through intake: a flood of near-copies queues only the first
+// few for the model, and the rest spend none of the member's scan ceiling,
+// so whatever they say next is still read.
+func TestSpamNeverReachesTheModelOrSpendsTheCeiling(t *testing.T) {
+	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps())
+	for i := range 10 {
+		p.HandleMessage(&discordgo.Message{
+			ID: fmt.Sprintf("m%d", i), GuildID: "g1", ChannelID: "c1",
+			Content: fmt.Sprintf("join my server for free robux, code %d, everyone is here", i),
+			Author:  &discordgo.User{ID: "u1"},
+			Member:  &discordgo.Member{},
+		})
+	}
+	p.batchMu.Lock()
+	queued := 0
+	if b, ok := p.batches["c1"]; ok {
+		queued = len(b.candidates)
+		b.timer.Stop()
+	}
+	p.batchMu.Unlock()
+	if queued != spamRepeats {
+		t.Errorf("queued %d of 10 near-copies for the model, want the first %d", queued, spamRepeats)
+	}
+
+	left := 0
+	for p.meter.allowScan("g1", "u1", testNow) {
+		left++
+	}
+	if left != maxBurstScans-spamRepeats {
+		t.Errorf("%d scans left, want %d: skipped spam spent the ceiling", left, maxBurstScans-spamRepeats)
 	}
 }

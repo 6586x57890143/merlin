@@ -3,8 +3,12 @@ package aimod
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"math"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -30,12 +34,12 @@ import (
 // demand, so that one gets the tighter ceiling.
 
 const (
-	// meterWindow is the sliding window both ceilings are counted over.
+	// meterWindow is the window the deep ceiling is counted over, and the
+	// span sanction.go looks back over for pending flags.
 	meterWindow = 10 * time.Minute
-	// maxUserScans is how many of one member's messages reach the fast pass
-	// per window. Far above ordinary chatter (a talkative member in a busy
-	// channel is well under this) and far below what it takes to matter.
-	maxUserScans = 40
+	// maxBurstScans is the tightest scan ceiling, the 30 second one, and so
+	// how many messages a member can have scanned at a single instant.
+	maxBurstScans = 15
 	// maxUserDeep is how many of one member's messages reach the deep pass
 	// per window.
 	//
@@ -54,6 +58,40 @@ const (
 	// meterMax bounds the meter map, like dedupeMax bounds the dedupe cache.
 	meterMax = 8192
 )
+
+// scanCeilings is how many of one member's messages may reach the fast pass
+// over each window, every one of which has to hold at once.
+//
+// One ceiling (it was 40 per ten minutes) cannot tell a heated argument from
+// somebody feeding the model. An argument is fast but short: a person typing
+// as quickly as they can manages a message every few seconds for a few
+// minutes, then slows. Draining a budget has to be sustained, because the
+// fast pass is a twentieth of a batch and one burst costs nothing. So the
+// short windows are generous and the allowed rate falls as the window grows,
+// from 30 a minute over 30 seconds to about 2 a minute over a day. A member
+// arguing flat out for half an hour is still scanned throughout; one posting
+// all afternoon at a pace no conversation keeps up is not.
+//
+// Each rate is roughly double a fast typist's at that span, since running
+// out means their messages go unread by the model, and a later message that
+// mattered is the one that gets missed. Similar-message spam never counts
+// against these at all (see spamSketch), which is most of what lets them be
+// this loose.
+var scanCeilings = []struct {
+	window time.Duration
+	max    int
+}{
+	{30 * time.Second, maxBurstScans},
+	{2 * time.Minute, 40},
+	{5 * time.Minute, 80},
+	{10 * time.Minute, 120},
+	{30 * time.Minute, 300},
+	{time.Hour, 480},
+	{3 * time.Hour, 1000},
+	{6 * time.Hour, 1500},
+	{12 * time.Hour, 2200},
+	{24 * time.Hour, 3000},
+}
 
 // SanctionAction is what happens to a member behind a confirmed violation or
 // a member draining the scan budget.
@@ -82,12 +120,44 @@ type meterKey struct {
 	userID  string
 }
 
-// meterEntry is a sliding-window count. Timestamps rather than a counter
-// plus a reset time, so a member cannot save up quota by staying quiet until
-// the boundary and then bursting through it.
+// meterEntry is one member's counts.
+//
+// The deep ceiling keeps exact timestamps: it is a dozen entries. The scan
+// ceilings cannot, since a day at 3000 is 3000 timestamps per member, so each
+// window is an approximate sliding count (windowCount). Neither is a plain
+// counter with a reset, which would let a member stay quiet until the
+// boundary and then burst straight through it.
 type meterEntry struct {
-	scans []time.Time
+	scans []windowCount
 	deep  []time.Time
+	// recent is the member's last few messages, sketched, for spam.
+	recent []recentSketch
+}
+
+// windowCount is the usual two-bucket approximation of a sliding window:
+// the count in the current fixed bucket, plus the previous bucket's count
+// weighted by how much of it still overlaps the window. Three numbers per
+// window instead of a timestamp per message, and a burst either side of a
+// bucket boundary still reads as one burst.
+type windowCount struct {
+	start     time.Time
+	cur, prev int
+}
+
+func (w *windowCount) roll(now time.Time, size time.Duration) {
+	b := now.Truncate(size)
+	switch {
+	case b.Equal(w.start):
+	case b.Equal(w.start.Add(size)):
+		w.prev, w.cur, w.start = w.cur, 0, b
+	default:
+		w.prev, w.cur, w.start = 0, 0, b
+	}
+}
+
+func (w *windowCount) estimate(now time.Time, size time.Duration) float64 {
+	overlap := 1 - float64(now.Sub(w.start))/float64(size)
+	return float64(w.prev)*overlap + float64(w.cur)
 }
 
 type userMeter struct {
@@ -99,7 +169,7 @@ func newUserMeter() *userMeter {
 	return &userMeter{entries: make(map[meterKey]*meterEntry)}
 }
 
-// trimStamps drops timestamps that have fallen out of the window.
+// trimStamps drops timestamps that have fallen out of the deep window.
 func trimStamps(stamps []time.Time, now time.Time) []time.Time {
 	cutoff := now.Add(-meterWindow)
 	kept := stamps[:0]
@@ -112,16 +182,22 @@ func trimStamps(stamps []time.Time, now time.Time) []time.Time {
 }
 
 // allowScan records one fast-pass message against a member and reports
-// whether they are still under the ceiling.
+// whether they are under every ceiling. A refused message is not counted,
+// so a member who hits the 30 second ceiling is back as soon as it eases
+// rather than digging themselves a deeper hole in the day's.
 func (m *userMeter) allowScan(guildID, userID string, now time.Time) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e := m.entryLocked(guildID, userID, now)
-	e.scans = trimStamps(e.scans, now)
-	if len(e.scans) >= maxUserScans {
-		return false
+	for i, c := range scanCeilings {
+		e.scans[i].roll(now, c.window)
+		if e.scans[i].estimate(now, c.window)+1 > float64(c.max) {
+			return false
+		}
 	}
-	e.scans = append(e.scans, now)
+	for i := range e.scans {
+		e.scans[i].cur++
+	}
 	return true
 }
 
@@ -148,6 +224,25 @@ func (m *userMeter) allowDeep(guildID, userID string, now time.Time) (allowed, j
 	}
 }
 
+// idle reports that nothing in an entry still counts against anybody.
+func (e *meterEntry) idle(now time.Time) bool {
+	if len(trimStamps(e.deep, now)) > 0 {
+		return false
+	}
+	for i, c := range scanCeilings {
+		e.scans[i].roll(now, c.window)
+		if e.scans[i].estimate(now, c.window) > 0 {
+			return false
+		}
+	}
+	for _, r := range e.recent {
+		if now.Sub(r.at) < spamWindow {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *userMeter) entryLocked(guildID, userID string, now time.Time) *meterEntry {
 	key := meterKey{guildID: guildID, userID: userID}
 	if e, ok := m.entries[key]; ok {
@@ -155,7 +250,7 @@ func (m *userMeter) entryLocked(guildID, userID string, now time.Time) *meterEnt
 	}
 	if len(m.entries) >= meterMax {
 		for k, e := range m.entries {
-			if len(trimStamps(e.scans, now)) == 0 && len(trimStamps(e.deep, now)) == 0 {
+			if e.idle(now) {
 				delete(m.entries, k)
 			}
 		}
@@ -163,7 +258,7 @@ func (m *userMeter) entryLocked(guildID, userID string, now time.Time) *meterEnt
 			clear(m.entries)
 		}
 	}
-	e := &meterEntry{}
+	e := &meterEntry{scans: make([]windowCount, len(scanCeilings))}
 	m.entries[key] = e
 	return e
 }
@@ -281,3 +376,141 @@ func (p *Plugin) applyTimeout(_ context.Context, guildID, userID string, duratio
 // jail is the primary mechanism and this is the fallback: jail has no such
 // limit because this bot enforces it itself.
 const maxDiscordTimeout = 28 * 24 * time.Hour
+
+// Similar-message spam: the same thing posted over and over with a word, a
+// number or an emoji changed each time.
+//
+// Exact repeats are already free (seenClean skips clean ones at rung 0 and
+// dedupeCache answers judged ones from the stored verdict). A near repeat is
+// neither, so each one was a fresh scan against the member's ceiling: a
+// spammer could empty their own quota, and every scan it spent was money
+// learning the same thing again.
+//
+// A message is spam when it closely resembles at least spamRepeats of the
+// member's own messages in the last spamWindow. The first few of a run are
+// still scanned, which is what makes skipping the rest safe: if the run
+// violates anything, those first ones say so, and enforce calls
+// forgetSimilar on a confirmed violation, so the next variants are scanned
+// in their turn rather than riding on the pass the first ones got. Skipped
+// spam draws nothing from the scan ceilings, so a flood leaves the member's
+// quota for whatever they say next.
+const (
+	spamWindow = 2 * time.Minute
+	// spamRepeats is how many close matches in the window make a message
+	// spam. Three, so a member saying "no" four times in a row is spam and a
+	// member saying it twice is having an argument.
+	spamRepeats = 3
+	// spamSimilarity is the estimated share of three-letter shingles two
+	// messages must have in common. High on purpose: "buy now at x.com 12"
+	// and "buy now at x.com 13" are the same message, while two replies in
+	// one argument share words but not most of their letters.
+	spamSimilarity = 0.7
+	// spamRecent bounds what is kept per member.
+	spamRecent = 12
+	// sketchSize is the number of MinHash values per message: the estimate
+	// is good to about a tenth, and 128 bytes per message kept.
+	sketchSize = 32
+)
+
+type recentSketch struct {
+	at     time.Time
+	sketch [sketchSize]uint32
+}
+
+// spamSketch is a MinHash of a message's three-letter shingles, after
+// lowercasing, collapsing every digit to 0 (so a counter or a changing
+// number does not make each copy new) and dropping everything that is not
+// a letter or a digit. Nothing of the text survives it, which is what lets
+// it sit in memory for two minutes under this plugin's retention rules.
+func spamSketch(text string) [sketchSize]uint32 {
+	var norm []rune
+	for _, r := range strings.ToLower(text) {
+		switch {
+		case unicode.IsDigit(r):
+			norm = append(norm, '0')
+		case unicode.IsLetter(r):
+			norm = append(norm, r)
+		}
+	}
+	var sk [sketchSize]uint32
+	for i := range sk {
+		sk[i] = math.MaxUint32
+	}
+	add := func(shingle []rune) {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(string(shingle)))
+		base := h.Sum32()
+		for i := range sk {
+			if v := mix32(base ^ uint32(i)*0x9e3779b9); v < sk[i] {
+				sk[i] = v
+			}
+		}
+	}
+	if len(norm) < 3 {
+		add(norm)
+		return sk
+	}
+	for i := 0; i+3 <= len(norm); i++ {
+		add(norm[i : i+3])
+	}
+	return sk
+}
+
+// mix32 is murmur3's finaliser, turning one hash into an independent-looking
+// one per sketch slot.
+func mix32(h uint32) uint32 {
+	h ^= h >> 16
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	h *= 0xc2b2ae35
+	h ^= h >> 16
+	return h
+}
+
+func similarity(a, b [sketchSize]uint32) float64 {
+	same := 0
+	for i := range a {
+		if a[i] == b[i] {
+			same++
+		}
+	}
+	return float64(same) / sketchSize
+}
+
+// similarSpam records a message against its member and reports whether it
+// is spam. Every message is recorded, spam included, so a run is still
+// recognised however long it goes on.
+func (m *userMeter) similarSpam(guildID, userID, text string, now time.Time) bool {
+	sk := spamSketch(text)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.entryLocked(guildID, userID, now)
+	matches := 0
+	kept := e.recent[:0]
+	for _, r := range e.recent {
+		if now.Sub(r.at) >= spamWindow {
+			continue
+		}
+		kept = append(kept, r)
+		if similarity(sk, r.sketch) >= spamSimilarity {
+			matches++
+		}
+	}
+	e.recent = append(kept, recentSketch{at: now, sketch: sk})
+	if len(e.recent) > spamRecent {
+		e.recent = e.recent[len(e.recent)-spamRecent:]
+	}
+	return matches >= spamRepeats
+}
+
+// forgetSimilar drops a member's spam history, so what they post next is
+// scanned rather than skipped as more of the same. Called when a violation
+// is confirmed against them: a run that turned out to violate something is
+// exactly the run whose later copies should be read.
+func (m *userMeter) forgetSimilar(guildID, userID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e, ok := m.entries[meterKey{guildID: guildID, userID: userID}]; ok {
+		e.recent = nil
+	}
+}
