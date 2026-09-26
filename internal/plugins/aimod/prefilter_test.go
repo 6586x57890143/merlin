@@ -452,6 +452,34 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
+			// The i moved behind the g, or dropped: what members tried
+			// once the swaps above were caught.
+			"transposed or missing letters do not get you past it",
+			"I hate all ngiers nggiers nggers ng1ers",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// By shape, whatever the letters: every one of these reads as
+			// the word, and the lookalike i is Cyrillic.
+			"the word's shape is caught whatever it is spelled with",
+			"Nibber! N!bb3r ni66er nigers nigor ngr nіgger you absolute n...i...g...g...e...r",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// The one real collision, and the casual ending the policy
+			// clears, stay out.
+			"Niger and the casual ending are not the shape",
+			"Niger's economy grew, nigga, he does a nixer on weekends",
+			"", false, false,
+		},
+		{
+			// The same letters inside ordinary words: the transposed entry
+			// only matches at the start of a word.
+			"transposed letters inside a word are not hits",
+			"stingier in Tangier, youngberry jam",
+			"", false, false,
+		},
+		{
 			"censoring bars do not either",
 			"f*ggot",
 			BucketHateSpeech, true, true,
@@ -610,8 +638,6 @@ func TestCompoundSlursAreRewrittenIntoWords(t *testing.T) {
 func TestHiddenSlursReachTheModelSpelledOut(t *testing.T) {
 	for _, s := range []string{
 		"n - i - g - g - e - r",
-		"you absolute n...i...g...g...e...r",
-		"nіgger", // Cyrillic i
 		"f  .  a  .  g  .  g  .  o  .  t",
 	} {
 		if _, _, _, hit := hardHit(s); hit {
@@ -650,7 +676,7 @@ func TestLooseSlurSpellingsGetANote(t *testing.T) {
 		}
 	}
 	for _, s := range []string{
-		"Niger", "the nippers are asleep", "a keen knitter", "nibblers",
+		"Niger", "the nippers are asleep", "a keen knitter", "nibblers", "a nicer nagger", "angry finger",
 		"dinner with Jennifer in Minnesota", "the spinner", "finish the innings",
 	} {
 		if n := slurNote(s); n != "" {
@@ -696,5 +722,33 @@ func TestFastPassIsToldWhatADisguisedSlurSpells(t *testing.T) {
 		if w := hiddenSlur(s); w != "" {
 			t.Errorf("hiddenSlur(%q) = %q, so rung 1.5 loses ordinary traffic", s, w)
 		}
+	}
+}
+
+// The broad check: anything within two edits of the word gets the note, the
+// casual ending and the ordinary words that land that close do not.
+func TestNearSpellingsOfTheWordGetANote(t *testing.T) {
+	for _, s := range []string{"nikker", "nigguh", "nigglet", "I hate all nikkers", "nuggers"} {
+		if slurNote(s) == "" {
+			t.Errorf("slurNote(%q) = nothing, want the note", s)
+		}
+	}
+	for _, s := range []string{"nicer", "chicken nuggets", "stop being so niggly", "Nigel", "Niger", "nigga", "my niggas", "nggias", "nagged"} {
+		if n := slurNote(s); n != "" {
+			t.Errorf("slurNote(%q) = %q, want nothing", s, n)
+		}
+	}
+	if editDistance("ngiers", "niggers") != 2 || editDistance("nigger", "nigger") != 0 || editDistance("ab", "ba") != 1 {
+		t.Error("editDistance is not the optimal string alignment distance")
+	}
+}
+
+// Whatever the fast pass let through, a message the slur check points at
+// still goes to the deep pass, and nothing already flagged is doubled.
+func TestSlurHintsAreEscalatedPastTheFastPass(t *testing.T) {
+	batch := []candidate{{Content: "hello there"}, {Content: "I hate all nikkers"}, {Content: "n g i e r s bro"}}
+	hits := withSlurHints(batch, []Verdict{{Index: 3, Bucket: BucketThreats, Confidence: 0.9}})
+	if len(hits) != 2 || hits[1].Index != 2 || hits[1].Bucket != BucketHateSpeech {
+		t.Errorf("hits = %+v, want the fast pass's own plus a hate_speech hit on message 2", hits)
 	}
 }

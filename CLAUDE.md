@@ -378,7 +378,38 @@ toward scanning:
   consonant in its shape ("nixxers", "nizzer") gets a "may be" note, since
   rung 1 can only rewrite spellings it names and that list never ends. A
   single consonant does not count (Niger), and `looseInnocent` spares
-  "nippers" and "knitter".
+  "nippers" and "knitter". It also matches by sound word by word (an n, a g or
+  stand-in, an r, any order of i and vowels between: "nigers", "ngr"),
+  anchored to the word start so "stingier" and "finger" stay quiet. Rung 1
+  itself rewrites the transposed and i-less forms ("ngiers", "nggers") via
+  a `wordStart` entry, since "stingier" and "youngberry" contain them
+  mid-word. Every one of these was checked against a 370k-word English list
+  before being added; do the same for any new entry. The broadest check,
+  `nearNWord`, is any word within two edits (optimal string alignment) of the
+  word or its plural, minus the casual "-a" ending and a named list of
+  ordinary words that land that close ("nicer", "nugget", "niggle").
+  **A message any of these point at goes to the deep pass whatever the fast
+  pass said** (`withSlurHints`): the small fast model is what cleared
+  "nibbers" and "ngiers" as nothing, so it does not get the last word on
+  them. The deep pass still has to confirm above `actThreshold`, so the
+  "nothing acts without rung 3" rule is intact, and `allowDeep` bounds the
+  cost. `similarSpam` yields to the same check, since cycling through
+  spellings of one word is exactly what near-copy spam looks like.
+- **Rung 1 reads the n-word by shape** (`nWordShape`), per word: lookalikes
+  back to letters, b/q/x read as g and y as i, runs collapsed, then
+  `^n(ig|gi|g)(ie|e|i|u|o|a)?rs?$`. "Nibber", "N!bb3r", "ni66er", "ngiers",
+  "nggers", "ngr" and a Cyrillic "nіgger" all land. Against a 370k-word list it
+  adds only "nixer" beyond the slur itself, which is spared by name like
+  Niger (possessive included); the casual "-a" ending is not the shape.
+- **The hard-slur block runs ahead of `shouldSkip`**, not just ahead of the
+  models: exempt channels, exempt roles, the clean-text cache and the length
+  floor no longer sit in front of it. "Nibber" passed live on 2026-09-27
+  after the pattern matching it had deployed, with nothing logged, so
+  something in front of rung 1 dropped it; a slur is not something a channel
+  or role should buy silence for. It still obeys mode off and hate_speech
+  off, only takes the early path when the slur is the whole hit (a message
+  that also carries a leaked token or a phishing link is removed, not
+  rewritten around it), and logs `aimod: hard slur` on every decision.
 - `triagePosWeight` (12) is what stops the model collapsing to always-clean.
   About 1% of messages are flagged, so the loss is minimised by answering
   "clean" to everything, and that model is right 99% of the time while skipping

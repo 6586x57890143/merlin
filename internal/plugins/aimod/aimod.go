@@ -534,10 +534,6 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 		p.log.Error("aimod: load config", "guild", m.GuildID, "err", err)
 		return
 	}
-	if reason := p.shouldSkip(cfg, m, p.now()); reason != skipNone {
-		return
-	}
-
 	// Resolved once here and carried on the candidate, so every rung below
 	// judges the same text. For a forward that text lives in a snapshot
 	// rather than in Content; see messageText.
@@ -547,31 +543,37 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 		Content: text, Forwarded: forwarded, ReplyTo: replyContext(m),
 	}
 
+	// The hard-slur block runs ahead of every skip in shouldSkip (exempt
+	// channels and roles, the clean-text cache, the length floor), not only
+	// ahead of the models. On 2026-09-27 "Nibber" was posted after the
+	// pattern matching it had deployed and passed with nothing logged, so
+	// whatever dropped it sat in front of rung 1. A slur is not something a
+	// channel or a role should buy silence for. It still obeys mode off and
+	// hate_speech off, which are the guild's policy rather than a skip, and
+	// logs every decision, since failing silently is the bug being fixed.
+	//
+	// Only when the slur is the whole hit: hardHit checks credentials and
+	// links first, and a message carrying both must be removed, not
+	// rewritten around a leaked token.
+	if cfg.Mode != ModeOff {
+		if bucket, reason, rewrite, hit := hardHit(c.Content); hit && bucket == BucketHateSpeech {
+			p.log.Info("aimod: hard slur", "guild", cfg.GuildID, "channel", c.ChannelID, "message", c.MessageID,
+				"action", EffectiveAction(cfg.BucketActions, bucket))
+			p.actOnHardHit(cfg, c, bucket, reason, rewrite)
+			return
+		}
+	}
+
+	if reason := p.shouldSkip(cfg, m, p.now()); reason != skipNone {
+		return
+	}
+
 	// Rung 1, before anything is queued or paid for. A hard hit is acted on
 	// with the bucket's own configured action and no model in the loop, so
 	// a token leak or a phishing link is gone in well under a second even on
 	// a guild whose budget is spent.
 	if bucket, reason, rewrite, hit := hardHit(c.Content); hit {
-		action := EffectiveAction(cfg.BucketActions, bucket)
-		// A slur hit is a hate_speech hit and obeys that bucket, off
-		// included. What rung 1 buys is not an exemption from the guild's
-		// policy, it is skipping the model on the words where no reading of
-		// the sentence would change the answer.
-		if action == ActionOff {
-			return
-		}
-		// Never a rewrite with nothing to clean: the patterns above match a
-		// credential or a link, and a "cleaned" version of a phishing
-		// message is still a phishing message with a hole in it.
-		if action == ActionRewrite && rewrite == "" {
-			action = ActionRemove
-		}
-		p.spawn(func(bg context.Context) {
-			p.enforce(bg, cfg, c, bucket, action, deepVerdict{
-				Violation: true, Bucket: bucket, Confidence: 1,
-				Reason: reason, Rewrite: rewrite,
-			})
-		})
+		p.actOnHardHit(cfg, c, bucket, reason, rewrite)
 		return
 	}
 
@@ -611,7 +613,10 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// same reason triage is: a verdict already reached on identical text is
 	// fact and this is a pattern. Yields to mustScan like every other skip,
 	// so repeating child-safety vocabulary is not a way to stop it being read.
-	if p.meter.similarSpam(cfg.GuildID, c.AuthorID, c.Content, p.now()) && !mustScan(c.Content) {
+	// A disguised slur is exempt too: cycling through spellings of one word
+	// is exactly what near-copy spam looks like, and dropping them here is
+	// how "ngiers", "nggiers", "nggers" went unread.
+	if p.meter.similarSpam(cfg.GuildID, c.AuthorID, c.Content, p.now()) && !mustScan(c.Content) && slurNote(c.Content) == "" {
 		return
 	}
 	// Rung 1.5. Ahead of the meter because a message this rung skips was
@@ -637,6 +642,31 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 		c.TriageSampled = true
 	}
 	p.queue(cfg.GuildID, c)
+}
+
+// actOnHardHit enforces a rung-1 hit with the bucket's own configured
+// action and no model in the loop.
+func (p *Plugin) actOnHardHit(cfg Config, c candidate, bucket Bucket, reason, rewrite string) {
+	action := EffectiveAction(cfg.BucketActions, bucket)
+	// A slur hit is a hate_speech hit and obeys that bucket, off included.
+	// What rung 1 buys is not an exemption from the guild's policy, it is
+	// skipping the model on the words where no reading of the sentence would
+	// change the answer.
+	if action == ActionOff {
+		return
+	}
+	// Never a rewrite with nothing to clean: the patterns above match a
+	// credential or a link, and a "cleaned" version of a phishing message is
+	// still a phishing message with a hole in it.
+	if action == ActionRewrite && rewrite == "" {
+		action = ActionRemove
+	}
+	p.spawn(func(bg context.Context) {
+		p.enforce(bg, cfg, c, bucket, action, deepVerdict{
+			Violation: true, Bucket: bucket, Confidence: 1,
+			Reason: reason, Rewrite: rewrite,
+		})
+	})
 }
 
 // queue adds a message to its channel's pending batch, starting the flush
@@ -748,6 +778,7 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 			p.log.Error("aimod: fast pass", "guild", guildID, "messages", len(batch), "err", err)
 			return
 		}
+		hits = withSlurHints(batch, hits)
 
 		// Only what the fast pass cleared is remembered, so an identical
 		// repeat of a *flagged* message is scanned and flagged again rather
@@ -814,6 +845,31 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 		wg.Wait()
 	})
 }
+
+// withSlurHints adds a hate_speech hit for every message in batch whose
+// letters look like a disguised slur (slurNote) and that the fast pass let
+// through. The small fast model is exactly what cleared "nibbers" and
+// "ngiers" as nothing, so on these it does not get the last word: the deep
+// pass reads each one against the full policy and decides, and the rule
+// that nothing is acted on without the deep pass confirming still holds.
+// Its cost is bounded the way every escalation is, by userMeter.allowDeep.
+func withSlurHints(batch []candidate, hits []Verdict) []Verdict {
+	flagged := make(map[int]bool, len(hits))
+	for _, h := range hits {
+		flagged[h.Index] = true
+	}
+	for i, c := range batch {
+		if !flagged[i+1] && slurNote(c.Content) != "" {
+			hits = append(hits, Verdict{Index: i + 1, Bucket: BucketHateSpeech, Confidence: slurHintConfidence})
+		}
+	}
+	return hits
+}
+
+// slurHintConfidence is what a slur-hint escalation records as the first
+// pass's confidence, which is only ever shown if the guild is on flag and no
+// deep pass runs. Middling on purpose: it is a shape, not a judgement.
+const slurHintConfidence = 0.5
 
 // escalate runs rung 3 on one flagged message and acts on the result.
 //
