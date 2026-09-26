@@ -607,6 +607,13 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 		})
 		return
 	}
+	// Near-repeat spam (see similarSpam), after the dedupe lookup for the
+	// same reason triage is: a verdict already reached on identical text is
+	// fact and this is a pattern. Yields to mustScan like every other skip,
+	// so repeating child-safety vocabulary is not a way to stop it being read.
+	if p.meter.similarSpam(cfg.GuildID, c.AuthorID, c.Content, p.now()) && !mustScan(c.Content) {
+		return
+	}
 	// Rung 1.5. Ahead of the meter because a message this rung skips was
 	// never scanned, so it must not draw on the member's scan ceiling either:
 	// charging for a call that was never made would let quiet, obviously fine

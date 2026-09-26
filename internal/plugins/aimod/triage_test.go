@@ -257,7 +257,7 @@ func TestTriageSkipDoesNotSpendTheScanCeiling(t *testing.T) {
 	p, cfg := triagePlugin(t, TriageOn)
 	trainTriage(p.triageFor(context.Background(), cfg.GuildID), 80)
 
-	for i := 0; i < maxUserScans*2; i++ {
+	for i := 0; i < maxBurstScans*2; i++ {
 		if d := p.triageDecide(context.Background(), cfg, triageClean[i%len(triageClean)]); !d.skip {
 			t.Fatalf("fixture is wrong: message %d was not skipped", i)
 		}
@@ -270,12 +270,12 @@ func TestTriageSkipDoesNotSpendTheScanCeiling(t *testing.T) {
 	left := 0
 	for p.meter.allowScan(cfg.GuildID, "u1", testNow) {
 		left++
-		if left > maxUserScans {
+		if left > maxBurstScans {
 			break
 		}
 	}
-	if left != maxUserScans {
-		t.Errorf("%d scans left of %d: skipped messages spent the ceiling", left, maxUserScans)
+	if left != maxBurstScans {
+		t.Errorf("%d scans left of %d: skipped messages spent the ceiling", left, maxBurstScans)
 	}
 }
 

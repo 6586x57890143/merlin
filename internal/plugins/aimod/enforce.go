@@ -56,6 +56,11 @@ func newIncidentCode() string {
 // other way, leaving a row for a message that is still there, which reads
 // correctly in /aimod why and is undone by nothing at all.
 func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bucket, action Action, v deepVerdict) {
+	// A confirmed violation means this member's run of similar messages is
+	// one worth reading, so its later copies are scanned rather than skipped
+	// as spam. See similarSpam.
+	p.meter.forgetSimilar(cfg.GuildID, c.AuthorID)
+
 	// The published text goes through rung 1 first, whatever produced it.
 	//
 	// A rewrite is the one thing this plugin posts that it did not write:
