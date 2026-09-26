@@ -459,6 +459,20 @@ func TestHardHit(t *testing.T) {
 			BucketHateSpeech, true, true,
 		},
 		{
+			// By shape, whatever the letters: every one of these reads as
+			// the word, and the lookalike i is Cyrillic.
+			"the word's shape is caught whatever it is spelled with",
+			"Nibber! N!bb3r ni66er nigers nigor ngr nіgger you absolute n...i...g...g...e...r",
+			BucketHateSpeech, true, true,
+		},
+		{
+			// The one real collision, and the casual ending the policy
+			// clears, stay out.
+			"Niger and the casual ending are not the shape",
+			"Niger's economy grew, nigga, he does a nixer on weekends",
+			"", false, false,
+		},
+		{
 			// The same letters inside ordinary words: the transposed entry
 			// only matches at the start of a word.
 			"transposed letters inside a word are not hits",
@@ -624,8 +638,6 @@ func TestCompoundSlursAreRewrittenIntoWords(t *testing.T) {
 func TestHiddenSlursReachTheModelSpelledOut(t *testing.T) {
 	for _, s := range []string{
 		"n - i - g - g - e - r",
-		"you absolute n...i...g...g...e...r",
-		"nіgger", // Cyrillic i
 		"f  .  a  .  g  .  g  .  o  .  t",
 	} {
 		if _, _, _, hit := hardHit(s); hit {
@@ -655,7 +667,7 @@ func TestHiddenSlursReachTheModelSpelledOut(t *testing.T) {
 // a model call, since rung 1 cannot list every letter; ordinary words of the
 // same shape, and a single consonant (Niger), get neither.
 func TestLooseSlurSpellingsGetANote(t *testing.T) {
-	for _, s := range []string{"nizzer", "n y p p e r s", "n1dd3r", "nittur", "nigers", "nigor", "ngr"} {
+	for _, s := range []string{"nizzer", "n y p p e r s", "n1dd3r", "nittur"} {
 		if _, _, _, hit := hardHit(s); hit {
 			t.Errorf("fixture is wrong: rung 1 already catches %q", s)
 		}

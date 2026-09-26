@@ -395,6 +395,21 @@ toward scanning:
   "nothing acts without rung 3" rule is intact, and `allowDeep` bounds the
   cost. `similarSpam` yields to the same check, since cycling through
   spellings of one word is exactly what near-copy spam looks like.
+- **Rung 1 reads the n-word by shape** (`nWordShape`), per word: lookalikes
+  back to letters, b/q/x read as g and y as i, runs collapsed, then
+  `^n(ig|gi|g)(ie|e|i|u|o|a)?rs?$`. "Nibber", "N!bb3r", "ni66er", "ngiers",
+  "nggers", "ngr" and a Cyrillic "nіgger" all land. Against a 370k-word list it
+  adds only "nixer" beyond the slur itself, which is spared by name like
+  Niger (possessive included); the casual "-a" ending is not the shape.
+- **The hard-slur block runs ahead of `shouldSkip`**, not just ahead of the
+  models: exempt channels, exempt roles, the clean-text cache and the length
+  floor no longer sit in front of it. "Nibber" passed live on 2026-09-27
+  after the pattern matching it had deployed, with nothing logged, so
+  something in front of rung 1 dropped it; a slur is not something a channel
+  or role should buy silence for. It still obeys mode off and hate_speech
+  off, only takes the early path when the slur is the whole hit (a message
+  that also carries a leaked token or a phishing link is removed, not
+  rewritten around it), and logs `aimod: hard slur` on every decision.
 - `triagePosWeight` (12) is what stops the model collapsing to always-clean.
   About 1% of messages are flagged, so the loss is minimised by answering
   "clean" to everything, and that model is right 99% of the time while skipping

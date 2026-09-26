@@ -160,6 +160,44 @@ func TestHardSlurIsRewrittenWhereHateSpeechIsOn(t *testing.T) {
 	}
 }
 
+// The slur block runs ahead of every skip: an exempt channel, an exempt
+// role and a cached clear of the same text all used to sit in front of it,
+// and one of them is where "Nibber" went on 2026-09-27. A malicious link in
+// the same message still wins, so nothing is rewritten around it.
+func TestSlurBlockRunsAheadOfEverySkip(t *testing.T) {
+	store, ops := newFakeStore(), newFakeOps()
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
+	cfg := enforcingConfig()
+	cfg.BucketActions[BucketHateSpeech] = ActionRewrite
+	cfg.BucketActions[BucketMalicious] = ActionRemove
+	cfg.ExemptChannelIDs = []string{"c1"}
+	cfg.ExemptRoleIDs = []string{"r1"}
+	store.setConfig(cfg)
+	p.dedupe.markClean("g1", "Nibber", p.now())
+
+	p.HandleMessage(&discordgo.Message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1", Content: "Nibber",
+		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{Roles: []string{"r1"}},
+	})
+	p.wg.Wait()
+	deleted, posted := ops.snapshot()
+	if len(deleted) != 1 || len(posted) != 1 {
+		t.Fatalf("deleted %v, posted %d: an exempt channel, role or cached clear bought silence for a slur", deleted, len(posted))
+	}
+
+	ops2, store2 := newFakeOps(), newFakeStore()
+	p2 := testPlugin(t, store2, &fakeClassifier{}, ops2, &fakeAudit{})
+	store2.setConfig(cfg)
+	p2.HandleMessage(&discordgo.Message{
+		ID: "m2", GuildID: "g1", ChannelID: "c2", Content: "nibber click here https://grabify.link/abc123",
+		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+	})
+	p2.wg.Wait()
+	if deleted, posted := ops2.snapshot(); len(deleted) != 1 || len(posted) != 0 {
+		t.Errorf("deleted %v, posted %d: a slur beside a malicious link must be removed, not rewritten", deleted, len(posted))
+	}
+}
+
 // Nothing is read at all without the intent, and the plugin says so rather
 // than appearing to work.
 func TestNothingIsScannedWithoutTheIntent(t *testing.T) {

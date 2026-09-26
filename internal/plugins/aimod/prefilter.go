@@ -688,8 +688,81 @@ func redactSlurs(content string) (string, bool) {
 		b.WriteString(out[last:])
 		out = b.String()
 	}
+	// Last, word by word, the n-word by shape rather than by spelling. See
+	// nWordShape.
+	out = shapeToken.ReplaceAllStringFunc(out, func(tok string) string {
+		core := strings.Trim(tok, tokenEdge)
+		if core == "" || !nWordShape(core) {
+			return tok
+		}
+		hit = true
+		r := pickSub(nWordSubs, false)
+		word := r.one
+		if n := nWordNormal(core); n[len(n)-1] == 's' {
+			word = r.many
+		}
+		i := strings.Index(tok, core)
+		return tok[:i] + word + tok[i+len(core):]
+	})
 	return out, hit
 }
+
+// shapeToken is one whitespace-separated token, and tokenEdge the
+// punctuation trimmed off either end of it before its shape is read, so
+// "Nibber!" and "(nibbers)" are judged as the word inside.
+var shapeToken = regexp.MustCompile(`\S+`)
+
+const tokenEdge = `.,!?;:'"()[]{}<>`
+
+// nWordShape reports whether one word is the hard-R n-word by its shape,
+// whatever letters it is spelled with.
+//
+// Every spelling people use comes back to the same few letters once the
+// disguise is taken off, so the word is normalised rather than enumerated:
+// lookalikes turn back into letters (squash), b, q and x stand for g and y
+// for i, and runs of one letter collapse. "Nibber", "n1gg3r", "N!bb3r",
+// "nixxers" and "nyggers" all become "niger"/"nigers"; the i moved behind
+// the g ("ngiers", "nggiers") or dropped ("nggers") keep their own shapes,
+// which the pattern also takes. Against a 370k-word English list this
+// matches nothing but the slur itself and the obscure "nibber", with two
+// real collisions spared when spelled plainly: Niger (possessive included)
+// and "nixer", Irish slang for a side job. "nixxer" is still the word.
+//
+// Per word and anchored, so it cannot fire on letters that only sit inside
+// a longer word ("stingier", "finger"); the regex entries above handle the
+// glued-on forms of the spellings they know.
+func nWordShape(word string) bool {
+	plain := strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(word), "'s"), "’s")
+	switch squash(plain) {
+	case "niger", "nixer", "nixers":
+		return false
+	}
+	return nWordShapeRe.MatchString(nWordNormal(word))
+}
+
+// nWordNormal is word with the disguise taken off, as nWordShape reads it.
+func nWordNormal(word string) string {
+	var b []byte
+	for _, ch := range []byte(squash(word)) {
+		switch ch {
+		case 'b', 'q', 'x':
+			ch = 'g'
+		case 'y':
+			ch = 'i'
+		case 'z':
+			ch = 's'
+		}
+		if len(b) == 0 || b[len(b)-1] != ch {
+			b = append(b, ch)
+		}
+	}
+	if len(b) == 0 {
+		return " "
+	}
+	return string(b)
+}
+
+var nWordShapeRe = regexp.MustCompile(`^n(?:ig|gi|g)(?:ie|e|i|u|o|a)?rs?$`)
 
 // squashLetters is what a disguise turns back into once it is taken off:
 // digits and symbols standing for letters, plus the Cyrillic lookalikes that
@@ -699,6 +772,7 @@ var squashLetters = map[rune]rune{
 	'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't',
 	'@': 'a', '!': 'i', '|': 'i', '$': 's',
 	'а': 'a', 'е': 'e', 'і': 'i', 'о': 'o', 'с': 'c', 'р': 'p', 'к': 'k', 'у': 'y', 'х': 'x', 'ı': 'i',
+	'6': 'g', '9': 'g',
 }
 
 // hiddenSlur is the hard slur a message spells once every space, symbol and
