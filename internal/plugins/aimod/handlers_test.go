@@ -430,7 +430,64 @@ func TestWhyOnAnUntouchedMessage(t *testing.T) {
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handleWhy(context.Background(), testSession(t), interaction("g1", "", "why", strOpt("message_id", "m-unknown")))
+	p.handleWhy(context.Background(), testSession(t), interaction("g1", "", "why", strOpt("id", "m-unknown")))
+}
+
+// recordingStub is discordStub that keeps every request body, for the few
+// tests where what the handler said is the thing under test.
+type recordingStub struct{ bodies *[]string }
+
+func (r recordingStub) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		*r.bodies = append(*r.bodies, string(b))
+	}
+	return discordStub{}.RoundTrip(req)
+}
+
+// /aimod why is public because the code is printed under the repost. What a
+// member gets back is the policy and the reason, never the original text
+// (for a rewrite, the very words taken out of the channel), and a message ID
+// gets them nothing, or any member could probe whether a message had been
+// quietly flagged. A moderator gets the whole record by either key.
+func TestWhyShowsAMemberOnlyThePublicHalf(t *testing.T) {
+	store := newFakeStore()
+	store.setConfig(enforcingConfig())
+	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+	p.privilege = fakePrivilege{bootstrapID: "boss"}
+	ctx := context.Background()
+	if _, err := store.RecordIncident(ctx, Incident{
+		GuildID: "g1", ChannelID: "c1", MessageID: "m1", AuthorID: "u1", Bucket: BucketHateSpeech,
+		Action: ActionRewrite, Reason: "hard slur", Content: "the original words", Code: "abcd2345",
+	}); err != nil {
+		t.Fatalf("RecordIncident: %v", err)
+	}
+
+	ask := func(actor, ref string) string {
+		var bodies []string
+		s := testSession(t)
+		s.Client = &http.Client{Transport: recordingStub{&bodies}}
+		i := interaction("g1", "", "why", strOpt("id", ref))
+		i.Member.User.ID = actor
+		p.handleWhy(ctx, s, i)
+		return strings.Join(bodies, "\n")
+	}
+
+	got := ask("member", "ABCD2345")
+	if !strings.Contains(got, "hard slur") {
+		t.Errorf("a member with the code was not told why: %s", got)
+	}
+	if strings.Contains(got, "the original words") {
+		t.Errorf("a member was shown the original: %s", got)
+	}
+	if got := ask("member", "m1"); strings.Contains(got, "hard slur") {
+		t.Errorf("a member looked an incident up by message ID: %s", got)
+	}
+	for _, ref := range []string{"abcd2345", "m1"} {
+		if got := ask("boss", ref); !strings.Contains(got, "the original words") {
+			t.Errorf("a moderator asking with %q was not shown the original: %s", ref, got)
+		}
+	}
 }
 
 // /aimod status is the command an admin runs when they think something is

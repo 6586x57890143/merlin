@@ -35,7 +35,7 @@ func TestMessageFateSaysWhatHappenedToTheMessage(t *testing.T) {
 // entry has nothing to link "Reposted" to.
 func TestRewriteReturnsTheRepostID(t *testing.T) {
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	id, err := p.rewriteMessage(t.Context(), "g1", candidate{ChannelID: "c1", MessageID: "m1", AuthorID: "u1"}, "fine words")
+	id, err := p.rewriteMessage(t.Context(), "g1", candidate{ChannelID: "c1", MessageID: "m1", AuthorID: "u1"}, "fine words", "abcd2345")
 	if err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}

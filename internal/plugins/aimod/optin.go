@@ -61,6 +61,9 @@ import (
 // needs: whether somebody is the bootstrap operator.
 type PrivilegeChecker interface {
 	IsBootstrapAdmin(userID string) bool
+	// Authorize is here for /aimod why, the one public command that shows a
+	// moderator more than it shows a member.
+	Authorize(i *discordgo.InteractionCreate, spec core.PermSpec) error
 }
 
 // sanctionable reports whether an automated sanction may target userID even

@@ -166,8 +166,12 @@ type Incident struct {
 	Reason      string
 	Content     string
 	Replacement string
-	Undone      bool
-	CreatedAt   time.Time
+	// Code is the random handle printed under a rewrite's repost, and the
+	// only key /aimod why accepts from a member. Empty for anything that was
+	// not reposted.
+	Code      string
+	Undone    bool
+	CreatedAt time.Time
 }
 
 // Spend is one guild's usage for one UTC day.
@@ -252,6 +256,7 @@ type Store interface {
 	// enforce.go: the other order loses the only copy of what was removed.
 	RecordIncident(ctx context.Context, inc Incident) (int64, error)
 	IncidentByMessage(ctx context.Context, guildID, messageID string) (Incident, error)
+	IncidentByCode(ctx context.Context, guildID, code string) (Incident, error)
 	// CountSanctions counts a member's prior enforcement history since a
 	// cutoff, which is what the escalation ladder in sanction.go multiplies
 	// by. Flags do not count: being looked at is not a punishment.
@@ -652,14 +657,15 @@ func (s *pgStore) RecordIncident(ctx context.Context, inc Incident) (int64, erro
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO aimod_incidents (guild_id, channel_id, message_id, author_id, bucket, action,
-		                             confidence, reason, content, replacement, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		                             confidence, reason, content, replacement, created_at, code)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($12, ''))
 		ON CONFLICT (guild_id, message_id) DO UPDATE SET
 			bucket = EXCLUDED.bucket, action = EXCLUDED.action, confidence = EXCLUDED.confidence,
-			reason = EXCLUDED.reason, content = EXCLUDED.content, replacement = EXCLUDED.replacement
+			reason = EXCLUDED.reason, content = EXCLUDED.content, replacement = EXCLUDED.replacement,
+			code = EXCLUDED.code
 		RETURNING id
 	`, inc.GuildID, inc.ChannelID, inc.MessageID, inc.AuthorID, string(inc.Bucket), string(inc.Action),
-		inc.Confidence, inc.Reason, inc.Content, inc.Replacement, inc.CreatedAt).Scan(&id)
+		inc.Confidence, inc.Reason, inc.Content, inc.Replacement, inc.CreatedAt, inc.Code).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("aimod store: record incident: %w", err)
 	}
@@ -667,18 +673,29 @@ func (s *pgStore) RecordIncident(ctx context.Context, inc Incident) (int64, erro
 }
 
 func (s *pgStore) IncidentByMessage(ctx context.Context, guildID, messageID string) (Incident, error) {
-	inc := Incident{GuildID: guildID, MessageID: messageID}
+	return s.incidentWhere(ctx, "message_id", guildID, messageID)
+}
+
+func (s *pgStore) IncidentByCode(ctx context.Context, guildID, code string) (Incident, error) {
+	return s.incidentWhere(ctx, "code", guildID, code)
+}
+
+// incidentWhere reads one incident by a unique column. col is always one of
+// the two literals above, never input.
+func (s *pgStore) incidentWhere(ctx context.Context, col, guildID, val string) (Incident, error) {
+	inc := Incident{GuildID: guildID}
 	var bucket, action string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, channel_id, author_id, bucket, action, confidence, reason, content, replacement, undone, created_at
-		FROM aimod_incidents WHERE guild_id = $1 AND message_id = $2
-	`, guildID, messageID).Scan(&inc.ID, &inc.ChannelID, &inc.AuthorID, &bucket, &action,
-		&inc.Confidence, &inc.Reason, &inc.Content, &inc.Replacement, &inc.Undone, &inc.CreatedAt)
+		SELECT id, channel_id, message_id, author_id, bucket, action, confidence, reason, content,
+		       replacement, COALESCE(code, ''), undone, created_at
+		FROM aimod_incidents WHERE guild_id = $1 AND `+col+` = $2
+	`, guildID, val).Scan(&inc.ID, &inc.ChannelID, &inc.MessageID, &inc.AuthorID, &bucket, &action,
+		&inc.Confidence, &inc.Reason, &inc.Content, &inc.Replacement, &inc.Code, &inc.Undone, &inc.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Incident{}, ErrNoIncident
 		}
-		return Incident{}, fmt.Errorf("aimod store: incident by message: %w", err)
+		return Incident{}, fmt.Errorf("aimod store: incident by %s: %w", col, err)
 	}
 	inc.Bucket, inc.Action = Bucket(bucket), Action(action)
 	return inc, nil
