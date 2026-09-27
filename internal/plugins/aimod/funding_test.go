@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // usdc renders a dollar amount the way the contract reports it, so a test can
@@ -882,5 +884,29 @@ func TestPollFundingAnnouncesNothingWithoutADonation(t *testing.T) {
 func TestFundingPollIsPrompt(t *testing.T) {
 	if fundingPollInterval > time.Minute {
 		t.Errorf("fundingPollInterval = %v: a donor watching for their tip waits this long", fundingPollInterval)
+	}
+}
+
+// merlin's face follows the same gauge as the words beside it, and shows no
+// tip jar face at all when the balance cannot be known.
+func TestTipJarMood(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	for name, c := range map[string]struct {
+		remaining, limit *float64
+		left             time.Duration
+		haveRunway       bool
+		want             core.Mood
+	}{
+		"unknown":         {nil, f(50), 0, false, core.MoodNone},
+		"empty":           {f(0), f(50), 0, false, core.MoodTipJarEmpty},
+		"short runway":    {f(40), f(50), 24 * time.Hour, true, core.MoodTipJarLow},
+		"nearly drained":  {f(5), f(50), 0, false, core.MoodTipJarLow},
+		"mostly full":     {f(40), f(50), 30 * 24 * time.Hour, true, core.MoodTipJarFull},
+		"halfway":         {f(25), f(50), 0, false, core.MoodNone},
+		"no cap, healthy": {f(25), nil, 0, false, core.MoodNone},
+	} {
+		if got := tipJarMood(c.remaining, c.limit, c.left, c.haveRunway); got != c.want {
+			t.Errorf("%s: got mood %d, want %d", name, got, c.want)
+		}
 	}
 }

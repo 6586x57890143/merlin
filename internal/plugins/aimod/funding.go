@@ -59,6 +59,12 @@ const (
 	// which is the whole job of the warning.
 	lowCreditRunway = 72 * time.Hour
 
+	// tipJarLowFraction and tipJarFullFraction are where merlin starts
+	// sweating and stops, as a share of the credit cap. Only the faces use
+	// them; the words go by runway.
+	tipJarLowFraction  = 0.2
+	tipJarFullFraction = 0.75
+
 	// addressChangeWarning is how long the public view leads with the fact
 	// that the payout address moved. A repointed jar is the one way this
 	// feature can cost somebody money, and nothing on chain can be undone, so
@@ -702,9 +708,36 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	}
 
 	embed := core.NewEmbed(color, "merlin's tip jar", core.TruncateEmbedDescription(body), fields...)
+	if m := tipJarMood(remaining, limit, left, haveRunway); m != core.MoodNone {
+		core.WithMood(embed, m)
+	}
 	if err := core.FollowUpEmbed(s, i, embed); err != nil {
 		p.log.Error("aimod: respond funding show", "guild", i.GuildID, "err", err)
 	}
+}
+
+// tipJarMood picks merlin's face from the same gauge the prose reads, with
+// the same thresholds as fundingWords, so she never weeps over a line saying
+// all is well. In between, and whenever the balance cannot be known, it
+// returns MoodNone and the embed keeps the face its colour gave it: a full or
+// empty jar drawn over a figure merlin does not have would be a guess.
+func tipJarMood(remaining, limit *float64, left time.Duration, haveRunway bool) core.Mood {
+	if remaining == nil {
+		return core.MoodNone
+	}
+	var frac float64 = -1
+	if limit != nil && *limit > 0 {
+		frac = *remaining / *limit
+	}
+	switch {
+	case *remaining <= 0:
+		return core.MoodTipJarEmpty
+	case haveRunway && left <= lowCreditRunway, frac >= 0 && frac < tipJarLowFraction:
+		return core.MoodTipJarLow
+	case frac >= tipJarFullFraction:
+		return core.MoodTipJarFull
+	}
+	return core.MoodNone
 }
 
 // fundingWords picks the prose around the numbers. The numbers themselves are
