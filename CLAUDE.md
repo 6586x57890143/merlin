@@ -101,7 +101,7 @@ The audit log is read by a human under time pressure, and until recently it was 
 
 ### Mood icons (`internal/core/embeds.go`)
 
-Six drawings of merlin (`assets/merlin_{ok,error,warn,info,notice,idle}.png`), shown as the embed **thumbnail**. Not the author icon: Discord renders that at around 24px and circle-crops it, which turns a detailed square sprite into a smudge with its corners cut off.
+Six drawings of merlin (`assets/merlin_{ok,error,warn,info,notice,idle}.png`), plus three tip jar faces only `/aimod funding show` uses (see the tip jar section), shown as the embed **thumbnail**. Not the author icon: Discord renders that at around 24px and circle-crops it, which turns a detailed square sprite into a smudge with its corners cut off.
 
 **The mood is derived from the embed's colour** (`moodForColor`), not passed in. That is what let all ~113 existing `RespondOK/Err/Info/Warn` call sites pick up an icon without being touched: the colour already encodes exactly this distinction, and a second argument saying the same thing again is only an opportunity for the two to disagree. `core.WithMood` overrides it for the cases the palette cannot express, which today is `MoodIdle` on `/config pause` and `/config dryrun`: both report as warnings, and a paused bot is doing what it was told rather than failing.
 
@@ -675,6 +675,21 @@ since `voice.Line` selects at random and falls back silently, which is right
 for a greeting and wrong for the sentence saying where somebody's money goes.
 Member-facing durations render through `humanRunway` ("6 days"), the audit and
 `/aimod status` ones through `core.FormatDuration` ("6d").
+
+**merlin's face on `funding/show` follows the scanning-credit gauge, not the
+jar** (`tipJarMood`): crying (`MoodTipJarEmpty`) when the credit is gone,
+sweating (`MoodTipJarLow`) inside `lowCreditRunway` or under
+`tipJarLowFraction` of the cap, dry-eyed over a full jar (`MoodTipJarFull`)
+from `tipJarFullFraction` up. The gauge rather than the donation balance
+because "mostly full" needs a capacity and only the cap gives one; a wallet
+has no top. Empty and low reuse `fundingWords`' thresholds so the face cannot
+weep beside a line saying all is well. An unknown balance (the usual
+OpenRouter case, see above) or one in between returns `MoodNone` and the embed
+keeps its colour's face: a full or empty jar drawn over a figure merlin does
+not have is the same misreading `keyInfo` drops `limit_remaining` to avoid.
+The low and full frames are edits of the crying emote kept in
+`assets/source/`, keyed by flood fill from the border rather than a global
+black key, which would have eaten the outline and the pupil.
 
 ### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)
 
