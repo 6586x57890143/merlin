@@ -180,7 +180,7 @@ func TestTruncateEmbedFieldCutsOnRuneBoundary(t *testing.T) {
 // silently produces an embed that references an image nobody uploaded,
 // which Discord renders as a broken frame to the whole channel.
 func TestEveryMoodHasAnAsset(t *testing.T) {
-	for _, m := range []Mood{MoodOK, MoodError, MoodWarn, MoodInfo, MoodNotice, MoodIdle} {
+	for _, m := range []Mood{MoodOK, MoodError, MoodWarn, MoodInfo, MoodNotice, MoodIdle, MoodTipJarEmpty, MoodTipJarLow, MoodTipJarFull} {
 		f := moodFile(m)
 		if f == nil {
 			t.Errorf("mood %d has no file", m)
@@ -225,6 +225,7 @@ func TestEmbedFilesCoversEveryReference(t *testing.T) {
 		"info":     NewEmbed(ColorInfo, "t", "d"),
 		"notice":   NewEmbed(ColorPrimary, "t", "d"),
 		"idle":     WithMood(NewEmbed(ColorWarning, "t", "d"), MoodIdle),
+		"tipjar":   WithMood(NewEmbed(ColorSuccess, "t", "d"), MoodTipJarFull),
 		"landmark": NewLandmarkEmbed(ColorInfo, "t", "d"),
 	} {
 		t.Run(name, func(t *testing.T) {

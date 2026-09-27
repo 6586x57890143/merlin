@@ -90,6 +90,19 @@ var moodNoticePNG []byte
 //go:embed assets/merlin_idle.png
 var moodIdlePNG []byte
 
+// The tip jar's three faces, cut from assets/source/merlin_tipjar_crying_source.png:
+// crying over an empty jar, sweating over a nearly empty one, and dry-eyed
+// over a full one.
+//
+//go:embed assets/merlin_tipjar_empty.png
+var moodTipJarEmptyPNG []byte
+
+//go:embed assets/merlin_tipjar_low.png
+var moodTipJarLowPNG []byte
+
+//go:embed assets/merlin_tipjar_full.png
+var moodTipJarFullPNG []byte
+
 // Mood is which drawing of merlin a message carries.
 type Mood int
 
@@ -108,6 +121,12 @@ const (
 	// paused bot is not broken, and showing it the error face would say the
 	// opposite of what an operator needs to read.
 	MoodIdle
+	// MoodTipJarEmpty, MoodTipJarLow and MoodTipJarFull belong to
+	// /aimod funding show alone, set via WithMood from how much scanning
+	// credit is left. No colour maps to them.
+	MoodTipJarEmpty
+	MoodTipJarLow
+	MoodTipJarFull
 )
 
 var moodAssets = map[Mood]struct {
@@ -120,6 +139,10 @@ var moodAssets = map[Mood]struct {
 	MoodInfo:   {"merlin_info.png", moodInfoPNG},
 	MoodNotice: {"merlin_notice.png", moodNoticePNG},
 	MoodIdle:   {"merlin_idle.png", moodIdlePNG},
+
+	MoodTipJarEmpty: {"merlin_tipjar_empty.png", moodTipJarEmptyPNG},
+	MoodTipJarLow:   {"merlin_tipjar_low.png", moodTipJarLowPNG},
+	MoodTipJarFull:  {"merlin_tipjar_full.png", moodTipJarFullPNG},
 }
 
 // moodForColor maps an embed's colour to a mood.
