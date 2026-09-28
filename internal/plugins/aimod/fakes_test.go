@@ -423,6 +423,11 @@ type fakeClassifier struct {
 	calibrationErr     error
 	calibrationCalls   int
 	lastCalibrationReq chatRequest
+	// secondLook is the answer to rung 1 checking a slur hit; unscripted,
+	// it confirms the hit, so tests that predate it see no change.
+	secondLook        []string
+	secondLookCalls   int
+	lastSecondLookReq chatRequest
 	// deepDelay makes a deep call take measurable time, so a test can tell
 	// serial escalation from concurrent. inDeep and maxDeepParallel record
 	// how many were actually in flight at once: a wall-clock assertion would
@@ -525,6 +530,14 @@ func (f *fakeClassifier) Chat(_ context.Context, _ string, req chatRequest) (str
 			return "", f.usage, f.calibrationErr
 		}
 		return pick(f.calibration, f.calibrationCalls), f.usage, nil
+	}
+	if schemaName(req) == "second_look" {
+		f.secondLookCalls++
+		f.lastSecondLookReq = req
+		if len(f.secondLook) == 0 {
+			return `{"slur":true,"confidence":1}`, f.usage, nil
+		}
+		return pick(f.secondLook, f.secondLookCalls), f.usage, nil
 	}
 	if isDeep(req) {
 		f.deepCalls++

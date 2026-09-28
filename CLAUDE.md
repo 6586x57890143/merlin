@@ -173,6 +173,17 @@ status` rather than appearing to work.
   ~1% that already tripped. A failed or unparseable deep pass acts on nothing;
   treating an outage as a confirmation would let Discord being down delete
   messages.
+- **Rung 1's slur table checks itself before acting** (`secondlook.go`). It is
+  the one pattern that acts with no model, and every widening against an
+  evasion also widens what lines up by accident ("nitro on" was reposted as
+  "nicartoon"). So a regex slur hit shows the deep model the matched words,
+  and nothing else from the message, and a confident "ordinary words" hands
+  the message to rungs 2 and 3 instead. It can only route a message *to* the
+  model rungs, never publish it unread, and every other outcome (error, spent
+  budget, deep ceiling, a hesitant answer) leaves the hit standing, which is
+  the opposite failure direction from the deep pass above and deliberately so:
+  here the default being overruled is an action, not a scan. The n-word by
+  shape (`nWordShape`) is never sent, since it matches nothing else in English.
 - **The policy catalogue is data, validated like `internal/voice`'s.** Ten
   `policy/*.yaml` files, `go:embed`ed, each carrying `violations` **and**
   `not_violations`, both with a `minListItems` floor. The second list is the

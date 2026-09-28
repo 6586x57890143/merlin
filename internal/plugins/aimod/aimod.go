@@ -557,13 +557,35 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// rewritten around a leaked token.
 	if cfg.Mode != ModeOff {
 		if bucket, reason, rewrite, hit := hardHit(c.Content); hit && bucket == BucketHateSpeech {
+			action := EffectiveAction(cfg.BucketActions, bucket)
 			p.log.Info("aimod: hard slur", "guild", cfg.GuildID, "channel", c.ChannelID, "message", c.MessageID,
-				"action", EffectiveAction(cfg.BucketActions, bucket))
-			p.actOnHardHit(cfg, c, bucket, reason, rewrite)
+				"action", action)
+			if action == ActionOff {
+				return
+			}
+			// The second look (secondlook.go) runs off the gateway goroutine,
+			// since it is a model call. A confident clear sends the message
+			// down the ordinary ladder instead; anything else enforces.
+			p.spawn(func(bg context.Context) {
+				if p.slurCleared(bg, cfg, c, rewrite) {
+					p.log.Info("aimod: slur hit cleared by second look", "guild", cfg.GuildID,
+						"channel", c.ChannelID, "message", c.MessageID)
+					p.scan(bg, cfg, m, c, true)
+					return
+				}
+				p.enforceHardHit(bg, cfg, c, bucket, reason, rewrite)
+			})
 			return
 		}
 	}
+	p.scan(ctx, cfg, m, c, false)
+}
 
+// scan is everything after the slur block: the skips, the rest of rung 1,
+// and the queue for the model rungs. slurCleared is set when the second
+// look has already overruled a slur hit on this exact text, so rung 1 does
+// not act on it again here.
+func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c candidate, slurCleared bool) {
 	if reason := p.shouldSkip(cfg, m, p.now()); reason != skipNone {
 		return
 	}
@@ -572,7 +594,7 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// with the bucket's own configured action and no model in the loop, so
 	// a token leak or a phishing link is gone in well under a second even on
 	// a guild whose budget is spent.
-	if bucket, reason, rewrite, hit := hardHit(c.Content); hit {
+	if bucket, reason, rewrite, hit := hardHit(c.Content); hit && (!slurCleared || bucket != BucketHateSpeech) {
 		p.actOnHardHit(cfg, c, bucket, reason, rewrite)
 		return
 	}
@@ -655,17 +677,24 @@ func (p *Plugin) actOnHardHit(cfg Config, c candidate, bucket Bucket, reason, re
 	if action == ActionOff {
 		return
 	}
+	p.spawn(func(bg context.Context) {
+		p.enforceHardHit(bg, cfg, c, bucket, reason, rewrite)
+	})
+}
+
+// enforceHardHit is actOnHardHit for a caller already off the gateway
+// goroutine, which is where the second look leaves the slur path.
+func (p *Plugin) enforceHardHit(ctx context.Context, cfg Config, c candidate, bucket Bucket, reason, rewrite string) {
+	action := EffectiveAction(cfg.BucketActions, bucket)
 	// Never a rewrite with nothing to clean: the patterns above match a
 	// credential or a link, and a "cleaned" version of a phishing message is
 	// still a phishing message with a hole in it.
 	if action == ActionRewrite && rewrite == "" {
 		action = ActionRemove
 	}
-	p.spawn(func(bg context.Context) {
-		p.enforce(bg, cfg, c, bucket, action, deepVerdict{
-			Violation: true, Bucket: bucket, Confidence: 1,
-			Reason: reason, Rewrite: rewrite,
-		})
+	p.enforce(ctx, cfg, c, bucket, action, deepVerdict{
+		Violation: true, Bucket: bucket, Confidence: 1,
+		Reason: reason, Rewrite: rewrite,
 	})
 }
 
