@@ -494,6 +494,19 @@ func TestHardHit(t *testing.T) {
 			"", false, false,
 		},
 		{
+			// Reposted as "nicartoon top" on 2026-09-28: troon's letters ran
+			// from the tail of one word over a space into the next. See
+			// acrossWords.
+			"letters lining up across ordinary words are not hits",
+			"Dw, you will get a free month of nitro on top of it too, let's go ok?",
+			"", false, false,
+		},
+		{
+			"a slur spelled a letter at a time still is one",
+			"what a t r a n n y",
+			BucketHateSpeech, true, true,
+		},
+		{
 			// Rung 1 is a spam gate. An ordinary insult still belongs to the
 			// model rungs, which at least read the sentence.
 			"ordinary insult is not a hard hit",

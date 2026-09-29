@@ -667,6 +667,9 @@ func redactSlurs(content string) (string, bool) {
 			if innocentCompounds.MatchString(out[ws:we]) || (s.wordStart && ws < start) {
 				continue
 			}
+			if acrossWords(out[start:end], ws < start || we > end) {
+				continue
+			}
 			// Glued means the slur is only part of a longer word, and it
 			// decides both halves of the replacement: which subs may be
 			// used, and that a trailing s belongs to the word rather than
@@ -705,6 +708,40 @@ func redactSlurs(content string) (string, bool) {
 		return tok[:i] + word + tok[i+len(core):]
 	})
 	return out, hit
+}
+
+// acrossWords reports a match that reached over whitespace into ordinary
+// words rather than one spelled out a letter at a time.
+//
+// slurSep lets a space sit between two letters, which is what catches
+// "t r a n n y", and letters may repeat across one, which is what catches
+// "n'i'ig'ger". Together they also let a pattern run from the tail of one
+// word into the head of the next: on 2026-09-28 "a free month of nitro on
+// top" read as t-r-o, space, o-n and was reposted as "nicartoon top". A
+// spaced-out slur owns every word it touches and has single letters among
+// them; letters that happen to line up across real words ("nitro on",
+// "go ok") do neither. Declining drops the message to the model rungs,
+// which is the safe direction.
+func acrossWords(match string, glued bool) bool {
+	pieces := strings.Fields(match)
+	if len(pieces) < 2 {
+		return false
+	}
+	if glued {
+		return true
+	}
+	for _, piece := range pieces {
+		letters := 0
+		for _, r := range piece {
+			if isWordRune(r) {
+				letters++
+			}
+		}
+		if letters <= 1 {
+			return false
+		}
+	}
+	return true
 }
 
 // shapeToken is one whitespace-separated token, and tokenEdge the
