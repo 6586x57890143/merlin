@@ -125,12 +125,34 @@ func TestInitRegistersAFullyWiredCommandTree(t *testing.T) {
 	}
 }
 
+// TestBuildHidesChannelNamesByDefault: without show-channels nobody's
+// channels are named, in the image or the list, so a ticket or mod channel
+// cannot end up in a shared report. The count still stands.
+func TestBuildHidesChannelNamesByDefault(t *testing.T) {
+	p, _ := seeded(t)
+	rep, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.Add(3 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.channels != 2 {
+		t.Fatalf("channel count: %d", rep.channels)
+	}
+	for _, per := range rep.people {
+		if len(per.channels) != 0 || len(per.rooms) != 0 {
+			t.Fatalf("%s named channels: %v %v", per.name, per.channels, per.rooms)
+		}
+	}
+	if md := markdown(rep, "g", windowStart, windowStart.Add(3*time.Hour), 0); strings.Contains(md, "#general") {
+		t.Fatalf("list names a channel:\n%s", md)
+	}
+}
+
 // TestBuildNamesPeopleAndChannelsFromTheBuckets: the report comes out of
 // the buckets ranked, named where a name was seen and by id where not, with
 // channels resolved to the names on record.
 func TestBuildNamesPeopleAndChannelsFromTheBuckets(t *testing.T) {
 	p, _ := seeded(t)
-	rep, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.Add(3 * time.Hour)})
+	rep, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.Add(3 * time.Hour), showChannels: true})
 	if err != nil {
 		t.Fatal(err)
 	}

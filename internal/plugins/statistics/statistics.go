@@ -215,6 +215,11 @@ func command() *discordgo.ApplicationCommand {
 						Name:        "share",
 						Description: "Post the report in this channel instead of answering only you",
 					},
+					&discordgo.ApplicationCommandOption{
+						Type:        discordgo.ApplicationCommandOptionBoolean,
+						Name:        "show-channels",
+						Description: "Name the channels each person posted or sat in. Off by default, so private channels stay off it",
+					},
 				),
 			},
 			{
@@ -355,6 +360,10 @@ type options struct {
 	channelID string
 	top       int
 	share     bool
+	// showChannels names where each person was. Off by default: the names
+	// come from every channel merlin can read, ticket and mod channels
+	// included, and a shared report would publish them.
+	showChannels bool
 }
 
 func parseOptions(args map[string]*discordgo.ApplicationCommandInteractionDataOption, now time.Time) (options, error) {
@@ -391,6 +400,9 @@ func parseOptions(args map[string]*discordgo.ApplicationCommandInteractionDataOp
 	}
 	if arg, ok := args["share"]; ok {
 		opts.share = arg.BoolValue()
+	}
+	if arg, ok := args["show-channels"]; ok {
+		opts.showChannels = arg.BoolValue()
 	}
 	return opts, nil
 }
@@ -486,11 +498,15 @@ func (p *Plugin) build(ctx context.Context, guildID string, opts options) (repor
 		per := &person{id: r.UserID, name: name, avatar: u.Avatar, count: r.Messages,
 			voice: time.Duration(r.VoiceSeconds) * time.Second, channels: map[string]bool{}, rooms: map[string]bool{}, last: r.Last}
 		for _, ch := range r.Channels {
-			per.channels[channelLabel(channels, ch)] = true
+			if opts.showChannels {
+				per.channels[channelLabel(channels, ch)] = true
+			}
 			busy[ch] = true
 		}
-		for _, ch := range r.VoiceChannels {
-			per.rooms[channelLabel(channels, ch)] = true
+		if opts.showChannels {
+			for _, ch := range r.VoiceChannels {
+				per.rooms[channelLabel(channels, ch)] = true
+			}
 		}
 		people[r.UserID] = per
 		rep.messages += r.Messages
