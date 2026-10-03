@@ -182,8 +182,15 @@ status` rather than appearing to work.
   model rungs, never publish it unread, and every other outcome (error, spent
   budget, deep ceiling, a hesitant answer) leaves the hit standing, which is
   the opposite failure direction from the deep pass above and deliberately so:
-  here the default being overruled is an action, not a scan. The n-word by
-  shape (`nWordShape`) is never sent, since it matches nothing else in English.
+  here the default being overruled is an action, not a scan. A word that is a
+  slur end to end (`wholeWordSlur`: the n-word by shape, or a table entry with
+  no `notIf`) is never sent, since there are no letters lining up by accident
+  to judge and a model may call "faggot" a bundle of sticks. The "nitro on"
+  fix itself (`acrossWords`) refuses a match that runs over whitespace into
+  ordinary words, and a refused match is **retried inside its first word**
+  rather than dropped: letters may repeat across a separator and plurals are
+  an optional s, so a real slur followed by "sissy" or "today" ran into that
+  word, was refused whole, and "Shut up faggot sissy retard" was published.
 - **The policy catalogue is data, validated like `internal/voice`'s.** Ten
   `policy/*.yaml` files, `go:embed`ed, each carrying `violations` **and**
   `not_violations`, both with a `minListItems` floor. The second list is the

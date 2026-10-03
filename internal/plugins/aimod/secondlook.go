@@ -28,12 +28,13 @@ import (
 // member over their deep ceiling, an unparseable answer) leaves rung 1's
 // verdict standing, exactly as it stood before this existed.
 //
-// Two things are never sent. A word that is the n-word by shape
-// (nWordShape) matches nothing else in a 370k word list, so a model
-// disagreeing with it is the model being wrong, and paying to ask would only
-// buy that chance. And the rest of the message: the question is about
-// letters, and every other word in the message is injection surface with no
-// bearing on the answer.
+// Two things are never sent. A word that is a slur from end to end
+// (wholeWordSlur) has no letters lining up by accident: there is nothing
+// for the question to be about, and asking only buys the chance of a model
+// answering "ordinary word" for "faggot" because it also means a bundle of
+// sticks. And the rest of the message: the question is about letters, and
+// every other word in the message is injection surface with no bearing on
+// the answer.
 
 // secondLookMaxTokens bounds the answer, which is two fields.
 const secondLookMaxTokens = 60
@@ -97,7 +98,7 @@ func (p *Plugin) slurCleared(ctx context.Context, cfg Config, c candidate, rewri
 		return false
 	}
 	for _, w := range words {
-		if core := strings.Trim(w, tokenEdge); core != "" && nWordShape(core) {
+		if core := strings.Trim(w, tokenEdge); core != "" && wholeWordSlur(core) {
 			return false
 		}
 	}
@@ -131,4 +132,24 @@ func (p *Plugin) slurCleared(ctx context.Context, cfg Config, c candidate, rewri
 		return false
 	}
 	return !v.Slur && v.Confidence >= actThreshold
+}
+
+// wholeWordSlur reports a word that is a hard slur from its first letter to
+// its last: the n-word by shape, or a table entry matching the whole word.
+// Entries with a notIf are left out, since that marks a spelling that is
+// also an ordinary word ("chink"), which is the one case where asking still
+// has an answer to find, and so is the phrase entry, which is never one word.
+func wholeWordSlur(word string) bool {
+	if nWordShape(word) {
+		return true
+	}
+	for _, s := range hardSlurs {
+		if s.notIf != nil || s.phrase {
+			continue
+		}
+		if loc := s.pattern.FindStringIndex(word); loc != nil && loc[0] == 0 && loc[1] == len(word) {
+			return true
+		}
+	}
+	return false
 }
