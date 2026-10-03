@@ -483,6 +483,9 @@ var hardSlurs = []struct {
 	// the entry whose letters also sit inside ordinary ones ("stingier",
 	// "Tangier"). It still takes a suffix.
 	wordStart bool
+	// wholeWord refuses a match glued on at either end, for the entry so
+	// short that ordinary words carry it whole ("spicy", "suspicion").
+	wholeWord bool
 	// phrase marks the entry that is several ordinary words by design, so
 	// acrossWords, which exists to refuse exactly that shape, does not apply.
 	phrase bool
@@ -614,6 +617,22 @@ var hardSlurs = []struct {
 			{"keen amateur beekeeper", "keen amateur beekeepers"},
 		},
 	},
+	{
+		// Four letters that ordinary words carry whole (spicy, spice,
+		// suspicion, despicable, auspicious, aspic), so only the word on its
+		// own counts, and the k spelling is left out because "spick and
+		// span" is an idiom. The cleaning brand is the one plain use.
+		pattern:   slurRe(`spic(s|z)?`),
+		wholeWord: true,
+		notIf:     regexp.MustCompile(`(?i)\bspic\s*(and|&|n)\s*span\b`),
+		subs: []sub{
+			{"spoon", "spoons"},
+			{"spatula", "spatulas"},
+			{"space cadet", "space cadets"},
+			{"spinach enthusiast", "spinach enthusiasts"},
+			{"sprinkler repair technician", "sprinkler repair technicians"},
+		},
+	},
 }
 
 var nWordSubs = []sub{
@@ -681,7 +700,7 @@ func redactSlurs(content string) (string, bool) {
 			}
 			pos = end
 			ws, we := wordBounds(out, start, end)
-			if innocentCompounds.MatchString(out[ws:we]) || (s.wordStart && ws < start) {
+			if innocentCompounds.MatchString(out[ws:we]) || (s.wordStart && ws < start) || (s.wholeWord && (ws < start || we > end)) {
 				continue
 			}
 			// Glued means the slur is only part of a longer word, and it
@@ -867,7 +886,7 @@ func hiddenSlur(text string) string {
 	for _, s := range hardSlurs {
 		// Squashing joins words, so a start-of-word entry has no word start
 		// to anchor to here; looseSlur checks its shape word by word.
-		if s.wordStart || (s.notIf != nil && s.notIf.MatchString(text)) {
+		if s.wordStart || s.wholeWord || (s.notIf != nil && s.notIf.MatchString(text)) {
 			continue
 		}
 		if loc := s.pattern.FindStringIndex(squashed); loc != nil {

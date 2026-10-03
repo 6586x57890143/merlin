@@ -787,3 +787,21 @@ func TestSlurHintsAreEscalatedPastTheFastPass(t *testing.T) {
 		t.Errorf("hits = %+v, want the fast pass's own plus a hate_speech hit on message 2", hits)
 	}
 }
+
+// spic is four letters that ordinary words carry whole, so it is the one
+// entry matched only as a word of its own.
+func TestSpicIsAWholeWordOnly(t *testing.T) {
+	for _, in := range []string{"shut up spic", "dirty spics", "sp1c", "s.p.i.c go home", "SPIC says"} {
+		if _, _, _, hit := hardHit(in); !hit {
+			t.Errorf("hardHit(%q) missed", in)
+		}
+	}
+	for _, in := range []string{
+		"this is spicy", "add more spice", "I'm suspicious", "despicable me", "auspicious day",
+		"aspic jelly", "conspicuous", "hospice care", "spick and span", "Spic and Span cleaner",
+	} {
+		if _, _, _, hit := hardHit(in); hit {
+			t.Errorf("hardHit(%q) fired on an ordinary word", in)
+		}
+	}
+}
