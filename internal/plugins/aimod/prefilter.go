@@ -483,6 +483,9 @@ var hardSlurs = []struct {
 	// the entry whose letters also sit inside ordinary ones ("stingier",
 	// "Tangier"). It still takes a suffix.
 	wordStart bool
+	// phrase marks the entry that is several ordinary words by design, so
+	// acrossWords, which exists to refuse exactly that shape, does not apply.
+	phrase bool
 }{
 	{
 		// The g is a class because swapping it is the evasion: "nibbers",
@@ -571,6 +574,7 @@ var hardSlurs = []struct {
 		// not one this table can afford to leave to a model that has never
 		// heard the euphemism.
 		pattern: slurRe(`[ck]u?te?a?nd?fu?n+y`),
+		phrase:  true,
 		subs: []sub{
 			{"beige", "beige"},
 			{"tall and boring", "tall and boring"},
@@ -648,26 +652,36 @@ func redactSlurs(content string) (string, bool) {
 		}
 		var b strings.Builder
 		last := 0
-		for _, loc := range s.pattern.FindAllStringIndex(out, -1) {
-			start, end := loc[0], loc[1]
-			// A pattern ending in an optional group ("nigger" plus an
-			// optional plural) can match the separator in front of a group
-			// that then matched nothing, so the hit runs one space past the
-			// word. Left alone that swallows the space into the replacement
-			// and, worse, widens the word the innocentCompounds veto is
-			// tested against, which is how "gobbledygook to me" got past it.
-			for end > start {
-				r, size := utf8.DecodeLastRuneInString(out[start:end])
-				if isWordRune(r) {
-					break
-				}
-				end -= size
+		// Searched one match at a time rather than with FindAll, because a
+		// match refused for running into the next word is retried inside
+		// its first word, and the search resumes from wherever that leaves.
+		for pos := 0; pos < len(out); {
+			loc := s.pattern.FindStringIndex(out[pos:])
+			if loc == nil {
+				break
 			}
+			start, end := pos+loc[0], trimTail(out, pos+loc[0], pos+loc[1])
+			if !s.phrase && acrossWords(out[start:end], isGlued(out, start, end)) {
+				// Every letter may repeat across a separator and the plural
+				// is an optional s, so a real slur followed by a word that
+				// starts with its last letter, an s or a z ("faggot sissy",
+				// "gook kid") ran into that word, read as letters lining up
+				// across ordinary words, and was refused whole: the slur
+				// published untouched. So the match is cut back to its first
+				// word and tried again there. "nitro on" still declines,
+				// since "tro" alone is not the word.
+				cut := start + strings.IndexFunc(out[start:end], unicode.IsSpace)
+				l := s.pattern.FindStringIndex(out[start:cut])
+				if l == nil {
+					_, size := utf8.DecodeRuneInString(out[start:])
+					pos = start + size
+					continue
+				}
+				start, end = start+l[0], trimTail(out, start+l[0], start+l[1])
+			}
+			pos = end
 			ws, we := wordBounds(out, start, end)
 			if innocentCompounds.MatchString(out[ws:we]) || (s.wordStart && ws < start) {
-				continue
-			}
-			if acrossWords(out[start:end], ws < start || we > end) {
 				continue
 			}
 			// Glued means the slur is only part of a longer word, and it
@@ -742,6 +756,29 @@ func acrossWords(match string, glued bool) bool {
 		}
 	}
 	return true
+}
+
+// trimTail pulls a match's end back to its last letter or digit. A pattern
+// ending in an optional group ("nigger" plus an optional plural) can match
+// the separator in front of a group that then matched nothing, so the hit
+// runs one space past the word. Left alone that swallows the space into the
+// replacement and, worse, widens the word the innocentCompounds veto is
+// tested against, which is how "gobbledygook to me" got past it.
+func trimTail(s string, start, end int) int {
+	for end > start {
+		r, size := utf8.DecodeLastRuneInString(s[start:end])
+		if isWordRune(r) {
+			break
+		}
+		end -= size
+	}
+	return end
+}
+
+// isGlued reports a match that is only part of a longer word.
+func isGlued(s string, start, end int) bool {
+	ws, we := wordBounds(s, start, end)
+	return ws < start || we > end
 }
 
 // shapeToken is one whitespace-separated token, and tokenEdge the

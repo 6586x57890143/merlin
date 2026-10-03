@@ -567,6 +567,28 @@ func TestRedactSlursKeepsTheSentence(t *testing.T) {
 	}
 }
 
+// A slur followed by a word starting with its own last letter, an s or a z
+// used to run into that word, read as letters lining up across ordinary
+// words, and be refused whole. "Shut up faggot sissy retard" was published
+// untouched on 2026-10-03.
+func TestSlurFollowedByAWordStillHits(t *testing.T) {
+	for _, in := range []string{
+		"<@1> Shut up faggot sissy retard",
+		"faggot today", "faggot zone", "faggot, sissy", "faggot\nsissy",
+		"troon now", "troon says", "gook kid", "kike eats", "chink says",
+		"cute and funny",
+	} {
+		if _, _, _, hit := hardHit(in); !hit {
+			t.Errorf("hardHit(%q) missed", in)
+		}
+	}
+	// Both words of a pair, not just the first: the first match used to eat
+	// the second word's opening letter.
+	if out, _ := redactSlurs("faggot tranny"); strings.Contains(out, "faggot") || strings.Contains(out, "tranny") {
+		t.Errorf("redactSlurs left a slur in %q", out)
+	}
+}
+
 func TestEnforcedBuckets(t *testing.T) {
 	// Only what a guild actually enforces is sent to the fast pass, which is
 	// a policy decision and a token saving at once.

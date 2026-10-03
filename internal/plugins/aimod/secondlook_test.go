@@ -18,12 +18,16 @@ func TestSecondLookGatesRegexSlurHits(t *testing.T) {
 		wantActed  bool
 		wantPrompt string
 	}{
-		{"confident clear stands rung 1 down", "shut up you faggot", `{"slur":false,"confidence":0.95}`, 1, false, "faggot"},
-		{"a hesitant clear does not", "shut up you faggot", `{"slur":false,"confidence":0.5}`, 1, true, "faggot"},
-		{"a confirmation acts", "shut up you faggot", `{"slur":true,"confidence":0.99}`, 1, true, "faggot"},
-		{"an unparseable answer acts", "shut up you faggot", `not json`, 1, true, "faggot"},
-		// nWordShape matches nothing else in English, so it is never asked.
+		// A match glued inside a longer word is the case the look is for.
+		{"confident clear stands rung 1 down", "this slime is gooky", `{"slur":false,"confidence":0.95}`, 1, false, "gooky"},
+		{"a hesitant clear does not", "this slime is gooky", `{"slur":false,"confidence":0.5}`, 1, true, "gooky"},
+		{"a confirmation acts", "this slime is gooky", `{"slur":true,"confidence":0.99}`, 1, true, "gooky"},
+		{"an unparseable answer acts", "this slime is gooky", `not json`, 1, true, "gooky"},
+		// A slur from end to end has no letters lining up by accident, so it
+		// is never asked: a model may well call "faggot" a bundle of sticks.
 		{"the n-word by shape is never second-guessed", "lol Nibber", `{"slur":false,"confidence":1}`, 0, true, ""},
+		{"a whole-word slur is never second-guessed", "shut up you faggot", `{"slur":false,"confidence":1}`, 0, true, ""},
+		{"nor when the next word starts with an s", "Shut up faggot sissy retard", `{"slur":false,"confidence":1}`, 0, true, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
