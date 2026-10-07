@@ -278,6 +278,28 @@ func TestMeHidesNotesModeratorsAndVoids(t *testing.T) {
 	}
 }
 
+func TestPublicViewIsForwardableAndMemberSafe(t *testing.T) {
+	h := newHarness()
+	seedEntries(h, "u1", 12)
+	_, _ = h.store.Insert(context.Background(), Entry{
+		GuildID: testGuild, UserID: "u1", Kind: KindNote, ActorID: modID, Reason: "STAFF-ONLY", Source: SourceCommand, CreatedAt: testNow,
+	})
+	s, rt := stubSession()
+	h.p.handleView(context.Background(), s, withResolved(
+		interaction("view", userOpt("user", "u1"), boolOpt("public", true)),
+		&discordgo.User{ID: "u1", Username: "dana"}))
+	said := rt.said()
+	// Ephemeral messages cannot be forwarded, so the flag must be absent.
+	for _, leak := range []string{"STAFF-ONLY", "@" + modID, "half-life", `"flags":64`, mePrefix, viewPrefix} {
+		if strings.Contains(said, leak) {
+			t.Errorf("public view carried %q: %s", leak, said)
+		}
+	}
+	if !strings.Contains(said, "Rapsheet: dana") || !strings.Contains(said, "a moderator") {
+		t.Errorf("got %s", said)
+	}
+}
+
 func TestMePageIgnoresTheCustomIDForIdentity(t *testing.T) {
 	h := newHarness()
 	seedEntries(h, "victim", 11)
