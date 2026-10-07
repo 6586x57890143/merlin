@@ -64,7 +64,13 @@ func (p *Plugin) registerCommands() {
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "view",
 				Description: "Read a member's rapsheet.",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Whose sheet to read."), pageOpt},
+				Options: []*discordgo.ApplicationCommandOption{
+					userOpt("user", "Whose sheet to read."), pageOpt,
+					{
+						Type: discordgo.ApplicationCommandOptionBoolean, Name: "public",
+						Description: "Post it in this channel, as the member would see it, so it can be forwarded.",
+					},
+				},
 			},
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "me",
@@ -347,6 +353,10 @@ func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discor
 	if a, ok := args["page"]; ok {
 		page = int(a.IntValue()) - 1
 	}
+	if a, ok := args["public"]; ok && a.BoolValue() {
+		p.postView(ctx, s, i, userID, page)
+		return
+	}
 	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), page, false)
 	if err != nil {
 		core.RespondErr(s, i, "Rapsheet", err)
@@ -354,6 +364,41 @@ func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discor
 	}
 	if err := core.RespondEmbedWithComponents(s, i, embed, components); err != nil {
 		p.log.Error("rapsheet: view response", "err", err)
+	}
+}
+
+// postView answers /rapsheet view public:true in the channel rather than
+// privately, because Discord will not forward an ephemeral message.
+//
+// It renders the member's view, not the mod one: a channel post can be
+// forwarded to anybody, the member included, so it carries exactly what
+// /rapsheet me would show them and no staff notes, hints or mod names.
+// It also carries no page buttons: the member view's buttons page whoever
+// clicks, which on a public message would swap in the clicker's own sheet
+// for the whole channel. One page is what gets forwarded anyway.
+func (p *Plugin) postView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, userID string, page int) {
+	u := resolvedUser(i, userID)
+	embed, _, err := p.renderFor(ctx, i.GuildID, userID, u, page, true)
+	if err != nil {
+		core.RespondErr(s, i, "Rapsheet", err)
+		return
+	}
+	// "Your rapsheet" reads wrong in a channel; name whose it is.
+	var cfPtr *CaseFile
+	if cf, ok, err := p.store.CaseFile(ctx, i.GuildID, userID); err == nil && ok {
+		cfPtr = &cf
+	}
+	embed.Title = "Rapsheet: " + displayName(u, cfPtr, userID)
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds:          []*discordgo.MessageEmbed{embed},
+			Files:           core.EmbedFiles(embed),
+			AllowedMentions: &discordgo.MessageAllowedMentions{},
+		},
+	})
+	if err != nil {
+		p.log.Error("rapsheet: public view response", "err", err)
 	}
 }
 
