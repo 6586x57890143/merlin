@@ -397,6 +397,10 @@ func (p *Plugin) registerCommands() {
 								Type: discordgo.ApplicationCommandOptionString, Name: "replacement",
 								Description: "What it becomes. Leave empty to remove the whole message instead",
 							},
+							{
+								Type: discordgo.ApplicationCommandOptionBoolean, Name: "noun_only",
+								Description: "Only the bare noun: \"at work\" matches, \"this works\" and \"doesn't work\" pass",
+							},
 						},
 					},
 					{

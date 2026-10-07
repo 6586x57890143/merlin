@@ -352,7 +352,10 @@ status` rather than appearing to work.
   patterns with no model involved. Matching reuses `slurRe` (so `w.o.r.k`
   and `w0rk` land) but, unlike the slur patterns, is anchored at the start of
   a word and allows only a short suffix list, so "work" catches "working" and
-  never "network". It records under `BucketWordList`, deliberately outside
+  never "network". An entry marked `noun_only` matches only the bare word
+  and skips it when the words before it say verb (`verbBefore`: "doesn't
+  work", "I work", "need to work", but "go to work" stays a noun), which
+  is a word list rather than a tagger and errs toward replacing. It records under `BucketWordList`, deliberately outside
   `AllBuckets`, and **never sanctions, never reaches the rap sheet and never
   counts toward `CountSanctions`**: one server's running joke is not a rule
   anybody broke. A rewrite skips the DM (the marker under the repost already

@@ -110,11 +110,11 @@ func TestWordsAddRemove(t *testing.T) {
 	ctx := context.Background()
 
 	p.handleWordsAdd(ctx, s, interaction("g1", "words", "add", strOpt("word", "Work"), strOpt("replacement", "the mines")))
-	p.handleWordsAdd(ctx, s, interaction("g1", "words", "add", strOpt("word", "work"), strOpt("replacement", "jorking")))
+	p.handleWordsAdd(ctx, s, interaction("g1", "words", "add", strOpt("word", "work"), strOpt("replacement", "jorking"), boolOpt("noun_only", true)))
 	// Refused: the replacement would be rewritten again on the way out.
 	p.handleWordsAdd(ctx, s, interaction("g1", "words", "add", strOpt("word", "job"), strOpt("replacement", "a job")))
 	cfg, _ := store.Config(ctx, "g1")
-	if len(cfg.WordList) != 1 || cfg.WordList[0] != (BannedWord{Word: "work", Replacement: "jorking"}) {
+	if len(cfg.WordList) != 1 || cfg.WordList[0] != (BannedWord{Word: "work", Replacement: "jorking", NounOnly: true}) {
 		t.Fatalf("word list = %v, want work replaced once", cfg.WordList)
 	}
 
@@ -159,5 +159,35 @@ func TestWordListStore(t *testing.T) {
 	}
 	if n, err := s.CountSanctions(ctx, "g1", "u1", now.Add(-time.Hour)); err != nil || n != 0 {
 		t.Errorf("CountSanctions = %d, %v; a word-list hit must not count", n, err)
+	}
+}
+
+func TestNounOnly(t *testing.T) {
+	list := []BannedWord{{Word: "work", Replacement: "the mines", NounOnly: true}}
+	cases := []struct{ in, want string }{
+		// Verbs pass.
+		{"this works", "this works"},
+		{"this doesn't work", "this doesn't work"},
+		{"this doesn" + string(rune(0x2019)) + "t work", "this doesn" + string(rune(0x2019)) + "t work"},
+		{"does this work?", "does this work?"},
+		{"I work from home", "I work from home"},
+		{"need to work on it", "need to work on it"},
+		{"it worked", "it worked"},
+		{"working late", "working late"},
+		{"make it work", "make it work"},
+		// Nouns go.
+		{"at work rn", "at the mines rn"},
+		{"going to work", "going to the mines"},
+		{"back to work", "back to the mines"},
+		{"my work is boring", "my the mines is boring"},
+		{"Work sucks", "The mines sucks"},
+		{"done. work tomorrow", "done. the mines tomorrow"},
+		{"this work is great", "this the mines is great"},
+		{"they work at work", "they work at the mines"},
+	}
+	for _, c := range cases {
+		if got, _ := redactWords(list, c.in); got != c.want {
+			t.Errorf("redactWords(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
