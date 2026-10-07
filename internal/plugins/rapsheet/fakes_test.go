@@ -597,7 +597,7 @@ func (f *fakeOps) User(userID string, _ ...discordgo.RequestOption) (*discordgo.
 	if u, ok := f.users[userID]; ok {
 		return u, nil
 	}
-	return nil, errors.New("unknown user")
+	return nil, unknownErr(discordgo.ErrCodeUnknownUser)
 }
 
 func (f *fakeOps) UserChannelCreate(recipientID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {

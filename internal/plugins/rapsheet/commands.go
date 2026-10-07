@@ -65,7 +65,15 @@ func (p *Plugin) registerCommands() {
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "view",
 				Description: "Read a member's rapsheet.",
 				Options: []*discordgo.ApplicationCommandOption{
-					userOpt("user", "Whose sheet to read."), pageOpt,
+					// Text, not a User option, because the user picker only
+					// lists current members and a sheet outlives membership.
+					// Typing @ still opens Discord's member picker here,
+					// which inserts <@id>; a bare ID reaches anyone.
+					{
+						Type: discordgo.ApplicationCommandOptionString, Name: "user", Required: true, MaxLength: 32,
+						Description: "Whose sheet to read: @name, or a Discord user ID for somebody who has left.",
+					},
+					pageOpt,
 					{
 						Type: discordgo.ApplicationCommandOptionBoolean, Name: "public",
 						Description: "Post it in this channel so it can be forwarded. Leaves out linked accounts and alt hints.",
@@ -328,6 +336,36 @@ func resolvedUser(i *discordgo.InteractionCreate, userID string) *discordgo.User
 	return data.Resolved.Users[userID]
 }
 
+// viewTarget reads /rapsheet view's user input: an @mention (<@id> or
+// <@!id>) or a bare user ID. A User-typed option is taken as is, which is
+// what a guild still holding the old registration sends until the next
+// GuildCreate re-registers it.
+//
+// Text carries no resolved user, so a bare ID costs one lookup. It names
+// the sheet, and it is the only thing that tells a typo from somebody
+// with a clean record: Discord saying the account does not exist refuses;
+// any other failure renders without a name rather than blocking a read.
+func (p *Plugin) viewTarget(i *discordgo.InteractionCreate, o *discordgo.ApplicationCommandInteractionDataOption) (string, *discordgo.User, error) {
+	if o.Type == discordgo.ApplicationCommandOptionUser {
+		id := o.Value.(string)
+		return id, resolvedUser(i, id), nil
+	}
+	raw := strings.TrimSpace(o.StringValue())
+	id := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(raw, "<@"), "!"), ">")
+	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+		return "", nil, fmt.Errorf("%q is not a member or a user ID; use @name, or paste the numeric ID", raw)
+	}
+	u, err := p.ops(i.GuildID).User(id)
+	if err != nil {
+		if core.IsUnknownResource(err) {
+			return "", nil, fmt.Errorf("no Discord account has the ID %s", id)
+		}
+		p.log.Error("rapsheet: look up user", "user", id, "err", err)
+		return id, nil, nil
+	}
+	return id, u, nil
+}
+
 // displayName is how the sheet titles its subject: the case file's snapshot
 // when there is one, the resolved user otherwise, the bare id as a last
 // resort. Never a REST call for a title.
@@ -351,16 +389,20 @@ func displayName(u *discordgo.User, cf *CaseFile, userID string) string {
 
 func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	args := core.LeafArgs(i)
-	userID := args["user"].Value.(string)
+	userID, u, err := p.viewTarget(i, args["user"])
+	if err != nil {
+		core.RespondErr(s, i, "Rapsheet", err)
+		return
+	}
 	page := 0
 	if a, ok := args["page"]; ok {
 		page = int(a.IntValue()) - 1
 	}
 	if a, ok := args["public"]; ok && a.BoolValue() {
-		p.postView(ctx, s, i, userID, page)
+		p.postView(ctx, s, i, userID, u, page)
 		return
 	}
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), page, false, false)
+	embed, components, err := p.renderFor(ctx, i.GuildID, userID, u, page, false, false)
 	if err != nil {
 		core.RespondErr(s, i, "Rapsheet", err)
 		return
@@ -374,8 +416,8 @@ func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discor
 // privately, because Discord will not forward an ephemeral message. It is
 // the mod view with the linked-accounts and alt-hint lines left off (see
 // view.go), since a channel post can be forwarded anywhere.
-func (p *Plugin) postView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, userID string, page int) {
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), page, false, true)
+func (p *Plugin) postView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, userID string, u *discordgo.User, page int) {
+	embed, components, err := p.renderFor(ctx, i.GuildID, userID, u, page, false, true)
 	if err != nil {
 		core.RespondErr(s, i, "Rapsheet", err)
 		return
