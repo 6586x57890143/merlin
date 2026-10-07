@@ -12,29 +12,36 @@ import (
 
 // Rendering a sheet.
 //
-// Two audiences read the same record. A moderator gets everything: score,
+// Three audiences read the same record. A moderator gets everything: score,
 // ladder position, linked accounts, hints, who recorded what. The member
 // themselves (/rapsheet me) gets the entries that are about things they
 // experienced, with the moderators anonymised and staff-internal notes
-// left out. Both come out of renderSheet, switched on forMember, so the
-// two views cannot drift on what an entry says.
+// left out. A public post (/rapsheet view public:true) is the moderator's
+// view minus what is staff-to-staff: no linked accounts, no alt hints, no
+// notes or ladder suggestions. Every moderation action stays, voided ones
+// included. All three come out of renderSheet, so they cannot drift on
+// what an entry says.
 
 // viewPrefix namespaces the mod view's pagination buttons; the user id
 // rides in the CustomID so a click re-derives the sheet with no session.
 const (
 	viewPrefix = "rapsheet:view:"
 	mePrefix   = "rapsheet:me:page:"
+	pubPrefix  = "rapsheet:pub:"
 	pageSep    = ":page:"
 )
 
 func viewPagePrefix(userID string) string { return viewPrefix + userID + pageSep }
 
-// parseViewCustomID recovers (userID, page) from a mod-view button.
-func parseViewCustomID(customID string) (string, int, error) {
-	rest := strings.TrimPrefix(customID, viewPrefix)
+func pubPagePrefix(userID string) string { return pubPrefix + userID + pageSep }
+
+// parseSheetCustomID recovers (userID, page) from a mod-view or public-post
+// button, whichever prefix it carries.
+func parseSheetCustomID(prefix, customID string) (string, int, error) {
+	rest := strings.TrimPrefix(customID, prefix)
 	userID, pageStr, ok := strings.Cut(rest, pageSep)
 	if !ok || userID == "" {
-		return "", 0, fmt.Errorf("rapsheet: malformed view custom id %q", customID)
+		return "", 0, fmt.Errorf("rapsheet: malformed sheet custom id %q", customID)
 	}
 	page, err := core.ParsePaginationPage(pageStr, "")
 	if err != nil {
@@ -42,6 +49,15 @@ func parseViewCustomID(customID string) (string, int, error) {
 	}
 	return userID, page, nil
 }
+
+// audience is who a rendered sheet is for.
+type audience int
+
+const (
+	audienceMod audience = iota
+	audienceMember
+	audiencePublic
+)
 
 // sheetView is everything renderSheet needs beyond the sheet itself.
 type sheetView struct {
@@ -52,10 +68,16 @@ type sheetView struct {
 	Now       time.Time
 	Page      int
 	ForMember bool
+	Public    bool
 	Hints     []AltHint
 }
 
 func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	if v.Public {
+		// Filtered on the sheet itself, so the header's entry count does
+		// not give away how many notes staff have written.
+		v.Sheet.Entries = withoutStaffNotes(v.Sheet.Entries)
+	}
 	entries := v.Sheet.Entries
 	if v.ForMember {
 		entries = memberVisible(entries)
@@ -85,8 +107,11 @@ func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageCompo
 	embed := core.NewEmbed(color, title, core.TruncateEmbedDescription(strings.TrimRight(b.String(), "\n")))
 
 	prefix := viewPagePrefix(v.UserID)
-	if v.ForMember {
+	switch {
+	case v.ForMember:
 		prefix = mePrefix
+	case v.Public:
+		prefix = pubPagePrefix(v.UserID)
 	}
 	return embed, core.PaginationRow(prefix, page, totalPages)
 }
@@ -113,7 +138,7 @@ func writeHeader(b *strings.Builder, v sheetView) {
 		b.WriteString("\n")
 	}
 
-	if v.ForMember {
+	if v.ForMember || v.Public {
 		return
 	}
 	if len(v.Sheet.Group) > 1 {
@@ -153,6 +178,19 @@ func memberVisible(entries []Entry) []Entry {
 			continue
 		}
 		out = append(out, e)
+	}
+	return out
+}
+
+// withoutStaffNotes drops what staff write to each other: notes, and the
+// ladder's own suggestions. Unlike memberVisible it keeps voided entries,
+// since a public post is every action taken, including the ones undone.
+func withoutStaffNotes(entries []Entry) []Entry {
+	var out []Entry
+	for _, e := range entries {
+		if e.Kind != KindNote && e.Kind != KindSuggestion {
+			out = append(out, e)
+		}
 	}
 	return out
 }

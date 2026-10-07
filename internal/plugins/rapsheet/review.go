@@ -215,7 +215,7 @@ func entryCountWords(entries []Entry) string {
 // plainInsteadOfSummary renders the sheet the ordinary way with a line
 // saying why there is no prose.
 func (p *Plugin) plainInsteadOfSummary(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, cfg Config, userID, name, why string) {
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), 0, false)
+	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), 0, audienceMod)
 	if err != nil {
 		_ = core.FollowUpErr(s, i, "Summary", err)
 		return

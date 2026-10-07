@@ -278,25 +278,48 @@ func TestMeHidesNotesModeratorsAndVoids(t *testing.T) {
 	}
 }
 
-func TestPublicViewIsForwardableAndMemberSafe(t *testing.T) {
+func TestPublicViewKeepsEveryActionAndDropsStaffMaterial(t *testing.T) {
 	h := newHarness()
+	ctx := context.Background()
 	seedEntries(h, "u1", 12)
-	_, _ = h.store.Insert(context.Background(), Entry{
+	_, _ = h.store.Insert(ctx, Entry{
 		GuildID: testGuild, UserID: "u1", Kind: KindNote, ActorID: modID, Reason: "STAFF-ONLY", Source: SourceCommand, CreatedAt: testNow,
 	})
+	id, _ := h.store.Insert(ctx, Entry{
+		GuildID: testGuild, UserID: "u1", Kind: KindWarn, Points: 10, ActorID: modID, Reason: "TAKEN-BACK", Source: SourceCommand, CreatedAt: testNow,
+	})
+	_ = h.store.Void(ctx, testGuild, id, modID, "oops", testNow)
+	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "u1", GroupID: "u1", LinkedBy: modID})
+	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "alt-account", GroupID: "u1", LinkedBy: modID})
+	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "u1", CandidateID: "hint-account", Signals: []string{"same avatar"}})
+
 	s, rt := stubSession()
-	h.p.handleView(context.Background(), s, withResolved(
+	h.p.handleView(ctx, s, withResolved(
 		interaction("view", userOpt("user", "u1"), boolOpt("public", true)),
 		&discordgo.User{ID: "u1", Username: "dana"}))
 	said := rt.said()
-	// Ephemeral messages cannot be forwarded, so the flag must be absent.
-	for _, leak := range []string{"STAFF-ONLY", "@" + modID, "half-life", `"flags":64`, mePrefix, viewPrefix} {
+	// Ephemeral messages cannot be forwarded, so the flag must be absent,
+	// and the buttons must not be the mod view's, whose next page would
+	// put the linked accounts back.
+	for _, leak := range []string{"STAFF-ONLY", "alt-account", "hint-account", "Linked accounts", "Possible alts", "14 entries", `"flags":64`, viewPrefix} {
 		if strings.Contains(said, leak) {
 			t.Errorf("public view carried %q: %s", leak, said)
 		}
 	}
-	if !strings.Contains(said, "Rapsheet: dana") || !strings.Contains(said, "a moderator") {
-		t.Errorf("got %s", said)
+	// The same as the private view otherwise: who acted, the voided case,
+	// the score, the band, and pages.
+	for _, want := range []string{"Rapsheet: dana", "@" + modID, "~~#14 warned~~", "voided by", "13 entries", "half-life", "jail 1d", pubPagePrefix("u1"), "Page 1/2"} {
+		if !strings.Contains(said, want) {
+			t.Errorf("public view should contain %q, got %s", want, said)
+		}
+	}
+
+	// Page two, through the public button, stays public.
+	s2, rt2 := stubSession()
+	h.p.handlePubPage(ctx, s2, componentClick(modID, pubPagePrefix("u1")+"1"), pubPagePrefix("u1")+"1")
+	said2 := rt2.said()
+	if !strings.Contains(said2, "Page 2/2") || strings.Contains(said2, "alt-account") || strings.Contains(said2, "hint-account") {
+		t.Errorf("page two should stay the public view, got %s", said2)
 	}
 }
 

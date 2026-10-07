@@ -68,7 +68,7 @@ func (p *Plugin) registerCommands() {
 					userOpt("user", "Whose sheet to read."), pageOpt,
 					{
 						Type: discordgo.ApplicationCommandOptionBoolean, Name: "public",
-						Description: "Post it in this channel, as the member would see it, so it can be forwarded.",
+						Description: "Post it in this channel so it can be forwarded. Leaves out notes, linked accounts and alt hints.",
 					},
 				},
 			},
@@ -285,6 +285,9 @@ func (p *Plugin) registerCommands() {
 
 	p.commands.HandleComponent(p.Name(), suggestPrefix, core.PermSpec{Tier: core.TierMod, Action: actionApply}, p.handleSuggestion)
 	p.commands.HandleComponent(p.Name(), viewPrefix, view, p.handleViewPage)
+	// Paging a public post is mod-only like the post itself: the button id
+	// names the member, and the sheet it renders is one a mod chose to show.
+	p.commands.HandleComponent(p.Name(), pubPrefix, view, p.handlePubPage)
 	p.commands.HandleComponent(p.Name(), mePrefix, core.PermSpec{Tier: core.TierPublic, Action: actionMe}, p.handleMePage)
 }
 
@@ -357,7 +360,7 @@ func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discor
 		p.postView(ctx, s, i, userID, page)
 		return
 	}
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), page, false)
+	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), page, audienceMod)
 	if err != nil {
 		core.RespondErr(s, i, "Rapsheet", err)
 		return
@@ -368,31 +371,20 @@ func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discor
 }
 
 // postView answers /rapsheet view public:true in the channel rather than
-// privately, because Discord will not forward an ephemeral message.
-//
-// It renders the member's view, not the mod one: a channel post can be
-// forwarded to anybody, the member included, so it carries exactly what
-// /rapsheet me would show them and no staff notes, hints or mod names.
-// It also carries no page buttons: the member view's buttons page whoever
-// clicks, which on a public message would swap in the clicker's own sheet
-// for the whole channel. One page is what gets forwarded anyway.
+// privately, because Discord will not forward an ephemeral message. It is
+// the public rendering (see view.go): every moderation action, but none of
+// the staff-to-staff parts, since a channel post can reach anybody.
 func (p *Plugin) postView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, userID string, page int) {
-	u := resolvedUser(i, userID)
-	embed, _, err := p.renderFor(ctx, i.GuildID, userID, u, page, true)
+	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), page, audiencePublic)
 	if err != nil {
 		core.RespondErr(s, i, "Rapsheet", err)
 		return
 	}
-	// "Your rapsheet" reads wrong in a channel; name whose it is.
-	var cfPtr *CaseFile
-	if cf, ok, err := p.store.CaseFile(ctx, i.GuildID, userID); err == nil && ok {
-		cfPtr = &cf
-	}
-	embed.Title = "Rapsheet: " + displayName(u, cfPtr, userID)
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Embeds:          []*discordgo.MessageEmbed{embed},
+			Components:      components,
 			Files:           core.EmbedFiles(embed),
 			AllowedMentions: &discordgo.MessageAllowedMentions{},
 		},
@@ -403,24 +395,35 @@ func (p *Plugin) postView(ctx context.Context, s *discordgo.Session, i *discordg
 }
 
 func (p *Plugin) handleViewPage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	userID, page, err := parseViewCustomID(customID)
+	p.turnPage(ctx, s, i, customID, viewPrefix, audienceMod)
+}
+
+// handlePubPage pages a public post. Its buttons carry their own prefix so
+// a click re-renders the public view: sharing the mod view's buttons would
+// put linked accounts and hints into the channel on the first click.
+func (p *Plugin) handlePubPage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+	p.turnPage(ctx, s, i, customID, pubPrefix, audiencePublic)
+}
+
+func (p *Plugin) turnPage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID, prefix string, a audience) {
+	userID, page, err := parseSheetCustomID(prefix, customID)
 	if err != nil {
-		p.log.Error("rapsheet: parse view page", "custom_id", customID, "err", err)
+		p.log.Error("rapsheet: parse sheet page", "custom_id", customID, "err", err)
 		return
 	}
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, nil, page, false)
+	embed, components, err := p.renderFor(ctx, i.GuildID, userID, nil, page, a)
 	if err != nil {
-		p.log.Error("rapsheet: view page", "err", err)
+		p.log.Error("rapsheet: sheet page", "err", err)
 		return
 	}
 	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
-		p.log.Error("rapsheet: view page update", "err", err)
+		p.log.Error("rapsheet: sheet page update", "err", err)
 	}
 }
 
 func (p *Plugin) handleMe(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	userID := actorID(i)
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, i.Member.User, 0, true)
+	embed, components, err := p.renderFor(ctx, i.GuildID, userID, i.Member.User, 0, audienceMember)
 	if err != nil {
 		core.RespondErr(s, i, "Your record", err)
 		return
@@ -439,7 +442,7 @@ func (p *Plugin) handleMePage(ctx context.Context, s *discordgo.Session, i *disc
 	// The subject is whoever clicked, never anything in the CustomID: a
 	// member paging their own sheet must not be able to page somebody
 	// else's by editing a button id.
-	embed, components, err := p.renderFor(ctx, i.GuildID, actorID(i), i.Member.User, page, true)
+	embed, components, err := p.renderFor(ctx, i.GuildID, actorID(i), i.Member.User, page, audienceMember)
 	if err != nil {
 		p.log.Error("rapsheet: me page", "err", err)
 		return
@@ -449,8 +452,8 @@ func (p *Plugin) handleMePage(ctx context.Context, s *discordgo.Session, i *disc
 	}
 }
 
-// renderFor loads and renders one member's sheet for either audience.
-func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *discordgo.User, page int, forMember bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
+// renderFor loads and renders one member's sheet for one audience.
+func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *discordgo.User, page int, a audience) (*discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
 	cfg := p.config(ctx, guildID)
 	sh, err := p.loadSheet(ctx, cfg, guildID, userID)
 	if err != nil {
@@ -461,7 +464,7 @@ func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *disco
 		cfPtr = &cf
 	}
 	var hints []AltHint
-	if !forMember {
+	if a == audienceMod {
 		if hints, err = p.store.Hints(ctx, guildID, userID); err != nil {
 			// Hints are decoration on the sheet, not the sheet.
 			p.log.Error("rapsheet: read hints", "guild", guildID, "user", userID, "err", err)
@@ -469,7 +472,7 @@ func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *disco
 	}
 	embed, components := renderSheet(sheetView{
 		Sheet: sh, Config: cfg, UserID: userID, Name: displayName(u, cfPtr, userID),
-		Now: p.now(), Page: page, ForMember: forMember, Hints: hints,
+		Now: p.now(), Page: page, ForMember: a == audienceMember, Public: a == audiencePublic, Hints: hints,
 	})
 	return embed, components, nil
 }
