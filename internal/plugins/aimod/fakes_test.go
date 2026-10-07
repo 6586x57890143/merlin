@@ -122,6 +122,9 @@ func (f *fakeStore) SetExemptChannels(_ context.Context, g string, ids []string)
 func (f *fakeStore) SetExemptRoles(_ context.Context, g string, ids []string) error {
 	return f.mutate(g, func(c *Config) { c.ExemptRoleIDs = ids })
 }
+func (f *fakeStore) SetWordList(_ context.Context, g string, list []BannedWord) error {
+	return f.mutate(g, func(c *Config) { c.WordList = list })
+}
 func (f *fakeStore) SetSanctionAction(_ context.Context, g string, a SanctionAction) error {
 	return f.mutate(g, func(c *Config) { c.SanctionAction = a })
 }
@@ -366,7 +369,7 @@ func (f *fakeStore) CountSanctions(_ context.Context, g, userID string, since ti
 	defer f.mu.Unlock()
 	n := 0
 	for _, inc := range f.incidents {
-		if inc.GuildID == g && inc.AuthorID == userID && inc.Action != ActionFlag && !inc.Undone && !inc.CreatedAt.Before(since) {
+		if inc.GuildID == g && inc.AuthorID == userID && inc.Action != ActionFlag && inc.Bucket != BucketWordList && !inc.Undone && !inc.CreatedAt.Before(since) {
 			n++
 		}
 	}

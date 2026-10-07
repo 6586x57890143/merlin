@@ -139,6 +139,11 @@ func (c *cachingStore) SetExemptRoles(ctx context.Context, guildID string, ids [
 	return c.Store.SetExemptRoles(ctx, guildID, ids)
 }
 
+func (c *cachingStore) SetWordList(ctx context.Context, guildID string, list []BannedWord) error {
+	defer c.invalidate(guildID)
+	return c.Store.SetWordList(ctx, guildID, list)
+}
+
 func (c *cachingStore) SetSanctionAction(ctx context.Context, guildID string, action SanctionAction) error {
 	defer c.invalidate(guildID)
 	return c.Store.SetSanctionAction(ctx, guildID, action)

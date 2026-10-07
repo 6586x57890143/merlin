@@ -346,6 +346,19 @@ status` rather than appearing to work.
   `aimod_config`, never frozen into a per-row column: that is the
   `rotation_archives.delete_after` mistake pointing the other way, and here the
   direction that has to work is *shortening* the window.
+- **The guild word list (`wordlist.go`, `/aimod words`) is house style, not
+  policy.** A per-guild list of words rewritten to a replacement the guild
+  chose, or removed when it chose none, checked right after rung 1's hard
+  patterns with no model involved. Matching reuses `slurRe` (so `w.o.r.k`
+  and `w0rk` land) but, unlike the slur patterns, is anchored at the start of
+  a word and allows only a short suffix list, so "work" catches "working" and
+  never "network". It records under `BucketWordList`, deliberately outside
+  `AllBuckets`, and **never sanctions, never reaches the rap sheet and never
+  counts toward `CountSanctions`**: one server's running joke is not a rule
+  anybody broke. A rewrite skips the DM (the marker under the repost already
+  says so); a removal keeps it. `enforce` also runs the list over every
+  model rewrite, before `redactSlurs`, so a guild's chosen replacement is
+  still held to the slur floor.
 - **Config is cached** (`cachingStore`, `configTTL`) because this is the only
   hot path in the codebase: without it a busy guild pays a Postgres round trip
   per message. Every setter invalidates; a new setter added to `Store` and not

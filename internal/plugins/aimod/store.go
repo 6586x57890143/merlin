@@ -90,6 +90,9 @@ type Config struct {
 	// written every few hundred messages and live in their own table, exactly
 	// the split the tip jar uses.
 	TriageMode TriageMode
+
+	// WordList is the guild's own banned words. See wordlist.go.
+	WordList []BannedWord
 }
 
 // Mode is the guild-wide switch, above the per-bucket actions.
@@ -212,6 +215,7 @@ type Store interface {
 	SetBucketAction(ctx context.Context, guildID string, bucket Bucket, action Action) error
 	SetExemptChannels(ctx context.Context, guildID string, ids []string) error
 	SetExemptRoles(ctx context.Context, guildID string, ids []string) error
+	SetWordList(ctx context.Context, guildID string, list []BannedWord) error
 	SetSanctionAction(ctx context.Context, guildID string, action SanctionAction) error
 	SetSanctionOptIn(ctx context.Context, guildID string, userIDs []string) error
 	// The member opt-out, whose two halves are a guild switch and the list
@@ -314,17 +318,17 @@ func defaultConfig(guildID string) Config {
 
 func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 	cfg := defaultConfig(guildID)
-	var actionsJSON, calJSON, calPendingJSON []byte
+	var actionsJSON, calJSON, calPendingJSON, wordsJSON []byte
 	var ranAt *time.Time
 	err := s.pool.QueryRow(ctx, `
 		SELECT api_key_sealed, orca_key_sealed, mode, daily_budget_usd, evidence_hours,
 		       fast_models, deep_models, exempt_channel_ids, exempt_role_ids, sanction_action, sanction_optin_user_ids, bucket_actions,
 		       calibration, calibration_pending, calibration_mode, calibration_ran_at,
-		       triage_mode, member_opt_out, opt_out_user_ids
+		       triage_mode, member_opt_out, opt_out_user_ids, word_list
 		FROM aimod_config WHERE guild_id = $1
 	`, guildID).Scan(&cfg.APIKeySealed, &cfg.OrcaKeySealed, &cfg.Mode, &cfg.DailyBudgetUSD, &cfg.EvidenceHours,
 		&cfg.FastModels, &cfg.DeepModels, &cfg.ExemptChannelIDs, &cfg.ExemptRoleIDs, &cfg.SanctionAction, &cfg.SanctionOptInUserIDs, &actionsJSON,
-		&calJSON, &calPendingJSON, &cfg.CalibrationMode, &ranAt, &cfg.TriageMode, &cfg.MemberOptOut, &cfg.OptOutUserIDs)
+		&calJSON, &calPendingJSON, &cfg.CalibrationMode, &ranAt, &cfg.TriageMode, &cfg.MemberOptOut, &cfg.OptOutUserIDs, &wordsJSON)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return cfg, nil
@@ -347,6 +351,11 @@ func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 	// behaviour, which is a safe place to land.
 	cfg.Calibration = decodeCalibration(calJSON)
 	cfg.CalibrationPending = decodeCalibration(calPendingJSON)
+	// Dropped rather than fatal for the reason calibration is: an unreadable
+	// list must not stop the guild being moderated at all.
+	if len(wordsJSON) > 0 {
+		_ = json.Unmarshal(wordsJSON, &cfg.WordList)
+	}
 	if ranAt != nil {
 		cfg.CalibrationRanAt = ranAt.UTC()
 	}
@@ -420,6 +429,17 @@ func (s *pgStore) SetExemptChannels(ctx context.Context, guildID string, ids []s
 
 func (s *pgStore) SetExemptRoles(ctx context.Context, guildID string, ids []string) error {
 	return s.upsert(ctx, guildID, "exempt_role_ids", ids)
+}
+
+func (s *pgStore) SetWordList(ctx context.Context, guildID string, list []BannedWord) error {
+	if list == nil {
+		list = []BannedWord{}
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return fmt.Errorf("aimod store: encode word list: %w", err)
+	}
+	return s.upsert(ctx, guildID, "word_list", raw)
 }
 
 func (s *pgStore) SetSanctionAction(ctx context.Context, guildID string, action SanctionAction) error {
@@ -712,7 +732,7 @@ func (s *pgStore) CountSanctions(ctx context.Context, guildID, userID string, si
 	err := s.pool.QueryRow(ctx, `
 		SELECT count(*) FROM aimod_incidents
 		WHERE guild_id = $1 AND author_id = $2 AND created_at >= $3
-		  AND action <> 'flag' AND NOT undone
+		  AND action <> 'flag' AND NOT undone AND bucket <> 'word_list'
 	`, guildID, userID, since).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("aimod store: count sanctions: %w", err)

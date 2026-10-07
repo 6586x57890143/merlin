@@ -78,6 +78,10 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	// more than rung 1 catches anywhere else; what it guarantees is that the
 	// filter's own output is held to the same floor as the member's.
 	if action == ActionRewrite {
+		// The guild's word list first, so a replacement it chose is still
+		// held to the slur floor. An entry with no replacement empties the
+		// rewrite, which the check below turns into a removal.
+		v.Rewrite, _ = redactWords(cfg.WordList, v.Rewrite)
 		v.Rewrite, _ = redactSlurs(v.Rewrite)
 	}
 	// A rewrite with nothing publishable left is a removal, and has to be
@@ -155,6 +159,17 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	switch {
 	case err == nil:
 		p.auditRepost(ctx, cfg.GuildID, auditAction, c, bucket, v, repostID)
+		if bucket == BucketWordList {
+			// House style, not a rule anybody broke: no rap sheet, no
+			// sanction. A removal still gets its DM, since a message that
+			// vanishes needs explaining; a rewrite already says so under the
+			// repost, and a DM every time somebody says the server's running
+			// joke would be the bot nagging.
+			if action == ActionRemove {
+				p.notifyAuthor(ctx, cfg, c, action, v)
+			}
+			return
+		}
 		p.publishRemoval(ctx, cfg.GuildID, incidentID, c, action, bucket, v)
 		p.notifyAuthor(ctx, cfg, c, action, v)
 		// Only after the message was actually dealt with. Jailing somebody

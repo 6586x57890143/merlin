@@ -224,6 +224,15 @@ func (c *dedupeCache) markCleanFor(guildID, authorID, content string, now time.T
 	c.rememberKey(dedupeKey(guildID, authorID, content), now, nil)
 }
 
+// reset forgets everything, for when a guild's word list changes and text
+// already judged clean may no longer be. Every guild pays a few repeat
+// classifications for it, which is the safe direction.
+func (c *dedupeCache) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clear(c.seen)
+}
+
 // sweepLocked bounds the map. Swept on write rather than on a ticker: no
 // goroutine to leak, and it only runs when the map is actually growing.
 func (c *dedupeCache) sweepLocked(now time.Time) {

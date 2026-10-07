@@ -380,6 +380,45 @@ func (p *Plugin) registerCommands() {
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+				Name:        "words",
+				Description: "This server's own banned words, rewritten or removed with no model involved",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "add",
+						Description: "List a word, or change what an already listed word becomes",
+						Options: []*discordgo.ApplicationCommandOption{
+							{
+								Type: discordgo.ApplicationCommandOptionString, Name: "word",
+								Description: "Letters, digits and spaces; also catches w.o.r.k, w0rk and working",
+								Required:    true,
+							},
+							{
+								Type: discordgo.ApplicationCommandOptionString, Name: "replacement",
+								Description: "What it becomes. Leave empty to remove the whole message instead",
+							},
+						},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "remove",
+						Description: "Take a word off the list",
+						Options: []*discordgo.ApplicationCommandOption{
+							{
+								Type: discordgo.ApplicationCommandOptionString, Name: "word",
+								Description: "The listed word", Required: true, Autocomplete: true,
+							},
+						},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "list",
+						Description: "Every listed word and what it becomes",
+					},
+				},
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
 				Name:        "calibrate",
 				Description: "The weekly review that tunes the filter to how this server actually talks",
 				Options: []*discordgo.ApplicationCommandOption{
@@ -489,6 +528,13 @@ func (p *Plugin) registerCommands() {
 	// setting here that makes the filter cover *less*.
 	p.commands.Handle("aimod", "configure/member-opt-out", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleSetMemberOptOut)
 	p.commands.Handle("aimod", "configure/show", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleConfigureShow)
+
+	// actionPolicy, like policy set: the list decides what gets rewritten or
+	// removed in this server.
+	p.commands.Handle("aimod", "words/add", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleWordsAdd)
+	p.commands.Handle("aimod", "words/remove", core.PermSpec{Tier: core.TierAdmin, Action: actionPolicy}, p.handleWordsRemove)
+	p.commands.Handle("aimod", "words/list", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleWordsList)
+	p.commands.Autocomplete("aimod", "words/remove", p.autocompleteWord)
 
 	// Reading the calibration is a moderator's business: it explains why a
 	// message was or was not touched. Changing it is not, because it changes
