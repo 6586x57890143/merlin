@@ -323,6 +323,35 @@ func TestPublicViewIsTheModViewWithoutAlts(t *testing.T) {
 	}
 }
 
+func TestViewTakesAMentionOrAnIDForSomebodyWhoLeft(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	const gone = "123456789012345678"
+	seedEntries(h, gone, 2)
+	// Not a member any more, but still a Discord account.
+	h.ops.users[gone] = &discordgo.User{ID: gone, Username: "departed"}
+
+	for _, in := range []string{gone, " " + gone + " ", "<@" + gone + ">", "<@!" + gone + ">"} {
+		s, rt := stubSession()
+		h.p.handleView(ctx, s, interaction("view", strOpt("user", in)))
+		if said := rt.said(); !strings.Contains(said, "Rapsheet: departed") || !strings.Contains(said, "**Score:** 20") {
+			t.Errorf("input %q: got %s", in, said)
+		}
+	}
+
+	for in, want := range map[string]string{
+		"dana":               "is not a member or a user ID",
+		"<@&" + gone + ">":   "is not a member or a user ID", // a role mention
+		"999999999999999999": "no Discord account has the ID",
+	} {
+		s, rt := stubSession()
+		h.p.handleView(ctx, s, interaction("view", strOpt("user", in)))
+		if !strings.Contains(rt.said(), want) {
+			t.Errorf("input %q: want %q, got %s", in, want, rt.said())
+		}
+	}
+}
+
 func TestMePageIgnoresTheCustomIDForIdentity(t *testing.T) {
 	h := newHarness()
 	seedEntries(h, "victim", 11)
