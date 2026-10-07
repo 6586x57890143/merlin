@@ -598,6 +598,13 @@ func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c c
 		p.actOnHardHit(cfg, c, bucket, reason, rewrite)
 		return
 	}
+	// The guild's own word list, after the hard patterns so a leaked token
+	// beside a listed word is removed rather than rewritten around, and ahead
+	// of the opt-out for the same reason rung 1 is: it is free and it is the
+	// guild's rule, not a judgement anybody is being sent to a model for.
+	if p.actOnWordList(cfg, c) {
+		return
+	}
 
 	// The member's own opt-out, deliberately here rather than in shouldSkip.
 	//
