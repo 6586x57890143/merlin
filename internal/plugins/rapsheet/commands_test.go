@@ -278,7 +278,7 @@ func TestMeHidesNotesModeratorsAndVoids(t *testing.T) {
 	}
 }
 
-func TestPublicViewKeepsEveryActionAndDropsStaffMaterial(t *testing.T) {
+func TestPublicViewIsTheModViewWithoutAlts(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	seedEntries(h, "u1", 12)
@@ -301,14 +301,14 @@ func TestPublicViewKeepsEveryActionAndDropsStaffMaterial(t *testing.T) {
 	// Ephemeral messages cannot be forwarded, so the flag must be absent,
 	// and the buttons must not be the mod view's, whose next page would
 	// put the linked accounts back.
-	for _, leak := range []string{"STAFF-ONLY", "alt-account", "hint-account", "Linked accounts", "Possible alts", "14 entries", `"flags":64`, viewPrefix} {
+	for _, leak := range []string{"alt-account", "hint-account", "Linked accounts", "Possible alts", `"flags":64`, viewPrefix} {
 		if strings.Contains(said, leak) {
 			t.Errorf("public view carried %q: %s", leak, said)
 		}
 	}
-	// The same as the private view otherwise: who acted, the voided case,
-	// the score, the band, and pages.
-	for _, want := range []string{"Rapsheet: dana", "@" + modID, "~~#14 warned~~", "voided by", "13 entries", "half-life", "jail 1d", pubPagePrefix("u1"), "Page 1/2"} {
+	// The mod view otherwise: notes, who acted, the voided case, the score,
+	// the band, and pages.
+	for _, want := range []string{"Rapsheet: dana", "STAFF-ONLY", "@" + modID, "~~#14 warned~~", "voided by", "14 entries", "half-life", "jail 1d", pubPagePrefix("u1"), "Page 1/2"} {
 		if !strings.Contains(said, want) {
 			t.Errorf("public view should contain %q, got %s", want, said)
 		}

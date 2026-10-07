@@ -12,15 +12,16 @@ import (
 
 // Rendering a sheet.
 //
-// Three audiences read the same record. A moderator gets everything: score,
+// Two audiences read the same record. A moderator gets everything: score,
 // ladder position, linked accounts, hints, who recorded what. The member
 // themselves (/rapsheet me) gets the entries that are about things they
 // experienced, with the moderators anonymised and staff-internal notes
-// left out. A public post (/rapsheet view public:true) is the moderator's
-// view minus what is staff-to-staff: no linked accounts, no alt hints, no
-// notes or ladder suggestions. Every moderation action stays, voided ones
-// included. All three come out of renderSheet, so they cannot drift on
-// what an entry says.
+// left out. Both come out of renderSheet, switched on forMember, so the
+// two views cannot drift on what an entry says.
+//
+// /rapsheet view public:true posts the moderator's view with HideAlts set,
+// which drops the linked-accounts and possible-alts lines and nothing else:
+// those name other accounts, and a channel post can be forwarded anywhere.
 
 // viewPrefix namespaces the mod view's pagination buttons; the user id
 // rides in the CustomID so a click re-derives the sheet with no session.
@@ -50,15 +51,6 @@ func parseSheetCustomID(prefix, customID string) (string, int, error) {
 	return userID, page, nil
 }
 
-// audience is who a rendered sheet is for.
-type audience int
-
-const (
-	audienceMod audience = iota
-	audienceMember
-	audiencePublic
-)
-
 // sheetView is everything renderSheet needs beyond the sheet itself.
 type sheetView struct {
 	Sheet     sheet
@@ -68,16 +60,11 @@ type sheetView struct {
 	Now       time.Time
 	Page      int
 	ForMember bool
-	Public    bool
+	HideAlts  bool
 	Hints     []AltHint
 }
 
 func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
-	if v.Public {
-		// Filtered on the sheet itself, so the header's entry count does
-		// not give away how many notes staff have written.
-		v.Sheet.Entries = withoutStaffNotes(v.Sheet.Entries)
-	}
 	entries := v.Sheet.Entries
 	if v.ForMember {
 		entries = memberVisible(entries)
@@ -110,7 +97,8 @@ func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageCompo
 	switch {
 	case v.ForMember:
 		prefix = mePrefix
-	case v.Public:
+	case v.HideAlts:
+		// Its own prefix, so the next page keeps the alts block off.
 		prefix = pubPagePrefix(v.UserID)
 	}
 	return embed, core.PaginationRow(prefix, page, totalPages)
@@ -138,7 +126,7 @@ func writeHeader(b *strings.Builder, v sheetView) {
 		b.WriteString("\n")
 	}
 
-	if v.ForMember || v.Public {
+	if v.ForMember || v.HideAlts {
 		return
 	}
 	if len(v.Sheet.Group) > 1 {
@@ -178,19 +166,6 @@ func memberVisible(entries []Entry) []Entry {
 			continue
 		}
 		out = append(out, e)
-	}
-	return out
-}
-
-// withoutStaffNotes drops what staff write to each other: notes, and the
-// ladder's own suggestions. Unlike memberVisible it keeps voided entries,
-// since a public post is every action taken, including the ones undone.
-func withoutStaffNotes(entries []Entry) []Entry {
-	var out []Entry
-	for _, e := range entries {
-		if e.Kind != KindNote && e.Kind != KindSuggestion {
-			out = append(out, e)
-		}
 	}
 	return out
 }
