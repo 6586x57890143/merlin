@@ -30,9 +30,15 @@ import (
 const BucketWordList Bucket = "word_list"
 
 // BannedWord is one entry. An empty Replacement removes the message.
+//
+// NounOnly is for a word that is also an ordinary verb: "work" the place
+// should go, "this works" and "doesn't work" should not. It matches only the
+// bare word (no suffixes, so "works" and "working" always pass) and skips it
+// when the words just before it say verb (see verbBefore).
 type BannedWord struct {
 	Word        string `json:"word"`
 	Replacement string `json:"replacement,omitempty"`
+	NounOnly    bool   `json:"noun_only,omitempty"`
 }
 
 const (
@@ -105,7 +111,9 @@ func redactWords(list []BannedWord, content string) (string, bool) {
 			}
 			start, end := pos+loc[0], trimTail(out, pos+loc[0], pos+loc[1])
 			ws, we := wordBounds(out, start, end)
-			if ws < start || !wordSuffixes[strings.ToLower(out[end:we])] || acrossWords(out[start:end], false) {
+			suffix := strings.ToLower(out[end:we])
+			if ws < start || !wordSuffixes[suffix] || acrossWords(out[start:end], false) ||
+				(w.NounOnly && (suffix != "" || verbBefore(out[:start]))) {
 				_, size := utf8.DecodeRuneInString(out[start:])
 				pos = start + size
 				continue
@@ -121,6 +129,69 @@ func redactWords(list []BannedWord, content string) (string, bool) {
 		out = b.String()
 	}
 	return out, hit
+}
+
+// verbSignals are words that, right before a noun-only word, make it a verb:
+// subject pronouns ("I work"), auxiliaries and modals ("doesn't work", "will
+// work"), and adverbs that sit between the two ("never work", "just work").
+// ponytail: a word list, not a part-of-speech tagger. It misses imperatives
+// at the start of a sentence ("Work harder") and errs toward replacing,
+// which for a joke list is the cheaper mistake.
+var verbSignals = map[string]bool{
+	"i": true, "you": true, "we": true, "they": true, "he": true, "she": true, "it": true,
+	"do": true, "does": true, "did": true, "don't": true, "doesn't": true, "didn't": true,
+	"dont": true, "doesnt": true, "didnt": true, "not": true,
+	"will": true, "won't": true, "wont": true, "would": true, "wouldn't": true,
+	"can": true, "can't": true, "cant": true, "could": true, "couldn't": true,
+	"should": true, "shouldn't": true, "must": true, "might": true, "may": true,
+	"gonna": true, "wanna": true, "gotta": true, "let's": true, "lets": true, "please": true,
+	"never": true, "always": true, "just": true, "still": true, "also": true, "really": true, "actually": true,
+}
+
+// commuteVerbs are what turn a following "to" back into a noun: "go to
+// work", "back to work". Any other "to" is an infinitive ("need to work").
+var commuteVerbs = map[string]bool{
+	"go": true, "goes": true, "going": true, "went": true, "gone": true, "back": true,
+	"get": true, "gets": true, "got": true, "getting": true,
+	"come": true, "comes": true, "came": true, "coming": true, "late": true, "head": true, "heading": true,
+}
+
+// verbBefore reads the two words in front of a match, within its sentence.
+func verbBefore(before string) bool {
+	prev, rest := lastWord(before)
+	switch prev {
+	case "to":
+		w, _ := lastWord(rest)
+		return !commuteVerbs[w]
+	case "this", "that", "these", "those":
+		// "does this work?" is a verb, "this work is great" a noun.
+		w, _ := lastWord(rest)
+		return verbSignals[w] && !isPronoun(w)
+	}
+	return verbSignals[prev]
+}
+
+func isPronoun(w string) bool {
+	switch w {
+	case "i", "you", "we", "they", "he", "she", "it":
+		return true
+	}
+	return false
+}
+
+// lastWord returns the final word of s, lowercased with its edge punctuation
+// trimmed, and everything before it. A sentence end in between means there
+// is no previous word: "Done. Work is fun" starts afresh at "Work".
+func lastWord(s string) (string, string) {
+	s = strings.TrimRight(s, " \t\n")
+	i := strings.LastIndexAny(s, " \t\n")
+	tok := s[i+1:]
+	if strings.ContainsAny(tok[max(0, len(tok)-1):], ".!?") {
+		return "", ""
+	}
+	// Phones type the curly apostrophe: "doesn't" either way.
+	tok = strings.ReplaceAll(strings.ToLower(tok), string(rune(0x2019)), "'")
+	return strings.Trim(tok, tokenEdge), s[:max(0, i)]
 }
 
 // matchCase capitalises the replacement when the word it replaces started
@@ -163,6 +234,9 @@ func (p *Plugin) handleWordsAdd(ctx context.Context, s *discordgo.Session, i *di
 	entry := BannedWord{Word: word}
 	if o, ok := opts["replacement"]; ok {
 		entry.Replacement = strings.TrimSpace(o.StringValue())
+	}
+	if o, ok := opts["noun_only"]; ok {
+		entry.NounOnly = o.BoolValue()
 	}
 	if len(entry.Replacement) > maxReplacementLen {
 		core.RespondErr(s, i, "Can't list that", fmt.Errorf("the replacement can be at most %d characters", maxReplacementLen))
@@ -265,8 +339,12 @@ func (p *Plugin) autocompleteWord(ctx context.Context, i *discordgo.InteractionC
 }
 
 func describeWord(w BannedWord) string {
+	out := fmt.Sprintf("`%s` becomes `%s`", w.Word, w.Replacement)
 	if w.Replacement == "" {
-		return fmt.Sprintf("`%s`: message removed", w.Word)
+		out = fmt.Sprintf("`%s`: message removed", w.Word)
 	}
-	return fmt.Sprintf("`%s` becomes `%s`", w.Word, w.Replacement)
+	if w.NounOnly {
+		out += " (as a noun only)"
+	}
+	return out
 }
