@@ -18,23 +18,31 @@ import (
 // experienced, with the moderators anonymised and staff-internal notes
 // left out. Both come out of renderSheet, switched on forMember, so the
 // two views cannot drift on what an entry says.
+//
+// /rapsheet view public:true posts the moderator's view with HideAlts set,
+// which drops the linked-accounts and possible-alts lines and nothing else:
+// those name other accounts, and a channel post can be forwarded anywhere.
 
 // viewPrefix namespaces the mod view's pagination buttons; the user id
 // rides in the CustomID so a click re-derives the sheet with no session.
 const (
 	viewPrefix = "rapsheet:view:"
 	mePrefix   = "rapsheet:me:page:"
+	pubPrefix  = "rapsheet:pub:"
 	pageSep    = ":page:"
 )
 
 func viewPagePrefix(userID string) string { return viewPrefix + userID + pageSep }
 
-// parseViewCustomID recovers (userID, page) from a mod-view button.
-func parseViewCustomID(customID string) (string, int, error) {
-	rest := strings.TrimPrefix(customID, viewPrefix)
+func pubPagePrefix(userID string) string { return pubPrefix + userID + pageSep }
+
+// parseSheetCustomID recovers (userID, page) from a mod-view or public-post
+// button, whichever prefix it carries.
+func parseSheetCustomID(prefix, customID string) (string, int, error) {
+	rest := strings.TrimPrefix(customID, prefix)
 	userID, pageStr, ok := strings.Cut(rest, pageSep)
 	if !ok || userID == "" {
-		return "", 0, fmt.Errorf("rapsheet: malformed view custom id %q", customID)
+		return "", 0, fmt.Errorf("rapsheet: malformed sheet custom id %q", customID)
 	}
 	page, err := core.ParsePaginationPage(pageStr, "")
 	if err != nil {
@@ -52,6 +60,7 @@ type sheetView struct {
 	Now       time.Time
 	Page      int
 	ForMember bool
+	HideAlts  bool
 	Hints     []AltHint
 }
 
@@ -85,8 +94,12 @@ func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageCompo
 	embed := core.NewEmbed(color, title, core.TruncateEmbedDescription(strings.TrimRight(b.String(), "\n")))
 
 	prefix := viewPagePrefix(v.UserID)
-	if v.ForMember {
+	switch {
+	case v.ForMember:
 		prefix = mePrefix
+	case v.HideAlts:
+		// Its own prefix, so the next page keeps the alts block off.
+		prefix = pubPagePrefix(v.UserID)
 	}
 	return embed, core.PaginationRow(prefix, page, totalPages)
 }
@@ -113,7 +126,7 @@ func writeHeader(b *strings.Builder, v sheetView) {
 		b.WriteString("\n")
 	}
 
-	if v.ForMember {
+	if v.ForMember || v.HideAlts {
 		return
 	}
 	if len(v.Sheet.Group) > 1 {
