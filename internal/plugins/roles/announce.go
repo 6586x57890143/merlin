@@ -69,11 +69,12 @@ func (p *Plugin) announceJail(ctx context.Context, guildID, invokingChannelID st
 	if len(jailedIDs) == 0 {
 		return
 	}
-	vars := map[string]string{
-		"members": mentionList(jailedIDs),
-		"until":   "**" + relativeTimestamp(p.now().Add(duration)) + "**",
+	releaseAt := p.releaseAtFor(duration)
+	vars := map[string]string{"members": mentionList(jailedIDs)}
+	if releaseAt != nil {
+		vars["until"] = "**" + relativeTimestamp(*releaseAt) + "**"
 	}
-	body := p.voice.Line(ctx, guildID, sn.announceKey, vars)
+	body := p.voice.Line(ctx, guildID, timedKey(sn.announceKey, releaseAt), vars)
 	if body == "" {
 		// Nothing renderable to say. Saying nothing beats posting a message
 		// with a visible placeholder in it.
@@ -117,10 +118,11 @@ func (p *Plugin) announceMoved(ctx context.Context, guildID, invokingChannelID s
 	if len(movedIDs) == 0 {
 		return
 	}
-	body := p.voice.Line(ctx, guildID, to.intoAnnKey, map[string]string{
-		"members": mentionList(movedIDs),
-		"until":   "**" + untilText(releaseAt) + "**",
-	})
+	vars := map[string]string{"members": mentionList(movedIDs)}
+	if releaseAt != nil {
+		vars["until"] = "**" + relativeTimestamp(*releaseAt) + "**"
+	}
+	body := p.voice.Line(ctx, guildID, timedKey(to.intoAnnKey, releaseAt), vars)
 	if body == "" {
 		p.log.Error("roles: no line for transfer announcement", "guild", guildID)
 		return

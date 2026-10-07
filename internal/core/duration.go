@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -59,13 +60,25 @@ func ParseFlexibleDuration(s string) (time.Duration, error) {
 			unitPart, "3d", "72h", "90m")
 	}
 
-	n, err := strconv.Atoi(numPart)
+	n, err := strconv.ParseInt(numPart, 10, 64)
+	if errors.Is(err, strconv.ErrRange) || (err == nil && n > int64(MaxFlexibleDuration/per)) {
+		return MaxFlexibleDuration, nil
+	}
 	if err != nil || n <= 0 {
 		return 0, fmt.Errorf("%q isn't a valid duration: use a positive whole number followed by d (days), h (hours) or m (minutes), e.g. %q, %q or %q",
 			s, "3d", "72h", "90m")
 	}
 	return time.Duration(n) * per, nil
 }
+
+// MaxFlexibleDuration is where ParseFlexibleDuration clamps anything longer.
+// time.Duration is int64 nanoseconds and tops out a little past 106751 days
+// (about 292 years), so "99999999d" used to wrap past it into a negative
+// duration. Clamping rather than refusing is deliberate: whoever types that
+// means "effectively forever", and the longest whole number of days a
+// Duration can hold says so. A sentence that truly never ends is the jail
+// command's "forever", not a very large number.
+const MaxFlexibleDuration = 106751 * 24 * time.Hour
 
 // splitNumberAndUnit divides s into its leading digits and the rest, with any
 // separating whitespace dropped ("3 days" -> "3", "days"). Either half may

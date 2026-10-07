@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/voice"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ func TestJailNoticeSaysWhereAndWhenItEnds(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	releaseAt := fixedNow.Add(3 * time.Hour)
-	p.notifyJailed(context.Background(), "g1", "u1", releaseAt, "", jailSentence)
+	p.notifyJailed(context.Background(), "g1", "u1", &releaseAt, "", jailSentence)
 
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("DMs sent = %d, want 1", len(ops.dmSends))
@@ -50,7 +51,7 @@ func TestJailNoticeCarriesTheReasonSeparately(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.notifyJailed(context.Background(), "g1", "u1", fixedNow.Add(time.Hour), "spamming the same link", jailSentence)
+	p.notifyJailed(context.Background(), "g1", "u1", ptrTime(fixedNow.Add(time.Hour)), "spamming the same link", jailSentence)
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("DMs sent = %d, want 1", len(ops.dmSends))
 	}
@@ -61,7 +62,7 @@ func TestJailNoticeCarriesTheReasonSeparately(t *testing.T) {
 
 	// With no reason there should be no empty field hanging off the embed.
 	ops.dmSends = nil
-	p.notifyJailed(context.Background(), "g1", "u2", fixedNow.Add(time.Hour), "", jailSentence)
+	p.notifyJailed(context.Background(), "g1", "u2", ptrTime(fixedNow.Add(time.Hour)), "", jailSentence)
 	if got := len(ops.dmSends[0].data.Embed.Fields); got != 0 {
 		t.Errorf("fields = %d with no reason given, want 0", got)
 	}
@@ -117,5 +118,43 @@ func TestNoticeStillSendsWhenTheGuildNameIsUnavailable(t *testing.T) {
 	}
 	if strings.ContainsAny(body, "{}") {
 		t.Errorf("notice leaked a placeholder: %q", body)
+	}
+}
+
+// Every line that says when a sentence ends needs a twin for a sentence that
+// never does, or a forever jail would DM a member that it was temporary.
+func TestEverySentenceLineHasAForeverTwin(t *testing.T) {
+	for _, sn := range []sentence{jailSentence, vacationSentence} {
+		for _, k := range []voice.Key{sn.noticeKey, sn.announceKey, sn.intoKey, sn.intoAnnKey} {
+			if foreverKeys[k] == "" {
+				t.Errorf("%s has no forever twin in foreverKeys", k)
+			}
+		}
+	}
+}
+
+// A forever sentence's DM and channel post name no end, in every path: a
+// fresh jail or vacation, and a transfer onto one.
+func TestForeverSentenceNamesNoEnd(t *testing.T) {
+	for _, sn := range []sentence{jailSentence, vacationSentence} {
+		ops := newFakeOps()
+		p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+		p.notifyJailed(context.Background(), "g1", "u1", nil, "r", sn)
+		p.notifyMoved(context.Background(), "g1", "u1", nil, sn, "r")
+		p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, foreverSentence, "r", sn)
+		p.announceMoved(context.Background(), "g1", "chan1", []string{"u1"}, nil, sn)
+		if len(ops.dmSends) != 4 {
+			t.Fatalf("%s: sends = %d, want 4", sn.name, len(ops.dmSends))
+		}
+		for _, s := range ops.dmSends {
+			body := s.data.Content
+			if s.data.Embed != nil {
+				body = s.data.Embed.Description
+			}
+			if body == "" || strings.Contains(body, "<t:") || strings.ContainsAny(body, "{}") ||
+				strings.Contains(body, "temporary") || strings.Contains(body, "isn't permanent") {
+				t.Errorf("%s: forever sentence posted %q", sn.name, body)
+			}
+		}
 	}
 }

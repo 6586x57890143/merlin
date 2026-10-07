@@ -102,7 +102,7 @@ func TestAResentenceIsPublishedAsANoteNotASecondJail(t *testing.T) {
 func TestPublishingWithNoBusIsANoOp(t *testing.T) {
 	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 	p.bus = nil
-	p.publishJailed(context.Background(), "g1", "u1", "m", "r", time.Hour, time.Now())
+	p.publishJailed(context.Background(), "g1", "u1", "m", "r", time.Hour, ptrTime(time.Now()))
 	p.publishResentenced(context.Background(), "g1", "u1", "m", "", time.Hour)
 	p.publishReleased(context.Background(), "g1", "u1", core.ActorSystem)
 }

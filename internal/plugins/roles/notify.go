@@ -27,10 +27,10 @@ import (
 // ends. reason is attached as its own field when a mod gave one, rather
 // than being folded into the sentence: an optional placeholder would make
 // every line carrying it fall back on exactly the occasions it is missing.
-func (p *Plugin) notifyJailed(ctx context.Context, guildID, userID string, releaseAt time.Time, reason string, sn sentence) {
-	vars := map[string]string{
-		"guild": p.guildName(guildID),
-		"until": relativeTimestamp(releaseAt),
+func (p *Plugin) notifyJailed(ctx context.Context, guildID, userID string, releaseAt *time.Time, reason string, sn sentence) {
+	vars := map[string]string{"guild": p.guildName(guildID)}
+	if releaseAt != nil {
+		vars["until"] = relativeTimestamp(*releaseAt)
 	}
 	var fields []*discordgo.MessageEmbedField
 	if reason != "" {
@@ -39,7 +39,7 @@ func (p *Plugin) notifyJailed(ctx context.Context, guildID, userID string, relea
 			Value: core.TruncateEmbedField(reason),
 		})
 	}
-	p.dm(ctx, guildID, userID, sn.noticeKey, capitalize(sn.verb), core.ColorWarning, vars, fields...)
+	p.dm(ctx, guildID, userID, timedKey(sn.noticeKey, releaseAt), capitalize(sn.verb), core.ColorWarning, vars, fields...)
 }
 
 // notifyReleased tells userID their roles are back. sn is what they were
@@ -51,22 +51,46 @@ func (p *Plugin) notifyReleased(ctx context.Context, guildID, userID string, sn 
 }
 
 // notifyMoved tells userID they have been transferred into sentence to
-// (script_vacation.go), and when it now ends. A nil releaseAt (a row that
-// predates timed jails) says so in words rather than sending nothing.
+// (script_vacation.go), and when it now ends. A nil releaseAt (a forever
+// sentence, or a row that predates timed jails) gets the line that names no
+// end rather than one promising a return.
 func (p *Plugin) notifyMoved(ctx context.Context, guildID, userID string, releaseAt *time.Time, to sentence, reason string) {
-	vars := map[string]string{
-		"guild": p.guildName(guildID),
-		"until": untilText(releaseAt),
+	vars := map[string]string{"guild": p.guildName(guildID)}
+	if releaseAt != nil {
+		vars["until"] = relativeTimestamp(*releaseAt)
 	}
 	var fields []*discordgo.MessageEmbedField
 	if reason != "" {
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Reason given", Value: core.TruncateEmbedField(reason)})
 	}
-	p.dm(ctx, guildID, userID, to.intoKey, "Moved to "+to.name, core.ColorWarning, vars, fields...)
+	p.dm(ctx, guildID, userID, timedKey(to.intoKey, releaseAt), "Moved to "+to.name, core.ColorWarning, vars, fields...)
 }
 
-// untilText renders a release instant for {until}, or the honest words for
-// a sentence with no end.
+// foreverKeys pairs every line that says when a sentence ends with the one
+// said instead when it never does (see voice.KeyJailNoticeForever).
+// TestEverySentenceLineHasAForeverTwin keeps it total over the sentence table.
+var foreverKeys = map[voice.Key]voice.Key{
+	voice.KeyJailNotice:               voice.KeyJailNoticeForever,
+	voice.KeyJailAnnounce:             voice.KeyJailAnnounceForever,
+	voice.KeyVacationNotice:           voice.KeyVacationNoticeForever,
+	voice.KeyVacationAnnounce:         voice.KeyVacationAnnounceForever,
+	voice.KeyVacationFromJail:         voice.KeyVacationFromJailForever,
+	voice.KeyVacationFromJailAnnounce: voice.KeyVacationFromJailAnnounceForever,
+	voice.KeyVacationToJail:           voice.KeyVacationToJailForever,
+	voice.KeyVacationToJailAnnounce:   voice.KeyVacationToJailAnnounceForever,
+}
+
+// timedKey is key for a sentence ending at releaseAt, or its forever twin
+// when there is no end. Callers set {until} only when releaseAt is non-nil.
+func timedKey(key voice.Key, releaseAt *time.Time) voice.Key {
+	if releaseAt == nil {
+		return foreverKeys[key]
+	}
+	return key
+}
+
+// untilText renders a release instant for staff-facing text, or the honest
+// words for a sentence with no end.
 func untilText(t *time.Time) string {
 	if t == nil {
 		return "when a moderator decides"

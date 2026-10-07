@@ -18,10 +18,10 @@ import (
 // panics is isolated by the bus, and one that fails logs for itself.
 
 // publishJailed reports a fresh jail.
-func (p *Plugin) publishJailed(ctx context.Context, guildID, userID, actor, reason string, duration time.Duration, releaseAt time.Time) {
+func (p *Plugin) publishJailed(ctx context.Context, guildID, userID, actor, reason string, duration time.Duration, releaseAt *time.Time) {
 	p.publish(ctx, guildID, core.ModerationActionPayload{
 		UserID: userID, Kind: "jail", ActorID: actor, Reason: reason,
-		Duration: duration, EndsAt: &releaseAt, Source: p.Name(),
+		Duration: duration, EndsAt: releaseAt, Source: p.Name(),
 	})
 }
 
@@ -30,7 +30,7 @@ func (p *Plugin) publishJailed(ctx context.Context, guildID, userID, actor, reas
 // not a second roles.jail: nobody was jailed here, and a ledger counting
 // jails would otherwise count this member twice.
 func (p *Plugin) publishResentenced(ctx context.Context, guildID, userID, actor, reason string, duration time.Duration) {
-	note := "sentence moved to " + core.FormatDuration(duration)
+	note := "sentence moved to " + sentenceLength(duration)
 	if reason != "" {
 		note += ": " + reason
 	}
@@ -43,7 +43,7 @@ func (p *Plugin) publishResentenced(ctx context.Context, guildID, userID, actor,
 // lighter sentence and must not score on the escalation ladder, but it
 // belongs on the sheet, so the next moderator can see the beach was tried.
 func (p *Plugin) publishVacation(ctx context.Context, guildID, userID, actor, reason string, duration time.Duration) {
-	note := "sent on vacation for " + core.FormatDuration(duration)
+	note := "sent on vacation " + forLength(duration)
 	if reason != "" {
 		note += ": " + reason
 	}

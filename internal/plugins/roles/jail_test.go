@@ -411,3 +411,28 @@ func TestReleaseJailKeepsRolesGainedWhileJailed(t *testing.T) {
 		t.Fatalf("expected [booster role-a] (marker gone, unmanageable snapshot role skipped), got %v", m.Roles)
 	}
 }
+
+// TestForeverJailHasNoReleaseTime pins "forever" as a jail with no end at
+// all, not a far-off date: ReleaseAt nil is what the sweep, the release
+// timer and evasion handling already read as "only a moderator ends this".
+func TestForeverJailHasNoReleaseTime(t *testing.T) {
+	for _, in := range []string{"forever", " Permanent ", "indefinite"} {
+		if d, err := parseSentence(in); err != nil || d != foreverSentence {
+			t.Fatalf("parseSentence(%q) = %v, %v; want forever", in, d, err)
+		}
+	}
+	if d, err := parseSentence("3d"); err != nil || d != 72*time.Hour {
+		t.Fatalf("parseSentence(3d) = %v, %v", d, err)
+	}
+
+	ops := newFakeOps()
+	ops.setMember("g1", "u1", []string{"role-a"})
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, foreverSentence, "mod", "r"); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok, _ := p.store.GetJail(context.Background(), "g1", "u1")
+	if !ok || rec.ReleaseAt != nil {
+		t.Fatalf("want a tracked jail with no release time, got ok=%v ReleaseAt=%v", ok, rec.ReleaseAt)
+	}
+}

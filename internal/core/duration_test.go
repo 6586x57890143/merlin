@@ -165,3 +165,15 @@ func TestFormatDurationRoundTripsWithParse(t *testing.T) {
 		}
 	}
 }
+
+func TestParseFlexibleDurationClampsInsteadOfOverflowing(t *testing.T) {
+	for _, in := range []string{"99999999d", "106752d", "999999999999999999999999m"} {
+		got, err := ParseFlexibleDuration(in)
+		if err != nil || got != MaxFlexibleDuration {
+			t.Errorf("ParseFlexibleDuration(%q) = %v, %v; want %v", in, got, err, MaxFlexibleDuration)
+		}
+	}
+	if got, _ := ParseFlexibleDuration("106751d"); got != 106751*24*time.Hour {
+		t.Errorf("106751d = %v, want it unclamped", got)
+	}
+}

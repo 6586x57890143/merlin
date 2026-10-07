@@ -54,6 +54,24 @@ roles.jail_announce:
   - "{members} lasted about as long as expected. jailed until {until}. gg fuckin' ez"
   - "gg fuckin' ez. {members} sits this one out until {until}, and the rematch is not scheduled"
 
+# roles.jail_announce_forever is the same post for a jail with no end date.
+# Same register and the same calm-to-blunt spread; what changes is that no
+# line may name a return, since there is no {until} to name.
+roles.jail_announce_forever:
+  # calm
+  - "well, {members} is off to the nest now, and nobody's set a timer. back whenever a moderator says so, and not a minute before"
+  - "{members} has been walked over to the nest for a breather. an open-ended one, as it happens, so it's a good time to get comfortable"
+  - "{members} is tucked away in the nest with no return date on the ticket. no hard feelings, mostly"
+  # neutral
+  - "and there it is. {members} is jailed until further notice, so whatever was about to be said can wait a while longer than usual"
+  - "{members} pushed their luck far enough that the nest stopped counting. out when a moderator decides, not before"
+  - "the view from the top perch is great, and {members} will be admiring the inside of the nest instead, indefinitely"
+  # blunt
+  - "{members}, jailed, no end date, no appeal. the sky belongs to whichever bird can still see it"
+  - "{members} has been relocated to the nest on an open-ended lease. no early checkout, and no checkout date either"
+  - "{members} down, flying privileges revoked until somebody bothers to give them back, and yes, she is enjoying this a little 😏"
+  - "gg fuckin' ez. {members} is in the nest until further notice, and honestly it was not even close"
+
 roles.release_announce:
   # calm
   - "{members} is back. welcome home 🌿"

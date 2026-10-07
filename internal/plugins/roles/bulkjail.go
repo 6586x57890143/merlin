@@ -110,7 +110,7 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 		unmanageable, err := p.applyJail(ctx, guildID, jailRoleID, t, duration, actorID, reason)
 		switch {
 		case errors.Is(err, ErrAlreadyJailed):
-			releaseAt := p.now().Add(duration)
+			releaseAt := p.releaseAtFor(duration)
 			// Already serving a sentence. If it is the *other* one (in jail
 			// and being sent on vacation, or the reverse) this is a transfer:
 			// the marker swaps, the snapshot stays, and the duration just
@@ -121,11 +121,11 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 			// is treated as the same sentence too: the safe wrong answer.
 			if existing, ok, gerr := p.store.GetJail(ctx, guildID, t.userID); gerr == nil && ok &&
 				p.sentenceFor(guildID, existing.JailRoleID) != p.sentenceFor(guildID, jailRoleID) {
-				if terr := p.transferJail(ctx, guildID, t, existing, jailRoleID, &releaseAt); terr != nil {
+				if terr := p.transferJail(ctx, guildID, t, existing, jailRoleID, releaseAt); terr != nil {
 					res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, terr))
 					continue
 				}
-				p.publishTransferred(ctx, guildID, t.userID, actorID, reason, p.sentenceFor(guildID, existing.JailRoleID), p.sentenceFor(guildID, jailRoleID), &releaseAt)
+				p.publishTransferred(ctx, guildID, t.userID, actorID, reason, p.sentenceFor(guildID, existing.JailRoleID), p.sentenceFor(guildID, jailRoleID), releaseAt)
 				res.transferred = append(res.transferred, t.userID)
 				continue
 			}
@@ -138,11 +138,13 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 			// Only release_at moves. The member is already stripped, and the
 			// snapshot on record is the only copy of what they held before
 			// that: re-recording it now would capture the marker role alone.
-			if serr := p.store.SetJailRelease(ctx, guildID, t.userID, &releaseAt); serr != nil {
+			if serr := p.store.SetJailRelease(ctx, guildID, t.userID, releaseAt); serr != nil {
 				res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, serr))
 				continue
 			}
-			p.armJailRelease(guildID, t.userID, releaseAt)
+			if releaseAt != nil {
+				p.armJailRelease(guildID, t.userID, *releaseAt)
+			}
 			p.publishResentenced(ctx, guildID, t.userID, actorID, reason, duration)
 			res.redated = append(res.redated, t.userID)
 		case err != nil:
@@ -312,7 +314,7 @@ func (p *Plugin) validateJailRoleTarget(guildID, roleID string) error {
 func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	opts := core.LeafArgs(i)
 	roleID := opts["role"].Value.(string)
-	duration, err := core.ParseFlexibleDuration(opts["duration"].StringValue())
+	duration, err := parseSentence(opts["duration"].StringValue())
 	if err != nil {
 		core.RespondErr(s, i, "Invalid duration", err)
 		return
@@ -404,7 +406,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 
 	res = res.merge(p.jailMany(ctx, i.GuildID, jailRoleID, allowed, duration, actorID(i), reason))
 	p.announceJail(ctx, i.GuildID, i.ChannelID, res.jailed, duration, reason, jailSentence)
-	p.announceMoved(ctx, i.GuildID, i.ChannelID, res.transferred, ptrTime(p.now().Add(duration)), jailSentence)
+	p.announceMoved(ctx, i.GuildID, i.ChannelID, res.transferred, p.releaseAtFor(duration), jailSentence)
 	p.recordBulkAudit(ctx, i.GuildID, actorID(i), fmt.Sprintf("role=%s", roleID), duration, reason, res, jailSentence)
 
 	title := fmt.Sprintf("Jailed %d member(s) from role", len(res.jailed))
@@ -450,7 +452,7 @@ func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope stri
 		mentions = append(mentions, core.MentionUser(id))
 	}
 	detail := fmt.Sprintf("%s duration=%s reason=%q %s=%d pending=%d already=%d moved=%d protected=%d failed=%d users=%s",
-		scope, core.FormatDuration(duration), reason, sn.name,
+		scope, sentenceLength(duration), reason, sn.name,
 		len(res.jailed), len(res.pending), len(res.redated), len(res.transferred), len(res.protected), len(res.failed),
 		strings.Join(mentions, " "))
 	if err := p.audit.Record(ctx, guildID, actor, sn.auditBulk, "", detail); err != nil {
@@ -463,7 +465,7 @@ func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope stri
 // who were not jailed is how somebody ends up believing a raid was contained.
 func summarizeBulkJail(res bulkJailResult, duration time.Duration, sn sentence) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**%s %d** of %d considered, for %s.\n", capitalize(sn.verb), len(res.jailed), res.attempted(), core.FormatDuration(duration))
+	fmt.Fprintf(&b, "**%s %d** of %d considered, %s.\n", capitalize(sn.verb), len(res.jailed), res.attempted(), forLength(duration))
 	if len(res.jailed) > 0 {
 		fmt.Fprintf(&b, "\n%s\n", mentionList(res.jailed))
 	}
