@@ -286,7 +286,7 @@ func (p *Plugin) detectManualTransfer(ctx context.Context, guildID string, rec J
 func (p *Plugin) handleVacation(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	opts := core.LeafArgs(i)
 	userIDs := collectJailUserIDs(opts)
-	duration, err := core.ParseFlexibleDuration(opts["duration"].StringValue())
+	duration, err := parseSentence(opts["duration"].StringValue())
 	if err != nil {
 		core.RespondErr(s, i, "Invalid duration", err)
 		return

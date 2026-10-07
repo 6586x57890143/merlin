@@ -27,6 +27,24 @@ moderation.jail:
   - "a moderator has jailed you in {guild}. nothing has been removed permanently, and your roles return {until}."
   - "you're jailed in {guild} for now. your roles are held exactly as they were and come back {until}."
 
+# moderation.jail_forever is moderation.jail for a sentence with no end
+# date (/roles jail duration:forever). It carries no {until} and cannot: the
+# catalog refuses a placeholder outside a key's required set, so no line here
+# can promise an end that does not exist. Every line still says the roles are
+# kept, because that part stays true.
+moderation.jail_forever:
+  # warm
+  - "you've been jailed in {guild}. there's no end date on this one, but your roles are kept exactly as they were and come back when a moderator releases you."
+  - "a moderator in {guild} has jailed you with no set end. nothing is lost: your roles are held as they were and return when you're released."
+  - "heads up: you're jailed in {guild}, and it doesn't lift on its own. your roles are safe and come back the moment a moderator lets you out."
+  # plain
+  - "you have been jailed in {guild}. there is no end date; a moderator will release you. your roles are saved until then."
+  - "you're jailed in {guild} until a moderator releases you. your roles are stored exactly as they were."
+  - "a moderator has jailed you in {guild}. this one has no timer. your roles are held and returned when you're released."
+  # matter of fact
+  - "jailed in {guild}. no end date. your roles are saved and come back on release."
+  - "you're jailed in {guild} with no set end. roles saved, returned when a moderator releases you."
+
 moderation.release:
   # warm
   - "you're out. your roles in {guild} are back where they were 🌿"

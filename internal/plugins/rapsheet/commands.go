@@ -42,9 +42,9 @@ func (p *Plugin) registerCommands() {
 	userOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionUser, Name: name, Description: desc, Required: true}
 	}
-	reasonOpt := func(required bool) *discordgo.ApplicationCommandOption {
+	reasonOpt := func() *discordgo.ApplicationCommandOption {
 		return &discordgo.ApplicationCommandOption{
-			Type: discordgo.ApplicationCommandOptionString, Name: "reason", Required: required, MaxLength: maxReasonLen,
+			Type: discordgo.ApplicationCommandOptionString, Name: "reason", Required: true, MaxLength: maxReasonLen,
 			Description: "Why. The member sees this, and so does the next moderator.",
 		}
 	}
@@ -90,7 +90,7 @@ func (p *Plugin) registerCommands() {
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "Who to warn."),
 					categoryOption(),
-					reasonOpt(true),
+					reasonOpt(),
 					{
 						Type: discordgo.ApplicationCommandOptionInteger, Name: "points",
 						Description: fmt.Sprintf("Override the category's points for this one (1-%d).", maxPoints),
@@ -101,12 +101,12 @@ func (p *Plugin) registerCommands() {
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "note",
 				Description: "Add a note to a member's sheet. Mods only, no points, no DM.",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who the note is about."), reasonOpt(true)},
+				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who the note is about."), reasonOpt()},
 			},
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "unban",
 				Description: "Lift a ban, whoever placed it.",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to unban."), reasonOpt(true)},
+				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to unban."), reasonOpt()},
 			},
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "summary",
@@ -119,7 +119,7 @@ func (p *Plugin) registerCommands() {
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The account to link."),
 					userOpt("other", "The account already on record."),
-					reasonOpt(false),
+					reasonOpt(),
 				},
 			},
 			{
@@ -130,12 +130,12 @@ func (p *Plugin) registerCommands() {
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "void",
 				Description: "Strike an entry. It stays visible, struck through, and counts for nothing.",
-				Options:     []*discordgo.ApplicationCommandOption{caseOpt, reasonOpt(true)},
+				Options:     []*discordgo.ApplicationCommandOption{caseOpt, reasonOpt()},
 			},
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "edit",
 				Description: "Rewrite an entry's reason.",
-				Options:     []*discordgo.ApplicationCommandOption{caseOpt, reasonOpt(true)},
+				Options:     []*discordgo.ApplicationCommandOption{caseOpt, reasonOpt()},
 			},
 			{
 				Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "list",
@@ -238,13 +238,13 @@ func (p *Plugin) registerCommands() {
 			userOpt("user", "Who to time out."),
 			{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Required: true, Description: "How long: 10m, 2h, 3d, up to 28d."},
 			categoryOption(),
-			reasonOpt(true),
+			reasonOpt(),
 		},
 	})
 	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
 		Name:        cmdKick,
 		Description: "Remove a member from the server. They can rejoin. Goes on their rapsheet.",
-		Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to kick."), categoryOption(), reasonOpt(true)},
+		Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to kick."), categoryOption(), reasonOpt()},
 	})
 	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
 		Name:        cmdBan,
@@ -252,7 +252,7 @@ func (p *Plugin) registerCommands() {
 		Options: []*discordgo.ApplicationCommandOption{
 			userOpt("user", "Who to ban."),
 			categoryOption(),
-			reasonOpt(true),
+			reasonOpt(),
 			{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Description: "How long: 7d, 30d, up to 365d. Leave out for a permanent ban, and say so."},
 			{Type: discordgo.ApplicationCommandOptionBoolean, Name: "permanent", Description: "A ban with no end date. Required if no duration is given."},
 			{Type: discordgo.ApplicationCommandOptionInteger, Name: "delete_message_days", Description: "Also delete their messages from the last N days (0-7).", MinValue: ptr(0.0), MaxValue: maxDeleteDays},

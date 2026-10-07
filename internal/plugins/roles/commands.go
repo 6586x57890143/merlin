@@ -80,7 +80,7 @@ func (p *Plugin) registerCommands() {
 		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionString, Name: name, Description: desc, Required: required}
 	}
 	reasonOpt := &discordgo.ApplicationCommandOption{
-		Type: discordgo.ApplicationCommandOptionString, Name: "reason", Description: "Why (recorded in the audit log)",
+		Type: discordgo.ApplicationCommandOptionString, Name: "reason", Description: "Why (recorded in the audit log)", Required: true,
 	}
 
 	cmd := &discordgo.ApplicationCommand{
@@ -92,17 +92,17 @@ func (p *Plugin) registerCommands() {
 				Name:        "jail",
 				Description: "Strip up to 5 members' roles and channel access for a period, then automatically restore them",
 				// Discord requires required options ahead of optional ones,
-				// so the extra member slots follow duration. They are plain
+				// so the extra member slots follow duration and reason. They are plain
 				// optional User pickers rather than a free-text list of IDs.
 				// See collectJailUserIDs.
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to jail; paste an ID to sentence an account that isn't here yet"),
-					durationOpt("duration", "How long before automatic release. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
+					durationOpt("duration", "How long before automatic release: \"3d\", \"24h\", \"90m\", or \"forever\"", true),
+					reasonOpt,
 					optionalUserOpt("user2", "A second member, jailed with the same duration and reason"),
 					optionalUserOpt("user3", "A third member"),
 					optionalUserOpt("user4", "A fourth member"),
 					optionalUserOpt("user5", "A fifth member"),
-					reasonOpt,
 				},
 			},
 			{
@@ -111,12 +111,12 @@ func (p *Plugin) registerCommands() {
 				Description: "vacation script: strip up to 5 members to the island's role for a period, then restore them",
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to send on vacation; paste an ID for an account that isn't here yet"),
-					durationOpt("duration", "How long before they come back. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
+					durationOpt("duration", "How long before they come back: \"3d\", \"24h\", \"90m\", or \"forever\"", true),
+					reasonOpt,
 					optionalUserOpt("user2", "A second member, same duration and reason"),
 					optionalUserOpt("user3", "A third member"),
 					optionalUserOpt("user4", "A fourth member"),
 					optionalUserOpt("user5", "A fifth member"),
-					reasonOpt,
 				},
 			},
 			{
@@ -125,7 +125,7 @@ func (p *Plugin) registerCommands() {
 				Description: "Jail everyone holding one role, for shutting down a raid",
 				Options: []*discordgo.ApplicationCommandOption{
 					roleOpt("role", "Every member holding this role will be jailed"),
-					durationOpt("duration", "How long before automatic release. Needs a unit: \"3d\", \"24h\", \"90m\"", true),
+					durationOpt("duration", "How long before automatic release: \"3d\", \"24h\", \"90m\", or \"forever\"", true),
 					reasonOpt,
 				},
 			},
@@ -142,8 +142,8 @@ func (p *Plugin) registerCommands() {
 				Options: []*discordgo.ApplicationCommandOption{
 					userOpt("user", "The member to grant a role to"),
 					roleOpt("role", "The role to grant"),
-					durationOpt("duration", "How long before automatic revocation. Needs a unit: \"3d\", \"24h\", \"90m\". Omit for permanent.", false),
 					reasonOpt,
+					durationOpt("duration", "How long before automatic revocation. Needs a unit: \"3d\", \"24h\", \"90m\". Omit for permanent.", false),
 				},
 			},
 			{

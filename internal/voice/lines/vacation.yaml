@@ -145,3 +145,89 @@ vacation.to_jail_announce:
   - "{members} got a downgrade: bahamas to nest, until {until}. the bigger bird's soft spot has limits"
   - "{members} managed to get thrown out of a beach. the nest has a room until {until}, no umbrellas in the drinks"
   - "return flight booked early. {members} is back in the nest until {until}, and she is not refunding the resort"
+
+# The *_forever keys are the four sentence-carrying vacation keys above, for
+# a sentence with no end date (duration:forever, or a transfer onto one).
+# None carries {until}, and the catalog refuses one that tries, so no line
+# can promise a return flight that was never booked.
+
+vacation.notice_forever:
+  # warm
+  - "you've been sent on vacation in {guild}, with no return date set. your roles are kept exactly as they were and come back when a moderator brings you home."
+  - "you're on the island in {guild} with an open-ended ticket. nothing is lost: your roles are safe on the shelf and return when you're brought back."
+  - "heads up: you've been booked onto the island in {guild}, and this one doesn't end on its own. your roles are held as they were until a moderator lets you back."
+  # plain
+  - "you have been sent on vacation in {guild}. there is no end date; a moderator will bring you back. your roles are saved until then."
+  - "you're on vacation in {guild} until a moderator ends it. your roles are stored exactly as they were."
+  - "a moderator in {guild} has sent you on vacation with no timer. your roles are held and returned when it's over."
+  # matter of fact
+  - "on vacation in {guild}. no end date. your roles are saved and come back when it ends."
+  - "you're on the island in {guild} with no set end. roles saved, returned when a moderator brings you back."
+
+vacation.announce_forever:
+  # calm
+  - "well, {members} is off to the island, and nobody booked the return flight. back whenever a moderator says so"
+  - "{members} has been sent somewhere warmer for an open-ended stay. the main perch will keep"
+  - "turns out the bigger bird also runs the travel agency, and she sold {members} a one way ticket. no hard feelings, mostly"
+  # neutral
+  - "and there it is. {members} is on vacation until further notice, so whatever was about to be said can wait for a flight that isn't scheduled"
+  - "{members} pushed their luck a little too far, so now they get a beach to sit on, indefinitely"
+  - "{members} thought they had the run of the place. they have the run of the island now, for as long as it takes"
+  # blunt
+  - "{members} has officially been relocated to the bahamas. all inclusive, no early checkout, no checkout date at all"
+  - "{members}, sent to the island, no return date, no appeal. she packed the sunscreen herself"
+  - "{members} down, flying privileges swapped for a sun lounger until somebody decides otherwise 😏"
+  - "gg fuckin' ez. {members} is on the island until further notice, and the resort thanks you for your custom"
+
+vacation.from_jail_forever:
+  # warm
+  - "good news: you've been moved from jail to vacation in {guild}. there's still no end date, but the nest is swapped for a hammock, and your roles are safe until a moderator brings you back."
+  - "you're out of the nest and onto the island in {guild}. same deal as before: no set end, and your roles are held exactly as they were until you're released."
+  - "your jail in {guild} has been turned into a vacation. sand, sun, a coconut if you want one. it still has no timer, and nothing is lost."
+  # plain
+  - "you've been moved from jail to vacation in {guild}. there is no end date; your roles are saved and come back when a moderator releases you."
+  - "a moderator in {guild} has moved you from jail to the island. your roles are stored exactly as they were and return when it ends."
+  - "you're on vacation in {guild} now instead of in jail. it has no set end, and your roles come back when a moderator brings you home."
+  # matter of fact
+  - "moved from jail to vacation in {guild}. no end date. roles saved, returned on release."
+  - "your jail in {guild} is now a beach, still with no timer. your roles are held exactly as they were."
+
+vacation.from_jail_announce_forever:
+  # calm
+  - "{members} has been let out of the nest and onto the beach. still no return date, just a better view and warmer sand"
+  - "good behaviour, or a generous mood: {members} is off to the bahamas instead of the nest, for as long as a moderator likes. the water is lovely"
+  - "{members} traded the nest for a hammock between two palm trees. still away until further notice, just somewhere with a sea breeze"
+  # neutral
+  - "{members} has been transferred from jail to the island, open-ended. the sunscreen is on the house"
+  - "and that's {members} moved to the beach. the sentence still has no end date, the scenery got a lot bluer"
+  - "{members} is out of the nest and on the sand indefinitely. it is still a timeout, it just comes with a coconut"
+  # witty
+  - "{members} got an upgrade: nest to bahamas, no return flight booked. the bigger bird occasionally has a soft spot for palm trees"
+  - "{members} has been paroled to the island until further notice. no early checkout, but the drinks have little umbrellas now"
+
+vacation.to_jail_forever:
+  # warm
+  - "sorry to say it: your vacation in {guild} is over early, and you've been moved to jail with no end date. your roles are still safe and come back when a moderator releases you."
+  - "the trip has been cut short. you're in jail in {guild} now rather than on the island, with no set end, and your roles are held exactly as they were."
+  - "your vacation in {guild} has been turned into a jail, and this one has no timer. nothing is lost; your roles return when you're released."
+  # plain
+  - "you've been moved from vacation to jail in {guild}. there is no end date. your roles are saved and come back when a moderator releases you."
+  - "a moderator in {guild} has moved you from the island to jail, with no set end. your roles are stored exactly as they were."
+  - "you're in jail in {guild} now instead of on vacation. it doesn't lift on its own; your roles return when a moderator lets you out."
+  # matter of fact
+  - "moved from vacation to jail in {guild}. no end date. roles saved, returned on release."
+  - "your vacation in {guild} has ended early and become a jail with no timer. your roles are held exactly as they were."
+
+vacation.to_jail_announce_forever:
+  # calm
+  - "{members} has been recalled from the island to the nest. trip over early, and no return date on this one"
+  - "the vacation is cut short: {members} is in the nest now, until further notice. the island will still be there another time"
+  - "{members} traded the hammock for the nest, open-ended. just somewhere quieter, for a while"
+  # neutral
+  - "{members} has been transferred from vacation to jail, no end date. the sunscreen goes back in the drawer"
+  - "and that's {members} moved off the beach. the sentence now runs until a moderator says otherwise, and the scenery got worse"
+  - "{members} is out of the sun and in the nest indefinitely. it was a timeout before, it is a stricter one now"
+  # witty
+  - "{members} got a downgrade: bahamas to nest, and nobody set a timer. the bigger bird's soft spot has limits"
+  - "{members} managed to get thrown out of a beach. the nest has a room until further notice, no umbrellas in the drinks"
+  - "return flight booked early, and the nest has no checkout date. {members} is in for a while, and she is not refunding the resort"

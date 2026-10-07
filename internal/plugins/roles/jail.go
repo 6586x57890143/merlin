@@ -53,7 +53,7 @@ func collectJailUserIDs(opts map[string]*discordgo.ApplicationCommandInteraction
 func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	opts := core.LeafArgs(i)
 	userIDs := collectJailUserIDs(opts)
-	duration, err := core.ParseFlexibleDuration(opts["duration"].StringValue())
+	duration, err := parseSentence(opts["duration"].StringValue())
 	if err != nil {
 		core.RespondErr(s, i, "Invalid duration", err)
 		return
@@ -134,7 +134,7 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 	p.announceJail(ctx, i.GuildID, i.ChannelID, res.jailed, duration, reason, sn)
 	// A transfer is announced as one, whichever command did it: the people
 	// in the channel were told where this member went last time.
-	p.announceMoved(ctx, i.GuildID, i.ChannelID, res.transferred, ptrTime(p.now().Add(duration)), sn)
+	p.announceMoved(ctx, i.GuildID, i.ChannelID, res.transferred, p.releaseAtFor(duration), sn)
 
 	// One member keeps the precise, actionable wording it always had, and its
 	// original roles.jail audit action, so existing audit history stays one
@@ -145,7 +145,7 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 	if len(userIDs) == 1 {
 		if len(res.jailed) == 1 {
 			if err := p.audit.Record(ctx, i.GuildID, actorID(i), sn.audit, "",
-				fmt.Sprintf("user=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), core.FormatDuration(duration), reason)); err != nil {
+				fmt.Sprintf("user=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), sentenceLength(duration), reason)); err != nil {
 				p.log.Error("roles: audit jail failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
 			}
 			// Only the individually-targeted path notifies. A jail is
@@ -159,7 +159,7 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 			// the raid, at the exact moment the releases that undo a
 			// mistake need that budget more. Same reasoning as the cap on
 			// batch size: reversibility beats completeness.
-			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.now().Add(duration), reason, sn)
+			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.releaseAtFor(duration), reason, sn)
 		}
 		// Sentenced in absentia: its own action, for the same reason a
 		// re-sentence is. Nobody was stripped of anything, and a reader
@@ -170,7 +170,7 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 		// read it and has not arrived.
 		if len(res.pending) == 1 {
 			if err := p.audit.Record(ctx, i.GuildID, actorID(i), sn.auditPending, "",
-				fmt.Sprintf("user=%s duration=%s reason=%q not in the server; applied on arrival", core.MentionUser(userIDs[0]), core.FormatDuration(duration), reason)); err != nil {
+				fmt.Sprintf("user=%s duration=%s reason=%q not in the server; applied on arrival", core.MentionUser(userIDs[0]), sentenceLength(duration), reason)); err != nil {
 				p.log.Error("roles: audit pending jail failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
 			}
 		}
@@ -181,20 +181,20 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 		// what just changed.
 		if len(res.redated) == 1 {
 			if err := p.audit.Record(ctx, i.GuildID, actorID(i), sn.auditMoved, "",
-				fmt.Sprintf("user=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), core.FormatDuration(duration), reason)); err != nil {
+				fmt.Sprintf("user=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), sentenceLength(duration), reason)); err != nil {
 				p.log.Error("roles: audit jail re-sentence failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
 			}
-			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.now().Add(duration), reason, sn)
+			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.releaseAtFor(duration), reason, sn)
 		}
 		// A transfer between the nest and the island is its own action too,
 		// and its own DM: the member is told where they are now, not merely
 		// when it ends.
 		if len(res.transferred) == 1 {
 			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.transferred", "",
-				fmt.Sprintf("user=%s to=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), sn.name, core.FormatDuration(duration), reason)); err != nil {
+				fmt.Sprintf("user=%s to=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), sn.name, sentenceLength(duration), reason)); err != nil {
 				p.log.Error("roles: audit transfer failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
 			}
-			p.notifyMoved(ctx, i.GuildID, userIDs[0], ptrTime(p.now().Add(duration)), sn, reason)
+			p.notifyMoved(ctx, i.GuildID, userIDs[0], p.releaseAtFor(duration), sn, reason)
 		}
 		p.respondSingleJail(s, i, userIDs[0], duration, res, sn)
 		return
@@ -208,6 +208,47 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// foreverSentence is the duration parseSentence returns for "forever": a
+// jail with no release time at all (ReleaseAt nil), which the sweep, the
+// release timer and evasion handling already read as "never ends". Zero,
+// because ParseFlexibleDuration never returns zero for a real duration.
+const foreverSentence time.Duration = 0
+
+// parseSentence reads a jail or vacation duration: anything
+// ParseFlexibleDuration takes, plus "forever" (and its synonyms) for a
+// sentence that only a moderator ends.
+func parseSentence(raw string) (time.Duration, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "forever", "permanent", "perm", "indefinite", "indefinitely":
+		return foreverSentence, nil
+	}
+	return core.ParseFlexibleDuration(raw)
+}
+
+// releaseAtFor is when a sentence of d handed out now ends, nil for forever.
+func (p *Plugin) releaseAtFor(d time.Duration) *time.Time {
+	if d == foreverSentence {
+		return nil
+	}
+	return ptrTime(p.now().Add(d))
+}
+
+// sentenceLength renders d compactly, for audit lines and the ledger.
+func sentenceLength(d time.Duration) string {
+	if d == foreverSentence {
+		return "forever"
+	}
+	return core.FormatDuration(d)
+}
+
+// forLength renders d to follow a verb: "jailed for 3d", "jailed indefinitely".
+func forLength(d time.Duration) string {
+	if d == foreverSentence {
+		return "indefinitely"
+	}
+	return "for " + core.FormatDuration(d)
+}
 
 func capitalize(s string) string {
 	if s == "" {
@@ -238,7 +279,7 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	// release is still the original one; only the marker and the end moved.
 	if len(res.transferred) > 0 {
 		if err := core.FollowUpOK(s, i, "Member moved",
-			fmt.Sprintf("<@%s> has been moved to %s. Their sentence now ends %s from now.", userID, sn.name, core.FormatDuration(duration))); err != nil {
+			fmt.Sprintf("<@%s> has been moved to %s. Their sentence now ends %s.", userID, sn.name, untilText(p.releaseAtFor(duration)))); err != nil {
 			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
 		}
 		return
@@ -250,7 +291,7 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	// jail, and the snapshot restored at release is still that one's.
 	if len(res.redated) > 0 {
 		if err := core.FollowUpOK(s, i, "Sentence updated",
-			fmt.Sprintf("<@%s> was already %s. Their sentence now ends %s from now.", userID, sn.verb, core.FormatDuration(duration))); err != nil {
+			fmt.Sprintf("<@%s> was already %s. Their sentence now ends %s.", userID, sn.verb, untilText(p.releaseAtFor(duration)))); err != nil {
 			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
 		}
 		return
@@ -261,14 +302,14 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	// actually taken anybody's roles away.
 	if len(res.pending) > 0 {
 		if err := core.FollowUpOK(s, i, "Sentence recorded", fmt.Sprintf(
-			"<@%s> isn't in this server. merlin has checked the account exists and recorded the sentence: they'll be %s for %s the moment they join, and nothing happens if they never do.\n"+
-				"Cancel it with `/roles release`.", userID, sn.verb, core.FormatDuration(duration))); err != nil {
+			"<@%s> isn't in this server. merlin has checked the account exists and recorded the sentence: they'll be %s %s the moment they join, and nothing happens if they never do.\n"+
+				"Cancel it with `/roles release`.", userID, sn.verb, forLength(duration))); err != nil {
 			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
 		}
 		return
 	}
 
-	msg := fmt.Sprintf("<@%s> %s for %s.", userID, sn.verb, core.FormatDuration(duration))
+	msg := fmt.Sprintf("<@%s> %s %s.", userID, sn.verb, forLength(duration))
 	if res.unmanageable > 0 {
 		msg += " Some role(s) could not be stripped (positioned at/above merlin's own top role, or managed by an integration)."
 	}
@@ -310,14 +351,14 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, jailRoleID string, t ja
 	newRoles, unmanageable := jailRoles(p.perms, guildID, jailRoleID, t.roles)
 
 	now := p.now()
-	releaseAt := now.Add(duration)
+	releaseAt := p.releaseAtFor(duration)
 	if err := p.store.InsertJail(ctx, JailRecord{
 		GuildID:         guildID,
 		UserID:          userID,
 		SnapshotRoleIDs: t.roles,
 		JailRoleID:      jailRoleID,
 		JailedAt:        now,
-		ReleaseAt:       &releaseAt,
+		ReleaseAt:       releaseAt,
 		JailedBy:        actor,
 		Reason:          reason,
 	}); err != nil {
@@ -333,7 +374,9 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, jailRoleID string, t ja
 			return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
 		}
 	}
-	p.armJailRelease(guildID, userID, releaseAt)
+	if releaseAt != nil {
+		p.armJailRelease(guildID, userID, *releaseAt)
+	}
 	if p.sentenceFor(guildID, jailRoleID) == vacationSentence {
 		p.publishVacation(ctx, guildID, userID, actor, reason, duration)
 	} else {

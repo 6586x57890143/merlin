@@ -41,6 +41,20 @@ const (
 	KeyJailNotice    Key = "moderation.jail"
 	KeyReleaseNotice Key = "moderation.release"
 
+	// Every key above and below that tells somebody when a sentence ends has
+	// a *Forever twin for a sentence with no end date (/roles jail
+	// duration:forever). The twins carry no {until}, and loadCatalog refuses
+	// a placeholder outside a key's required set, so none of their lines can
+	// promise an end that does not exist. roles.foreverKeys pairs them.
+	KeyJailNoticeForever               Key = "moderation.jail_forever"
+	KeyJailAnnounceForever             Key = "roles.jail_announce_forever"
+	KeyVacationNoticeForever           Key = "vacation.notice_forever"
+	KeyVacationAnnounceForever         Key = "vacation.announce_forever"
+	KeyVacationFromJailForever         Key = "vacation.from_jail_forever"
+	KeyVacationFromJailAnnounceForever Key = "vacation.from_jail_announce_forever"
+	KeyVacationToJailForever           Key = "vacation.to_jail_forever"
+	KeyVacationToJailAnnounceForever   Key = "vacation.to_jail_announce_forever"
+
 	// KeyWarnNotice is the DM behind /rapsheet warn. Plain register: a
 	// warning is the lightest thing on the ladder and the whole point of it
 	// is to be understood, so the wording explains that this is on record
@@ -400,6 +414,55 @@ var specs = map[Key]spec{
 		required: []string{"members", "until"},
 		maxLen:   maxMessageContent,
 		fallback: "{members} has been moved from vacation to jail. back {until}.",
+	},
+
+	KeyJailNoticeForever: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been jailed in {guild} with no end date. your roles are saved and come back when a moderator releases you.",
+	},
+	KeyJailAnnounceForever: {
+		register: RegisterPlayful,
+		required: []string{"members"},
+		maxLen:   maxMessageContent,
+		fallback: "{members} has been jailed until further notice.",
+	},
+	KeyVacationNoticeForever: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been sent on vacation in {guild} with no end date. your roles are saved and come back when a moderator brings you back.",
+	},
+	KeyVacationAnnounceForever: {
+		register: RegisterPlayful,
+		required: []string{"members"},
+		maxLen:   maxMessageContent,
+		fallback: "{members} has been sent on vacation until further notice.",
+	},
+	KeyVacationFromJailForever: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "you have been moved from jail to vacation in {guild}. there is no end date; your roles are still saved and come back when a moderator releases you.",
+	},
+	KeyVacationFromJailAnnounceForever: {
+		register: RegisterPlayful,
+		required: []string{"members"},
+		maxLen:   maxMessageContent,
+		fallback: "{members} has been moved from jail to vacation, until further notice.",
+	},
+	KeyVacationToJailForever: {
+		register: RegisterPlain,
+		required: []string{"guild"},
+		maxLen:   maxEmbedDescription,
+		fallback: "your vacation in {guild} is over early: you have been moved to jail with no end date. your roles are still saved and come back when a moderator releases you.",
+	},
+	KeyVacationToJailAnnounceForever: {
+		register: RegisterPlayful,
+		required: []string{"members"},
+		maxLen:   maxMessageContent,
+		fallback: "{members} has been moved from vacation to jail, until further notice.",
 	},
 
 	KeyDenied: {
