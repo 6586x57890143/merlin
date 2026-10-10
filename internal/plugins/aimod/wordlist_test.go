@@ -1,7 +1,9 @@
 package aimod
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -189,5 +191,27 @@ func TestNounOnly(t *testing.T) {
 		if got, _ := redactWords(list, c.in); got != c.want {
 			t.Errorf("redactWords(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// A skipped message carrying a listed word says why, since "the word list
+// missed it" was otherwise unanswerable from the logs.
+func TestSkippedListedWordIsLogged(t *testing.T) {
+	store := newFakeStore()
+	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
+	var buf bytes.Buffer
+	p.log = slog.New(slog.NewTextHandler(&buf, nil))
+	cfg := sanctioningConfig()
+	cfg.WordList = []BannedWord{{Word: "work", NounOnly: true, Replacement: "the mines"}}
+	cfg.ExemptChannelIDs = []string{"c1"}
+	store.setConfig(cfg)
+
+	p.HandleMessage(&discordgo.Message{
+		ID: "m1", GuildID: cfg.GuildID, ChannelID: "c1", Content: "work",
+		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+	})
+	p.wg.Wait()
+	if out := buf.String(); !strings.Contains(out, "listed word skipped") || !strings.Contains(out, string(skipChannel)) {
+		t.Errorf("log = %q, want the skip and its reason", out)
 	}
 }

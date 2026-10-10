@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -509,6 +510,20 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	if !p.scanning || m == nil || m.GuildID == "" {
 		return
 	}
+	// Debug, and IDs only: the one line that says Discord delivered this
+	// message at all. A report of "the filter missed it" with no line here
+	// means merlin never saw it, which no amount of reading the matcher will
+	// explain. Raise log_level in config.yaml and SIGHUP to see it.
+	//
+	// Lengths rather than text: bytes against runes is what shows a message
+	// that renders as "work" but carries characters nobody can see, without
+	// logging what anybody wrote.
+	if p.log.Enabled(context.Background(), slog.LevelDebug) {
+		text, _ := messageText(m)
+		p.log.Debug("aimod: received", "guild", m.GuildID, "channel", m.ChannelID, "message", m.ID,
+			"edit", m.EditedTimestamp != nil, "webhook", m.WebhookID != "", "author_known", m.Author != nil,
+			"bytes", len(text), "runes", utf8.RuneCountInString(text), "folded_bytes", len(fold(text)))
+	}
 	// The checks that need no configuration run first, ahead of the store
 	// read, because this is the hot path: every message in every guild
 	// arrives here. Bots and webhooks are a large share of traffic on a busy
@@ -523,6 +538,7 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// point that is not one. Reads the same in-memory settings cache, so it
 	// costs nothing here. See PluginGate.
 	if p.gate != nil && !p.gate.PluginEnabled(m.GuildID, p.Name()) {
+		p.log.Debug("aimod: plugin disabled in guild", "guild", m.GuildID, "message", m.ID)
 		return
 	}
 
@@ -587,6 +603,15 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 // not act on it again here.
 func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c candidate, slurCleared bool) {
 	if reason := p.shouldSkip(cfg, m, p.now()); reason != skipNone {
+		// A skip is silent by design, which made "the word list missed this"
+		// unanswerable from the logs. Info when the skipped text is something
+		// the guild listed, Debug otherwise.
+		if _, hit := redactWords(cfg.WordList, c.Content); hit {
+			p.log.Info("aimod: listed word skipped", "guild", cfg.GuildID, "channel", c.ChannelID,
+				"message", c.MessageID, "reason", string(reason))
+		} else {
+			p.log.Debug("aimod: skipped", "guild", cfg.GuildID, "message", c.MessageID, "reason", string(reason))
+		}
 		return
 	}
 

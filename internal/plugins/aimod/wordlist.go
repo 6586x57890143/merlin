@@ -223,6 +223,8 @@ func (p *Plugin) actOnWordList(cfg Config, c candidate) bool {
 	if rewrite == "" {
 		action = ActionRemove
 	}
+	p.log.Info("aimod: word list", "guild", cfg.GuildID, "channel", c.ChannelID, "message", c.MessageID,
+		"action", string(action))
 	p.spawn(func(bg context.Context) {
 		p.enforce(bg, cfg, c, BucketWordList, action, deepVerdict{
 			Violation: true, Bucket: BucketWordList, Confidence: 1,
