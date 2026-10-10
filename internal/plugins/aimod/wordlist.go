@@ -81,10 +81,12 @@ func wordPattern(word string) *regexp.Regexp {
 	return re
 }
 
-// normalizeWord lowercases and collapses whitespace, and reports whether the
-// result is listable.
+// normalizeWord folds, lowercases and collapses whitespace, and reports
+// whether the result is listable. Folded so an admin pasting a term in
+// fullwidth or with an accent lists the plain word redactWords matches
+// against, rather than being refused.
 func normalizeWord(s string) (string, error) {
-	w := strings.Join(strings.Fields(strings.ToLower(s)), " ")
+	w := strings.Join(strings.Fields(strings.ToLower(fold(s))), " ")
 	switch {
 	case len(w) < minWordLen || len(w) > maxWordLen:
 		return "", fmt.Errorf("a listed word has to be %d to %d characters", minWordLen, maxWordLen)
@@ -98,8 +100,11 @@ func normalizeWord(s string) (string, error) {
 // matched. An empty result with a hit means an entry with no replacement
 // matched, so the whole message goes: the same convention the deep pass and
 // redactSlurs use.
+//
+// Folded first, as redactSlurs is, so a listed word in fullwidth or Cyrillic
+// still lands; a miss returns content untouched.
 func redactWords(list []BannedWord, content string) (string, bool) {
-	out, hit := content, false
+	out, hit := fold(content), false
 	for _, w := range list {
 		re := wordPattern(w.Word)
 		var b strings.Builder
@@ -128,7 +133,10 @@ func redactWords(list []BannedWord, content string) (string, bool) {
 		b.WriteString(out[last:])
 		out = b.String()
 	}
-	return out, hit
+	if !hit {
+		return content, false
+	}
+	return out, true
 }
 
 // verbSignals are words that, right before a noun-only word, make it a verb:

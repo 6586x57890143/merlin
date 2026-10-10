@@ -388,10 +388,10 @@ type sub struct{ one, many string }
 // \b was free, and it is the right trade: an anchor cannot tell snigger from
 // spacenigger, so it spared both.
 //
-// It stops at ASCII. Unicode homoglyphs are the next rung of evasion and
-// deliberately not chased here: normalising them is a table that needs
-// maintaining, the win is one round of whack-a-mole, and anything that gets
-// past this is still read by the model rungs, which is what they are for.
+// Unicode disguises (fullwidth, math bold, Cyrillic, small capitals, zalgo,
+// zero-width characters between letters) are taken off before any of this
+// runs, by fold. This comment used to say they were deliberately not chased,
+// and they were the cheapest way past the whole table.
 // slurSep is what may sit between two letters of a slur: up to two
 // characters that are neither a letter nor a digit. Excluding both is the
 // whole safety property, since it means the letters have to be adjacent in
@@ -653,8 +653,11 @@ var innocentCompounds = regexp.MustCompile(`(?i)^(?:snigger|niggard|gobbledygook
 // redactSlurs replaces every hard slur in content, reporting whether any
 // matched. The replacement is what gets published, so it is built from the
 // member's own message rather than from anything a model returned.
+//
+// It reads the folded text, and a hit publishes the folded text: see fold for
+// why that is the right price. A miss returns content untouched.
 func redactSlurs(content string) (string, bool) {
-	out, hit := content, false
+	out, hit := fold(content), false
 	for _, s := range hardSlurs {
 		if s.notIf != nil && s.notIf.MatchString(out) {
 			continue
@@ -730,7 +733,10 @@ func redactSlurs(content string) (string, bool) {
 		i := strings.Index(tok, core)
 		return tok[:i] + word + tok[i+len(core):]
 	})
-	return out, hit
+	if !hit {
+		return content, false
+	}
+	return out, true
 }
 
 // acrossWords reports a match that reached over whitespace into ordinary
@@ -848,13 +854,11 @@ func nWordNormal(word string) string {
 var nWordShapeRe = regexp.MustCompile(`^n(?:ig|gi|g)(?:ie|e|i|u|o|a)?rs?$`)
 
 // squashLetters is what a disguise turns back into once it is taken off:
-// digits and symbols standing for letters, plus the Cyrillic lookalikes that
-// render identically to Latin ones and are the obvious move once the plain
-// letters are caught.
+// digits and symbols standing for letters. Lookalikes from other scripts are
+// fold's job, which squash runs first.
 var squashLetters = map[rune]rune{
 	'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't',
 	'@': 'a', '!': 'i', '|': 'i', '$': 's',
-	'а': 'a', 'е': 'e', 'і': 'i', 'о': 'o', 'с': 'c', 'р': 'p', 'к': 'k', 'у': 'y', 'х': 'x', 'ı': 'i',
 	'6': 'g', '9': 'g',
 }
 
@@ -876,7 +880,7 @@ func hiddenSlur(text string) string {
 	for _, s := range hardSlurs {
 		// Squashing joins words, so a start-of-word entry has no word start
 		// to anchor to here; looseSlur checks its shape word by word.
-		if s.wordStart || (s.notIf != nil && s.notIf.MatchString(text)) {
+		if s.wordStart || (s.notIf != nil && s.notIf.MatchString(fold(text))) {
 			continue
 		}
 		if loc := s.pattern.FindStringIndex(squashed); loc != nil {
@@ -890,7 +894,7 @@ func hiddenSlur(text string) string {
 // everything else, skipping whole words innocentCompounds spares.
 func squash(text string) string {
 	var b strings.Builder
-	for _, w := range strings.Fields(strings.ToLower(text)) {
+	for _, w := range strings.Fields(strings.ToLower(fold(text))) {
 		if innocentCompounds.MatchString(strings.Trim(w, `.,!?;:'"()`)) {
 			continue
 		}

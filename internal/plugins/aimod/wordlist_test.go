@@ -48,7 +48,7 @@ func TestNormalizeWord(t *testing.T) {
 	}
 	// Anything slurRe would read as its own syntax, or split mid-rune, is
 	// refused rather than compiled.
-	for _, bad := range []string{"ab", "wo[rk", "w(o)rk", "wo?rk", "trabajoñ", strings.Repeat("a", 41)} {
+	for _, bad := range []string{"ab", "wo[rk", "w(o)rk", "wo?rk", "仕事", strings.Repeat("a", 41)} {
 		if _, err := normalizeWord(bad); err == nil {
 			t.Errorf("normalizeWord(%q) accepted", bad)
 		}

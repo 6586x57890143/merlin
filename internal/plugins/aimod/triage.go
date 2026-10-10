@@ -345,7 +345,8 @@ var neverSkipPattern = regexp.MustCompile(`(?i)` + strings.Join([]string{
 }, "|"))
 
 // mustScan reports that this text may never be skipped on a model's guess.
-func mustScan(text string) bool { return neverSkipPattern.MatchString(text) }
+// Folded, so "ｍｉｎｏｒ" or a Cyrillic "kіds" is not a way past it.
+func mustScan(text string) bool { return neverSkipPattern.MatchString(fold(text)) }
 
 // encodeTriageModel serialises the weights for storage: little-endian float32
 // bits, bias appended as a float64. A fixed-width blob rather than JSON,

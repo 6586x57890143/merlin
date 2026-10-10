@@ -93,7 +93,9 @@ func replacedWords(original, rewrite string) []string {
 // slurCleared reports whether the deep model confidently read a rung-1 slur
 // hit as ordinary words. False on every path that is not exactly that.
 func (p *Plugin) slurCleared(ctx context.Context, cfg Config, c candidate, rewrite string) bool {
-	words := replacedWords(c.Content, rewrite)
+	// Against the folded text, since that is what the rewrite was built from:
+	// diffing the raw one would report every accented word as a match.
+	words := replacedWords(fold(c.Content), rewrite)
 	if len(words) == 0 {
 		return false
 	}
@@ -140,6 +142,7 @@ func (p *Plugin) slurCleared(ctx context.Context, cfg Config, c candidate, rewri
 // also an ordinary word ("chink"), which is the one case where asking still
 // has an answer to find, and so is the phrase entry, which is never one word.
 func wholeWordSlur(word string) bool {
+	word = fold(word)
 	if nWordShape(word) {
 		return true
 	}
