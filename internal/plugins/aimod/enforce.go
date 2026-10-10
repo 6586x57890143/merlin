@@ -366,8 +366,8 @@ func (p *Plugin) notifyAuthor(ctx context.Context, cfg Config, c candidate, acti
 	if cfg.MemberOptOut {
 		fields = append(fields, &discordgo.MessageEmbedField{
 			Name: "Don't want to be moderated by me?",
-			Value: "This server lets you opt out: `/aimod opt-out enabled:true` and I stop sending your messages to " +
-				"a model. The built-in pattern checks and anything reading as child safety still apply to everyone.",
+			Value: "This server lets you opt out: `/aimod opt-out enabled:true` and I stop moderating your messages. " +
+				"Slurs and anything reading as child safety still apply to everyone.",
 		})
 	}
 

@@ -310,9 +310,12 @@ status` rather than appearing to work.
   is only the coarse floor on the leaf); and **nobody opts anybody else out**,
   the exact opposite of `moderate-user`'s rule and from the same principle,
   since an admin who could opt a member out could exempt an account they
-  control. `scanExempt` is checked **after rung 1**, not in `shouldSkip`: the
-  free pattern table still runs, because opting out of a judgement is
-  reasonable and opting out of a leaked token being deleted is not. And it
+  control. An opted-out member is treated **like an exempt role**: `scanExempt`
+  runs at the top of `scan`, so the hard patterns, the word list and the
+  models are all skipped, and only the slur block in `HandleMessage` (which
+  runs ahead of every exemption) still applies. It used to sit after rung 1
+  and skip only the models, which made opt-out and exempt roles read as one
+  thing on `/aimod status` while behaving as two. It still
   **yields to `mustScan`**, so the child-safety vocabulary is scanned exactly
   as it would have been. That carve-out is the reason the guard is where it
   is: `EffectiveAction` refuses to let `/aimod policy set` turn `child_safety`

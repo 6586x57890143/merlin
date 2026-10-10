@@ -614,6 +614,19 @@ func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c c
 		}
 		return
 	}
+	// The member's own opt-out, at the same level as an exempt role: it
+	// skips the hard patterns, the word list and the models alike. Only the
+	// slur block in HandleMessage runs ahead of it, as it does ahead of an
+	// exempt role. scanExempt still yields to mustScan for the child-safety
+	// bucket, which cannot be turned off by any route in this package; such
+	// a message carries on through every rung below. See optout.go.
+	if scanExempt(cfg, c.AuthorID, c.Content) {
+		if _, hit := redactWords(cfg.WordList, c.Content); hit {
+			p.log.Info("aimod: listed word skipped", "guild", cfg.GuildID, "channel", c.ChannelID,
+				"message", c.MessageID, "reason", "author opted out")
+		}
+		return
+	}
 
 	// Rung 1, before anything is queued or paid for. A hard hit is acted on
 	// with the bucket's own configured action and no model in the loop, so
@@ -624,21 +637,8 @@ func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c c
 		return
 	}
 	// The guild's own word list, after the hard patterns so a leaked token
-	// beside a listed word is removed rather than rewritten around, and ahead
-	// of the opt-out for the same reason rung 1 is: it is free and it is the
-	// guild's rule, not a judgement anybody is being sent to a model for.
+	// beside a listed word is removed rather than rewritten around.
 	if p.actOnWordList(cfg, c) {
-		return
-	}
-
-	// The member's own opt-out, deliberately here rather than in shouldSkip.
-	//
-	// Rung 1 has already run above, which is the point: its patterns are free
-	// and unambiguous, so opting out does not buy exemption from a leaked bot
-	// token or a phishing link. What it buys is not being sent to a model.
-	// scanExempt yields to mustScan for the child-safety bucket, which cannot
-	// be turned off by any route in this package. See optout.go.
-	if scanExempt(cfg, c.AuthorID, c.Content) {
 		return
 	}
 

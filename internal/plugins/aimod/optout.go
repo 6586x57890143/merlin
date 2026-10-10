@@ -45,7 +45,7 @@ import (
 //     a member out could also exempt an account they control.
 //
 // **The child-safety carve-out is not negotiable, and it is the reason this
-// file does not simply skip at rung 0.** EffectiveAction refuses to let
+// is not simply a skip in shouldSkip.** EffectiveAction refuses to let
 // /aimod policy set turn child_safety off, and validateCalibration refuses to
 // let the weekly review stand the bucket down, because there is no legitimate
 // reason to disable it and so there is no way to. A per-member opt-out that
@@ -55,15 +55,14 @@ import (
 // vocabulary is scanned exactly as it would have been, and everything
 // downstream (which enforces that bucket unconditionally) behaves normally.
 //
-// What the opt-out genuinely buys is not being sent to a model. It is checked
-// *after* rung 1, so the free pattern table still runs: a leaked bot token, a
-// phishing domain and an SSN cost nothing to catch, and removing them is
-// damage control for everyone reading rather than a judgement of the member.
-// Opting out of a judgement is a reasonable thing to want; opting out of a
-// credential leak being deleted is not a thing anybody is asking for.
+// Otherwise the opt-out sits at the same level as an exempt role: the hard
+// patterns, the guild's word list and the models are all skipped, and only
+// the hard-slur block (which runs ahead of every exemption) still applies.
+// It used to skip only the models, which made the two read as one thing on
+// /aimod status while behaving as two.
 
 // scanExempt reports whether this author's own opt-out keeps this message
-// away from the model rungs.
+// away from every rung after the slur block.
 //
 // A pure function of the config and the text on purpose: it is on the hot
 // path for every message in every guild, it has to be readable in one sitting
@@ -131,9 +130,8 @@ func (p *Plugin) handleOptOut(ctx context.Context, s *discordgo.Session, i *disc
 		return
 	}
 	core.RespondOK(s, i, "Opted out",
-		"I'll stop sending your messages to a model. Two things that does not cover, so you know where you stand:\n\n"+
-			"- The built-in pattern checks still run on everyone. They catch leaked credentials and phishing links, "+
-			"and none of it is a judgement of what you said.\n"+
+		"I'll stop moderating your messages, the same as for an exempt role. Two things that does not cover, so you know where you stand:\n\n"+
+			"- Slurs are still caught on everyone, exempt or not.\n"+
 			"- Anything reading as child safety is still checked. That one has no opt-out on this bot, for anybody.\n\n"+
 			"Moderators can see who has opted out, on `/aimod status`. Undo it any time with the same command set to false.")
 }
@@ -185,8 +183,9 @@ func (p *Plugin) handleSetMemberOptOut(ctx context.Context, s *discordgo.Session
 		return
 	}
 	core.RespondWarn(s, i, "Member opt-out on",
-		"Members can now run `/aimod opt-out enabled:true` and their messages stop being sent to a model.\n\n"+
-			"What that does not cover: the built-in pattern checks still run on everyone, and anything reading as "+
+		"Members can now run `/aimod opt-out enabled:true` and are treated as if they held an exempt role: "+
+			"no word list, no pattern checks, no model.\n\n"+
+			"What that does not cover: slurs are still caught on everyone, and anything reading as "+
 			"child safety is still scanned regardless. Nobody can opt anybody else out, and `/aimod status` lists who has.")
 }
 
