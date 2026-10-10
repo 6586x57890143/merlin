@@ -131,29 +131,38 @@ func TestOptOutAppliesToTheMemberNotTheGuild(t *testing.T) {
 	}
 }
 
-// The guard sits *after* rung 1 on purpose. Opting out of a judgement is a
-// reasonable thing to want; opting out of a phishing link being deleted is
-// not, and the pattern table costs nothing to run.
-func TestOptedOutStillGetsTheFreePatternChecks(t *testing.T) {
+// The opt-out is at the same level as an exempt role: the pattern table and
+// the word list are skipped along with the models, and only the slur block,
+// which runs ahead of every exemption, still applies.
+func TestOptedOutIsTreatedLikeAnExemptRole(t *testing.T) {
 	store := newFakeStore()
 	ops := newFakeOps()
 	client := &fakeClassifier{}
 	p := testPlugin(t, store, client, ops, &fakeAudit{})
-	store.setConfig(optOutConfig(true, "u1"))
+	cfg := optOutConfig(true, "u1")
+	cfg.BucketActions[BucketHateSpeech] = ActionRewrite
+	cfg.WordList = []BannedWord{{Word: "work", Replacement: "the mines"}}
+	store.setConfig(cfg)
 
-	p.HandleMessage(&discordgo.Message{
-		ID: "m1", GuildID: "g1", ChannelID: "c1",
-		Content: "free nitro here https://grabify.link/abcdef",
-		Author:  &discordgo.User{ID: "u1"},
-		Member:  &discordgo.Member{},
-	})
-	p.wg.Wait()
-
-	if deleted, _ := ops.snapshot(); len(deleted) != 1 {
-		t.Errorf("deleted %v, want the grabber link removed despite the opt-out", deleted)
+	post := func(id, content string) {
+		p.HandleMessage(&discordgo.Message{
+			ID: id, GuildID: "g1", ChannelID: "c1", Content: content,
+			Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+		})
+		p.wg.Wait()
+	}
+	post("m1", "free nitro here https://grabify.link/abcdef")
+	post("m2", "back to work")
+	if deleted, _ := ops.snapshot(); len(deleted) != 0 {
+		t.Errorf("deleted %v, want an opted-out member's pattern and word-list hits left alone", deleted)
 	}
 	if fast, deep := client.counts(); fast != 0 || deep != 0 {
-		t.Errorf("paid for a model on a hard-hit pattern: fast=%d deep=%d", fast, deep)
+		t.Errorf("paid for a model on an opted-out member: fast=%d deep=%d", fast, deep)
+	}
+
+	post("m3", "shut up faggot")
+	if deleted, _ := ops.snapshot(); len(deleted) != 1 || deleted[0] != "m3" {
+		t.Errorf("deleted %v, want the slur caught despite the opt-out", deleted)
 	}
 }
 

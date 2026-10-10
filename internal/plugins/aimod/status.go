@@ -335,10 +335,10 @@ func optOutPages(cfg Config) []statusPage {
 		body := "**Member opt-out is off.** Everyone in this server is covered by the filter. " +
 			"Only the server owner can change that, with `/aimod configure member-opt-out`."
 		if cfg.MemberOptOut {
-			body = "**Member opt-out is on.** Anyone here can run `/aimod opt-out` and their messages stop being " +
-				"sent to a model. Nobody can opt anybody else out.\n\n" +
-				"Still applies to everyone regardless: the built-in pattern checks, and anything reading as child " +
-				"safety. Neither has an opt-out on this bot."
+			body = "**Member opt-out is on.** Anyone here can run `/aimod opt-out` and is treated as if they held " +
+				"an exempt role. Nobody can opt anybody else out.\n\n" +
+				"Still applies to everyone regardless: slurs, and anything reading as child safety. Neither has an " +
+				"opt-out on this bot."
 		}
 
 		listed := "nobody"
