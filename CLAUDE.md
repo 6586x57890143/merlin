@@ -191,6 +191,15 @@ status` rather than appearing to work.
   rather than dropped: letters may repeat across a separator and plurals are
   an optional s, so a real slur followed by "sissy" or "today" ran into that
   word, was refused whole, and "Shut up faggot sissy retard" was published.
+- **Every rung-1 reader sees folded text** (`fold.go`): NFKD, a lookalike
+  table (Cyrillic, Greek, small capitals, stroked letters), regional
+  indicators, and invisible characters (ZWSP, soft hyphen, Hangul filler)
+  dropped, with combining marks dropped only after a letter so emoji
+  sequences survive. It sits inside `redactSlurs`, `redactWords`,
+  `normalizeWord`, `squash` and `mustScan` rather than at call sites, so the
+  guild word list gets it too. A hit publishes the folded text as the
+  rewrite (a disguised slur costs the message its accents); a miss returns
+  the original untouched.
 - **The policy catalogue is data, validated like `internal/voice`'s.** Ten
   `policy/*.yaml` files, `go:embed`ed, each carrying `violations` **and**
   `not_violations`, both with a `minListItems` floor. The second list is the
