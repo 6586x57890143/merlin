@@ -135,6 +135,8 @@ var actions = map[string]meta{
 	"roles.eternal_removed":         {title: "Eternal role removed", color: core.ColorInfo},
 	"roles.eternal_reassigned":      {title: "Eternal role: given back", color: core.ColorWarning},
 	"roles.eternal_recreated":       {title: "Eternal role: recreated", color: core.ColorWarning},
+	"roles.join_role_changed":       {title: "Join role edited in Discord", color: core.ColorWarning},
+	"roles.join_role_deleted":       {title: "Join role deleted in Discord", color: core.ColorError},
 	"rotation.remove":               {title: "Channel rotation removed", color: core.ColorWarning},
 	"config.admin_removed":          {title: "Admin removed", color: core.ColorWarning},
 	"config.mod_role_removed":       {title: "Mod role removed", color: core.ColorWarning},

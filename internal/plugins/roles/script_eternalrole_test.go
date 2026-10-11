@@ -281,7 +281,7 @@ func TestEternalRoleSweepAndHandlersReachTheScript(t *testing.T) {
 	}
 
 	f.role(f.copyRec(t).RoleID).Name = "edited"
-	f.p.HandleRoleUpdated(context.Background(), etGuild)
+	f.p.HandleRoleUpdated(context.Background(), etGuild, nil)
 	if f.role(f.copyRec(t).RoleID).Name != "neumale" {
 		t.Fatal("a role update should have run the script")
 	}

@@ -555,16 +555,17 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		}
 	})
 
-	// An edited role is only interesting to the eternal-role script, which
-	// answers an edit with a fresh copy of the original. Latency only: the
-	// roles sweep re-checks every minute regardless.
+	// An edited role interests the eternal-role script, which answers an
+	// edit with a fresh copy of the original (latency only: the roles sweep
+	// re-checks every minute regardless), and the join-role script, which
+	// reports an edit to a role every new member is given.
 	session.AddHandler(func(s *discordgo.Session, ru *discordgo.GuildRoleUpdate) {
 		if ru.GuildRole == nil {
 			return
 		}
 		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		rolesPlugin.HandleRoleUpdated(guildCtx, ru.GuildID)
+		rolesPlugin.HandleRoleUpdated(guildCtx, ru.GuildID, ru.Role)
 	})
 
 	session.AddHandler(func(s *discordgo.Session, gd *discordgo.GuildDelete) {

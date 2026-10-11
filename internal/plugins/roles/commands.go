@@ -208,6 +208,18 @@ func (p *Plugin) registerCommands() {
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "join-role-add",
+						Description: "join-role script: also give new members this role, besides the member role",
+						Options:     []*discordgo.ApplicationCommandOption{roleOpt("role", "The role every new member gets")},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "join-role-remove",
+						Description: "join-role script: stop giving new members this role",
+						Options:     []*discordgo.ApplicationCommandOption{roleOpt("role", "The role to stop giving")},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "vacation-role",
 						Description: "vacation script: the existing role a member on vacation holds (never created). Omit to clear.",
 						Options:     []*discordgo.ApplicationCommandOption{optionalRoleOpt("role", "The existing role a member on vacation holds")},
@@ -281,6 +293,8 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("roles", "configure/list-channels", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleListChannels)
 	p.commands.Handle("roles", "configure/marker-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMarkerRole)
 	p.commands.Handle("roles", "configure/member-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleMemberRole)
+	p.commands.Handle("roles", "configure/join-role-add", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleJoinRoleAdd)
+	p.commands.Handle("roles", "configure/join-role-remove", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleJoinRoleRemove)
 	p.commands.Handle("roles", "configure/vacation-role", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationRole)
 	p.commands.Handle("roles", "configure/vacation-allow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationAllowChannel)
 	p.commands.Handle("roles", "configure/vacation-disallow-channel", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigureJailCh}, p.handleVacationDisallowChannel)
@@ -524,6 +538,7 @@ func (p *Plugin) handleMemberRole(ctx context.Context, s *discordgo.Session, i *
 	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "member_role="+detail); err != nil {
 		p.log.Error("roles: audit member-role failed", "guild", i.GuildID, "err", err)
 	}
+	p.watchJoinRoles(i.GuildID)
 	p.jailRoleMu.Lock()
 	jailRoleID, known := p.jailRoleID[i.GuildID]
 	p.jailRoleMu.Unlock()
@@ -541,6 +556,51 @@ func (p *Plugin) handleMemberRole(ctx context.Context, s *discordgo.Session, i *
 	}
 	_ = core.FollowUpOK(s, i, "Member role set",
 		fmt.Sprintf("Jailed and vacationing members are now capped at what %s can do in each allowlisted channel. Every channel has been re-synced against it.", core.MentionRole(roleID)))
+}
+
+// handleJoinRoleAdd and handleJoinRoleRemove edit the join-role script's
+// extra roles (script_joinrole.go). Adding one starts watching it, so an
+// edit to it in Discord is reported from then on.
+func (p *Plugin) handleJoinRoleAdd(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	p.changeJoinRole(ctx, s, i, true)
+}
+
+func (p *Plugin) handleJoinRoleRemove(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+	p.changeJoinRole(ctx, s, i, false)
+}
+
+func (p *Plugin) changeJoinRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, add bool) {
+	roleID := ""
+	if opt, ok := core.LeafArgs(i)["role"]; ok {
+		roleID, _ = opt.Value.(string)
+	}
+	if roleID == "" || roleID == i.GuildID {
+		core.RespondErr(s, i, "Not a role merlin can give", fmt.Errorf("pick a role other than @everyone"))
+		return
+	}
+	change := "removed"
+	var err error
+	if add {
+		change = "added"
+		if err := p.perms.CanManageRole(i.GuildID, roleID); err != nil {
+			core.RespondErr(s, i, "merlin cannot give that role", err)
+			return
+		}
+		err = p.jailChannelConfig.AddJoinRole(ctx, i.GuildID, roleID)
+	} else {
+		err = p.jailChannelConfig.RemoveJoinRole(ctx, i.GuildID, roleID)
+	}
+	if err != nil {
+		core.RespondErr(s, i, "Failed to save", err)
+		return
+	}
+	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "join_role_"+change+"="+core.MentionRole(roleID)); err != nil {
+		p.log.Error("roles: audit join-role change failed", "guild", i.GuildID, "err", err)
+	}
+	if add {
+		p.watchJoinRoles(i.GuildID)
+	}
+	core.RespondOK(s, i, "Join role "+change, "Script: "+p.joinRoleLine(i.GuildID)+".")
 }
 
 // handleAnnounceChannel sets, or with the option omitted clears, the one
@@ -719,9 +779,9 @@ func (p *Plugin) handleScriptsList(ctx context.Context, s *discordgo.Session, i 
 func (p *Plugin) scriptDescription(guildID, name string, recs []EternalRoleRecord) string {
 	switch name {
 	case scriptJoinRole:
-		return "**join-role**: " + p.joinRoleLine(guildID) + ", 15 seconds after joining, unless they already hold it " +
-			"(another bot restored it) or are jailed or on vacation. Change the role with `/roles configure member-role`. " +
-			"Joins from now on only; nobody already here is touched."
+		return "**join-role**: " + p.joinRoleLine(guildID) + ", 15 seconds after joining, except roles they already hold " +
+			"(another bot restored them), and nothing for anyone jailed or on vacation. Change the roles with " +
+			"`/roles configure member-role` and `join-role-add`/`join-role-remove`. Joins from now on only; nobody already here is touched."
 	case scriptVacation:
 		return "**vacation**: " + p.vacationLine(guildID) + ". `/roles vacation` does what `/roles jail` does with that role " +
 			"as the marker instead of the jail one: roles snapshotted and stripped, restored on the timer or with `/roles release`, " +
