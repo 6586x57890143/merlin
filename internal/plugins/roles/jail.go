@@ -651,6 +651,7 @@ func releaseAtText(rec JailRecord) string {
 // sends the event, and the sweep above remains the sole mechanism.
 func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 	defer p.memberChanged(ctx, guildID, userID)
+	p.scheduleJoinRole(guildID, userID)
 	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
 	if err != nil {
 		p.log.Error("roles: look up jail on member join", "guild", guildID, "user", userID, "err", err)

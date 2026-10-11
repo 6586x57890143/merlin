@@ -56,7 +56,7 @@ const (
 // list on /roles scripts set. A compile-time set, so a plain Choices option
 // rather than autocomplete (spec.MD §4a's autocomplete rule is for values
 // that come from bot state).
-var pluginScripts = []string{scriptEternalRole, scriptVacation}
+var pluginScripts = []string{scriptEternalRole, scriptVacation, scriptJoinRole}
 
 func (p *Plugin) registerCommands() {
 	userOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
@@ -707,6 +707,8 @@ func (p *Plugin) handleScriptsList(ctx context.Context, s *discordgo.Session, i 
 			}
 		case scriptVacation:
 			b.WriteString(": " + p.vacationLine(i.GuildID))
+		case scriptJoinRole:
+			b.WriteString(": " + p.joinRoleLine(i.GuildID))
 		}
 		b.WriteString("\n")
 	}
@@ -716,6 +718,10 @@ func (p *Plugin) handleScriptsList(ctx context.Context, s *discordgo.Session, i 
 // scriptDescription is what an admin is told they just turned on.
 func (p *Plugin) scriptDescription(guildID, name string, recs []EternalRoleRecord) string {
 	switch name {
+	case scriptJoinRole:
+		return "**join-role**: " + p.joinRoleLine(guildID) + ", 15 seconds after joining, unless they already hold it " +
+			"(another bot restored it) or are jailed or on vacation. Change the role with `/roles configure member-role`. " +
+			"Joins from now on only; nobody already here is touched."
 	case scriptVacation:
 		return "**vacation**: " + p.vacationLine(guildID) + ". `/roles vacation` does what `/roles jail` does with that role " +
 			"as the marker instead of the jail one: roles snapshotted and stripped, restored on the timer or with `/roles release`, " +
