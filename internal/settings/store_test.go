@@ -466,6 +466,31 @@ func TestMemberRoleRoundTrip(t *testing.T) {
 	}
 }
 
+// The join roles: a list, deduplicated on add, pruned like the member role.
+func TestJoinRolesRoundTrip(t *testing.T) {
+	store, _, guildID := setupStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"role-a", "role-b", "role-a"} {
+		if err := store.AddJoinRole(ctx, guildID, id); err != nil {
+			t.Fatalf("AddJoinRole(%s): %v", id, err)
+		}
+	}
+	if got := store.JoinRoleIDs(guildID); len(got) != 2 {
+		t.Fatalf("JoinRoleIDs = %v, want role-a and role-b once each", got)
+	}
+	if err := store.RemoveJoinRole(ctx, guildID, "role-b"); err != nil {
+		t.Fatalf("RemoveJoinRole: %v", err)
+	}
+	removed, err := store.PruneDeletedRole(ctx, guildID, "role-a")
+	if err != nil {
+		t.Fatalf("PruneDeletedRole: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "join role" || len(store.JoinRoleIDs(guildID)) != 0 {
+		t.Fatalf("expected the join role pruned, got %v / %v", removed, store.JoinRoleIDs(guildID))
+	}
+}
+
 // GrantOverride and DenyOverride take roleID and userID together, with an
 // empty string meaning "leave this column alone" (the CASE WHEN on an
 // empty $3 in the SQL). Granting a role, then separately granting a user for the same

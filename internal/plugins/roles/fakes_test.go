@@ -747,10 +747,11 @@ type fakeSettings struct {
 	vacationRole    map[string]string   // guildID -> configured vacation marker role ID
 	vacationAllowed map[string][]string // guildID -> vacation allowlist
 	memberRole      map[string]string   // guildID -> ordinary member role
+	joinRoles       map[string][]string // guildID -> extra join roles
 }
 
 func newFakeSettings() *fakeSettings {
-	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string), vacationRole: make(map[string]string), vacationAllowed: make(map[string][]string), memberRole: make(map[string]string)}
+	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string), vacationRole: make(map[string]string), vacationAllowed: make(map[string][]string), memberRole: make(map[string]string), joinRoles: make(map[string][]string)}
 }
 
 func (f *fakeSettings) JailAnnounceChannelID(guildID string) string {
@@ -858,6 +859,28 @@ func (f *fakeSettings) SetMemberRole(ctx context.Context, guildID, roleID string
 		return nil
 	}
 	f.memberRole[guildID] = roleID
+	return nil
+}
+
+func (f *fakeSettings) JoinRoleIDs(guildID string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.joinRoles[guildID])
+}
+
+func (f *fakeSettings) AddJoinRole(ctx context.Context, guildID, roleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Contains(f.joinRoles[guildID], roleID) {
+		f.joinRoles[guildID] = append(f.joinRoles[guildID], roleID)
+	}
+	return nil
+}
+
+func (f *fakeSettings) RemoveJoinRole(ctx context.Context, guildID, roleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.joinRoles[guildID] = slices.DeleteFunc(f.joinRoles[guildID], func(id string) bool { return id == roleID })
 	return nil
 }
 

@@ -85,6 +85,11 @@ type JailChannelConfig interface {
 	// alone; an empty roleID passed to the setter clears it.
 	MemberRoleID(guildID string) string
 	SetMemberRole(ctx context.Context, guildID, roleID string) error
+	// The extra roles the join-role script gives a new member besides
+	// MemberRoleID (script_joinrole.go).
+	JoinRoleIDs(guildID string) []string
+	AddJoinRole(ctx context.Context, guildID, roleID string) error
+	RemoveJoinRole(ctx context.Context, guildID, roleID string) error
 }
 
 // jailManagedChannelTypes are the channel kinds jail's deny-by-default

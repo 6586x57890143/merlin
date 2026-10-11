@@ -90,6 +90,12 @@ type Plugin struct {
 	jailRoleID     map[string]string // guild ID -> resolved jail role ID, cached per process
 	vacationRoleID map[string]string // guild ID -> resolved vacation role ID (script_vacation.go), same lifetime
 
+	// joinRoleSeen is the last known shape of every join role, keyed
+	// guild:role, so an edit can be reported as what changed
+	// (script_joinrole.go). Discord's role update carries only the new one.
+	joinRoleMu   sync.Mutex
+	joinRoleSeen map[string]joinRoleShape
+
 	// timers holds one pending release/expiry per jail or grant key, and
 	// inFlight the keys being released this instant. See release.go.
 	// afterFunc is time.AfterFunc, injectable like now.
@@ -124,6 +130,7 @@ func New(store Store, jailChannelConfig JailChannelConfig, scriptStore scripts.S
 		sweepRegistered:   make(map[string]bool),
 		jailRoleID:        make(map[string]string),
 		vacationRoleID:    make(map[string]string),
+		joinRoleSeen:      make(map[string]joinRoleShape),
 		timers:            make(map[string]*time.Timer),
 		inFlight:          make(map[string]bool),
 		afterFunc:         time.AfterFunc,
@@ -159,6 +166,7 @@ func (p *Plugin) Shutdown(ctx context.Context) error {
 // rotation.Plugin.SyncGuild. This plugin has no configurable settings that
 // change job existence, just one fixed sweep per known guild.
 func (p *Plugin) SyncGuild(guildID string) {
+	p.watchJoinRoles(guildID)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.sweepRegistered[guildID] {
@@ -210,6 +218,7 @@ func (p *Plugin) ForgetGuild(guildID string) {
 // The eternal-role script is also told, so a deleted eternal role comes
 // back now rather than on the next sweep.
 func (p *Plugin) HandleRoleDeleted(ctx context.Context, guildID, roleID string) {
+	p.joinRoleDeleted(ctx, guildID, roleID)
 	if err := p.enforceEternalRoles(ctx, guildID); err != nil {
 		p.log.Error("roles: eternal-role: enforce on role delete", "guild", guildID, "err", err)
 	}

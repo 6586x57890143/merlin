@@ -2,7 +2,10 @@ package roles
 
 import (
 	"context"
+	"fmt"
+	"math/bits"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -10,25 +13,34 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
-// The join-role script: everyone who joins gets one role.
+// The join-role script: everyone who joins gets the guild's join roles.
 //
-// The role is the guild's member role (/roles configure member-role), the
-// same one memberBaseline caps the jail and vacation markers against: a
-// second setting naming "the role ordinary members hold" would be two facts
-// that have to agree. No member role configured means the script does
-// nothing. It hooks HandleMemberJoin and nothing else: no sweep, no
-// backfill, so it covers joins from the moment it is on.
+// Those are the member role (/roles configure member-role), the same one
+// memberBaseline caps the jail and vacation markers against, plus any extra
+// roles added with /roles configure join-role-add (a media-permissions role,
+// say). The member role is not duplicated into the list: a second setting
+// naming "the role ordinary members hold" would be two facts that have to
+// agree. No join roles at all means the script does nothing. It hooks
+// HandleMemberJoin and nothing else: no sweep, no backfill, so it covers
+// joins from the moment it is on.
 //
 // It waits joinRoleSettle before looking, then re-fetches the member and
-// adds the role only if they still lack it. The wait is for other bots that
-// persist roles across a rejoin: if one restores the role, merlin does
-// nothing. It yields to jail and vacation (any role_jails row), since a role
-// carrying channel allows would beat the marker's denies, and the switch is
-// read after the wait, so turning it off stops joins already pending.
+// adds only the roles they still lack. The wait is for other bots that
+// persist roles across a rejoin: whatever one restores, merlin leaves alone.
+// It yields to jail and vacation (any role_jails row), since a role carrying
+// channel allows would beat the marker's denies, and the switch is read
+// after the wait, so turning it off stops joins already pending.
 //
 // No audit entry per join: during a raid that is one embed per member
 // against the guild's message budget. The log line and Discord's own audit
 // log reason are the trail.
+//
+// A guild that configured join roles depends on them existing and doing
+// what they did, so an edit or deletion of one in Discord is reported to the
+// audit log whether or not the script is on (joinRoleUpdated,
+// joinRoleDeleted). Position is the one change ignored, since Discord sends
+// an update for every role a reorder shifts, except where a move takes the
+// role out of merlin's reach.
 
 const scriptJoinRole = "join-role"
 
@@ -38,10 +50,25 @@ var joinRoleSettle = 15 * time.Second
 
 const joinRoleTimeout = 15 * time.Second
 
+// joinRoles is every role a new member of guildID is given, member role
+// first.
+func (p *Plugin) joinRoles(guildID string) []string {
+	var out []string
+	if id := p.jailChannelConfig.MemberRoleID(guildID); id != "" {
+		out = append(out, id)
+	}
+	for _, id := range p.jailChannelConfig.JoinRoleIDs(guildID) {
+		if id != "" && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // scheduleJoinRole is the script's hook into HandleMemberJoin. The handler's
 // context ends with the event, so the delayed check gets its own.
 func (p *Plugin) scheduleJoinRole(guildID, userID string) {
-	if p.jailChannelConfig.MemberRoleID(guildID) == "" {
+	if len(p.joinRoles(guildID)) == 0 {
 		return
 	}
 	time.AfterFunc(joinRoleSettle, func() {
@@ -52,8 +79,8 @@ func (p *Plugin) scheduleJoinRole(guildID, userID string) {
 }
 
 func (p *Plugin) giveJoinRole(ctx context.Context, guildID, userID string) {
-	roleID := p.jailChannelConfig.MemberRoleID(guildID)
-	if roleID == "" || p.dryRun(guildID) || !p.scriptOn(ctx, guildID, scriptJoinRole) {
+	roleIDs := p.joinRoles(guildID)
+	if len(roleIDs) == 0 || p.dryRun(guildID) || !p.scriptOn(ctx, guildID, scriptJoinRole) {
 		return
 	}
 	if _, jailed, err := p.store.GetJail(ctx, guildID, userID); err != nil || jailed {
@@ -70,21 +97,189 @@ func (p *Plugin) giveJoinRole(ctx context.Context, guildID, userID string) {
 		}
 		return
 	}
-	if (member.User != nil && member.User.Bot) || slices.Contains(member.Roles, roleID) {
+	if member.User != nil && member.User.Bot {
 		return
 	}
-	if err := ops.GuildMemberRoleAdd(guildID, userID, roleID, discordgo.WithAuditLogReason("join-role script")); err != nil {
-		p.log.Error("roles: join-role: add role", "guild", guildID, "user", userID, "role", roleID, "err", err)
-		return
+	// One additive call per role rather than one GuildMemberEdit with the
+	// whole list: an edit replaces roles, and would race whatever another
+	// bot is restoring at the same moment. One failing does not stop the rest.
+	for _, roleID := range roleIDs {
+		if slices.Contains(member.Roles, roleID) {
+			continue
+		}
+		if err := ops.GuildMemberRoleAdd(guildID, userID, roleID, discordgo.WithAuditLogReason("join-role script")); err != nil {
+			p.log.Error("roles: join-role: add role", "guild", guildID, "user", userID, "role", roleID, "err", err)
+			continue
+		}
+		p.log.Info("roles: join-role: role given", "guild", guildID, "user", userID, "role", roleID)
 	}
-	p.log.Info("roles: join-role: role given", "guild", guildID, "user", userID, "role", roleID)
 }
 
 // joinRoleLine renders the script's definition for guildID.
 func (p *Plugin) joinRoleLine(guildID string) string {
-	id := p.jailChannelConfig.MemberRoleID(guildID)
-	if id == "" {
-		return "no member role configured, so it does nothing (`/roles configure member-role`)"
+	ids := p.joinRoles(guildID)
+	if len(ids) == 0 {
+		return "no join roles configured, so it does nothing (`/roles configure member-role`, `/roles configure join-role-add`)"
 	}
-	return "new members get " + core.MentionRole(id)
+	mentions := make([]string, len(ids))
+	for i, id := range ids {
+		mentions[i] = core.MentionRole(id)
+	}
+	return "new members get " + strings.Join(mentions, ", ")
+}
+
+// joinRoleShape is what of a join role is worth reporting a change to.
+type joinRoleShape struct {
+	name        string
+	permissions int64
+	// manageable is whether merlin can give the role out at all.
+	manageable bool
+}
+
+func (p *Plugin) shapeOf(guildID string, r *discordgo.Role) joinRoleShape {
+	return joinRoleShape{name: r.Name, permissions: r.Permissions, manageable: p.perms.CanManageRole(guildID, r.ID) == nil}
+}
+
+// watchJoinRoles records the current shape of any join role in guildID not
+// already known, so its first edit has something to compare against. Run
+// from SyncGuild and whenever a join role is configured. Known entries are
+// kept, so an edit made while merlin was disconnected is still reported, at
+// the next edit, against what was there before.
+//
+// ponytail: an edit made while disconnected and never followed by another
+// goes unreported. Compare here on GuildCreate if that ever matters.
+func (p *Plugin) watchJoinRoles(guildID string) {
+	ids := p.joinRoles(guildID)
+	if len(ids) == 0 {
+		return
+	}
+	roles, err := p.ops(guildID).GuildRoles(guildID)
+	if err != nil {
+		p.log.Error("roles: join-role: read roles to watch", "guild", guildID, "err", err)
+		return
+	}
+	p.joinRoleMu.Lock()
+	defer p.joinRoleMu.Unlock()
+	for _, r := range roles {
+		key := guildID + ":" + r.ID
+		if _, seen := p.joinRoleSeen[key]; !seen && slices.Contains(ids, r.ID) {
+			p.joinRoleSeen[key] = p.shapeOf(guildID, r)
+		}
+	}
+}
+
+// joinRoleUpdated reports an edit to one of guildID's join roles.
+func (p *Plugin) joinRoleUpdated(ctx context.Context, guildID string, role *discordgo.Role) {
+	if role == nil || !slices.Contains(p.joinRoles(guildID), role.ID) {
+		return
+	}
+	now := p.shapeOf(guildID, role)
+	key := guildID + ":" + role.ID
+	p.joinRoleMu.Lock()
+	before, known := p.joinRoleSeen[key]
+	p.joinRoleSeen[key] = now
+	p.joinRoleMu.Unlock()
+	if known && before == now {
+		return
+	}
+	var lines []string
+	if !known {
+		// Watching failed earlier. Saying so beats saying nothing about an
+		// edit to a role the guild depends on.
+		lines = append(lines, "Edited; what it was before is unknown.")
+	} else {
+		if before.name != now.name {
+			lines = append(lines, "Renamed from **"+before.name+"** to **"+now.name+"**.")
+		}
+		if lost := permNames(before.permissions &^ now.permissions); lost != "" {
+			lines = append(lines, "Lost: "+lost+".")
+		}
+		if gained := permNames(now.permissions &^ before.permissions); gained != "" {
+			lines = append(lines, "Gained: "+gained+".")
+		}
+		if before.manageable && !now.manageable {
+			lines = append(lines, "merlin can no longer give it out: it now sits at or above merlin's own top role.")
+		}
+		if !before.manageable && now.manageable {
+			lines = append(lines, "merlin can give it out again.")
+		}
+	}
+	p.auditJoinRole(ctx, guildID, "roles.join_role_changed",
+		core.MentionRole(role.ID)+" is given to every new member.\n"+strings.Join(lines, "\n"))
+}
+
+// joinRoleDeleted reports the deletion of one of guildID's join roles. Runs
+// before settings prunes the role (cmd/bot/main.go), which is what lets it
+// still recognise the role as one.
+func (p *Plugin) joinRoleDeleted(ctx context.Context, guildID, roleID string) {
+	if !slices.Contains(p.joinRoles(guildID), roleID) {
+		return
+	}
+	key := guildID + ":" + roleID
+	p.joinRoleMu.Lock()
+	name := p.joinRoleSeen[key].name
+	delete(p.joinRoleSeen, key)
+	p.joinRoleMu.Unlock()
+	if name == "" {
+		name = roleID
+	}
+	p.auditJoinRole(ctx, guildID, "roles.join_role_deleted",
+		"**"+name+"** was deleted in Discord. It was given to every new member, and new members no longer get it. "+
+			"Recreate it, then add it back with `/roles configure join-role-add` (or `member-role` if it was the member role).")
+}
+
+func (p *Plugin) auditJoinRole(ctx context.Context, guildID, action, detail string) {
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, action, "", detail); err != nil {
+		p.log.Error("roles: join-role: audit failed", "guild", guildID, "action", action, "err", err)
+	}
+}
+
+// permBits names the permissions a join role plausibly carries. Anything
+// else is still reported, as a count.
+var permBits = []struct {
+	bit  int64
+	name string
+}{
+	{discordgo.PermissionAdministrator, "Administrator"},
+	{discordgo.PermissionViewChannel, "View Channels"},
+	{discordgo.PermissionSendMessages, "Send Messages"},
+	{discordgo.PermissionSendMessagesInThreads, "Send Messages in Threads"},
+	{discordgo.PermissionCreatePublicThreads, "Create Public Threads"},
+	{discordgo.PermissionEmbedLinks, "Embed Links"},
+	{discordgo.PermissionAttachFiles, "Attach Files"},
+	{discordgo.PermissionAddReactions, "Add Reactions"},
+	{discordgo.PermissionUseExternalEmojis, "Use External Emoji"},
+	{discordgo.PermissionUseExternalStickers, "Use External Stickers"},
+	{discordgo.PermissionReadMessageHistory, "Read Message History"},
+	{discordgo.PermissionSendVoiceMessages, "Send Voice Messages"},
+	{discordgo.PermissionSendPolls, "Create Polls"},
+	{discordgo.PermissionUseApplicationCommands, "Use Application Commands"},
+	{discordgo.PermissionUseExternalApps, "Use External Apps"},
+	{discordgo.PermissionVoiceConnect, "Connect"},
+	{discordgo.PermissionVoiceSpeak, "Speak"},
+	{discordgo.PermissionVoiceStreamVideo, "Video"},
+	{discordgo.PermissionVoiceUseVAD, "Use Voice Activity"},
+	{discordgo.PermissionUseSoundboard, "Use Soundboard"},
+	{discordgo.PermissionUseEmbeddedActivities, "Use Activities"},
+	{discordgo.PermissionChangeNickname, "Change Nickname"},
+	{discordgo.PermissionCreateInstantInvite, "Create Invite"},
+	{discordgo.PermissionMentionEveryone, "Mention @everyone"},
+	{discordgo.PermissionManageMessages, "Manage Messages"},
+}
+
+func permNames(set int64) string {
+	var names []string
+	for _, b := range permBits {
+		if set&b.bit != 0 {
+			names = append(names, b.name)
+			set &^= b.bit
+		}
+	}
+	switch n := bits.OnesCount64(uint64(set)); {
+	case n == 1:
+		names = append(names, "1 other permission")
+	case n > 1:
+		names = append(names, fmt.Sprintf("%d other permissions", n))
+	}
+	return strings.Join(names, ", ")
 }

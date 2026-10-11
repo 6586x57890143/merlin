@@ -281,9 +281,11 @@ func (p *Plugin) auditEternal(ctx context.Context, guildID, action, oldValue, ne
 	}
 }
 
-// HandleRoleUpdated reacts to any role edit in guildID by re-checking the
-// eternal roles there. Latency only; the sweep is the mechanism.
-func (p *Plugin) HandleRoleUpdated(ctx context.Context, guildID string) {
+// HandleRoleUpdated reacts to any role edit in guildID by reporting it if
+// it is a join role, and by re-checking the eternal roles there (latency
+// only for those; the sweep is the mechanism).
+func (p *Plugin) HandleRoleUpdated(ctx context.Context, guildID string, role *discordgo.Role) {
+	p.joinRoleUpdated(ctx, guildID, role)
 	if err := p.enforceEternalRoles(ctx, guildID); err != nil {
 		p.log.Error("roles: eternal-role: enforce on role update", "guild", guildID, "err", err)
 	}

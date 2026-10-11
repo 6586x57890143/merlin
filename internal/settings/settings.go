@@ -67,6 +67,9 @@ type GuildSettings struct {
 	// allowlisted channel to what this role can do there. Empty means the
 	// baseline is @everyone alone.
 	MemberRoleID string
+	// JoinRoleIDs is the extra roles the roles plugin's join-role script
+	// gives every new member besides MemberRoleID (migration 0045).
+	JoinRoleIDs []string
 	// ArchiveViewerRoleIDs is which extra roles can see rotation's archive
 	// channels, on top of ModRoleIDs and anyone holding Discord's own
 	// Administrator bit. Guild-scoped rather than per rotating channel
@@ -236,10 +239,10 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids, member_role_id
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids, member_role_id, join_role_ids
 		FROM settings_guild WHERE guild_id = $1`, guildID)
 	var marker, announce, vacation, member sql.NullString
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs, &member); err {
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs, &member, &gc.settings.JoinRoleIDs); err {
 	case nil, pgx.ErrNoRows:
 		if marker.Valid {
 			v := marker.String
@@ -662,6 +665,13 @@ func (s *Store) PruneDeletedRole(ctx context.Context, guildID, roleID string) ([
 		removed = append(removed, "member role")
 	}
 
+	if slices.Contains(s.JoinRoleIDs(guildID), roleID) {
+		if err := s.RemoveJoinRole(ctx, guildID, roleID); err != nil {
+			return removed, err
+		}
+		removed = append(removed, "join role")
+	}
+
 	for _, o := range s.Overrides(guildID) {
 		if slices.Contains(o.RoleIDs, roleID) {
 			if err := s.RevokeOverride(ctx, guildID, o.Action, roleID, ""); err != nil {
@@ -744,6 +754,45 @@ func (s *Store) RemoveArchiveViewerRole(ctx context.Context, guildID, roleID str
 	}
 	s.publishChanged(ctx, guildID)
 	return nil
+}
+
+// AddJoinRole and RemoveJoinRole are the same shape again, for the extra
+// roles the join-role script gives new members (migration 0045).
+func (s *Store) AddJoinRole(ctx context.Context, guildID, roleID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, join_role_ids, updated_at) VALUES ($1, ARRAY[$2], now())
+		ON CONFLICT (guild_id) DO UPDATE SET
+			join_role_ids = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.join_role_ids || $2) AS r),
+			updated_at = now()`,
+		guildID, roleID); err != nil {
+		return fmt.Errorf("settings: add join role: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+func (s *Store) RemoveJoinRole(ctx context.Context, guildID, roleID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE settings_guild SET join_role_ids = array_remove(join_role_ids, $2), updated_at = now()
+		WHERE guild_id = $1`, guildID, roleID); err != nil {
+		return fmt.Errorf("settings: remove join role: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// JoinRoleIDs returns the extra roles the join-role script gives new
+// members, besides MemberRoleID.
+func (s *Store) JoinRoleIDs(guildID string) []string {
+	return s.guild(guildID).settings.JoinRoleIDs
 }
 
 // SetJailMarkerRole records an explicit role ID to use as the guild's jail
