@@ -86,15 +86,16 @@ the moment the contest ends, then wipes it. If it does not, she introduces the
 two of you and stays out of it. She never holds money.
 
 **Everything is configured in Discord.** No YAML editing on the host for
-day-to-day stuff. `/config setup` walks you through the audit log channel,
-status channel, mod role and admins. After that it's `/config admins`,
-`/config mod-roles`, `/config permissions` and `/config plugins`. Every command
+day-to-day stuff. `/config` opens one settings panel: admins and mod roles,
+channels, plugins, permissions, and pause and dry-run, each a page you change
+with pickers rather than a subcommand you type. Its guided setup walks you
+through the audit log channel, status channel, mod role and admins. Every command
 declares a Public/Mod/Admin tier. You can override tiers per server, allow or
 deny specific people or roles per action, or switch a whole plugin off entirely.
 
 **An audit trail and an off switch.** Anything the bot does lands in
-`#bird-audit-log` as an embed and in Postgres as a row. `/config pause` refuses
-every destructive action instantly, `/config dryrun` makes it describe what it
+`#bird-audit-log` as an embed and in Postgres as a row. Pause, on `/config`,
+refuses every destructive action instantly, dry-run makes it describe what it
 would have done without doing it, and there's a host-level env var for when
 Discord or the database is the thing that's broken.
 
@@ -231,16 +232,16 @@ of reconnect-looping.
 ## First run
 
 1. Invite the bot.
-2. Run `/config setup` as the server owner, any Administrator or the bootstrap
+2. Run `/config` and press **Guided setup** under Channels, as the server owner, any Administrator or the bootstrap
    admin. It creates `#bird-audit-log`, `#bird-status` and a `merlin Mod` role
    for whatever's missing, and offers a picker for anything you already have. Safe
    to re-run whenever, it doubles as a status screen.
-3. `/config admins add` and `/config mod-roles add` for everyone else.
+3. Add everyone else on `/config`'s **Admins and mod roles** page.
 4. `/rotation configure add` if you want a rotating channel.
-5. `/config status` to check it's all wired up.
+5. `/config`'s overview to check it's all wired up.
 
-Before you trust rotation on a real channel, turn on `/config dryrun
-enabled:true` and let a full interval pass. It'll write to the audit log
+Before you trust rotation on a real channel, turn on dry-run
+(`/config`, **Pause and dry-run**) and let a full interval pass. It'll write to the audit log
 describing exactly what it would have deleted, and touch nothing. Channel
 deletion has no undo, so this is worth the wait.
 
@@ -356,7 +357,7 @@ without an interactive sudo prompt.
 
 ## When something breaks
 
-**Make it stop.** `/config pause paused:true` refuses every rotation, archive
+**Make it stop.** **Pause** on `/config`'s Pause and dry-run page refuses every rotation, archive
 deletion, jail and role change in that server, effective on the next attempted
 action. Read commands keep working. Scheduled jobs stay due rather than getting
 skipped, so they run on the first tick after you unpause.
@@ -404,7 +405,7 @@ re-run on the way back up and are idempotent, so restoring an older dump is
 fine. Rehearse this into a scratch database at some point, an untested restore
 isn't a backup.
 
-**Work out what happened.** `/config status` in Discord first: database
+**Work out what happened.** `/config` in Discord first (its overview): database
 reachable, any failing jobs, paused or dry-run state and whether the configured
 channels and roles still exist. Then `/scheduler list` for last-run, next-due and
 failure counts per job, which is usually the quickest way to tell a wedged job

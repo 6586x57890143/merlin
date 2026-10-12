@@ -57,8 +57,9 @@ const (
 	sevError
 )
 
-func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	gs := p.settings.GuildSettings(i.GuildID)
+// statusReport is the panel's overview page body and how worried it is.
+func (p *Plugin) statusReport(ctx context.Context, guildID string) (string, severity) {
+	gs := p.settings.GuildSettings(guildID)
 	var b strings.Builder
 	worst := sevOK
 	note := func(sev severity) {
@@ -81,7 +82,7 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	if p.jobs == nil {
 		b.WriteString("**Jobs:** not wired up\n")
 	} else {
-		total, failing, err := p.jobs.JobHealth(ctx, i.GuildID)
+		total, failing, err := p.jobs.JobHealth(ctx, guildID)
 		switch {
 		case err != nil:
 			fmt.Fprintf(&b, "**Jobs:** ⚠️ %d registered, state unreadable: %v\n", total, err)
@@ -101,10 +102,10 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		b.WriteString("**Actions:** ⛔ paused *and* in dry-run; nothing will be changed\n")
 		note(sevStopped)
 	case gs.WritesPaused:
-		b.WriteString("**Actions:** ⛔ paused; clear with `/config pause paused:false`\n")
+		b.WriteString("**Actions:** ⛔ paused; resume it under Pause and dry-run\n")
 		note(sevStopped)
 	case gs.WritesDryRun:
-		b.WriteString("**Actions:** 🧪 dry-run; clear with `/config dryrun enabled:false`\n")
+		b.WriteString("**Actions:** 🧪 dry-run; switch it off under Pause and dry-run\n")
 		note(sevStopped)
 	default:
 		b.WriteString("**Actions:** ✅ running normally\n")
@@ -117,20 +118,10 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 
 	// Truncated because the body interpolates error text from the database,
 	// the scheduler and per-channel lookups, none of it bounded and none of
-	// it ours. Over 4096 bytes Discord rejects the whole message, so without
-	// this the health command would break in exactly the circumstances that
+	// it ours. Over the limit Discord rejects the whole message, so without
+	// this the health page would break in exactly the circumstances that
 	// produce a long error.
-	body := core.TruncateEmbedDescription(b.String())
-
-	switch worst {
-	case sevError, sevWarn:
-		core.RespondWarn(s, i, "merlin status", body)
-	case sevStopped:
-		embed := core.WithMood(core.NewEmbed(core.ColorWarning, "merlin status", body), core.MoodIdle)
-		_ = core.RespondEmbed(s, i, embed)
-	default:
-		core.RespondInfo(s, i, "merlin status", body)
-	}
+	return core.TruncateEmbedDescription(b.String()), worst
 }
 
 // configuredResourceLines reports whether each configured channel/role still
@@ -198,7 +189,7 @@ func mentionList(ids []string, render func(string) string) string {
 
 func (p *Plugin) channelState(channelID string) (string, severity) {
 	if channelID == "" {
-		return "⚠️ not configured; run `/config setup`", sevWarn
+		return "⚠️ not configured; pick one under Channels", sevWarn
 	}
 	if p.session == nil {
 		return fmt.Sprintf("<#%s>", channelID), sevOK
@@ -206,7 +197,7 @@ func (p *Plugin) channelState(channelID string) (string, severity) {
 	ch, err := p.session.Channel(channelID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
-			return fmt.Sprintf("❌ configured as `%s`, but that channel no longer exists. Re-run `/config setup`", channelID), sevError
+			return fmt.Sprintf("❌ configured as `%s`, but that channel no longer exists. Re-pick one under Channels", channelID), sevError
 		}
 		return fmt.Sprintf("<#%s> (couldn't verify: %v)", channelID, err), sevWarn
 	}

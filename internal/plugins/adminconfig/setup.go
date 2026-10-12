@@ -176,7 +176,7 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 			"Assign your mod role to the people who should actually have it.",
 			"`/rotation configure add` to start rotating a channel.",
 			"`/roles configure allow-channel` to choose what jailed members can still see.",
-			"`/config permissions` to loosen or tighten any single command.",
+			"`/config` to change any of this later, or loosen or tighten a single command under Permissions.",
 		}, "\n")})
 	}
 	if notice != "" {

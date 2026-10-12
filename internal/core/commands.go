@@ -130,7 +130,7 @@ func (r *CommandRouter) RegisterCommand(pluginName string, cmd *discordgo.Applic
 }
 
 // Plugins returns every distinct plugin name that has registered a top-level
-// command, used by /config plugins enable/disable's autocomplete.
+// command, which is what /config's plugins page lists.
 func (r *CommandRouter) Plugins() []string {
 	seen := make(map[string]bool, len(r.topLevelPlugin))
 	var out []string
@@ -204,17 +204,27 @@ func (r *CommandRouter) HandleModal(pluginName, prefix string, spec PermSpec, fn
 }
 
 // Actions returns every distinct, non-empty PermSpec.Action currently
-// registered, used by /config permissions grant/revoke's autocomplete so
-// admins can discover valid action names without reading source code.
+// registered, which is what /config's permissions page offers. Components
+// and modals count as well as commands: once a plugin's settings move onto a
+// panel, its configure action lives on the panel's controls, and an action
+// missing from this list is one a guild can no longer retier or block.
 func (r *CommandRouter) Actions() []string {
 	seen := make(map[string]bool)
 	var out []string
-	for _, leaf := range r.leaves {
-		if leaf.spec.Action == "" || seen[leaf.spec.Action] {
-			continue
+	add := func(a string) {
+		if a != "" && !seen[a] {
+			seen[a] = true
+			out = append(out, a)
 		}
-		seen[leaf.spec.Action] = true
-		out = append(out, leaf.spec.Action)
+	}
+	for _, leaf := range r.leaves {
+		add(leaf.spec.Action)
+	}
+	for _, c := range r.components {
+		add(c.spec.Action)
+	}
+	for _, m := range r.modals {
+		add(m.spec.Action)
 	}
 	return out
 }

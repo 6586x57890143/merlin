@@ -1,0 +1,232 @@
+package core
+
+import (
+	"bytes"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/bwmarrin/discordgo"
+)
+
+// Panel is a settings surface: one Components V2 container that a plugin's
+// whole configuration is read and changed from, in place of a tree of
+// subcommands that each answered with an embed.
+//
+// The layout is the one skua settled on, kept because it reads on a phone:
+// the title and one subtext line sit beside the mood thumbnail, and
+// everything else goes below at full width, since beside a thumbnail a phone
+// gives text a narrow column. What is merlin's own is the art: the mood is
+// still derived from the colour (moodForColor), and the rule is the same
+// barred line NewEmbed carries, here as the divider under the head. It is
+// there for its width as much as its look, exactly as on an embed: a
+// container is sized to its content, so a panel whose page is two short lines
+// would otherwise render narrower than the one before it and every click
+// would make the controls jump.
+//
+// A panel holds no session. Everything it shows is re-read from settings on
+// every render and anything a control needs to know rides in its CustomID, so
+// a panel opened last week still works and two admins can drive one at once,
+// the same choice /config setup made.
+type Panel struct {
+	Color int
+	Title string
+	// Line is the subtext beside the thumbnail: what this panel is for.
+	Line string
+	// Note says what the last click did ("✓ ...", "✗ ..."). Shown under the
+	// rule, gone on the next render.
+	Note string
+	// Body is the page: TextDisplays, ActionsRows, Separators.
+	Body []discordgo.MessageComponent
+	// Footer is a closing subtext line.
+	Footer string
+	// Mood overrides the one Color implies (WithMood's counterpart).
+	Mood Mood
+}
+
+// Components renders p as the message's single top-level container.
+func (p Panel) Components() []discordgo.MessageComponent {
+	mood := p.Mood
+	if mood == MoodNone {
+		mood = moodForColor(p.Color)
+	}
+	head := "## " + p.Title
+	if p.Line != "" {
+		head += "\n-# " + p.Line
+	}
+	parts := []discordgo.MessageComponent{
+		discordgo.Section{
+			Components: []discordgo.MessageComponent{discordgo.TextDisplay{Content: head}},
+			Accessory:  discordgo.Thumbnail{Media: discordgo.UnfurledMediaItem{URL: moodAttachmentURL(mood)}},
+		},
+		discordgo.MediaGallery{Items: []discordgo.MediaGalleryItem{{Media: discordgo.UnfurledMediaItem{URL: ruleAttachmentURL}}}},
+	}
+	if p.Note != "" {
+		parts = append(parts, discordgo.TextDisplay{Content: p.Note})
+	}
+	parts = append(parts, p.Body...)
+	if p.Footer != "" {
+		parts = append(parts, discordgo.TextDisplay{Content: "-# " + p.Footer})
+	}
+	color := p.Color
+	return []discordgo.MessageComponent{discordgo.Container{AccentColor: &color, Components: parts}}
+}
+
+// Files is what p points at: its mood and the rule, never anything else, so
+// an attachment:// URL can never be left without its upload.
+func (p Panel) Files() []*discordgo.File {
+	mood := p.Mood
+	if mood == MoodNone {
+		mood = moodForColor(p.Color)
+	}
+	return []*discordgo.File{
+		moodFile(mood),
+		{Name: ruleAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(rulePNG)},
+	}
+}
+
+// RespondPanel opens p as a fresh ephemeral message.
+func RespondPanel(s *discordgo.Session, i *discordgo.InteractionCreate, p Panel) error {
+	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Components:      p.Components(),
+			Files:           p.Files(),
+			Flags:           discordgo.MessageFlagsEphemeral | discordgo.MessageFlagsIsComponentsV2,
+			AllowedMentions: &discordgo.MessageAllowedMentions{},
+		},
+	})
+}
+
+// UpdatePanel redraws the panel a control was clicked on. Attachments is
+// empty rather than omitted for the reason followUpFiles gives: omitted keeps
+// the last draw's files and appends this one's, until Discord's cap refuses
+// the eleventh click.
+func UpdatePanel(s *discordgo.Session, i *discordgo.InteractionCreate, p Panel) error {
+	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Components:      p.Components(),
+			Files:           p.Files(),
+			Attachments:     &[]*discordgo.MessageAttachment{},
+			Flags:           discordgo.MessageFlagsIsComponentsV2,
+			AllowedMentions: &discordgo.MessageAllowedMentions{},
+		},
+	})
+}
+
+// DeferPanelUpdate acknowledges a click whose work may outrun Discord's 3
+// seconds; FollowUpPanel then redraws.
+func DeferPanelUpdate(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredMessageUpdate})
+}
+
+// FollowUpPanel redraws a panel after DeferPanelUpdate.
+func FollowUpPanel(s *discordgo.Session, i *discordgo.InteractionCreate, p Panel) error {
+	c := p.Components()
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Components:      &c,
+		Files:           p.Files(),
+		Attachments:     &[]*discordgo.MessageAttachment{},
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	})
+	return err
+}
+
+// Text is a TextDisplay, for building a Panel's Body.
+func Text(s string) discordgo.TextDisplay { return discordgo.TextDisplay{Content: s} }
+
+// Row is an ActionsRow, for building a Panel's Body.
+func Row(c ...discordgo.MessageComponent) discordgo.ActionsRow {
+	return discordgo.ActionsRow{Components: c}
+}
+
+// Gap is a small divider between a panel's sections.
+func Gap() discordgo.Separator {
+	return discordgo.Separator{}
+}
+
+// Readout lays facts out as a code block grid: the label column is the
+// longest label plus two spaces, so values line up the same on every client,
+// where how embed fields wrap is up to each one. Keep it to plain facts: a
+// mention inside a code block renders as its raw snowflake, so who and where
+// go on lines below the grid, not in it.
+func Readout(rows [][2]string) string {
+	width := 0
+	for _, r := range rows {
+		width = max(width, len(r[0]))
+	}
+	var b strings.Builder
+	b.WriteString("```\n")
+	for _, r := range rows {
+		fmt.Fprintf(&b, "%-*s%s\n", width+2, r[0], r[1])
+	}
+	b.WriteString("```")
+	return b.String()
+}
+
+// SelectDiff is what a member changed on a multi-select that was drawn with
+// the current values preselected: what they picked that was not preselected,
+// and what was preselected that they unpicked.
+//
+// Diffed against what *this panel* showed, read back off the message the
+// click arrived on, not against current settings. Two admins on two panels
+// would otherwise undo each other: the second to submit would silently remove
+// whatever the first had just added, because it was never on their screen.
+// The message comes from Discord, not the member's client, so it is what was
+// really drawn.
+func SelectDiff(i *discordgo.InteractionCreate, customID string) (added, removed []string) {
+	var shown []string
+	if i.Message != nil {
+		if menu := findSelect(i.Message.Components, customID); menu != nil {
+			for _, d := range menu.DefaultValues {
+				shown = append(shown, d.ID)
+			}
+			for _, o := range menu.Options {
+				if o.Default {
+					shown = append(shown, o.Value)
+				}
+			}
+		}
+	}
+	picked := i.MessageComponentData().Values
+	for _, v := range picked {
+		if !slices.Contains(shown, v) {
+			added = append(added, v)
+		}
+	}
+	for _, v := range shown {
+		if !slices.Contains(picked, v) {
+			removed = append(removed, v)
+		}
+	}
+	return added, removed
+}
+
+func findSelect(cs []discordgo.MessageComponent, customID string) *discordgo.SelectMenu {
+	for _, c := range cs {
+		var children []discordgo.MessageComponent
+		switch v := c.(type) {
+		case *discordgo.SelectMenu:
+			if v.CustomID == customID {
+				return v
+			}
+		case discordgo.SelectMenu:
+			if v.CustomID == customID {
+				return &v
+			}
+		case *discordgo.ActionsRow:
+			children = v.Components
+		case discordgo.ActionsRow:
+			children = v.Components
+		case *discordgo.Container:
+			children = v.Components
+		case discordgo.Container:
+			children = v.Components
+		}
+		if m := findSelect(children, customID); m != nil {
+			return m
+		}
+	}
+	return nil
+}
