@@ -36,7 +36,6 @@ readonly FLOOR=70
 # it has to clear.
 baseline() {
   case "$1" in
-    github.com/6586x57890143/merlin/internal/plugins/rotation)    echo 51 ;;
     github.com/6586x57890143/merlin/internal/plugins/ping)        echo 0  ;;
     *) echo "" ;;
   esac

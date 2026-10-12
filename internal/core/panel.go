@@ -230,3 +230,96 @@ func findSelect(cs []discordgo.MessageComponent, customID string) *discordgo.Sel
 	}
 	return nil
 }
+
+// Allows is whether p would let i's member through spec, for drawing a
+// control disabled rather than offering a click the router will refuse. A
+// nil p allows nothing.
+func (p *Permissions) Allows(i *discordgo.InteractionCreate, spec PermSpec) bool {
+	return p != nil && p.Authorize(i, spec) == nil
+}
+
+// MaxSelectValues is Discord's cap on a select's options and picks.
+const MaxSelectValues = 25
+
+// StringSelect is a select over fixed options. multi lets any number be
+// picked, none included, which is what a set drawn with its current members
+// preselected needs.
+func StringSelect(customID, placeholder string, opts []discordgo.SelectMenuOption, multi, disabled bool) discordgo.SelectMenu {
+	m := discordgo.SelectMenu{MenuType: discordgo.StringSelectMenu, CustomID: customID, Placeholder: placeholder, Options: opts[:min(len(opts), MaxSelectValues)], Disabled: disabled}
+	if multi {
+		zero := 0
+		m.MinValues, m.MaxValues = &zero, len(m.Options)
+	}
+	return m
+}
+
+// EntitySelect is a user, role or channel picker drawn with ids
+// preselected, so the set is what the member sees and edits as one; what
+// changed comes back from SelectDiff. max is how many may be picked (1 for
+// a single value). A list longer than the cap shows its first 25 and the
+// rest are untouched by a submit, because SelectDiff only removes what was
+// drawn.
+func EntitySelect(kind discordgo.SelectMenuType, customID, placeholder string, ids []string, max int, disabled bool) discordgo.SelectMenu {
+	dv := map[discordgo.SelectMenuType]discordgo.SelectMenuDefaultValueType{
+		discordgo.UserSelectMenu:    discordgo.SelectMenuDefaultValueUser,
+		discordgo.RoleSelectMenu:    discordgo.SelectMenuDefaultValueRole,
+		discordgo.ChannelSelectMenu: discordgo.SelectMenuDefaultValueChannel,
+	}[kind]
+	m := discordgo.SelectMenu{MenuType: kind, CustomID: customID, Placeholder: placeholder, MaxValues: min(max, MaxSelectValues), Disabled: disabled}
+	if max > 1 {
+		zero := 0
+		m.MinValues = &zero
+	}
+	for _, id := range ids[:min(len(ids), MaxSelectValues)] {
+		if id != "" {
+			m.DefaultValues = append(m.DefaultValues, discordgo.SelectMenuDefaultValue{ID: id, Type: dv})
+		}
+	}
+	return m
+}
+
+// ChannelSelect is EntitySelect for channels of the given types, one pick.
+func ChannelSelect(customID, placeholder, current string, disabled bool, types ...discordgo.ChannelType) discordgo.SelectMenu {
+	m := EntitySelect(discordgo.ChannelSelectMenu, customID, placeholder, []string{current}, 1, disabled)
+	m.ChannelTypes = types
+	return m
+}
+
+// Button is a panel button. A disabled one is still drawn, so a member who
+// may not press it can see that it exists.
+func Button(label, customID string, style discordgo.ButtonStyle, disabled bool) discordgo.Button {
+	return discordgo.Button{Label: label, Style: style, CustomID: customID, Disabled: disabled}
+}
+
+// Switch is a section with a button beside its text: a setting, its state,
+// and the one control that changes it.
+func Switch(text string, b discordgo.Button) discordgo.Section {
+	return discordgo.Section{Components: []discordgo.MessageComponent{Text(text)}, Accessory: b}
+}
+
+// Field is one text input in a modal, prefilled with value.
+func Field(id, label, value, placeholder string, paragraph, required bool) discordgo.ActionsRow {
+	style := discordgo.TextInputShort
+	maxLen := 200
+	if paragraph {
+		style, maxLen = discordgo.TextInputParagraph, 4000
+	}
+	return Row(discordgo.TextInput{CustomID: id, Label: label, Value: value, Placeholder: placeholder, Style: style, Required: required, MaxLength: maxLen})
+}
+
+// OpenModal answers a click with a form. Its submission comes back to the
+// router as a modal, under whatever spec customID's prefix carries.
+func OpenModal(s *discordgo.Session, i *discordgo.InteractionCreate, customID, title string, fields ...discordgo.MessageComponent) error {
+	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseModal,
+		Data: &discordgo.InteractionResponseData{CustomID: customID, Title: title, Components: fields},
+	})
+}
+
+// FirstValue is the first value a select submitted, or "".
+func FirstValue(i *discordgo.InteractionCreate) string {
+	if v := i.MessageComponentData().Values; len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}

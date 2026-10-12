@@ -133,7 +133,7 @@ Consumers depend on `voice.Source`, never `*Speaker`, so that swap stays a const
 
 `PERSONA.md` is the brief the lines are written against, and is what a generator would get as its system prompt. Operator-supplied sticky messages are deliberately **not** routed through any of this: those are the guild's own words, posted verbatim in order.
 
-Admin surfaces (`/config`, `/rotation configure`) are not in the catalog at all. They are read by someone making a decision, often under time pressure, where warmth costs scanning speed.
+Admin surfaces (the `/config` and `/rotation` panels) are not in the catalog at all. They are read by someone making a decision, often under time pressure, where warmth costs scanning speed.
 
 ### Temporary Role Management (`internal/plugins/roles`)
 

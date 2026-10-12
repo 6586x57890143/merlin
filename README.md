@@ -23,8 +23,8 @@ what just happened. Handy if you run a channel where people would rather their
 history not sit around indefinitely.
 
 Archives are hidden from everyone except your mods and anyone with Discord's
-Administrator bit. If you want another role to be able to read them, add it with
-`/rotation configure allow-archive-role`. That grant is read-only, so the role
+Administrator bit. If you want another role to be able to read them, add it under
+**Archive readers** on `/rotation`. That grant is read-only, so the role
 can view the channel and read the history back and nothing else: no posting, no
 reactions, no threads. Permissions live on the archive category and every
 archived channel is kept in sync with it, so a role you add or remove applies to
@@ -237,7 +237,7 @@ of reconnect-looping.
    for whatever's missing, and offers a picker for anything you already have. Safe
    to re-run whenever, it doubles as a status screen.
 3. Add everyone else on `/config`'s **Admins and mod roles** page.
-4. `/rotation configure add` if you want a rotating channel.
+4. `/rotation`, pick a channel and press **Start rotating** if you want one.
 5. `/config`'s overview to check it's all wired up.
 
 Before you trust rotation on a real channel, turn on dry-run

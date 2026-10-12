@@ -62,7 +62,7 @@ func (p *Plugin) handleConfig(ctx context.Context, s *discordgo.Session, i *disc
 // config:panel:view:action (permissions' action select).
 func (p *Plugin) handlePanelView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
 	page, arg := "home", ""
-	v := firstValue(i)
+	v := core.FirstValue(i)
 	switch strings.TrimPrefix(customID, panelView) {
 	case "page":
 		page = v
@@ -80,16 +80,9 @@ func (p *Plugin) redraw(ctx context.Context, s *discordgo.Session, i *discordgo.
 	}
 }
 
-func firstValue(i *discordgo.InteractionCreate) string {
-	if v := i.MessageComponentData().Values; len(v) > 0 {
-		return v[0]
-	}
-	return ""
-}
-
 // panel draws one page. arg is the permissions page's area or action.
 func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page, arg, note string) core.Panel {
-	can := p.perms != nil && p.perms.Authorize(i, mutateSpec) == nil
+	can := p.perms.Allows(i, mutateSpec)
 	gs := p.settings.GuildSettings(i.GuildID)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Settings", Note: note,
 		Footer: "Mods can read this; only admins can change it. Every change is written to the audit log."}
@@ -103,10 +96,10 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 		pn.Body = []discordgo.MessageComponent{
 			core.Text("**Admins** can change merlin's own configuration. Anyone holding Discord's Administrator permission already counts, so this is for people who should have it without that.\n" +
 				"-# Now: " + userListText(gs.AdminUserIDs)),
-			core.Row(entitySelect(discordgo.UserSelectMenu, panelSet+"admins", "Pick who has standing admin access", gs.AdminUserIDs, !can)),
+			core.Row(core.EntitySelect(discordgo.UserSelectMenu, panelSet+"admins", "Pick who has standing admin access", gs.AdminUserIDs, core.MaxSelectValues, !can)),
 			core.Text("**Mod roles** can use mod-tier commands: jailing, releasing, running a rotation early.\n" +
 				"-# Now: " + roleListText(gs.ModRoleIDs)),
-			core.Row(entitySelect(discordgo.RoleSelectMenu, panelSet+"modroles", "Pick which roles count as mod", gs.ModRoleIDs, !can)),
+			core.Row(core.EntitySelect(discordgo.RoleSelectMenu, panelSet+"modroles", "Pick which roles count as mod", gs.ModRoleIDs, core.MaxSelectValues, !can)),
 		}
 
 	case "channels":
@@ -115,9 +108,9 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 		pn.Line = "Where the audit log and status alerts go"
 		pn.Body = []discordgo.MessageComponent{
 			core.Text("**Audit log**: config changes, rotations and moderation actions. Mod roles are given access.\n-# Now: " + audit),
-			core.Row(channelSelect(panelSet+"audit", "Pick the audit log channel", gs.AuditLogChannelID, !can)),
+			core.Row(core.ChannelSelect(panelSet+"audit", "Pick the audit log channel", gs.AuditLogChannelID, !can, discordgo.ChannelTypeGuildText)),
 			core.Text("**Status channel**: operational trouble, like a job failing over and over. Quiet when nothing is wrong.\n-# Now: " + status),
-			core.Row(channelSelect(panelSet+"status", "Pick the status channel", gs.StatusChannelID, !can)),
+			core.Row(core.ChannelSelect(panelSet+"status", "Pick the status channel", gs.StatusChannelID, !can, discordgo.ChannelTypeGuildText)),
 			core.Row(discordgo.Button{Label: "Guided setup", Style: discordgo.SecondaryButton, CustomID: panelSet + "setup", Disabled: !can}),
 		}
 		pn.Footer = "Guided setup can create either channel for you, locked to mods."
@@ -143,7 +136,7 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 			core.Text("A plugin that is off answers nobody here, admins included, and its scheduled work stops.\n" + core.Readout(rows)),
 		}
 		if len(opts) > 0 {
-			pn.Body = append(pn.Body, core.Row(stringSelect(panelSet+"plugins", "Pick which plugins are on", opts, true, !can)))
+			pn.Body = append(pn.Body, core.Row(core.StringSelect(panelSet+"plugins", "Pick which plugins are on", opts, true, !can)))
 		}
 		pn.Footer = p.Name() + " runs this panel, so it stays on."
 
@@ -203,46 +196,7 @@ func pageSelect(current string) discordgo.SelectMenu {
 	for n, pg := range panelPages {
 		opts[n] = discordgo.SelectMenuOption{Label: pg.label, Value: pg.key, Description: pg.about, Default: pg.key == current}
 	}
-	return stringSelect(panelView+"page", "Go to...", opts, false, false)
-}
-
-func stringSelect(customID, placeholder string, opts []discordgo.SelectMenuOption, multi, disabled bool) discordgo.SelectMenu {
-	m := discordgo.SelectMenu{MenuType: discordgo.StringSelectMenu, CustomID: customID, Placeholder: placeholder, Options: opts, Disabled: disabled}
-	if multi {
-		zero := 0
-		m.MinValues, m.MaxValues = &zero, len(opts)
-	}
-	return m
-}
-
-// entitySelect is a user or role picker drawn with the current list
-// preselected, so the panel's set is what the member sees and edits as one.
-// What changed is recovered with core.SelectDiff.
-func entitySelect(kind discordgo.SelectMenuType, customID, placeholder string, ids []string, disabled bool) discordgo.SelectMenu {
-	zero := 0
-	dvType := discordgo.SelectMenuDefaultValueUser
-	if kind == discordgo.RoleSelectMenu {
-		dvType = discordgo.SelectMenuDefaultValueRole
-	}
-	m := discordgo.SelectMenu{MenuType: kind, CustomID: customID, Placeholder: placeholder, MinValues: &zero, MaxValues: maxSelectValues, Disabled: disabled}
-	for _, id := range ids[:min(len(ids), maxSelectValues)] {
-		m.DefaultValues = append(m.DefaultValues, discordgo.SelectMenuDefaultValue{ID: id, Type: dvType})
-	}
-	return m
-}
-
-// maxSelectValues is Discord's cap on a select's picks. A list longer than
-// this shows its first 25; the rest are untouched by a submit, because
-// SelectDiff only removes what was drawn.
-const maxSelectValues = 25
-
-func channelSelect(customID, placeholder, current string, disabled bool) discordgo.SelectMenu {
-	m := discordgo.SelectMenu{MenuType: discordgo.ChannelSelectMenu, CustomID: customID, Placeholder: placeholder,
-		ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText}, Disabled: disabled}
-	if current != "" {
-		m.DefaultValues = []discordgo.SelectMenuDefaultValue{{ID: current, Type: discordgo.SelectMenuDefaultValueChannel}}
-	}
-	return m
+	return core.StringSelect(panelView+"page", "Go to...", opts, false, false)
 }
 
 // permissionsBody is the permissions page: pick a plugin, then an action,
@@ -267,7 +221,7 @@ func (p *Plugin) permissionsBody(guildID, arg string, can bool) []discordgo.Mess
 		byArea[ar] = append(byArea[ar], a)
 	}
 	var areaOpts []discordgo.SelectMenuOption
-	for _, ar := range areas[:min(len(areas), maxSelectValues)] {
+	for _, ar := range areas {
 		areaOpts = append(areaOpts, discordgo.SelectMenuOption{Label: ar, Value: ar, Default: ar == area})
 	}
 
@@ -281,18 +235,18 @@ func (p *Plugin) permissionsBody(guildID, arg string, can bool) []discordgo.Mess
 		body = append(body, core.Text("Every command runs as an **action**. Pick one to change who may run it.\n"+summary))
 	}
 	if len(areaOpts) > 0 {
-		body = append(body, core.Row(stringSelect(panelView+"area", "Pick a plugin", areaOpts, false, false)))
+		body = append(body, core.Row(core.StringSelect(panelView+"area", "Pick a plugin", areaOpts, false, false)))
 	}
 	if area == "" {
 		return body
 	}
 
 	var actOpts []discordgo.SelectMenuOption
-	for _, a := range byArea[area][:min(len(byArea[area]), maxSelectValues)] {
+	for _, a := range byArea[area] {
 		actOpts = append(actOpts, discordgo.SelectMenuOption{Label: a, Value: a, Default: a == action})
 	}
 	if len(actOpts) > 0 {
-		body = append(body, core.Row(stringSelect(panelView+"action", "Pick an action", actOpts, false, false)))
+		body = append(body, core.Row(core.StringSelect(panelView+"action", "Pick an action", actOpts, false, false)))
 	}
 	if action == "" {
 		return body
@@ -325,11 +279,11 @@ func (p *Plugin) permissionsBody(guildID, arg string, can bool) []discordgo.Mess
 			tierBtn("Admins only", "admin", tier == core.TierAdmin),
 		),
 		core.Text("**Also allowed**, whatever their tier:"),
-		core.Row(entitySelect(discordgo.RoleSelectMenu, panelSet+"allow-roles:"+action, "Roles also allowed", allowR, !can)),
-		core.Row(entitySelect(discordgo.UserSelectMenu, panelSet+"allow-users:"+action, "Members also allowed", allowU, !can)),
+		core.Row(core.EntitySelect(discordgo.RoleSelectMenu, panelSet+"allow-roles:"+action, "Roles also allowed", allowR, core.MaxSelectValues, !can)),
+		core.Row(core.EntitySelect(discordgo.UserSelectMenu, panelSet+"allow-users:"+action, "Members also allowed", allowU, core.MaxSelectValues, !can)),
 		core.Text("**Blocked**, whatever their tier. A block wins over tier, Administrator and any allow."),
-		core.Row(entitySelect(discordgo.RoleSelectMenu, panelSet+"deny-roles:"+action, "Roles blocked", denyR, !can)),
-		core.Row(entitySelect(discordgo.UserSelectMenu, panelSet+"deny-users:"+action, "Members blocked", denyU, !can)),
+		core.Row(core.EntitySelect(discordgo.RoleSelectMenu, panelSet+"deny-roles:"+action, "Roles blocked", denyR, core.MaxSelectValues, !can)),
+		core.Row(core.EntitySelect(discordgo.UserSelectMenu, panelSet+"deny-users:"+action, "Members blocked", denyU, core.MaxSelectValues, !can)),
 	)
 }
 
@@ -425,7 +379,7 @@ func changeNote(added, removed []string, render func(string) string, noun string
 // wizard: same setter, same re-grant of mod access, same warning when the
 // channel is one everybody can read.
 func (p *Plugin) applyChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, label string, set func(ctx context.Context, guildID, channelID string) error) string {
-	channelID := firstValue(i)
+	channelID := core.FirstValue(i)
 	if channelID == "" {
 		return ""
 	}

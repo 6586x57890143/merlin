@@ -237,7 +237,7 @@ func TestBlockingIsAuditedPerTarget(t *testing.T) {
 	st := &recordingSettings{}
 	p := newPanelPlugin(t, st)
 	id := panelSet + "deny-users:rotation.configure"
-	drawn := asReceived(t, core.Panel{Body: []discordgo.MessageComponent{core.Row(entitySelect(discordgo.UserSelectMenu, id, "", []string{"x"}, false))}})
+	drawn := asReceived(t, core.Panel{Body: []discordgo.MessageComponent{core.Row(core.EntitySelect(discordgo.UserSelectMenu, id, "", []string{"x"}, core.MaxSelectValues, false))}})
 	p.applyOverride(context.Background(), click(bootstrapID, id, drawn, "y"), "deny-users", "rotation.configure")
 	if want := []string{"deny rotation.configure /y", "undeny rotation.configure /x"}; !slices.Equal(st.calls, want) {
 		t.Fatalf("calls %v, want %v", st.calls, want)

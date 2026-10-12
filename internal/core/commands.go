@@ -119,6 +119,10 @@ func (r *CommandRouter) say(key voice.Key, plain string) string {
 	return plain
 }
 
+// Perms is the router's permission checker, for a panel drawing a control
+// disabled for somebody the router would refuse.
+func (r *CommandRouter) Perms() *Permissions { return r.perms }
+
 // RegisterCommand adds one top-level command, owned by pluginName (used for
 // the per-guild plugin enable/disable gate, see PluginGate). cmd's Options
 // may nest subcommands/subcommand groups arbitrarily (as discordgo itself
