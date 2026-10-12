@@ -80,3 +80,13 @@ func TestBuild(t *testing.T) {
 		t.Fatal("no build")
 	}
 }
+
+// A stamped revision wins over whatever Go recorded, and is cut to seven.
+func TestBuildPrefersTheStampedRevision(t *testing.T) {
+	if got := build("2db258f0123456789abcdef"); got != "2db258f" {
+		t.Errorf("build = %q", got)
+	}
+	if got := build(""); got == "" {
+		t.Error("an unstamped build must still name something")
+	}
+}

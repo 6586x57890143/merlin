@@ -145,6 +145,7 @@ jobs:
           context: .
           push: false
           tags: merlin:ci
+          build-args: REVISION=${{ github.sha }}
 
   push-image:
     needs: [lint-test, secret-scan, docker-build]
@@ -165,6 +166,7 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
+          build-args: REVISION=${{ github.sha }}
           tags: |
             ghcr.io/6586x57890143/merlin:latest
             ghcr.io/6586x57890143/merlin:${{ github.sha }}
