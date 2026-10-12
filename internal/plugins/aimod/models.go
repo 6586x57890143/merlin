@@ -271,7 +271,7 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 	// JSON schema has already pinned down.
 	if share := reasoningShare(history); share > 0 {
 		costLine += fmt.Sprintf("\n%.0f%% of the completion tokens were reasoning, billed at the same rate as the answer. "+
-			"`/aimod models set-fast|set-deep` to a stack that allows it to be switched off if that is not worth paying for.", share*100)
+			"Change models on `/aimod settings` to a stack that allows it to be switched off if that is not worth paying for.", share*100)
 	}
 	fields = append(fields, &discordgo.MessageEmbedField{
 		Name:  "Cost",
@@ -449,26 +449,17 @@ func (p *Plugin) handleModelsCompare(ctx context.Context, s *discordgo.Session, 
 	}
 }
 
-func (p *Plugin) handleSetFast(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	p.setStack(ctx, s, i, true)
-}
-
-func (p *Plugin) handleSetDeep(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	p.setStack(ctx, s, i, false)
-}
-
 // maxStackModels bounds a configured fallback chain. Past a handful, the
 // later entries are only ever reached when everything before them is down at
 // once, and a long chain mostly serves to hide that the first entry is
 // broken.
 const maxStackModels = 5
 
-func (p *Plugin) setStack(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, fast bool) {
-	raw := strings.TrimSpace(core.LeafArgs(i)["models"].Value.(string))
+func (p *Plugin) setStack(ctx context.Context, i *discordgo.InteractionCreate, raw string, fast bool) outcome {
+	raw = strings.TrimSpace(raw)
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 
 	var ids []string
@@ -482,13 +473,11 @@ func (p *Plugin) setStack(ctx context.Context, s *discordgo.Session, i *discordg
 			}
 		}
 		if len(ids) == 0 {
-			core.RespondErr(s, i, "No models given",
+			return failed("No models given",
 				fmt.Errorf("give one or more model IDs separated by commas, or \"default\""))
-			return
 		}
 		if len(ids) > maxStackModels {
-			core.RespondErr(s, i, "Too many models", fmt.Errorf("at most %d, in order of preference", maxStackModels))
-			return
+			return failed("Too many models", fmt.Errorf("at most %d, in order of preference", maxStackModels))
 		}
 	}
 
@@ -499,8 +488,7 @@ func (p *Plugin) setStack(ctx context.Context, s *discordgo.Session, i *discordg
 		nextDeep = ids
 	}
 	if err := p.store.SetModels(ctx, i.GuildID, nextFast, nextDeep); err != nil {
-		core.RespondErr(s, i, "Failed to set the models", err)
-		return
+		return failed("Failed to set the models", err)
 	}
 
 	which := "deep"
@@ -510,15 +498,14 @@ func (p *Plugin) setStack(ctx context.Context, s *discordgo.Session, i *discordg
 	p.auditConfig(ctx, i, "aimod.models_set", which, strings.Join(ids, ", "))
 
 	if len(ids) == 0 {
-		core.RespondOK(s, i, "Tracking the defaults",
+		return outcome{core.ColorSuccess, "Tracking the defaults",
 			fmt.Sprintf("The %s pass will use merlin's own defaults, and will follow them if they change.\n\n"+
-				"`/aimod models show` for the current prices.", which))
-		return
+				"`/aimod models show` for the current prices.", which)}
 	}
-	core.RespondOK(s, i, "Models set",
+	return outcome{core.ColorSuccess, "Models set",
 		fmt.Sprintf("The %s pass will try, in order:\n%s\n\nLater entries are only used when an earlier one errors "+
 			"or is rate limited.\n\n`/aimod models show` to see what that costs at this server's traffic.",
-			which, "- "+strings.Join(ids, "\n- ")))
+			which, "- "+strings.Join(ids, "\n- "))}
 }
 
 // autocompleteModel suggests model IDs with their prices attached.

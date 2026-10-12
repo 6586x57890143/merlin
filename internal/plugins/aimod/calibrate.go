@@ -571,7 +571,7 @@ func summariseReview(mode CalibrationMode, res calibrationResult) string {
 	if mode == CalibrationAuto {
 		b.WriteString(" Applied automatically.")
 	} else {
-		b.WriteString(" Run `/aimod calibrate show` to read them, `/aimod calibrate apply` to put them in force.")
+		b.WriteString(" `/aimod calibrate show` reads them; Apply proposal, under Calibration on `/aimod settings`, puts them in force.")
 	}
 	for _, f := range res.Findings {
 		direction := "too lenient"
@@ -706,14 +706,6 @@ func (p *Plugin) makeCalibrationJob(guildID string) func(context.Context) error 
 	}
 }
 
-func calibrationModeChoices() []*discordgo.ApplicationCommandOptionChoice {
-	out := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(CalibrationModes))
-	for _, m := range CalibrationModes {
-		out = append(out, &discordgo.ApplicationCommandOptionChoice{Name: string(m), Value: string(m)})
-	}
-	return out
-}
-
 func (p *Plugin) handleCalibrateShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
@@ -732,7 +724,7 @@ func (p *Plugin) handleCalibrateShow(ctx context.Context, s *discordgo.Session, 
 		// Worth saying here rather than only in /aimod configure show: the
 		// review reads stored message text, so a guild keeping none gets a
 		// materially weaker one and has no way to find that out.
-		b.WriteString("\n> Evidence retention is off, so the review can see what the filter decided but not what it decided about. Set `/aimod configure evidence` above 0 for a sharper one.\n")
+		b.WriteString("\n> Evidence retention is off, so the review can see what the filter decided but not what it decided about. Keep some evidence (`/aimod settings`, Budget and evidence) for a sharper one.\n")
 	}
 
 	b.WriteString("\n**In force**\n")
@@ -745,7 +737,7 @@ func (p *Plugin) handleCalibrateShow(ctx context.Context, s *discordgo.Session, 
 	if len(cfg.CalibrationPending) > 0 {
 		b.WriteString("\n**Proposed, not yet in force**\n")
 		b.WriteString(renderCalibration(cfg.CalibrationPending))
-		b.WriteString("\nRun `/aimod calibrate apply` to put these in force, or `/aimod calibrate clear` to drop them.\n")
+		b.WriteString("\nApply or clear them under Calibration on `/aimod settings`.\n")
 	}
 
 	// The body interpolates an unbounded example list, and Discord rejects an
@@ -754,113 +746,90 @@ func (p *Plugin) handleCalibrateShow(ctx context.Context, s *discordgo.Session, 
 	core.RespondInfo(s, i, "Filter calibration", core.TruncateEmbedDescription(b.String()))
 }
 
-func (p *Plugin) handleCalibrateRunNow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// A transcript fetch plus the largest model call this plugin makes, so
-	// nowhere near Discord's 3 second window.
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("aimod: defer calibrate run-now", "err", err)
-		return
-	}
+func (p *Plugin) calibrateNow(ctx context.Context, i *discordgo.InteractionCreate) outcome {
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 	if cfg.Mode == ModeOff {
-		_ = core.FollowUpErr(s, i, "Nothing to review",
-			errors.New("this plugin is off, so there is no moderation history to learn from. Set `/aimod configure mode` first"))
-		return
+		return failed("Nothing to review",
+			errors.New("this plugin is off, so there is no moderation history to learn from. Set the mode first"))
 	}
 
 	res, err := p.reviewGuild(ctx, cfg)
 	switch {
 	case errors.Is(err, errNothingToReview):
-		_ = core.FollowUpErr(s, i, "Nothing to review",
+		return failed("Nothing to review",
 			errors.New("nothing has been actioned or flagged in the last week, so there is nothing to calibrate against yet"))
-		return
 	case errors.Is(err, errCalibrationBudget):
-		_ = core.FollowUpErr(s, i, "Daily budget spent", err)
-		return
+		return failed("Daily budget spent", err)
 	case err != nil:
-		_ = core.FollowUpErr(s, i, "The review failed", err)
-		return
+		return failed("The review failed", err)
 	}
 	if len(res.Examples) == 0 {
-		_ = core.FollowUpOK(s, i, "Nothing to change",
-			"The review read the last week and found nothing worth correcting. The filter's current calibration stands.")
-		return
+		return outcome{core.ColorSuccess, "Nothing to change",
+			"The review read the last week and found nothing worth correcting. The filter's current calibration stands."}
 	}
 	// run-now honours the guild's mode rather than applying regardless. An
 	// admin running this on suggest is asking for the weekly review early,
 	// not asking to skip the approval step they configured.
 	if err := p.applyCalibration(ctx, cfg, res); err != nil {
-		_ = core.FollowUpErr(s, i, "Could not store the result", err)
-		return
+		return failed("Could not store the result", err)
 	}
 	if cfg.CalibrationMode == CalibrationAuto {
-		_ = core.FollowUpOK(s, i, "Calibration updated",
-			fmt.Sprintf("%d example(s) are now in force. `/aimod calibrate show` to read them.", len(res.Examples)))
-		return
+		return outcome{core.ColorSuccess, "Calibration updated",
+			fmt.Sprintf("%d example(s) are now in force. `/aimod calibrate show` reads them.", len(res.Examples))}
 	}
-	_ = core.FollowUpOK(s, i, "Calibration proposed",
-		fmt.Sprintf("%d example(s) are waiting. `/aimod calibrate show` to read them, `/aimod calibrate apply` to put them in force.", len(res.Examples)))
+	return outcome{core.ColorSuccess, "Calibration proposed",
+		fmt.Sprintf("%d example(s) are waiting. `/aimod calibrate show` reads them; Apply puts them in force.", len(res.Examples))}
 }
 
-func (p *Plugin) handleCalibrateApply(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (p *Plugin) calibrateApply(ctx context.Context, i *discordgo.InteractionCreate) outcome {
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 	if len(cfg.CalibrationPending) == 0 {
-		core.RespondWarn(s, i, "Nothing proposed",
-			"There is no pending calibration to apply. `/aimod calibrate run-now` produces one.")
-		return
+		return outcome{core.ColorWarning, "Nothing proposed",
+			"There is no pending calibration to apply. Review now produces one."}
 	}
 	// Re-validated against live config rather than trusted from the column.
 	// A proposal can sit for a week, and a bucket switched off in the
 	// meantime must not come back through a stored example.
 	kept, _ := validateCalibration(cfg, cfg.CalibrationPending)
 	if err := p.store.SetCalibration(ctx, i.GuildID, kept, nil, time.Time{}); err != nil {
-		core.RespondErr(s, i, "Failed to apply it", err)
-		return
+		return failed("Failed to apply it", err)
 	}
 	p.auditConfig(ctx, i, "aimod.calibration_applied",
 		fmt.Sprintf("%d in force", len(cfg.Calibration)), fmt.Sprintf("%d in force", len(kept)))
-	core.RespondOK(s, i, "Calibration applied",
-		fmt.Sprintf("%d example(s) are now in force and will be carried by every scan from here on.", len(kept)))
+	return outcome{core.ColorSuccess, "Calibration applied",
+		fmt.Sprintf("%d example(s) are now in force and will be carried by every scan from here on.", len(kept))}
 }
 
-func (p *Plugin) handleCalibrateClear(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (p *Plugin) calibrateClear(ctx context.Context, i *discordgo.InteractionCreate) outcome {
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 	if err := p.store.SetCalibration(ctx, i.GuildID, nil, nil, time.Time{}); err != nil {
-		core.RespondErr(s, i, "Failed to clear it", err)
-		return
+		return failed("Failed to clear it", err)
 	}
 	p.auditConfig(ctx, i, "aimod.calibration_cleared",
 		fmt.Sprintf("%d in force", len(cfg.Calibration)), "0 in force")
-	core.RespondOK(s, i, "Calibration cleared",
-		"The filter is back to the built-in policies alone. The weekly review still runs unless you also set `/aimod calibrate mode off`.")
+	return outcome{core.ColorSuccess, "Calibration cleared",
+		"The filter is back to the built-in policies alone. The weekly review still runs unless you also set reviews off."}
 }
 
-func (p *Plugin) handleCalibrateMode(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	mode := CalibrationMode(core.LeafArgs(i)["mode"].Value.(string))
+func (p *Plugin) setCalibrationMode(ctx context.Context, i *discordgo.InteractionCreate, mode CalibrationMode) outcome {
 	if !mode.valid() {
-		core.RespondErr(s, i, "Unknown mode", fmt.Errorf("%q is not a review mode", mode))
-		return
+		return failed("Unknown mode", fmt.Errorf("%q is not a review mode", mode))
 	}
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 	if err := p.store.SetCalibrationMode(ctx, i.GuildID, mode); err != nil {
-		core.RespondErr(s, i, "Failed to set the mode", err)
-		return
+		return failed("Failed to set the mode", err)
 	}
 	p.auditConfig(ctx, i, "aimod.calibration_mode_set", string(cfg.CalibrationMode), string(mode))
 
@@ -872,16 +841,16 @@ func (p *Plugin) handleCalibrateMode(ctx context.Context, s *discordgo.Session, 
 
 	switch mode {
 	case CalibrationAuto:
-		core.RespondWarn(s, i, "Reviewing weekly, applying automatically",
-			"Every Sunday the filter will review the week's moderation and change its own calibration without asking. "+
-				"`/aimod calibrate show` to read what it is carrying, `/aimod calibrate clear` to undo it.")
+		return outcome{core.ColorWarning, "Reviewing weekly, applying automatically",
+			"Every Sunday the filter will review the week's moderation and change its own calibration without asking. " +
+				"`/aimod calibrate show` reads what it is carrying; Clear undoes it."}
 	case CalibrationSuggest:
-		core.RespondOK(s, i, "Reviewing weekly, proposing only",
-			"Every Sunday the filter will review the week's moderation and post what it would change to the audit log. "+
-				"Nothing takes effect until you run `/aimod calibrate apply`.")
+		return outcome{core.ColorSuccess, "Reviewing weekly, proposing only",
+			"Every Sunday the filter will review the week's moderation and post what it would change to the audit log. " +
+				"Nothing takes effect until you press Apply."}
 	default:
-		core.RespondOK(s, i, "Reviews off",
-			"The filter will run on the built-in policies plus whatever calibration is already in force. "+
-				"`/aimod calibrate clear` also drops that.")
+		return outcome{core.ColorSuccess, "Reviews off",
+			"The filter will run on the built-in policies plus whatever calibration is already in force. " +
+				"Clear also drops that."}
 	}
 }

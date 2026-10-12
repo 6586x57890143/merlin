@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -108,24 +109,22 @@ func TestWordsAddRemove(t *testing.T) {
 	store := newFakeStore()
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	s := testSession(t)
 	ctx := context.Background()
 
-	p.handleWordsAdd(ctx, s, interaction("g1", "words", "add", strOpt("word", "Work"), strOpt("replacement", "the mines")))
-	p.handleWordsAdd(ctx, s, interaction("g1", "words", "add", strOpt("word", "work"), strOpt("replacement", "jorking"), boolOpt("noun_only", true)))
+	p.addWord(ctx, interaction("g1", "", "settings"), "Work", "the mines", false)
+	p.addWord(ctx, interaction("g1", "", "settings"), "work", "jorking", true)
 	// Refused: the replacement would be rewritten again on the way out.
-	p.handleWordsAdd(ctx, s, interaction("g1", "words", "add", strOpt("word", "job"), strOpt("replacement", "a job")))
+	p.addWord(ctx, interaction("g1", "", "settings"), "job", "a job", false)
 	cfg, _ := store.Config(ctx, "g1")
 	if len(cfg.WordList) != 1 || cfg.WordList[0] != (BannedWord{Word: "work", Replacement: "jorking", NounOnly: true}) {
 		t.Fatalf("word list = %v, want work replaced once", cfg.WordList)
 	}
 
-	p.handleWordsList(ctx, s, interaction("g1", "words", "list"))
-	if got := p.autocompleteWord(ctx, interaction("g1", "words", "remove"), "word", "wo"); len(got) != 1 {
-		t.Errorf("autocomplete = %v", got)
+	if sel := paneltest.Selects(p.panel(ctx, interaction("g1", "", "settings"), "words", "", ""))[panelPol+"unword"]; len(sel.Options) != 1 {
+		t.Errorf("remove picker = %v", sel.Options)
 	}
 
-	p.handleWordsRemove(ctx, s, interaction("g1", "words", "remove", strOpt("word", "WORK")))
+	p.removeWord(ctx, interaction("g1", "", "settings"), "WORK")
 	cfg, _ = store.Config(ctx, "g1")
 	if len(cfg.WordList) != 0 {
 		t.Errorf("word list = %v after remove", cfg.WordList)

@@ -191,7 +191,7 @@ func unavailableWords(err error) string {
 	case strings.Contains(msg, "budget"):
 		return "the daily model budget for this server is spent; it resets at midnight UTC."
 	case strings.Contains(msg, "key"):
-		return "no model key is configured for this server; `/aimod configure key` sets one."
+		return "no model key is configured for this server; the key button on `/aimod settings` sets one."
 	}
 	return "the model is not available for this server right now."
 }

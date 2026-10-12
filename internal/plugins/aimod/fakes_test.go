@@ -5,11 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"github.com/6586x57890143/merlin/internal/secret"
 	"io"
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/6586x57890143/merlin/internal/secret"
 
 	"github.com/bwmarrin/discordgo"
 

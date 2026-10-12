@@ -125,7 +125,7 @@ prices any other model before you switch.
 
 Every action is explained to the member in a DM, recorded in the audit log, and
 reversible with `/aimod undo` while the evidence window lasts. Start with
-`/aimod configure mode flag` and watch it for a week before letting it act.
+the mode on `/aimod settings` set to flag, and watch it for a week before letting it act.
 
 **Rapsheets.** Every warning, jail, timeout, kick, ban and AI removal a member
 collects lands on one per-member record with a case number, whoever or whatever

@@ -328,7 +328,7 @@ status` rather than appearing to work.
   thing on `/aimod status` while behaving as two. It still
   **yields to `mustScan`**, so the child-safety vocabulary is scanned exactly
   as it would have been. That carve-out is the reason the guard is where it
-  is: `EffectiveAction` refuses to let `/aimod policy set` turn `child_safety`
+  is: `EffectiveAction` refuses to let the policy page turn `child_safety`
   off and `validateCalibration` refuses to let the weekly review stand it
   down, so a per-member opt-out that suppressed it would be turning the bucket
   off by a third route, one command at a time, for whoever wanted it off most.
@@ -368,7 +368,7 @@ status` rather than appearing to work.
   `aimod_config`, never frozen into a per-row column: that is the
   `rotation_archives.delete_after` mistake pointing the other way, and here the
   direction that has to work is *shortening* the window.
-- **The guild word list (`wordlist.go`, `/aimod words`) is house style, not
+- **The guild word list (`wordlist.go`, the word list page) is house style, not
   policy.** A per-guild list of words rewritten to a replacement the guild
   chose, or removed when it chose none, checked right after rung 1's hard
   patterns with no model involved. Matching reuses `slurRe` (so `w.o.r.k`
@@ -518,7 +518,7 @@ if it holds an `orca_key_sealed`, OpenRouter otherwise. A provider column
 beside a key column is two facts that must agree, and what a disagreement
 produces is a guild whose scanning silently stopped pointing at a gateway it
 has no credential for. The same reasoning runs through the whole change:
-`/aimod configure key` reads the gateway off the key's own prefix (with an
+The key form on `/aimod settings` reads the gateway off the key's own prefix (with an
 explicit option only as the escape hatch for a gateway that changes what its
 keys look like), and the tip jar reads its chain off its address.
 

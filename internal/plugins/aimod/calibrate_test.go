@@ -3,10 +3,11 @@ package aimod
 import (
 	"context"
 	"errors"
-	"github.com/6586x57890143/merlin/internal/secret"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/6586x57890143/merlin/internal/secret"
 
 	"github.com/bwmarrin/discordgo"
 

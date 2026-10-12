@@ -141,15 +141,15 @@ func (p *Plugin) statusPages(ctx context.Context, guildID string) ([]statusPage,
 			"Developer Portal and set `MERLIN_ENABLE_MESSAGE_CONTENT_INTENT=1`.")
 	case cfg.Mode == ModeOff:
 		worse(core.ColorWarning)
-		body.WriteString("**Off.** Nothing is being scanned. `/aimod configure mode flag` to start watching without acting.")
+		body.WriteString("**Off.** Nothing is being scanned. Set the mode to flag on `/aimod settings` to start watching without acting.")
 	case len(cfg.APIKeySealed) == 0 && len(cfg.OrcaKeySealed) == 0:
 		worse(core.ColorWarning)
-		body.WriteString("**No API key.** Only the built-in pattern checks are running. `/aimod configure key` to fix.")
+		body.WriteString("**No API key.** Only the built-in pattern checks are running. Set a key on `/aimod settings` to fix.")
 	case cfg.Mode == ModeFlag:
 		worse(core.ColorInfo)
 		body.WriteString("**Flagging only.** Decisions are recorded and posted to the audit log; no message is touched.")
 	default:
-		body.WriteString("**Enforcing.** Messages are removed or rewritten per `/aimod policy list`.")
+		body.WriteString("**Enforcing.** Messages are removed or rewritten per the policy page on `/aimod settings`.")
 	}
 
 	// An empty account outranks the day's budget: a budget resets at midnight
@@ -197,8 +197,8 @@ func policyPage(cfg Config) statusPage {
 	}
 	return statusPage{
 		name: "what it acts on",
-		body: "What happens to a message that breaches each policy area. `/aimod policy list` for the full table, " +
-			"`/aimod policy set` to change one.",
+		body: "What happens to a message that breaches each policy area. The policy page on `/aimod settings` reads " +
+			"and changes each one.",
 		fields: []*discordgo.MessageEmbedField{
 			{Name: "Acting on", Value: core.TruncateEmbedField(orNone(enforcing))},
 			{Name: "Watching only", Value: core.TruncateEmbedField(orNone(watching))},
@@ -333,7 +333,7 @@ func optOutPages(cfg Config) []statusPage {
 		}
 
 		body := "**Member opt-out is off.** Everyone in this server is covered by the filter. " +
-			"Only the server owner can change that, with `/aimod configure member-opt-out`."
+			"Only the server owner can change that, under Scanning on `/aimod settings`."
 		if cfg.MemberOptOut {
 			body = "**Member opt-out is on.** Anyone here can run `/aimod opt-out` and is treated as if they held " +
 				"an exempt role. Nobody can opt anybody else out.\n\n" +
@@ -392,7 +392,7 @@ func (p *Plugin) triageLine(ctx context.Context, cfg Config) string {
 		fmt.Fprintf(&b, "\nmissed %d of %d sampled checks", st.Missed, st.Sampled)
 	}
 	if cfg.TriageMode == TriageShadow {
-		b.WriteString("\nshadow mode: changing nothing yet. `/aimod configure triage on` to act on it.")
+		b.WriteString("\nshadow mode: changing nothing yet. Turn the pre-filter on in `/aimod settings` to act on it.")
 	}
 	return b.String()
 }

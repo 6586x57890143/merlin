@@ -35,12 +35,10 @@ const budgetCeiling = 100.0
 // rotation exists to provide.
 const evidenceCeiling = 24 * 14
 
-func (p *Plugin) handleSetKey(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	key := strings.TrimSpace(args["key"].Value.(string))
+func (p *Plugin) setKey(ctx context.Context, i *discordgo.InteractionCreate, key, provider string) outcome {
+	key = strings.TrimSpace(key)
 	if key == "" {
-		core.RespondErr(s, i, "No key given", errors.New("paste an OrcaRouter or OpenRouter API key"))
-		return
+		return failed("No key given", errors.New("paste an OrcaRouter or OpenRouter API key"))
 	}
 
 	// Which gateway this key belongs to is read off the key itself, so the
@@ -49,13 +47,12 @@ func (p *Plugin) handleSetKey(ctx context.Context, s *discordgo.Session, i *disc
 	// refusing a valid key would be the worse failure, so an unrecognised
 	// prefix asks rather than guesses.
 	spec := providerForKey(key)
-	if opt, ok := args["provider"]; ok {
-		spec = providerByName(opt.Value.(string))
+	if provider = strings.TrimSpace(provider); provider != "" {
+		spec = providerByName(provider)
 	}
 	if spec == nil {
-		core.RespondErr(s, i, "Not sure whose key this is",
-			errors.New("that does not start with `sk-orca-` or `sk-or-`. Run this again with the `provider` option set"))
-		return
+		return failed("Not sure whose key this is",
+			errors.New("that does not start with `sk-orca-` or `sk-or-`. Open the key form again and name the provider"))
 	}
 
 	sealed, err := p.sealer.Seal(key)
@@ -63,23 +60,21 @@ func (p *Plugin) handleSetKey(ctx context.Context, s *discordgo.Session, i *disc
 		// The MERLIN_SECRET_KEY case reaches here, and its message is
 		// actionable on purpose: an admin who cannot fix it can at least
 		// tell their operator exactly what to set.
-		core.RespondErr(s, i, "Cannot store the key", err)
-		return
+		return failed("Cannot store the key", err)
 	}
 	if err := p.store.SetAPIKey(ctx, i.GuildID, spec.name, sealed); err != nil {
-		core.RespondErr(s, i, "Failed to store the key", err)
-		return
+		return failed("Failed to store the key", err)
 	}
 
 	// The key itself never reaches the audit row or the log. maskKey's tail
 	// is enough to tell two keys apart, which is all an audit trail needs.
 	p.auditConfig(ctx, i, "aimod.key_set", "", spec.label+" "+secret.Mask(key))
-	core.RespondOK(s, i, spec.label+" key stored",
+	return outcome{core.ColorSuccess, spec.label + " key stored",
 		fmt.Sprintf("Stored encrypted as `%s`. It is never shown again, and never written to the logs.\n\n"+
 			"%s\n\nGive this key its own spend limit with the provider as well: this bot's daily budget is a "+
-			"second line of defence, not the only one.\n\nRun `/aimod configure mode flag` next and watch it "+
+			"second line of defence, not the only one.\n\nSet the mode to flag next and watch it "+
 			"for a week before enforcing.",
-			secret.Mask(key), routingNote(spec)))
+			secret.Mask(key), routingNote(spec))}
 }
 
 // routingNote says what storing this key just changed, because an OrcaRouter
@@ -95,141 +90,80 @@ func routingNote(spec *providerSpec) string {
 		"what is sent."
 }
 
-func (p *Plugin) handleSetMode(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	mode := Mode(core.LeafArgs(i)["mode"].Value.(string))
+func (p *Plugin) setMode(ctx context.Context, i *discordgo.InteractionCreate, mode Mode) outcome {
 	if !slices.Contains(Modes, mode) {
-		core.RespondErr(s, i, "Unknown mode", fmt.Errorf("%q is not a mode", mode))
-		return
+		return failed("Unknown mode", fmt.Errorf("%q is not a mode", mode))
 	}
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 	if mode != ModeOff && len(cfg.APIKeySealed) == 0 {
-		core.RespondWarn(s, i, "No API key configured",
-			"Set one with `/aimod configure key` first. Without it only the built-in pattern checks run, "+
-				"and those catch phishing and leaked credentials, nothing that needs reading a sentence.")
-		return
+		return outcome{core.ColorWarning, "No API key configured",
+			"Set one with the key button first. Without it only the built-in pattern checks run, " +
+				"and those catch phishing and leaked credentials, nothing that needs reading a sentence."}
 	}
 	if err := p.store.SetMode(ctx, i.GuildID, mode); err != nil {
-		core.RespondErr(s, i, "Failed to set the mode", err)
-		return
+		return failed("Failed to set the mode", err)
 	}
 	p.auditConfig(ctx, i, "aimod.mode_set", string(cfg.Mode), string(mode))
 
 	switch mode {
 	case ModeEnforce:
-		core.RespondOK(s, i, "Enforcing", "Messages will now be removed or rewritten according to `/aimod policy list`. "+
-			"Every action is reversible with `/aimod undo` while the evidence window lasts.")
+		return outcome{core.ColorSuccess, "Enforcing", "Messages will now be removed or rewritten according to the policy page. " +
+			"Every action is reversible with `/aimod undo` while the evidence window lasts."}
 	case ModeFlag:
-		core.RespondOK(s, i, "Flagging only", "Nothing will be touched. Every decision is recorded and posted to the audit log, "+
-			"so you can see exactly what enforcing would have done.")
+		return outcome{core.ColorSuccess, "Flagging only", "Nothing will be touched. Every decision is recorded and posted to the audit log, " +
+			"so you can see exactly what enforcing would have done."}
 	default:
-		core.RespondOK(s, i, "Off", "Nothing is being scanned.")
+		return outcome{core.ColorSuccess, "Off", "Nothing is being scanned."}
 	}
 }
 
-func (p *Plugin) handleSetBudget(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	usd := core.LeafArgs(i)["usd"].FloatValue()
+func (p *Plugin) setBudget(ctx context.Context, i *discordgo.InteractionCreate, usd float64) outcome {
 	if usd < 0 || usd > budgetCeiling {
-		core.RespondErr(s, i, "Budget out of range",
+		return failed("Budget out of range",
 			fmt.Errorf("give a figure between 0 and %s per day", formatUSD(budgetCeiling)))
-		return
 	}
 	if err := p.store.SetBudget(ctx, i.GuildID, usd); err != nil {
-		core.RespondErr(s, i, "Failed to set the budget", err)
-		return
+		return failed("Failed to set the budget", err)
 	}
 	p.auditConfig(ctx, i, "aimod.budget_set", "", formatUSD(usd))
-	core.RespondOK(s, i, "Budget set",
+	return outcome{core.ColorSuccess, "Budget set",
 		fmt.Sprintf("Up to %s per UTC day. Past that, scanning falls back to the free pattern checks until midnight "+
-			"and one note is posted to the audit log.\n\nRun `/aimod models show` to see what that buys at this "+
-			"server's actual traffic.", formatUSD(usd)))
+			"and one note is posted to the audit log.\n\n`/aimod models show` shows what that buys at this "+
+			"server's actual traffic.", formatUSD(usd))}
 }
 
-func (p *Plugin) handleSetEvidence(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	hours := int(core.LeafArgs(i)["hours"].IntValue())
+func (p *Plugin) setEvidence(ctx context.Context, i *discordgo.InteractionCreate, hours int) outcome {
 	if hours < 0 || hours > evidenceCeiling {
-		core.RespondErr(s, i, "Out of range", fmt.Errorf("give a number of hours between 0 and %d", evidenceCeiling))
-		return
+		return failed("Out of range", fmt.Errorf("give a number of hours between 0 and %d", evidenceCeiling))
 	}
 	if err := p.store.SetEvidenceHours(ctx, i.GuildID, hours); err != nil {
-		core.RespondErr(s, i, "Failed to set evidence retention", err)
-		return
+		return failed("Failed to set evidence retention", err)
 	}
 	p.auditConfig(ctx, i, "aimod.evidence_set", "", fmt.Sprintf("%d hours", hours))
 
 	if hours == 0 {
-		core.RespondWarn(s, i, "Keeping no evidence",
-			"Only IDs and the verdict are recorded now. `/aimod why` will not be able to show what a message said, "+
-				"and `/aimod undo` will not work at all, because there is nothing left to restore.")
-		return
+		return outcome{core.ColorWarning, "Keeping no evidence",
+			"Only IDs and the verdict are recorded now. `/aimod why` will not be able to show what a message said, " +
+				"and `/aimod undo` will not work at all, because there is nothing left to restore."}
 	}
 	// Shortening the window applies to messages already stored, not only to
 	// future ones, and saying so is the point: the alternative is an admin
 	// believing they have tightened retention while yesterday's text sits
 	// there on the old schedule.
-	core.RespondOK(s, i, "Evidence retention set",
+	return outcome{core.ColorSuccess, "Evidence retention set",
 		fmt.Sprintf("The original text of a moderated message is kept for %d hours, then cleared. "+
-			"This applies to everything already stored as well, not just to new incidents.", hours))
+			"This applies to everything already stored as well, not just to new incidents.", hours)}
 }
 
-func (p *Plugin) handleExemptChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
-	channelID := opts["channel"].Value.(string)
-	exempt := opts["exempt"].BoolValue()
-
-	cfg, err := p.store.Config(ctx, i.GuildID)
-	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
-	}
-	next, changed := toggle(cfg.ExemptChannelIDs, channelID, exempt)
-	if !changed {
-		core.RespondInfo(s, i, "No change", fmt.Sprintf("%s was already %s.", core.MentionChannel(channelID), exemptWord(exempt)))
-		return
-	}
-	if err := p.store.SetExemptChannels(ctx, i.GuildID, next); err != nil {
-		core.RespondErr(s, i, "Failed to update exempt channels", err)
-		return
-	}
-	p.auditConfig(ctx, i, "aimod.exempt_channel", "", core.MentionChannel(channelID)+" "+exemptWord(exempt))
-	core.RespondOK(s, i, "Updated", fmt.Sprintf("%s is now %s.", core.MentionChannel(channelID), exemptWord(exempt)))
-}
-
-func (p *Plugin) handleExemptRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
-	roleID := opts["role"].Value.(string)
-	exempt := opts["exempt"].BoolValue()
-
-	cfg, err := p.store.Config(ctx, i.GuildID)
-	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
-	}
-	next, changed := toggle(cfg.ExemptRoleIDs, roleID, exempt)
-	if !changed {
-		core.RespondInfo(s, i, "No change", fmt.Sprintf("%s was already %s.", core.MentionRole(roleID), exemptWord(exempt)))
-		return
-	}
-	if err := p.store.SetExemptRoles(ctx, i.GuildID, next); err != nil {
-		core.RespondErr(s, i, "Failed to update exempt roles", err)
-		return
-	}
-	p.auditConfig(ctx, i, "aimod.exempt_role", "", core.MentionRole(roleID)+" "+exemptWord(exempt))
-	core.RespondOK(s, i, "Updated", fmt.Sprintf("Members holding %s are now %s.", core.MentionRole(roleID), exemptWord(exempt)))
-}
-
-func (p *Plugin) handleSetSanction(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	action := SanctionAction(core.LeafArgs(i)["action"].Value.(string))
+func (p *Plugin) setSanction(ctx context.Context, i *discordgo.InteractionCreate, action SanctionAction) outcome {
 	if !slices.Contains(SanctionActions, action) {
-		core.RespondErr(s, i, "Unknown action", fmt.Errorf("%q is not a sanction action", action))
-		return
+		return failed("Unknown action", fmt.Errorf("%q is not a sanction action", action))
 	}
 	if err := p.store.SetSanctionAction(ctx, i.GuildID, action); err != nil {
-		core.RespondErr(s, i, "Failed to set the sanction response", err)
-		return
+		return failed("Failed to set the sanction response", err)
 	}
 	p.auditConfig(ctx, i, "aimod.sanction_action_set", "", string(action))
 
@@ -253,19 +187,16 @@ func (p *Plugin) handleSetSanction(ctx context.Context, s *discordgo.Session, i 
 	default:
 		body += "Nothing else will happen. The message is still dealt with; only the sanction that would follow it is off."
 	}
-	core.RespondOK(s, i, "Sanctions set", body)
+	return outcome{core.ColorSuccess, "Sanctions set", body}
 }
 
 // handleSetTriage switches the local pre-filter between off, shadow and on.
-func (p *Plugin) handleSetTriage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	mode := TriageMode(core.LeafArgs(i)["mode"].Value.(string))
+func (p *Plugin) setTriage(ctx context.Context, i *discordgo.InteractionCreate, mode TriageMode) outcome {
 	if !mode.Valid() {
-		core.RespondErr(s, i, "Unknown mode", fmt.Errorf("%q is not a triage mode", mode))
-		return
+		return failed("Unknown mode", fmt.Errorf("%q is not a triage mode", mode))
 	}
 	if err := p.store.SetTriageMode(ctx, i.GuildID, mode); err != nil {
-		core.RespondErr(s, i, "Failed to set the local pre-filter", err)
-		return
+		return failed("Failed to set the local pre-filter", err)
 	}
 	p.auditConfig(ctx, i, "aimod.triage_mode_set", "", string(mode))
 
@@ -290,152 +221,41 @@ func (p *Plugin) handleSetTriage(ctx context.Context, s *discordgo.Session, i *d
 		body += "It is off. Every message that gets past the free pattern checks goes to a model, which is how this " +
 			"plugin worked before this rung existed."
 	}
-	core.RespondOK(s, i, "Local pre-filter set", body)
+	return outcome{core.ColorSuccess, "Local pre-filter set", body}
 }
 
-// triageModeChoices are the three values, described by what each one does to
-// the scanning rather than by its own name.
-func triageModeChoices() []*discordgo.ApplicationCommandOptionChoice {
-	return []*discordgo.ApplicationCommandOptionChoice{
-		{Name: "off: send everything to a model", Value: string(TriageOff)},
-		{Name: "shadow: learn and keep score, change nothing", Value: string(TriageShadow)},
-		{Name: "on: skip the model call when confident", Value: string(TriageOn)},
-	}
-}
-
-func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg, err := p.store.Config(ctx, i.GuildID)
-	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
-	}
-
-	key := "not set"
-	if len(cfg.APIKeySealed) > 0 {
-		if plain, err := p.sealer.Open(cfg.APIKeySealed); err == nil {
-			key = secret.Mask(plain)
-		} else {
-			key = "stored, but unreadable: " + err.Error()
-		}
-	}
-
-	// The defaults shown are the routed gateway's, not OpenRouter's: a
-	// guild reading "leave it unset and you get these" is entitled to the
-	// list its own key would actually reach.
-	spec, _ := route(cfg)
-
-	fields := []*discordgo.MessageEmbedField{
-		{Name: "Mode", Value: string(cfg.Mode), Inline: true},
-		{Name: "API key", Value: key, Inline: true},
-		{Name: "Daily budget", Value: formatUSD(cfg.DailyBudgetUSD), Inline: true},
-		{Name: "Evidence kept", Value: evidenceWord(cfg.EvidenceHours), Inline: true},
-		{Name: "Sanctions", Value: string(cfg.SanctionAction), Inline: true},
-		{Name: "Member opt-out", Value: fmt.Sprintf("%s (%d opted out)", onOff(cfg.MemberOptOut), len(cfg.OptOutUserIDs)), Inline: true},
-		{Name: "Fast models", Value: core.TruncateEmbedField(modelList(cfg.FastModels, spec.fastModels))},
-		{Name: "Deep models", Value: core.TruncateEmbedField(modelList(cfg.DeepModels, spec.deepModels))},
-		{Name: "Exempt channels", Value: core.TruncateEmbedField(mentionList(cfg.ExemptChannelIDs, core.MentionChannel))},
-		{Name: "Exempt roles", Value: core.TruncateEmbedField(mentionList(cfg.ExemptRoleIDs, core.MentionRole))},
-	}
-	if err := core.RespondEmbed(s, i, core.NewEmbed(core.ColorInfo, "AI moderation configuration", "", fields...)); err != nil {
-		p.log.Error("aimod: respond configure show", "guild", i.GuildID, "err", err)
-	}
-}
-
-func (p *Plugin) handlePolicyList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg, err := p.store.Config(ctx, i.GuildID)
-	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
-	}
-
-	var body strings.Builder
-	body.WriteString("What this server does about each of Discord's guideline areas. " +
-		"`/aimod policy explain <area>` shows exactly where each one starts and stops.\n\n")
-	for _, b := range AllBuckets {
-		action := EffectiveAction(cfg.BucketActions, b)
-		note := ""
-		if b == BucketChildSafety {
-			note = " (cannot be changed)"
-		}
-		pol := p.policies[b]
-		fmt.Fprintf(&body, "**%s** - `%s`%s\n%s\n\n", b, action, note, pol.Short)
-	}
-
-	embed := core.NewEmbed(core.ColorInfo, "Policy areas", core.TruncateEmbedDescription(body.String()))
-	if err := core.RespondEmbed(s, i, embed); err != nil {
-		p.log.Error("aimod: respond policy list", "guild", i.GuildID, "err", err)
-	}
-}
-
-func (p *Plugin) handlePolicyExplain(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	bucket := Bucket(core.LeafArgs(i)["policy"].Value.(string))
-	pol, ok := p.policies[bucket]
-	if !ok {
-		core.RespondErr(s, i, "Unknown policy area", fmt.Errorf("%q is not a policy area", bucket))
-		return
-	}
-	cfg, err := p.store.Config(ctx, i.GuildID)
-	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
-	}
-
-	fields := []*discordgo.MessageEmbedField{
-		{Name: "This server does", Value: string(EffectiveAction(cfg.BucketActions, bucket)), Inline: true},
-		{Name: "Definitions", Value: core.TruncateEmbedField(bullets(pol.Definitions))},
-		{Name: "This IS a violation", Value: core.TruncateEmbedField(bullets(pol.Violations))},
-		// Shown to moderators on purpose, and given equal billing. This is
-		// the half people argue about, and the half that decides whether the
-		// filter is trustworthy on a server that likes to argue.
-		{Name: "This is NOT a violation", Value: core.TruncateEmbedField(bullets(pol.NotViolations))},
-	}
-	embed := core.NewEmbed(core.ColorInfo, "Policy: "+string(bucket), pol.Short, fields...)
-	if err := core.RespondEmbed(s, i, embed); err != nil {
-		p.log.Error("aimod: respond policy explain", "guild", i.GuildID, "err", err)
-	}
-}
-
-func (p *Plugin) handlePolicySet(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
-	bucket := Bucket(opts["policy"].Value.(string))
-	action := Action(opts["action"].Value.(string))
-
+func (p *Plugin) setPolicy(ctx context.Context, i *discordgo.InteractionCreate, bucket Bucket, action Action) outcome {
 	if !known(bucket) {
-		core.RespondErr(s, i, "Unknown policy area", fmt.Errorf("%q is not a policy area", bucket))
-		return
+		return failed("Unknown policy area", fmt.Errorf("%q is not a policy area", bucket))
 	}
 	if !action.valid() {
-		core.RespondErr(s, i, "Unknown action", fmt.Errorf("%q is not an action", action))
-		return
+		return failed("Unknown action", fmt.Errorf("%q is not an action", action))
 	}
 	// The same shape as adminconfig.validateTierChange and its refusal to
 	// let a guild lower config.mutate below Admin: a pure, testable guard
 	// against the one setting whose only effect is to disarm the server.
 	if bucket == BucketChildSafety {
-		core.RespondWarn(s, i, "That one is not configurable",
-			"Child safety always removes. It is a termination offence for the server and a reporting obligation for "+
-				"Discord, so there is no setting that turns it off. Everything else here is yours to decide.")
-		return
+		return outcome{core.ColorWarning, "That one is not configurable",
+			"Child safety always removes. It is a termination offence for the server and a reporting obligation for " +
+				"Discord, so there is no setting that turns it off. Everything else here is yours to decide."}
 	}
 
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 	before := EffectiveAction(cfg.BucketActions, bucket)
 	if err := p.store.SetBucketAction(ctx, i.GuildID, bucket, action); err != nil {
-		core.RespondErr(s, i, "Failed to set the policy", err)
-		return
+		return failed("Failed to set the policy", err)
 	}
 	p.auditConfig(ctx, i, "aimod.policy_set", string(bucket)+" "+string(before), string(bucket)+" "+string(action))
 
 	body := fmt.Sprintf("`%s` is now `%s`.", bucket, action)
 	if action.acts() && cfg.Mode != ModeEnforce {
 		body += "\n\nThis server is not in enforce mode, so nothing will actually be touched yet. " +
-			"`/aimod configure mode enforce` when you are ready."
+			"Set the mode to enforce when you are ready."
 	}
-	core.RespondOK(s, i, "Policy updated", body)
+	return outcome{core.ColorSuccess, "Policy updated", body}
 }
 
 func (p *Plugin) handleWhy(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -631,13 +451,6 @@ func evidenceWord(hours int) string {
 		return "nothing kept"
 	}
 	return core.FormatDuration(time.Duration(hours) * time.Hour)
-}
-
-func modelList(configured, fallback []string) string {
-	if len(configured) == 0 {
-		return strings.Join(fallback, "\n") + "\n_(merlin's defaults, tracked automatically)_"
-	}
-	return strings.Join(configured, "\n")
 }
 
 func mentionList(ids []string, render func(string) string) string {

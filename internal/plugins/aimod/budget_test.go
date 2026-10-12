@@ -3,11 +3,12 @@ package aimod
 import (
 	"context"
 	"errors"
-	"github.com/6586x57890143/merlin/internal/secret"
 	"math"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/6586x57890143/merlin/internal/secret"
 )
 
 // The budget is somebody else's money. Every failure mode here has to point
@@ -310,7 +311,9 @@ type fakeTraffic struct {
 	ok     bool
 }
 
-func (f fakeTraffic) MessagesPerDay(context.Context, string, int) (float64, bool) { return f.perDay, f.ok }
+func (f fakeTraffic) MessagesPerDay(context.Context, string, int) (float64, bool) {
+	return f.perDay, f.ok
+}
 
 func TestMeasuredTrafficIsOptional(t *testing.T) {
 	p := &Plugin{}

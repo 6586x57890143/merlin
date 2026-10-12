@@ -2,12 +2,13 @@ package aimod
 
 import (
 	"context"
-	"github.com/6586x57890143/merlin/internal/secret"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/6586x57890143/merlin/internal/secret"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -293,24 +294,20 @@ func TestModelsShowAndCompareRun(t *testing.T) {
 func TestSetStackStoresAndResetsToDefault(t *testing.T) {
 	store := newFakeStore()
 	p := stubCatalogue(t, store)
-	s := testSession(t)
 
-	p.handleSetFast(context.Background(), s, interaction("g1", "models", "set-fast",
-		strOpt("models", "openai/gpt-5-nano")))
+	p.setStack(context.Background(), interaction("g1", "", "settings"), "openai/gpt-5-nano", true)
 	cfg, _ := store.Config(context.Background(), "g1")
 	if len(cfg.FastModels) != 1 || cfg.FastModels[0] != "openai/gpt-5-nano" {
 		t.Errorf("fast stack = %v, want the model just set", cfg.FastModels)
 	}
 
-	p.handleSetDeep(context.Background(), s, interaction("g1", "models", "set-deep",
-		strOpt("models", "openai/gpt-5-mini")))
+	p.setStack(context.Background(), interaction("g1", "", "settings"), "openai/gpt-5-mini", false)
 	cfg, _ = store.Config(context.Background(), "g1")
 	if len(cfg.DeepModels) != 1 {
 		t.Errorf("deep stack = %v, want the model just set", cfg.DeepModels)
 	}
 
-	p.handleSetFast(context.Background(), s, interaction("g1", "models", "set-fast",
-		strOpt("models", "default")))
+	p.setStack(context.Background(), interaction("g1", "", "settings"), "default", true)
 	cfg, _ = store.Config(context.Background(), "g1")
 	if len(cfg.FastModels) != 0 {
 		t.Errorf("fast stack = %v, want empty so it tracks the compiled-in defaults", cfg.FastModels)
