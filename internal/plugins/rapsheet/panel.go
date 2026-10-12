@@ -371,3 +371,12 @@ func (p *Plugin) setForum(ctx context.Context, i *discordgo.InteractionCreate, c
 	}
 	return msg
 }
+
+// Help is this plugin's page in /help.
+func (p *Plugin) Help() core.Help {
+	return core.Help{
+		Title: "Rapsheets",
+		Line:  "a scored record of warnings, jails, timeouts, kicks and bans",
+		About: "every warning, jail, timeout, kick, ban and ai removal goes on the member's rapsheet with a few points that fade over time. when the score crosses a band i can suggest the next step to the mods, or take it myself if the server says so; never a permanent ban. `/rapsheet view` reads one, `/rapsheet me` shows you your own, and `/ban`, `/kick` and `/timeout` record as they act. admins set the ladder on `/rapsheet settings`.",
+	}
+}

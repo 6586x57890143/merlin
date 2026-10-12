@@ -49,6 +49,30 @@ func TestEveryPluginHasAnIcon(t *testing.T) {
 	}
 }
 
+// Every plugin has a /help page, so the guide lists all of merlin and a new
+// plugin cannot ship without saying what it does.
+func TestEveryPluginHasAHelpPage(t *testing.T) {
+	dirs, err := filepath.Glob("../plugins/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range append(dirs, "../scheduler") {
+		files, _ := filepath.Glob(filepath.Join(dir, "*.go"))
+		var named, helped bool
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			src, _ := os.ReadFile(f)
+			named = named || nameMethod.Match(src)
+			helped = helped || strings.Contains(string(src), ") Help() core.Help {") || strings.Contains(string(src), ") Help() Help {")
+		}
+		if named && !helped {
+			t.Errorf("%s has no Help(): give it a /help page", dir)
+		}
+	}
+}
+
 // An icon is pixel art on an exact grid: 128 px, every 4 px cell one flat
 // colour, small enough that uploading it costs nothing.
 func TestIconsAreOnTheirGrid(t *testing.T) {

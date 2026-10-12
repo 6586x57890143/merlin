@@ -183,3 +183,12 @@ func (p *Plugin) syncRunningForum(ctx context.Context, i *discordgo.InteractionC
 	}
 	return "✓ " + core.MentionChannel(c.ForumChannelID) + " now matches the gate."
 }
+
+// Help is this plugin's page in /help.
+func (p *Plugin) Help() core.Help {
+	return core.Help{
+		Title: "Contests",
+		Line:  "art contests: entries in a forum, a gallery, a vote",
+		About: "a mod starts one with `/contest new`. entries go in as posts in the contest's forum, the gallery and the ballot live on a web page where everyone signs in with discord, and it's one vote per member of this server. `/contest prize` pledges a prize, sealed until it's handed to the winner. admins say who contests are for on `/contest settings`.",
+	}
+}

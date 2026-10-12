@@ -107,3 +107,12 @@ func (p *Plugin) setRetention(ctx context.Context, guildID string, days int) str
 	}
 	return fmt.Sprintf("✓ hourly counts are kept for %d days. anything older goes on the next prune, within the hour.", days)
 }
+
+// Help is this plugin's page in /help.
+func (p *Plugin) Help() core.Help {
+	return core.Help{
+		Title: "Statistics",
+		Line:  "who was talking where, counted by the hour",
+		About: "i count messages per channel and per member by the hour, nothing more, and keep the counts as long as this server says. `/statistics channels` and `/statistics members` read them back. admins only, and naming people needs my operator.",
+	}
+}

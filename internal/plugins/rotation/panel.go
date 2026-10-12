@@ -408,3 +408,12 @@ func (p *Plugin) applyReaders(ctx context.Context, s *discordgo.Session, i *disc
 		p.log.Error("rotation: panel follow-up failed", "err", err)
 	}
 }
+
+// Help is this plugin's page in /help.
+func (p *Plugin) Help() core.Help {
+	return core.Help{
+		Title: "Rotation",
+		Line:  "channels that start fresh on a schedule",
+		About: "a rotating channel is replaced by a fresh copy every so often, and the old one is archived where only mods can read it, then deleted once its retention runs out. the channel is told when it rotates and how long the archive lasts, and gets a heads-up before it happens. admins set it all up on `/rotation`: pick a channel, start it, and change its timings, sticky messages and archive whenever.",
+	}
+}

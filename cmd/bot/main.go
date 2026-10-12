@@ -25,6 +25,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
+	"github.com/6586x57890143/merlin/internal/plugins/help"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
 	"github.com/6586x57890143/merlin/internal/plugins/rapsheet"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
@@ -299,6 +300,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// like WithJailer: aimod never imports statistics.
 	aimodPlugin.WithTraffic(statisticsPlugin)
 	registry.Register(adminconfigPlugin)
+	registry.Register(help.New(registry.Plugins, settingsStore))
 
 	if err := registry.InitAll(); err != nil {
 		return err

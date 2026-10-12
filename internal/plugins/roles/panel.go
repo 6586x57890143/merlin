@@ -553,3 +553,12 @@ func channelList(ids []string) string {
 	}
 	return strings.Join(out, " ")
 }
+
+// Help is this plugin's page in /help.
+func (p *Plugin) Help() core.Help {
+	return core.Help{
+		Title: "Roles",
+		Line:  "jail, vacation and temporary roles",
+		About: "`/roles jail` takes away someone's roles for a while and gives them back on their own when the time is up; leaving and rejoining doesn't shake it. `/roles vacation` is the same thing with a nicer room. `/roles grant` hands out one role, optionally for a while. what a jailed member can still see, the roles new members get, and the scripts all live on `/roles settings`.",
+	}
+}

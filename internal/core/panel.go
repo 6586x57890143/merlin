@@ -46,6 +46,11 @@ type Panel struct {
 	// emoji are synced. The thumbnail stays merlin's mood, which is the
 	// art; the icon says which part of her this is.
 	Plugin string
+	// Icon replaces the mood thumbnail, for a page that is about the thing
+	// it shows (a /help page wears its plugin's tile). IconFile is its
+	// upload, nil when Icon is already a URL Discord can fetch.
+	Icon     string
+	IconFile *discordgo.File
 }
 
 // Components renders p as the message's single top-level container.
@@ -64,7 +69,7 @@ func (p Panel) Components() []discordgo.MessageComponent {
 	parts := []discordgo.MessageComponent{
 		discordgo.Section{
 			Components: []discordgo.MessageComponent{discordgo.TextDisplay{Content: head}},
-			Accessory:  discordgo.Thumbnail{Media: discordgo.UnfurledMediaItem{URL: moodAttachmentURL(mood)}},
+			Accessory:  discordgo.Thumbnail{Media: discordgo.UnfurledMediaItem{URL: p.thumbnail(mood)}},
 		},
 		discordgo.MediaGallery{Items: []discordgo.MediaGalleryItem{{Media: discordgo.UnfurledMediaItem{URL: ruleAttachmentURL}}}},
 	}
@@ -79,17 +84,29 @@ func (p Panel) Components() []discordgo.MessageComponent {
 	return []discordgo.MessageComponent{discordgo.Container{AccentColor: &color, Components: parts}}
 }
 
-// Files is what p points at: its mood and the rule, never anything else, so
-// an attachment:// URL can never be left without its upload.
+func (p Panel) thumbnail(mood Mood) string {
+	if p.Icon != "" {
+		return p.Icon
+	}
+	return moodAttachmentURL(mood)
+}
+
+// Files is what p points at: its thumbnail and the rule, never anything
+// else, so an attachment:// URL can never be left without its upload.
 func (p Panel) Files() []*discordgo.File {
 	mood := p.Mood
 	if mood == MoodNone {
 		mood = moodForColor(p.Color)
 	}
-	return []*discordgo.File{
-		moodFile(mood),
-		{Name: ruleAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(rulePNG)},
+	thumb := moodFile(mood)
+	if p.Icon != "" {
+		thumb = p.IconFile
 	}
+	files := []*discordgo.File{{Name: ruleAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(rulePNG)}}
+	if thumb != nil {
+		files = append(files, thumb)
+	}
+	return files
 }
 
 // RespondPanel opens p as a fresh ephemeral message.

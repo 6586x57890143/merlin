@@ -554,3 +554,12 @@ func (p *Plugin) applyOverride(ctx context.Context, i *discordgo.InteractionCrea
 	}
 	return fmt.Sprintf("✓ Updated who may run `%s`.", action)
 }
+
+// Help is this plugin's page in /help.
+func (p *Plugin) Help() core.Help {
+	return core.Help{
+		Title: "Settings",
+		Line:  "who runs me here, where i write things down, and what is switched on",
+		About: "`/config` opens my settings for this server: who counts as an admin or a mod, where the audit log and status alerts go, which parts of me are on, and who may run any single command. mods can read it; only admins can change it. pause stops everything destructive at once, and dry-run makes me say what i would have done without doing it.",
+	}
+}

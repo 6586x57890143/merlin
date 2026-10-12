@@ -463,3 +463,12 @@ func (p *Plugin) setExempt(ctx context.Context, i *discordgo.InteractionCreate, 
 	}
 	return outcome{core.ColorSuccess, "Exemptions updated", ""}
 }
+
+// Help is this plugin's page in /help.
+func (p *Plugin) Help() core.Help {
+	return core.Help{
+		Title: "AI moderation",
+		Line:  "reads messages against discord's community guidelines",
+		About: "i read messages against discord's own guidelines and, where this server says so, remove or tidy the ones that cross a line. a cheap pass reads everything and a better one double checks anything flagged before i touch it. whoever i act on is told why in a dm, and mods can put it back with `/aimod undo`. `/aimod why` shows why a message was changed. admins set it up on `/aimod settings`.",
+	}
+}

@@ -707,3 +707,12 @@ func backoffFor(consecutiveFailures int) time.Duration {
 	}
 	return d
 }
+
+// Help is this plugin's page in /help.
+func (s *Scheduler) Help() core.Help {
+	return core.Help{
+		Title: "Scheduler",
+		Line:  "the clock behind everything i do on my own",
+		About: "rotations, sweeps and reviews run on my own clock. `/scheduler list` shows every job here, when it last ran and when it runs next, and `/scheduler run-now` runs one early. if a job keeps failing, the status channel hears about it.",
+	}
+}
