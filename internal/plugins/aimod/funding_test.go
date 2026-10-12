@@ -403,11 +403,11 @@ func TestFundingShowFormatsTheJar(t *testing.T) {
 	all := strings.Join(showTheJar(t), "\n")
 
 	for _, want := range []string{
-		testWallet, // the address itself
+		testWallet,                         // the address itself
 		"**🔗 " + familyEVM.networks + "**", // the money-losing mistake, at full weight
-		"-# ",                           // Discord's small grey style is in use
-		"-# Set by ",                    // provenance, demoted
-		"merlin only reads this wallet", // the disclaimer is still present
+		"-# ",                              // Discord's small grey style is in use
+		"-# Set by ",                       // provenance, demoted
+		"merlin only reads this wallet",    // the disclaimer is still present
 	} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("rendered jar is missing %q\n%s", want, all)

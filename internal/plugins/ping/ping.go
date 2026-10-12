@@ -56,3 +56,12 @@ func (p *Plugin) handlePing(ctx context.Context, s *discordgo.Session, i *discor
 		},
 	})
 }
+
+// Help is this plugin's page in /help.
+func (p *Plugin) Help() core.Help {
+	return core.Help{
+		Title: "Ping",
+		Line:  "whether i'm awake and how fast",
+		About: "`/ping` answers with how long discord took to reach me. that's all it does.",
+	}
+}

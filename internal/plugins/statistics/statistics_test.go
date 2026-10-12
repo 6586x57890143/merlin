@@ -269,7 +269,7 @@ func TestCommandIsNotListedToTheServer(t *testing.T) {
 	// The picker is cosmetic; the gate is not. If this ever stops being
 	// TierAdmin-floored and operator-checked, the line above is not what
 	// should have been relied on.
-	if cmd.Name != "statistics" || len(cmd.Options) != 6 {
+	if cmd.Name != "statistics" || len(cmd.Options) != 5 {
 		t.Fatalf("command shape changed: %s with %d options", cmd.Name, len(cmd.Options))
 	}
 }

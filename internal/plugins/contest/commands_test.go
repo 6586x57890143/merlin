@@ -13,6 +13,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/6586x57890143/merlin/internal/secret"
 )
 
@@ -797,19 +798,9 @@ func TestConfigureRoundTrips(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	s, rt := stubSession()
 
-	i := interaction("set", intOpt("picks", 5))
-	// configure is a subcommand group, so the leaf sits one level deeper.
-	i.Data = discordgo.ApplicationCommandInteractionData{
-		Name: "contest",
-		Options: []*discordgo.ApplicationCommandInteractionDataOption{{
-			Name: "configure", Type: discordgo.ApplicationCommandOptionSubCommandGroup,
-			Options: []*discordgo.ApplicationCommandInteractionDataOption{{
-				Name: "set", Type: discordgo.ApplicationCommandOptionSubCommand,
-				Options: []*discordgo.ApplicationCommandInteractionDataOption{intOpt("picks", 5)},
-			}},
-		}},
-	}
-	p.handleConfigureSet(context.Background(), s, i)
+	i := paneltest.Click("u1", panelSet+"picks", nil, "5")
+	i.GuildID = "g1"
+	p.handlePanelSet(context.Background(), s, i, panelSet+"picks")
 
 	cfg, err := store.GetConfig(context.Background(), "g1")
 	if err != nil || cfg.DefaultMaxVotes != 5 {
@@ -822,8 +813,8 @@ func TestConfigureRoundTrips(t *testing.T) {
 	rt.mu.Lock()
 	rt.calls = nil
 	rt.mu.Unlock()
-	p.handleConfigureShow(context.Background(), s, interaction("show"))
-	if !strings.Contains(rt.said(), "5") {
+	p.handleSettings(context.Background(), s, interaction("settings"))
+	if !strings.Contains(rt.said(), "5 pick(s) per member") {
 		t.Errorf("show did not report the new value:\n%s", rt.said())
 	}
 }

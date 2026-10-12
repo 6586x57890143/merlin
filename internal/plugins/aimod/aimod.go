@@ -160,8 +160,8 @@ type Plugin struct {
 	// (the rapsheet plugin), without this package knowing who. Nil in tests
 	// that do not care, and publish tolerates that.
 	bus *core.EventBus
-	log   *slog.Logger
-	now   func() time.Time
+	log *slog.Logger
+	now func() time.Time
 
 	// scanning is false when the operator did not enable the MESSAGE_CONTENT
 	// intent. The plugin still registers its commands so /aimod status can

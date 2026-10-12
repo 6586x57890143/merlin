@@ -20,6 +20,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/obs"
 )
 
 // CronSpec is an alias for core.CronSpec so Scheduler's Register method
@@ -69,6 +70,15 @@ const (
 // the guild ID from the key) and /scheduler run-now work correctly.
 func JobKey(guildID, name string) string {
 	return guildID + ":" + name
+}
+
+// jobKind is what /perf files a job under: its name without the guild or a
+// per-slot ID, "job rotation" for "123:rotation:7", so one kind of work is
+// one row however many guilds and channels run it.
+func jobKind(key string) string {
+	_, name, _ := strings.Cut(key, ":")
+	kind, _, _ := strings.Cut(name, ":")
+	return "job " + kind
 }
 
 type registeredJob struct {
@@ -394,7 +404,10 @@ func nextDue(st JobState, sched core.Schedule, jitter time.Duration) (time.Time,
 }
 
 func (s *Scheduler) execute(ctx context.Context, j *registeredJob) error {
-	err := safeRun(ctx, j.fn)
+	start := time.Now()
+	var err error
+	obs.Region(jobKind(j.key), func() { err = safeRun(ctx, j.fn) })
+	obs.Default.Add(jobKind(j.key), obs.Run, time.Since(start))
 	now := s.now()
 
 	// The outcome has to be persisted even when ctx is exactly what ended
@@ -706,4 +719,13 @@ func backoffFor(consecutiveFailures int) time.Duration {
 		return backoffMax
 	}
 	return d
+}
+
+// Help is this plugin's page in /help.
+func (s *Scheduler) Help() core.Help {
+	return core.Help{
+		Title: "Scheduler",
+		Line:  "the clock behind everything i do on my own",
+		About: "rotations, sweeps and reviews run on my own clock. `/scheduler list` shows every job here, when it last ran and when it runs next, and `/scheduler run-now` runs one early. if a job keeps failing, the status channel hears about it.",
+	}
 }

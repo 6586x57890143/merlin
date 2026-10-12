@@ -11,6 +11,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/paneltest"
 )
 
 // The slash-command handlers, driven directly.
@@ -125,9 +126,8 @@ func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }
 func TestModeRefusesToEnableWithoutAKey(t *testing.T) {
 	store := newFakeStore()
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	s := testSession(t)
 
-	p.handleSetMode(context.Background(), s, interaction("g1", "configure", "mode", strOpt("mode", "enforce")))
+	p.setMode(context.Background(), interaction("g1", "", "settings"), Mode("enforce"))
 
 	cfg, err := store.Config(context.Background(), "g1")
 	if err != nil {
@@ -146,7 +146,7 @@ func TestModeSetsWithAKeyConfigured(t *testing.T) {
 	cfg.APIKeySealed = []byte("sealed")
 	store.setConfig(cfg)
 
-	p.handleSetMode(context.Background(), testSession(t), interaction("g1", "configure", "mode", strOpt("mode", "flag")))
+	p.setMode(context.Background(), interaction("g1", "", "settings"), Mode("flag"))
 
 	got, err := store.Config(context.Background(), "g1")
 	if err != nil {
@@ -163,7 +163,7 @@ func TestUnknownModeIsRejected(t *testing.T) {
 	store := newFakeStore()
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handleSetMode(context.Background(), testSession(t), interaction("g1", "configure", "mode", strOpt("mode", "sideways")))
+	p.setMode(context.Background(), interaction("g1", "", "settings"), Mode("sideways"))
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if cfg.Mode == "sideways" {
@@ -178,8 +178,7 @@ func TestChildSafetyCannotBeSwitchedOff(t *testing.T) {
 	store := newFakeStore()
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handlePolicySet(context.Background(), testSession(t), interaction("g1", "policy", "set",
-		strOpt("policy", string(BucketChildSafety)), strOpt("action", string(ActionOff))))
+	p.setPolicy(context.Background(), interaction("g1", "", "settings"), Bucket(string(BucketChildSafety)), Action(string(ActionOff)))
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if got := EffectiveAction(cfg.BucketActions, BucketChildSafety); got != ActionRemove {
@@ -191,8 +190,7 @@ func TestPolicySetStoresAValidAction(t *testing.T) {
 	store := newFakeStore()
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handlePolicySet(context.Background(), testSession(t), interaction("g1", "policy", "set",
-		strOpt("policy", string(BucketHateSpeech)), strOpt("action", string(ActionRewrite))))
+	p.setPolicy(context.Background(), interaction("g1", "", "settings"), Bucket(string(BucketHateSpeech)), Action(string(ActionRewrite)))
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if got := EffectiveAction(cfg.BucketActions, BucketHateSpeech); got != ActionRewrite {
@@ -214,8 +212,7 @@ func TestCalibrateModeStoresAndReconciles(t *testing.T) {
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 	p.sched = sched
 
-	p.handleCalibrateMode(context.Background(), testSession(t),
-		interaction("g1", "calibrate", "mode", strOpt("mode", string(CalibrationAuto))))
+	p.setCalibrationMode(context.Background(), interaction("g1", "", "settings"), CalibrationMode(string(CalibrationAuto)))
 
 	got, _ := store.Config(context.Background(), "g1")
 	if got.CalibrationMode != CalibrationAuto {
@@ -225,8 +222,7 @@ func TestCalibrateModeStoresAndReconciles(t *testing.T) {
 		t.Error("the weekly job was not registered, so the setting does nothing")
 	}
 
-	p.handleCalibrateMode(context.Background(), testSession(t),
-		interaction("g1", "calibrate", "mode", strOpt("mode", string(CalibrationOff))))
+	p.setCalibrationMode(context.Background(), interaction("g1", "", "settings"), CalibrationMode(string(CalibrationOff)))
 	if sched.jobs[calibrationJobKey("g1")] {
 		t.Error("switching reviews off left the job registered")
 	}
@@ -236,8 +232,7 @@ func TestCalibrateModeRejectsAnUnknownValue(t *testing.T) {
 	store := newFakeStore()
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handleCalibrateMode(context.Background(), testSession(t),
-		interaction("g1", "calibrate", "mode", strOpt("mode", "whenever")))
+	p.setCalibrationMode(context.Background(), interaction("g1", "", "settings"), CalibrationMode("whenever"))
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if cfg.CalibrationMode == "whenever" {
@@ -259,7 +254,7 @@ func TestCalibrateApplyRevalidatesAgainstLiveConfig(t *testing.T) {
 	store.setConfig(cfg)
 
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	p.handleCalibrateApply(context.Background(), testSession(t), interaction("g1", "calibrate", "apply"))
+	p.calibrateApply(context.Background(), interaction("g1", "", "settings"))
 
 	got, _ := store.Config(context.Background(), "g1")
 	if len(got.Calibration) != 1 || got.Calibration[0].Bucket != BucketThreats {
@@ -280,7 +275,7 @@ func TestCalibrateApplyWithNothingPendingChangesNothing(t *testing.T) {
 	store.setConfig(cfg)
 
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	p.handleCalibrateApply(context.Background(), testSession(t), interaction("g1", "calibrate", "apply"))
+	p.calibrateApply(context.Background(), interaction("g1", "", "settings"))
 
 	got, _ := store.Config(context.Background(), "g1")
 	if len(got.Calibration) != 1 {
@@ -296,7 +291,7 @@ func TestCalibrateClearEmptiesBothSets(t *testing.T) {
 	store.setConfig(cfg)
 
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	p.handleCalibrateClear(context.Background(), testSession(t), interaction("g1", "calibrate", "clear"))
+	p.calibrateClear(context.Background(), interaction("g1", "", "settings"))
 
 	got, _ := store.Config(context.Background(), "g1")
 	if len(got.Calibration) != 0 || len(got.CalibrationPending) != 0 {
@@ -341,7 +336,7 @@ func TestCalibrateRunNowRefusesWhenThePluginIsOff(t *testing.T) {
 
 	client := &fakeClassifier{}
 	p := testPlugin(t, store, client, newFakeOps(), &fakeAudit{})
-	p.handleCalibrateRunNow(context.Background(), testSession(t), interaction("g1", "calibrate", "run-now"))
+	p.calibrateNow(context.Background(), interaction("g1", "", "settings"))
 
 	if fast, deep := client.counts(); fast != 0 || deep != 0 {
 		t.Errorf("paid for a review on a disabled guild: fast=%d deep=%d", fast, deep)
@@ -356,7 +351,7 @@ func TestCalibrateRunNowReportsAQuietWeek(t *testing.T) {
 	client := &fakeClassifier{}
 	p := testPlugin(t, store, client, newFakeOps(), &fakeAudit{})
 
-	p.handleCalibrateRunNow(context.Background(), testSession(t), interaction("g1", "calibrate", "run-now"))
+	p.calibrateNow(context.Background(), interaction("g1", "", "settings"))
 
 	if fast, deep := client.counts(); fast != 0 || deep != 0 {
 		t.Errorf("paid for a review with no incidents to review: fast=%d deep=%d", fast, deep)
@@ -497,18 +492,6 @@ func TestStatusRendersOnAnUnconfiguredGuild(t *testing.T) {
 	p.handleStatus(context.Background(), testSession(t), interaction("g1", "", "status"))
 }
 
-func numOpt(name string, v float64) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{
-		Name: name, Type: discordgo.ApplicationCommandOptionNumber, Value: v,
-	}
-}
-
-func intOpt(name string, v float64) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{
-		Name: name, Type: discordgo.ApplicationCommandOptionInteger, Value: v,
-	}
-}
-
 func boolOpt(name string, v bool) *discordgo.ApplicationCommandInteractionDataOption {
 	return &discordgo.ApplicationCommandInteractionDataOption{
 		Name: name, Type: discordgo.ApplicationCommandOptionBoolean, Value: v,
@@ -523,7 +506,7 @@ func TestBudgetRejectsANegativeCap(t *testing.T) {
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handleSetBudget(context.Background(), testSession(t), interaction("g1", "configure", "budget", numOpt("usd", -1)))
+	p.setBudget(context.Background(), interaction("g1", "", "settings"), -1)
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if cfg.DailyBudgetUSD < 0 {
@@ -536,7 +519,7 @@ func TestBudgetStoresAValidCap(t *testing.T) {
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handleSetBudget(context.Background(), testSession(t), interaction("g1", "configure", "budget", numOpt("usd", 5)))
+	p.setBudget(context.Background(), interaction("g1", "", "settings"), 5)
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if cfg.DailyBudgetUSD != 5 {
@@ -551,15 +534,14 @@ func TestEvidenceAcceptsZeroAndRefusesNegative(t *testing.T) {
 	store := newFakeStore()
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	s := testSession(t)
 
-	p.handleSetEvidence(context.Background(), s, interaction("g1", "configure", "evidence", intOpt("hours", 0)))
+	p.setEvidence(context.Background(), interaction("g1", "", "settings"), 0)
 	cfg, _ := store.Config(context.Background(), "g1")
 	if cfg.EvidenceHours != 0 {
 		t.Errorf("evidence = %d, want 0 accepted as a deliberate choice", cfg.EvidenceHours)
 	}
 
-	p.handleSetEvidence(context.Background(), s, interaction("g1", "configure", "evidence", intOpt("hours", -5)))
+	p.setEvidence(context.Background(), interaction("g1", "", "settings"), -5)
 	cfg, _ = store.Config(context.Background(), "g1")
 	if cfg.EvidenceHours < 0 {
 		t.Errorf("evidence = %d, want a negative window refused", cfg.EvidenceHours)
@@ -570,17 +552,14 @@ func TestSanctionActionRoundTrips(t *testing.T) {
 	store := newFakeStore()
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	s := testSession(t)
 
-	p.handleSetSanction(context.Background(), s, interaction("g1", "configure", "sanctions",
-		strOpt("action", string(SanctionJail))))
+	p.setSanction(context.Background(), interaction("g1", "", "settings"), SanctionAction(string(SanctionJail)))
 	cfg, _ := store.Config(context.Background(), "g1")
 	if cfg.SanctionAction != SanctionJail {
 		t.Errorf("sanction action = %q, want jail", cfg.SanctionAction)
 	}
 
-	p.handleSetSanction(context.Background(), s, interaction("g1", "configure", "sanctions",
-		strOpt("action", "banish")))
+	p.setSanction(context.Background(), interaction("g1", "", "settings"), SanctionAction("banish"))
 	cfg, _ = store.Config(context.Background(), "g1")
 	if cfg.SanctionAction == "banish" {
 		t.Error("an invented sanction action was stored")
@@ -594,27 +573,26 @@ func TestExemptTogglesAreIdempotent(t *testing.T) {
 	store := newFakeStore()
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	s := testSession(t)
 
-	add := interaction("g1", "configure", "exempt-channel", strOpt("channel", "c9"), boolOpt("exempt", true))
-	p.handleExemptChannel(context.Background(), s, add)
-	p.handleExemptChannel(context.Background(), s, add)
+	// Two panels both drawn before c9 was exempt, both adding it.
+	add := exemptClick(panelCfg+"exch", nil, "c9")
+	p.setExempt(context.Background(), add, true)
+	p.setExempt(context.Background(), add, true)
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if len(cfg.ExemptChannelIDs) != 1 {
 		t.Errorf("exempt channels = %v, want one entry after two identical adds", cfg.ExemptChannelIDs)
 	}
 
-	p.handleExemptChannel(context.Background(), s,
-		interaction("g1", "configure", "exempt-channel", strOpt("channel", "c9"), boolOpt("exempt", false)))
+	p.setExempt(context.Background(), exemptClick(panelCfg+"exch", []string{"c9"}), true)
 	cfg, _ = store.Config(context.Background(), "g1")
 	if len(cfg.ExemptChannelIDs) != 0 {
 		t.Errorf("exempt channels = %v, want the channel removed", cfg.ExemptChannelIDs)
 	}
 
-	roleAdd := interaction("g1", "configure", "exempt-role", strOpt("role", "r9"), boolOpt("exempt", true))
-	p.handleExemptRole(context.Background(), s, roleAdd)
-	p.handleExemptRole(context.Background(), s, roleAdd)
+	roleAdd := exemptClick(panelCfg+"exrole", nil, "r9")
+	p.setExempt(context.Background(), roleAdd, false)
+	p.setExempt(context.Background(), roleAdd, false)
 	cfg, _ = store.Config(context.Background(), "g1")
 	if len(cfg.ExemptRoleIDs) != 1 {
 		t.Errorf("exempt roles = %v, want one entry after two identical adds", cfg.ExemptRoleIDs)
@@ -647,10 +625,10 @@ func TestReadOnlySurfacesRender(t *testing.T) {
 			p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 			s := testSession(t)
 
-			p.handleConfigureShow(context.Background(), s, interaction("g1", "configure", "show"))
-			p.handlePolicyList(context.Background(), s, interaction("g1", "policy", "list"))
-			p.handlePolicyExplain(context.Background(), s,
-				interaction("g1", "policy", "explain", strOpt("policy", string(BucketHateSpeech))))
+			for _, pg := range aimodPages {
+				p.panel(context.Background(), interaction("g1", "", "settings"), pg.key, "", "")
+			}
+			p.panel(context.Background(), interaction("g1", "", "settings"), "policy", string(BucketHateSpeech), "")
 			p.handleStatus(context.Background(), s, interaction("g1", "", "status"))
 			p.handleCalibrateShow(context.Background(), s, interaction("g1", "calibrate", "show"))
 		})
@@ -662,8 +640,7 @@ func TestPolicyExplainOnAnUnknownBucket(t *testing.T) {
 	store := newFakeStore()
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	p.handlePolicyExplain(context.Background(), testSession(t),
-		interaction("g1", "policy", "explain", strOpt("policy", "invented")))
+	p.panel(context.Background(), interaction("g1", "", "settings"), "policy", "invented", "")
 }
 
 // /aimod undo has outcomes a moderator can genuinely hit, and they have to be
@@ -748,4 +725,19 @@ func TestCachingStoreInvalidatesOnTheCalibrationSetters(t *testing.T) {
 	if len(got.Calibration) != 1 {
 		t.Error("SetCalibration did not invalidate, so the classifier keeps the old set")
 	}
+}
+
+// exemptClick is an admin submitting one of the exemption pickers, drawn
+// with drawn preselected, now holding picked.
+func exemptClick(customID string, drawn []string, picked ...string) *discordgo.InteractionCreate {
+	msg := paneltest.Received(core.Panel{Body: []discordgo.MessageComponent{core.Row(core.EntitySelect(discordgo.ChannelSelectMenu, customID, "", drawn, core.MaxSelectValues, false))}})
+	i := paneltest.Click("actor", customID, msg, picked...)
+	i.GuildID = "g1"
+	return i
+}
+
+// enabled reads the old command's boolean off an interaction built for it,
+// so the opt-out switch tests can keep building their interactions as before.
+func enabled(i *discordgo.InteractionCreate) bool {
+	return core.LeafArgs(i)["enabled"].BoolValue()
 }

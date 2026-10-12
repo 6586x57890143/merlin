@@ -174,9 +174,9 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 	if step == setupStepDone {
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Where to go next", Value: strings.Join([]string{
 			"Assign your mod role to the people who should actually have it.",
-			"`/rotation configure add` to start rotating a channel.",
-			"`/roles configure allow-channel` to choose what jailed members can still see.",
-			"`/config permissions` to loosen or tighten any single command.",
+			"`/rotation` to start rotating a channel.",
+			"`/roles settings` to choose what jailed members can still see.",
+			"`/config` to change any of this later, or loosen or tighten a single command under Permissions.",
 		}, "\n")})
 	}
 	if notice != "" {

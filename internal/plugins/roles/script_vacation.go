@@ -53,7 +53,7 @@ import (
 const scriptVacation = "vacation"
 
 // errVacationOff is what /roles vacation says while the script is off.
-var errVacationOff = errors.New("the vacation script is off in this server: `/roles scripts set script:vacation enabled:true`")
+var errVacationOff = errors.New("the vacation script is off in this server: turn it on under Scripts on `/roles settings`")
 
 // sentence is everything that differs between a jail and a vacation once
 // the row exists: the words, and the audit action names. One table rather
@@ -135,7 +135,7 @@ func (p *Plugin) resolveVacationRole(guildID string) (string, error) {
 	}
 	want := p.configuredVacationRole(guildID)
 	if want == "" {
-		return "", errors.New("no vacation role is configured for this server: `/roles configure vacation-role`")
+		return "", errors.New("no vacation role is configured for this server: set one under Vacation on `/roles settings`")
 	}
 	rolesList, err := p.ops(guildID).GuildRoles(guildID)
 	if err != nil {
@@ -147,7 +147,7 @@ func (p *Plugin) resolveVacationRole(guildID string) (string, error) {
 				p.log.Error("roles: failed to clear missing vacation role", "guild", guildID, "role", want, "err", err)
 			}
 		}
-		return "", fmt.Errorf("the vacation role %s no longer exists; set another with `/roles configure vacation-role`", core.MentionRole(want))
+		return "", fmt.Errorf("the vacation role %s no longer exists; set another under Vacation on `/roles settings`", core.MentionRole(want))
 	}
 	p.vacationRoleID[guildID] = want
 	return want, nil
@@ -355,49 +355,6 @@ func (p *Plugin) scriptOn(ctx context.Context, guildID, script string) bool {
 	return on
 }
 
-// handleVacationRole is /roles configure vacation-role: set, or with the
-// option omitted clear, the island's marker. Setting syncs every channel
-// for the new role (deferred: that is O(channels)), and the answer reads
-// back what the role can now see.
-func (p *Plugin) handleVacationRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	roleID := ""
-	if opt, ok := core.LeafArgs(i)["role"]; ok {
-		roleID, _ = opt.Value.(string)
-	}
-	// Setting a role syncs every channel, O(channels), past Discord's
-	// 3-second deadline in a large guild. Every path below answers with a
-	// follow-up, the clear included, so the two cannot drift.
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("roles: defer vacation-role response failed", "guild", i.GuildID, "err", err)
-		return
-	}
-	if err := p.jailChannelConfig.SetVacationRole(ctx, i.GuildID, roleID); err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to save", err)
-		return
-	}
-	p.forgetVacationRole(i.GuildID)
-	detail := "none"
-	if roleID != "" {
-		detail = core.MentionRole(roleID)
-	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "vacation_role="+detail); err != nil {
-		p.log.Error("roles: audit vacation-role failed", "guild", i.GuildID, "err", err)
-	}
-	if roleID == "" {
-		msg := "No vacation role is configured."
-		if i.GuildID == meltingPotGuildID {
-			msg = fmt.Sprintf("Cleared. merlin will use %s, the Melting Pot's own island role.", core.MentionRole(meltingPotDefaultVacationRoleID))
-		}
-		_ = core.FollowUpOK(s, i, "Vacation role cleared", msg)
-		return
-	}
-	if err := p.syncAllVacationOverwrites(i.GuildID); err != nil {
-		p.log.Error("roles: sync vacation overwrites for new role failed", "guild", i.GuildID, "err", err)
-	}
-	_ = core.FollowUpOK(s, i, "Vacation role set",
-		fmt.Sprintf("Members on vacation will hold %s.\n\n%s", core.MentionRole(roleID), p.describeRoleAccess(i.GuildID, roleID)))
-}
-
 // describeRoleAccess is the read-back after a sync: which channels carry an
 // overwrite for roleID allowing or denying View. Effective permissions are
 // not computed (that is Discord's job and a much longer function); this is
@@ -478,42 +435,11 @@ func (p *Plugin) syncVacationChannel(guildID, channelID string) (withheld int64,
 	return p.syncChannelVisibility(guildID, p.vacationMarker(guildID, roleID), channelID)
 }
 
-func (p *Plugin) handleVacationAllowChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	channelID := core.LeafArgs(i)["channel"].Value.(string)
-	if err := p.jailChannelConfig.AddVacationAllowedChannel(ctx, i.GuildID, channelID); err != nil {
-		core.RespondErr(s, i, "Failed to save", err)
-		return
-	}
-	withheld, err := p.syncVacationChannel(i.GuildID, channelID)
-	if err != nil {
-		p.log.Error("roles: sync vacation channel failed", "guild", i.GuildID, "channel", channelID, "err", err)
-	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "", "vacation_allow="+core.MentionChannel(channelID)+withheldDetail(withheld)); err != nil {
-		p.log.Error("roles: audit vacation-allow-channel failed", "guild", i.GuildID, "err", err)
-	}
-	p.respondAllowed(s, i, "members on vacation", channelID, withheld)
-}
-
-func (p *Plugin) handleVacationDisallowChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	channelID := core.LeafArgs(i)["channel"].Value.(string)
-	if err := p.jailChannelConfig.RemoveVacationAllowedChannel(ctx, i.GuildID, channelID); err != nil {
-		core.RespondErr(s, i, "Failed to save", err)
-		return
-	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.configure_jail_channels", "vacation_allow="+core.MentionChannel(channelID), ""); err != nil {
-		p.log.Error("roles: audit vacation-disallow-channel failed", "guild", i.GuildID, "err", err)
-	}
-	if _, err := p.syncVacationChannel(i.GuildID, channelID); err != nil {
-		p.log.Error("roles: sync vacation channel failed", "guild", i.GuildID, "channel", channelID, "err", err)
-	}
-	core.RespondOK(s, i, "Channel hidden", fmt.Sprintf("<#%s> is hidden from members on vacation again.", channelID))
-}
-
 // vacationLine renders the script's state for /roles scripts list and the
 // enable notice.
 func (p *Plugin) vacationLine(guildID string) string {
 	if id := p.configuredVacationRole(guildID); id != "" {
 		return "island role " + core.MentionRole(id)
 	}
-	return "no island role configured (`/roles configure vacation-role`)"
+	return "no island role configured (set it on `/roles settings`)"
 }

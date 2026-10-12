@@ -170,7 +170,7 @@ func (p *Plugin) mirrorNow(ctx context.Context, cfg Config, e Entry) error {
 	}, send)
 	if err != nil {
 		if core.IsUnknownResource(err) {
-			p.log.Warn("rapsheet: case-file forum is gone, unsetting it; run /rapsheet configure forum to choose another",
+			p.log.Warn("rapsheet: case-file forum is gone, unsetting it; choose another on /rapsheet settings",
 				"guild", e.GuildID, "forum", cfg.ForumChannelID)
 			cfg.ForumChannelID = ""
 			if cerr := p.store.SetConfig(ctx, cfg); cerr != nil {

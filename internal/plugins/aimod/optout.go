@@ -110,7 +110,7 @@ func (p *Plugin) handleOptOut(ctx context.Context, s *discordgo.Session, i *disc
 	if on && !cfg.MemberOptOut {
 		core.RespondWarn(s, i, "This server doesn't offer that",
 			"AI moderation applies to everyone here. Only the server owner can turn the opt-out on, with "+
-				"`/aimod configure member-opt-out enabled:true`.")
+				"Member opt-out on `/aimod settings`.")
 		return
 	}
 
@@ -138,36 +138,30 @@ func (p *Plugin) handleOptOut(ctx context.Context, s *discordgo.Session, i *disc
 
 // handleSetMemberOptOut flips the guild's switch. Owner or operator only; see
 // the file comment for why that is narrower than the TierAdmin on the leaf.
-func (p *Plugin) handleSetMemberOptOut(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (p *Plugin) setMemberOptOut(ctx context.Context, i *discordgo.InteractionCreate, on bool) outcome {
 	actor := ""
 	if i.Member != nil && i.Member.User != nil {
 		actor = i.Member.User.ID
 	}
 	allowed, err := p.ownerOrOperator(i.GuildID, actor)
 	if err != nil {
-		core.RespondErr(s, i, "Could not check who you are", err)
-		return
+		return failed("Could not check who you are", err)
 	}
 	if !allowed {
-		core.RespondWarn(s, i, "Not yours to set",
-			"Only the server owner can decide whether members may opt out of AI moderation. It is the one setting "+
-				"here that makes the filter cover less of the server, so it does not travel with admin.")
-		return
+		return outcome{core.ColorWarning, "Not yours to set",
+			"Only the server owner can decide whether members may opt out of AI moderation. It is the one setting " +
+				"here that makes the filter cover less of the server, so it does not travel with admin."}
 	}
 
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
-	on := core.LeafArgs(i)["enabled"].BoolValue()
 	if on == cfg.MemberOptOut {
-		core.RespondInfo(s, i, "No change", fmt.Sprintf("Member opt-out is already %s.", onOff(on)))
-		return
+		return outcome{core.ColorInfo, "No change", fmt.Sprintf("Member opt-out is already %s.", onOff(on))}
 	}
 	if err := p.store.SetMemberOptOut(ctx, i.GuildID, on); err != nil {
-		core.RespondErr(s, i, "Failed to update the setting", err)
-		return
+		return failed("Failed to update the setting", err)
 	}
 	p.auditConfig(ctx, i, "aimod.member_opt_out_set", onOff(cfg.MemberOptOut), onOff(on))
 
@@ -176,17 +170,16 @@ func (p *Plugin) handleSetMemberOptOut(ctx context.Context, s *discordgo.Session
 		// this off and back on next month should not be surprised to find the
 		// same people still opted out, and one who wants it genuinely empty
 		// needs to know it is not.
-		core.RespondOK(s, i, "Member opt-out off",
+		return outcome{core.ColorSuccess, "Member opt-out off",
 			fmt.Sprintf("Everyone is covered by the filter again, including the %d who had opted out. Their choices "+
 				"are kept rather than discarded, so turning this back on restores them instead of re-enrolling everybody.",
-				len(cfg.OptOutUserIDs)))
-		return
+				len(cfg.OptOutUserIDs))}
 	}
-	core.RespondWarn(s, i, "Member opt-out on",
-		"Members can now run `/aimod opt-out enabled:true` and are treated as if they held an exempt role: "+
-			"no word list, no pattern checks, no model.\n\n"+
-			"What that does not cover: slurs are still caught on everyone, and anything reading as "+
-			"child safety is still scanned regardless. Nobody can opt anybody else out, and `/aimod status` lists who has.")
+	return outcome{core.ColorWarning, "Member opt-out on",
+		"Members can now run `/aimod opt-out enabled:true` and are treated as if they held an exempt role: " +
+			"no word list, no pattern checks, no model.\n\n" +
+			"What that does not cover: slurs are still caught on everyone, and anything reading as " +
+			"child safety is still scanned regardless. Nobody can opt anybody else out, and `/aimod status` lists who has."}
 }
 
 func optOutWord(on bool) string {

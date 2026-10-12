@@ -9,6 +9,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/6586x57890143/merlin/internal/obs"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
@@ -119,6 +120,15 @@ func (r *CommandRouter) say(key voice.Key, plain string) string {
 	return plain
 }
 
+// Perms is the router's permission checker, for a panel drawing a control
+// disabled for somebody the router would refuse.
+func (r *CommandRouter) Perms() *Permissions {
+	if r == nil {
+		return nil
+	}
+	return r.perms
+}
+
 // RegisterCommand adds one top-level command, owned by pluginName (used for
 // the per-guild plugin enable/disable gate, see PluginGate). cmd's Options
 // may nest subcommands/subcommand groups arbitrarily (as discordgo itself
@@ -130,7 +140,7 @@ func (r *CommandRouter) RegisterCommand(pluginName string, cmd *discordgo.Applic
 }
 
 // Plugins returns every distinct plugin name that has registered a top-level
-// command, used by /config plugins enable/disable's autocomplete.
+// command, which is what /config's plugins page lists.
 func (r *CommandRouter) Plugins() []string {
 	seen := make(map[string]bool, len(r.topLevelPlugin))
 	var out []string
@@ -204,17 +214,27 @@ func (r *CommandRouter) HandleModal(pluginName, prefix string, spec PermSpec, fn
 }
 
 // Actions returns every distinct, non-empty PermSpec.Action currently
-// registered, used by /config permissions grant/revoke's autocomplete so
-// admins can discover valid action names without reading source code.
+// registered, which is what /config's permissions page offers. Components
+// and modals count as well as commands: once a plugin's settings move onto a
+// panel, its configure action lives on the panel's controls, and an action
+// missing from this list is one a guild can no longer retier or block.
 func (r *CommandRouter) Actions() []string {
 	seen := make(map[string]bool)
 	var out []string
-	for _, leaf := range r.leaves {
-		if leaf.spec.Action == "" || seen[leaf.spec.Action] {
-			continue
+	add := func(a string) {
+		if a != "" && !seen[a] {
+			seen[a] = true
+			out = append(out, a)
 		}
-		seen[leaf.spec.Action] = true
-		out = append(out, leaf.spec.Action)
+	}
+	for _, leaf := range r.leaves {
+		add(leaf.spec.Action)
+	}
+	for _, c := range r.components {
+		add(c.spec.Action)
+	}
+	for _, m := range r.modals {
+		add(m.spec.Action)
 	}
 	return out
 }
@@ -487,7 +507,7 @@ func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.Int
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	matched.handler(ctx, s, i, customID)
+	timed(matched.pluginName, i, func() { matched.handler(ctx, s, i, customID) })
 }
 
 // matchModal is matchComponent for modal submissions. Split out for the same
@@ -543,7 +563,7 @@ func (r *CommandRouter) dispatchModal(s *discordgo.Session, i *discordgo.Interac
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	matched.handler(ctx, s, i, customID)
+	timed(matched.pluginName, i, func() { matched.handler(ctx, s, i, customID) })
 }
 
 func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -587,7 +607,19 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	leaf.handler(ctx, s, i)
+	timed(r.topLevelPlugin[data.Name], i, func() { leaf.handler(ctx, s, i) })
+}
+
+// timed records an interaction's two legs against plugin: in, from Discord
+// creating it to merlin dispatching it (the gateway, decoding, scheduling),
+// and run, the handler itself, in a trace region named for the plugin.
+func timed(plugin string, i *discordgo.InteractionCreate, fn func()) {
+	if d, ok := obs.Since(i.ID); ok {
+		obs.Default.Add(plugin, obs.In, d)
+	}
+	start := time.Now()
+	obs.Region(plugin, fn)
+	obs.Default.Add(plugin, obs.Run, time.Since(start))
 }
 
 func (r *CommandRouter) dispatchAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {

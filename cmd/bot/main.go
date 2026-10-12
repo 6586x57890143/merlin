@@ -22,9 +22,12 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/fleet"
+	"github.com/6586x57890143/merlin/internal/obs"
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
+	"github.com/6586x57890143/merlin/internal/plugins/help"
+	"github.com/6586x57890143/merlin/internal/plugins/perf"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
 	"github.com/6586x57890143/merlin/internal/plugins/rapsheet"
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
@@ -120,9 +123,19 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	}
 	// The link to cygnet, the fleet's hub, only where it is configured.
 	// Every request Discord refuses for want of a permission is reported
-	// to her, whichever plugin made it, so she can grant it.
+	// to her, whichever plugin made it, so she can grant it. Outside that,
+	// every REST call is timed by route for /perf, so the two wrap the one
+	// client and nothing that sends through this session goes unseen by
+	// either.
 	hub := fleet.Dial(os.Getenv("MERLIN_CYGNET_URL"), os.Getenv("MERLIN_CYGNET_TOKEN"), log)
-	session.Client = &http.Client{Timeout: 20 * time.Second, Transport: hub.Transport(nil, log)}
+	session.Client = &http.Client{Timeout: 20 * time.Second, Transport: obs.Transport(hub.Transport(nil, log), obs.Default)}
+	if addr := os.Getenv("MERLIN_DEBUG_ADDR"); addr != "" {
+		if err := obs.Serve(addr); err != nil {
+			log.Error("debug listener", "err", err)
+		} else {
+			log.Info("debug listener", "addr", addr)
+		}
+	}
 
 	bus := core.NewEventBus(log)
 	settingsStore := settings.New(db.Pool, bus)
@@ -299,6 +312,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// like WithJailer: aimod never imports statistics.
 	aimodPlugin.WithTraffic(statisticsPlugin)
 	registry.Register(adminconfigPlugin)
+	registry.Register(perf.New(obs.Default))
+	registry.Register(help.New(registry.Plugins, settingsStore))
 
 	if err := registry.InitAll(); err != nil {
 		return err
@@ -316,6 +331,14 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	if err := commands.PurgeGlobalCommands(session, cfg.Discord.AppID); err != nil {
 		log.Error("purge global commands", "err", err)
 	}
+	// Plugin icons as application emoji, in the background: one list call
+	// when nothing changed, and until it lands every icon goes as text or an
+	// attachment, so nothing waits on it.
+	go func() {
+		if err := core.SyncEmoji(session, cfg.Discord.AppID); err != nil {
+			log.Warn("sync plugin icons", "err", err)
+		}
+	}()
 
 	// One dispatcher for every plugin's commands (spec.MD §4a), replacing
 	// each plugin calling session.AddHandler itself. Guild-scoped command

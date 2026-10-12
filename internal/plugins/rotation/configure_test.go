@@ -37,10 +37,6 @@ func TestValidateRotationChannelRejectsZeroRetention(t *testing.T) {
 	}
 }
 
-func fakeChannelOpt(name, channelID string) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionChannel, Value: channelID}
-}
-
 // TestResolveArchiveCategoryUsesGivenOption is a regression test for the
 // second half of the same reported bug: archive_category used to be
 // required, forcing a mod to go create a category in Discord's UI before
@@ -49,11 +45,7 @@ func fakeChannelOpt(name, channelID string) *discordgo.ApplicationCommandInterac
 // as-is rather than ignoring it in favor of the auto-create fallback.
 func TestResolveArchiveCategoryUsesGivenOption(t *testing.T) {
 	ops, _, _, p, _ := setupRotation(t, finiteRetentionRC())
-	opts := map[string]*discordgo.ApplicationCommandInteractionDataOption{
-		"archive_category": fakeChannelOpt("archive_category", "explicit-cat"),
-	}
-
-	got, err := p.resolveArchiveCategory("g1", opts)
+	got, err := p.resolveArchiveCategory("g1", "explicit-cat")
 	if err != nil {
 		t.Fatalf("resolveArchiveCategory: %v", err)
 	}
@@ -69,7 +61,7 @@ func TestResolveArchiveCategoryReusesExistingArchiveCategory(t *testing.T) {
 	ops, _, _, p, _ := setupRotation(t, finiteRetentionRC())
 	ops.addChannel(&discordgo.Channel{ID: "existing-archive-cat", GuildID: "g1", Name: defaultArchiveCategoryName, Type: discordgo.ChannelTypeGuildCategory})
 
-	got, err := p.resolveArchiveCategory("g1", map[string]*discordgo.ApplicationCommandInteractionDataOption{})
+	got, err := p.resolveArchiveCategory("g1", "")
 	if err != nil {
 		t.Fatalf("resolveArchiveCategory: %v", err)
 	}
@@ -81,7 +73,7 @@ func TestResolveArchiveCategoryReusesExistingArchiveCategory(t *testing.T) {
 func TestResolveArchiveCategoryCreatesArchiveCategoryWhenMissing(t *testing.T) {
 	ops, _, _, p, _ := setupRotation(t, finiteRetentionRC())
 
-	got, err := p.resolveArchiveCategory("g1", map[string]*discordgo.ApplicationCommandInteractionDataOption{})
+	got, err := p.resolveArchiveCategory("g1", "")
 	if err != nil {
 		t.Fatalf("resolveArchiveCategory: %v", err)
 	}

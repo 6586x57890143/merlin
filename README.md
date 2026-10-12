@@ -23,8 +23,8 @@ what just happened. Handy if you run a channel where people would rather their
 history not sit around indefinitely.
 
 Archives are hidden from everyone except your mods and anyone with Discord's
-Administrator bit. If you want another role to be able to read them, add it with
-`/rotation configure allow-archive-role`. That grant is read-only, so the role
+Administrator bit. If you want another role to be able to read them, add it under
+**Archive readers** on `/rotation`. That grant is read-only, so the role
 can view the channel and read the history back and nothing else: no posting, no
 reactions, no threads. Permissions live on the archive category and every
 archived channel is kept in sync with it, so a role you add or remove applies to
@@ -38,14 +38,14 @@ big the server is. They get their roles back automatically when the timer runs
 out, or when a mod runs `/roles release`. Leaving and rejoining doesn't shake it
 off. There's a bulk version and a `/roles jail-role` for when a raid shows up.
 A jailed member is never given more in an allowlisted channel than an ordinary
-member has there (`/roles configure member-role @melted` says who that is): allow
+member has there (the member role on `/roles settings` says who that is): allow
 an announcements room and they can read it, not post in it, and the command
 says so.
 
 **Vacation.** The same thing, somewhere nicer. `/roles vacation @someone 2d` is
 jail with a different marker role, one the server already has (the Melting
-Pot's island; elsewhere `/roles configure vacation-role`), hidden from every
-channel except its own allowlist (`/roles configure vacation-allow-channel`;
+Pot's island; elsewhere set on `/roles settings`), hidden from every
+channel except its own allowlist (also on `/roles settings`;
 the Melting Pot's beach by default). merlin never creates that role, and when
 it syncs a channel it moves only the visibility bits and leaves the rest of
 the overwrite as the server set it, so a beach built by hand keeps working.
@@ -54,7 +54,7 @@ off; talking and voice are not. Moving
 someone between the two is `/roles jail` or `/roles vacation` on them again,
 which takes the new duration; a mod swapping the two roles by hand is noticed
 and the sentence follows the role. It is a script, so it is off until
-`/roles scripts set script:vacation enabled:true`.
+turned on under Scripts on `/roles settings`.
 
 **Timed role grants.** `/roles grant @someone @role 24h`, and it comes off by
 itself.
@@ -69,14 +69,14 @@ Everyone signs in with Discord there, so it is one vote per member of your
 server and no one else, and the page is an unguessable link no search engine
 indexes.
 
-Before the first contest, tell merlin who contests are for:
-`/contest configure set gate-like:#members-only`. She copies that channel's
+Before the first contest, tell merlin who contests are for on
+`/contest settings`, by picking a channel like #members-only. She copies that channel's
 view permissions onto every contest forum she makes, so a server where only a
 gated role sees the chat gets a contest only that role can see, and a server
 where everyone sees everything gets one everyone can enter. It is read live
 each time, so renaming or replacing the role needs no change here. If no
-channel suits, `/contest configure access-role add @role` names them outright,
-and `media` on that same command hands attachment rights to a separate role.
+channel suits, the roles picker on the same panel names them outright, and a
+second picker hands attachment rights to a separate role.
 `/contest new` refuses until one of the two is set, because the wrong guess
 publishes members' work to accounts you deliberately have not let in.
 
@@ -86,15 +86,16 @@ the moment the contest ends, then wipes it. If it does not, she introduces the
 two of you and stays out of it. She never holds money.
 
 **Everything is configured in Discord.** No YAML editing on the host for
-day-to-day stuff. `/config setup` walks you through the audit log channel,
-status channel, mod role and admins. After that it's `/config admins`,
-`/config mod-roles`, `/config permissions` and `/config plugins`. Every command
+day-to-day stuff. `/config` opens one settings panel: admins and mod roles,
+channels, plugins, permissions, and pause and dry-run, each a page you change
+with pickers rather than a subcommand you type. Its guided setup walks you
+through the audit log channel, status channel, mod role and admins. Every command
 declares a Public/Mod/Admin tier. You can override tiers per server, allow or
 deny specific people or roles per action, or switch a whole plugin off entirely.
 
 **An audit trail and an off switch.** Anything the bot does lands in
-`#bird-audit-log` as an embed and in Postgres as a row. `/config pause` refuses
-every destructive action instantly, `/config dryrun` makes it describe what it
+`#bird-audit-log` as an embed and in Postgres as a row. Pause, on `/config`,
+refuses every destructive action instantly, dry-run makes it describe what it
 would have done without doing it, and there's a host-level env var for when
 Discord or the database is the thing that's broken.
 
@@ -124,7 +125,7 @@ prices any other model before you switch.
 
 Every action is explained to the member in a DM, recorded in the audit log, and
 reversible with `/aimod undo` while the evidence window lasts. Start with
-`/aimod configure mode flag` and watch it for a week before letting it act.
+the mode on `/aimod settings` set to flag, and watch it for a week before letting it act.
 
 **Rapsheets.** Every warning, jail, timeout, kick, ban and AI removal a member
 collects lands on one per-member record with a case number, whoever or whatever
@@ -231,16 +232,16 @@ of reconnect-looping.
 ## First run
 
 1. Invite the bot.
-2. Run `/config setup` as the server owner, any Administrator or the bootstrap
+2. Run `/config` and press **Guided setup** under Channels, as the server owner, any Administrator or the bootstrap
    admin. It creates `#bird-audit-log`, `#bird-status` and a `merlin Mod` role
    for whatever's missing, and offers a picker for anything you already have. Safe
    to re-run whenever, it doubles as a status screen.
-3. `/config admins add` and `/config mod-roles add` for everyone else.
-4. `/rotation configure add` if you want a rotating channel.
-5. `/config status` to check it's all wired up.
+3. Add everyone else on `/config`'s **Admins and mod roles** page.
+4. `/rotation`, pick a channel and press **Start rotating** if you want one.
+5. `/config`'s overview to check it's all wired up.
 
-Before you trust rotation on a real channel, turn on `/config dryrun
-enabled:true` and let a full interval pass. It'll write to the audit log
+Before you trust rotation on a real channel, turn on dry-run
+(`/config`, **Pause and dry-run**) and let a full interval pass. It'll write to the audit log
 describing exactly what it would have deleted, and touch nothing. Channel
 deletion has no undo, so this is worth the wait.
 
@@ -356,7 +357,7 @@ without an interactive sudo prompt.
 
 ## When something breaks
 
-**Make it stop.** `/config pause paused:true` refuses every rotation, archive
+**Make it stop.** **Pause** on `/config`'s Pause and dry-run page refuses every rotation, archive
 deletion, jail and role change in that server, effective on the next attempted
 action. Read commands keep working. Scheduled jobs stay due rather than getting
 skipped, so they run on the first tick after you unpause.
@@ -404,7 +405,7 @@ re-run on the way back up and are idempotent, so restoring an older dump is
 fine. Rehearse this into a scratch database at some point, an untested restore
 isn't a backup.
 
-**Work out what happened.** `/config status` in Discord first: database
+**Work out what happened.** `/config` in Discord first (its overview): database
 reachable, any failing jobs, paused or dry-run state and whether the configured
 channels and roles still exist. Then `/scheduler list` for last-run, next-due and
 failure counts per job, which is usually the quickest way to tell a wedged job

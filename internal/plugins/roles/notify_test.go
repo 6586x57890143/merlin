@@ -3,11 +3,12 @@ package roles
 import (
 	"context"
 	"errors"
-	"github.com/6586x57890143/merlin/internal/core"
-	"github.com/6586x57890143/merlin/internal/voice"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // A jailed member should be told what happened, when it ends, and where.

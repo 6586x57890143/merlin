@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -150,77 +149,8 @@ func (p *Plugin) registerCommands() {
 				Description: "How rapsheets are set up in this server.",
 			},
 			{
-				Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "configure",
-				Description: "Set up rapsheets for this server.",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "forum",
-						Description: "Where case files live: an existing forum, or leave it out and merlin creates #rapsheets.",
-						Options: []*discordgo.ApplicationCommandOption{{
-							Type: discordgo.ApplicationCommandOptionChannel, Name: "channel",
-							Description:  "An existing forum channel. Its permissions are left exactly as they are.",
-							ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildForum},
-						}},
-					},
-					{
-						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "show",
-						Description: "The current configuration.",
-					},
-					{
-						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "mode",
-						Description: "What the ladder does when a record crosses a band.",
-						Options: []*discordgo.ApplicationCommandOption{{
-							Type: discordgo.ApplicationCommandOptionString, Name: "mode", Required: true,
-							Description: "off: ledger only. suggest: post to the mod channel with an Apply button. auto: act.",
-							Choices: []*discordgo.ApplicationCommandOptionChoice{
-								{Name: "off", Value: string(ModeOff)},
-								{Name: "suggest (default)", Value: string(ModeSuggest)},
-								{Name: "auto", Value: string(ModeAuto)},
-							},
-						}},
-					},
-					{
-						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "mod-channel",
-						Description: "Where ladder suggestions and alt hints are posted. Should be staff-only.",
-						Options: []*discordgo.ApplicationCommandOption{{
-							Type: discordgo.ApplicationCommandOptionChannel, Name: "channel", Required: true,
-							Description:  "A text channel only staff can see.",
-							ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText},
-						}},
-					},
-					{
-						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "half-life",
-						Description: "How fast points fade: the time for an entry to count half. Default 30d.",
-						Options: []*discordgo.ApplicationCommandOption{{
-							Type: discordgo.ApplicationCommandOptionString, Name: "duration", Required: true,
-							Description: "Between 1d and 365d, like 14d or 60d.",
-						}},
-					},
-					{
-						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "points",
-						Description: "What one offence in a category is worth here.",
-						Options: []*discordgo.ApplicationCommandOption{
-							categoryOption(),
-							{Type: discordgo.ApplicationCommandOptionInteger, Name: "points", Description: fmt.Sprintf("1-%d. Leave out to go back to the default.", maxPoints), MinValue: ptr(1.0), MaxValue: maxPoints},
-						},
-					},
-					{
-						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "alt-hints",
-						Description: "Compare joins with members on record and flag possible alts for a mod.",
-						Options: []*discordgo.ApplicationCommandOption{{
-							Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled", Required: true,
-							Description: "On by default. Nothing is ever linked without a moderator.",
-						}},
-					},
-					{
-						Type: discordgo.ApplicationCommandOptionSubCommand, Name: "bands",
-						Description: "The ladder: which score owes what. Never a permanent ban.",
-						Options: []*discordgo.ApplicationCommandOption{{
-							Type: discordgo.ApplicationCommandOptionString, Name: "ladder", Required: true, MaxLength: 300,
-							Description: "e.g. \"25 notice, 50 jail 2h, 100 jail 1d, 200 ban 7d\" or \"default\".",
-						}},
-					},
-				},
+				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "settings",
+				Description: "The ladder, half-life, mod channel, case files, alt hints and points, on one panel.",
 			},
 		},
 	}
@@ -281,15 +211,8 @@ func (p *Plugin) registerCommands() {
 	p.commands.Handle("rapsheet", "list/categories", view, p.handleListCategories)
 	p.commands.Handle("rapsheet", "list/bands", view, p.handleListBands)
 	p.commands.Handle("rapsheet", "status", view, p.handleStatus)
-	admin := core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}
-	p.commands.Handle("rapsheet", "configure/forum", admin, p.handleConfigureForum)
-	p.commands.Handle("rapsheet", "configure/show", admin, p.handleConfigureShow)
-	p.commands.Handle("rapsheet", "configure/mode", admin, p.handleConfigureMode)
-	p.commands.Handle("rapsheet", "configure/mod-channel", admin, p.handleConfigureModChannel)
-	p.commands.Handle("rapsheet", "configure/half-life", admin, p.handleConfigureHalfLife)
-	p.commands.Handle("rapsheet", "configure/points", admin, p.handleConfigurePoints)
-	p.commands.Handle("rapsheet", "configure/bands", admin, p.handleConfigureBands)
-	p.commands.Handle("rapsheet", "configure/alt-hints", admin, p.handleConfigureAltHints)
+	p.commands.Handle("rapsheet", "settings", view, p.handleSettings)
+	p.registerPanel()
 
 	p.commands.HandleComponent(p.Name(), suggestPrefix, core.PermSpec{Tier: core.TierMod, Action: actionApply}, p.handleSuggestion)
 	p.commands.HandleComponent(p.Name(), viewPrefix, view, p.handleViewPage)
@@ -816,7 +739,7 @@ func (p *Plugin) handleListBands(ctx context.Context, s *discordgo.Session, i *d
 	note := ""
 	if len(bands) == 0 {
 		bands = defaultBands
-		note = "\nThese are the defaults; `/rapsheet configure bands` changes them."
+		note = "\nThese are the defaults; Ladder bands on `/rapsheet settings` changes them."
 	}
 	var b strings.Builder
 	for _, band := range bands {
@@ -879,82 +802,6 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	core.RespondInfo(s, i, "Rapsheet status", strings.TrimRight(b.String(), "\n"))
 }
 
-// --- configure --------------------------------------------------------------
-
-// handleConfigureForum points case files at a forum, creating one when none
-// is given. Choosing an existing forum changes nothing about its
-// permissions, exactly as /config setup's pickers do: if it is visible to
-// @everyone, the sheet is public, and the response says so.
-func (p *Plugin) handleConfigureForum(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("rapsheet: defer configure forum", "err", err)
-		return
-	}
-	cfg := p.config(ctx, i.GuildID)
-	var (
-		forum *discordgo.Channel
-		err   error
-		made  bool
-	)
-	if a, ok := core.LeafArgs(i)["channel"]; ok {
-		forum, err = p.ops(i.GuildID).Channel(a.Value.(string))
-		if err == nil && forum.Type != discordgo.ChannelTypeGuildForum {
-			err = fmt.Errorf("%s is not a forum channel", core.MentionChannel(forum.ID))
-		}
-	} else {
-		forum, err = p.createForum(i.GuildID)
-		made = true
-	}
-	if err != nil {
-		_ = core.FollowUpErr(s, i, "Case files", err)
-		return
-	}
-	old := cfg.ForumChannelID
-	cfg.ForumChannelID = forum.ID
-	if err := p.store.SetConfig(ctx, cfg); err != nil {
-		_ = core.FollowUpErr(s, i, "Case files", err)
-		return
-	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.configured",
-		core.MentionChannel(old), "forum="+core.MentionChannel(forum.ID)); err != nil {
-		p.log.Error("rapsheet: audit configure forum", "guild", i.GuildID, "err", err)
-	}
-	msg := fmt.Sprintf("Case files will be kept in %s. Each member gets a post the first time they are on record.", core.MentionChannel(forum.ID))
-	if made {
-		msg += " It is hidden from @everyone and readable by the mod roles."
-	} else {
-		msg += " Its permissions were left as they are: make sure only staff can see it."
-	}
-	if n, err := p.store.CountUnmirrored(ctx, i.GuildID); err == nil && n > 0 {
-		msg += fmt.Sprintf("\n\n%d existing entries are not mirrored; they will be, the next time each is edited or voided.", n)
-	}
-	_ = core.FollowUpOK(s, i, "Case files", msg)
-}
-
-func (p *Plugin) handleConfigureShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg := p.config(ctx, i.GuildID)
-	var b strings.Builder
-	fmt.Fprintf(&b, "**Escalation:** %s\n**Half-life:** %s\n", cfg.EscalationMode, core.FormatDuration(cfg.HalfLife))
-	fmt.Fprintf(&b, "**Mod channel:** %s\n", orUnset(core.MentionChannel(cfg.ModChannelID)))
-	fmt.Fprintf(&b, "**Case-file forum:** %s\n", orUnset(core.MentionChannel(cfg.ForumChannelID)))
-	fmt.Fprintf(&b, "**Alt hints:** %s\n", onOff(cfg.AltHints))
-	if len(cfg.CategoryPoints) > 0 {
-		b.WriteString("**Tuned points:**")
-		for _, c := range categories {
-			if v, ok := cfg.CategoryPoints[c]; ok {
-				fmt.Fprintf(&b, " %s=%d", c, v)
-			}
-		}
-		b.WriteString("\n")
-	}
-	if len(cfg.Bands) > 0 {
-		b.WriteString("**Bands:** custom (`/rapsheet list bands`)\n")
-	} else {
-		b.WriteString("**Bands:** defaults\n")
-	}
-	core.RespondInfo(s, i, "Rapsheet configuration", strings.TrimRight(b.String(), "\n"))
-}
-
 func onOff(b bool) string {
 	if b {
 		return "on"
@@ -967,128 +814,6 @@ func orUnset(s string) string {
 		return "not set"
 	}
 	return s
-}
-
-// --- configure: the ladder ------------------------------------------------------
-
-// setConfig writes cfg and audits the change as one line.
-func (p *Plugin) setConfig(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, cfg Config, what, old, now string) {
-	if err := p.store.SetConfig(ctx, cfg); err != nil {
-		core.RespondErr(s, i, "Configure", err)
-		return
-	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.configured", old, what+"="+now); err != nil {
-		p.log.Error("rapsheet: audit configure", "guild", i.GuildID, "err", err)
-	}
-}
-
-func (p *Plugin) handleConfigureMode(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	mode := Mode(core.LeafArgs(i)["mode"].StringValue())
-	switch mode {
-	case ModeOff, ModeSuggest, ModeAuto:
-	default:
-		core.RespondErr(s, i, "Configure", fmt.Errorf("unknown mode %q", mode))
-		return
-	}
-	cfg := p.config(ctx, i.GuildID)
-	old := cfg.EscalationMode
-	cfg.EscalationMode = mode
-	p.setConfig(ctx, s, i, cfg, "mode", string(old), string(mode))
-	p.mu.Lock()
-	p.reconcileReviewJob(ctx, i.GuildID)
-	p.mu.Unlock()
-	msg := map[Mode]string{
-		ModeOff:     "The ladder is off. Entries are recorded and scored; nothing is suggested or applied.",
-		ModeSuggest: "When a record crosses a band, merlin posts the recommendation to the mod channel with an Apply button.",
-		ModeAuto:    "When a record crosses a band on an automatic entry (aimod, or a ban done through Discord), merlin applies the consequence herself. A moderator's own command still gets a suggestion, never an automatic action on top of it. Staff are never actioned, and the ladder never bans permanently.",
-	}[mode]
-	if mode != ModeOff && cfg.ModChannelID == "" {
-		msg += "\n\n⚠️ No mod channel is set, so suggestions have nowhere to go: `/rapsheet configure mod-channel`."
-		core.RespondWarn(s, i, "Ladder: "+string(mode), msg)
-		return
-	}
-	core.RespondOK(s, i, "Ladder: "+string(mode), msg)
-}
-
-func (p *Plugin) handleConfigureModChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	channelID := core.LeafArgs(i)["channel"].Value.(string)
-	cfg := p.config(ctx, i.GuildID)
-	old := cfg.ModChannelID
-	cfg.ModChannelID = channelID
-	p.setConfig(ctx, s, i, cfg, "mod_channel", core.MentionChannel(old), core.MentionChannel(channelID))
-	p.mu.Lock()
-	p.reconcileReviewJob(ctx, i.GuildID)
-	p.mu.Unlock()
-	core.RespondOK(s, i, "Mod channel", fmt.Sprintf("Ladder suggestions and alt hints go to %s. Make sure only staff can see it: a suggestion names the member and what they are up for.", core.MentionChannel(channelID)))
-}
-
-const (
-	minHalfLife = 24 * time.Hour
-	maxHalfLife = 365 * 24 * time.Hour
-)
-
-func (p *Plugin) handleConfigureHalfLife(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	d, err := core.ParseFlexibleDuration(core.LeafArgs(i)["duration"].StringValue())
-	if err != nil {
-		core.RespondErr(s, i, "Half-life", err)
-		return
-	}
-	if d < minHalfLife || d > maxHalfLife {
-		core.RespondErr(s, i, "Half-life", fmt.Errorf("the half-life must be between %s and %s", core.FormatDuration(minHalfLife), core.FormatDuration(maxHalfLife)))
-		return
-	}
-	cfg := p.config(ctx, i.GuildID)
-	old := cfg.HalfLife
-	cfg.HalfLife = d
-	p.setConfig(ctx, s, i, cfg, "half_life", core.FormatDuration(old), core.FormatDuration(d))
-	core.RespondOK(s, i, "Half-life", fmt.Sprintf("Points now count half after %s and a quarter after %s. Every entry's current value is worked out from its own date on the new curve; the points each was given do not change.",
-		core.FormatDuration(d), core.FormatDuration(2*d)))
-}
-
-func (p *Plugin) handleConfigurePoints(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	category := Category(args["category"].StringValue())
-	if !validCategory(category) {
-		core.RespondErr(s, i, "Points", fmt.Errorf("unknown category %q", category))
-		return
-	}
-	cfg := p.config(ctx, i.GuildID)
-	old := pointsFor(cfg, KindWarn, category, actorID(i), 0)
-	var msg string
-	if a, ok := args["points"]; ok {
-		cfg.CategoryPoints[category] = int(a.IntValue())
-		msg = fmt.Sprintf("One offence in **%s** is now worth **%d** points (was %d). Entries already on file keep the points they were given.", categoryLabel(category), int(a.IntValue()), old)
-	} else {
-		delete(cfg.CategoryPoints, category)
-		msg = fmt.Sprintf("**%s** is back on its default of **%d** points (was %d).", categoryLabel(category), defaultPoints[category], old)
-	}
-	p.setConfig(ctx, s, i, cfg, "points."+string(category), fmt.Sprint(old), fmt.Sprint(pointsFor(cfg, KindWarn, category, actorID(i), 0)))
-	core.RespondOK(s, i, "Points", msg)
-}
-
-func (p *Plugin) handleConfigureBands(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	spec := strings.TrimSpace(core.LeafArgs(i)["ladder"].StringValue())
-	cfg := p.config(ctx, i.GuildID)
-	var bands []Band
-	if !strings.EqualFold(spec, "default") {
-		var err error
-		if bands, err = parseBands(spec); err != nil {
-			core.RespondErr(s, i, "Bands", err)
-			return
-		}
-	}
-	old := bandsWords(cfg.Bands)
-	cfg.Bands = bands
-	p.setConfig(ctx, s, i, cfg, "bands", old, bandsWords(bands))
-	var b strings.Builder
-	for _, band := range effectiveBands(bands) {
-		b.WriteString(band.String() + "\n")
-	}
-	if len(bands) == 0 {
-		b.WriteString("\n(the defaults)")
-	}
-	b.WriteString("\nA member already past a band is not re-suggested for it; the next crossing is.")
-	core.RespondOK(s, i, "Ladder", b.String())
 }
 
 func effectiveBands(bands []Band) []Band {

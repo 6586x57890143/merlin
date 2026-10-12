@@ -257,21 +257,21 @@ func TestWritePreviews(t *testing.T) {
 	h.p.handleListCategories(ctx, s, interaction("list/categories"))
 	fromRT("/rapsheet list categories", rt)
 	s, rt = stubSession()
-	h.p.handleConfigureShow(ctx, s, interaction("configure/show"))
+	h.p.handleSettings(ctx, s, interaction("settings"))
 	fromRT("/rapsheet configure show", rt)
 	s, rt = stubSession()
-	h.p.handleConfigureMode(ctx, s, interaction("configure/mode", strOpt("mode", "auto")))
+	panelClick(h.p, s, panelSet+"mode", "auto")
 	fromRT("/rapsheet configure mode auto", rt)
 	s, rt = stubSession()
-	h.p.handleConfigureBands(ctx, s, interaction("configure/bands", strOpt("ladder", "25 notice, 50 jail 2h, 100 jail 1d, 200 ban 7d, 400 ban 30d")))
+	panelForm(h.p, s, formSet+"bands", map[string]string{"ladder": "25 notice, 50 jail 2h, 100 jail 1d, 200 ban 7d, 400 ban 30d"})
 	fromRT("/rapsheet configure bands", rt)
 	s, rt = stubSession()
-	h.p.handleConfigureHalfLife(ctx, s, interaction("configure/half-life", strOpt("duration", "14d")))
+	panelForm(h.p, s, formSet+"halflife", map[string]string{"half_life": "14d"})
 	fromRT("/rapsheet configure half-life 14d", rt)
 	fresh := newHarness()
 	fresh.p.botID = "merlin-1"
 	s, rt = stubSession()
-	fresh.p.handleConfigureForum(ctx, s, interaction("configure/forum"))
+	panelClick(fresh.p, s, panelSet+"forumnew")
 	fromRT("/rapsheet configure forum (created)", rt)
 
 	// 8. Alt hints and links.
@@ -291,7 +291,7 @@ func TestWritePreviews(t *testing.T) {
 	h.p.handleUnlink(ctx, s, interaction("unlink", userOpt("user", "u6")))
 	fromRT("/rapsheet unlink: confirmation", rt)
 	s, rt = stubSession()
-	h.p.handleConfigureAltHints(ctx, s, interaction("configure/alt-hints", boolOpt("enabled", false)))
+	panelClick(h.p, s, panelSet+"alts:off")
 	fromRT("/rapsheet configure alt-hints off", rt)
 
 	// 9. The model surfaces, with a scripted reviewer.

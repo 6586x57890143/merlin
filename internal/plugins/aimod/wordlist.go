@@ -234,35 +234,24 @@ func (p *Plugin) actOnWordList(cfg Config, c candidate) bool {
 	return true
 }
 
-func (p *Plugin) handleWordsAdd(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
-	word, err := normalizeWord(opts["word"].StringValue())
+func (p *Plugin) addWord(ctx context.Context, i *discordgo.InteractionCreate, raw, replacement string, nounOnly bool) outcome {
+	word, err := normalizeWord(raw)
 	if err != nil {
-		core.RespondErr(s, i, "Can't list that", err)
-		return
+		return failed("Can't list that", err)
 	}
-	entry := BannedWord{Word: word}
-	if o, ok := opts["replacement"]; ok {
-		entry.Replacement = strings.TrimSpace(o.StringValue())
-	}
-	if o, ok := opts["noun_only"]; ok {
-		entry.NounOnly = o.BoolValue()
-	}
+	entry := BannedWord{Word: word, Replacement: strings.TrimSpace(replacement), NounOnly: nounOnly}
 	if len(entry.Replacement) > maxReplacementLen {
-		core.RespondErr(s, i, "Can't list that", fmt.Errorf("the replacement can be at most %d characters", maxReplacementLen))
-		return
+		return failed("Can't list that", fmt.Errorf("the replacement can be at most %d characters", maxReplacementLen))
 	}
 	// A replacement that is itself a hit would be rewritten again by the
 	// pass enforce runs over every rewrite before it is posted.
 	if _, self := redactWords([]BannedWord{entry}, entry.Replacement); self {
-		core.RespondErr(s, i, "Can't list that", fmt.Errorf("the replacement contains the word it replaces"))
-		return
+		return failed("Can't list that", fmt.Errorf("the replacement contains the word it replaces"))
 	}
 
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 	next := make([]BannedWord, 0, len(cfg.WordList)+1)
 	for _, w := range cfg.WordList {
@@ -271,28 +260,25 @@ func (p *Plugin) handleWordsAdd(ctx context.Context, s *discordgo.Session, i *di
 		}
 	}
 	if len(next) >= maxWordList {
-		core.RespondErr(s, i, "Word list full", fmt.Errorf("a server can list at most %d words", maxWordList))
-		return
+		return failed("Word list full", fmt.Errorf("a server can list at most %d words", maxWordList))
 	}
 	next = append(next, entry)
 	if err := p.store.SetWordList(ctx, i.GuildID, next); err != nil {
-		core.RespondErr(s, i, "Failed to update the word list", err)
-		return
+		return failed("Failed to update the word list", err)
 	}
 	// Text already judged clean is remembered for dedupeWindow, and that
 	// verdict predates this word.
 	p.dedupe.reset()
 	p.auditConfig(ctx, i, "aimod.word_list", "", "added "+describeWord(entry))
-	core.RespondOK(s, i, "Word listed", describeWord(entry)+
-		"\nApplies to new and edited messages from now on. Exempt channels and roles are still exempt.")
+	return outcome{core.ColorSuccess, "Word listed", describeWord(entry) +
+		"\nApplies to new and edited messages from now on. Exempt channels and roles are still exempt."}
 }
 
-func (p *Plugin) handleWordsRemove(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	word := strings.Join(strings.Fields(strings.ToLower(core.LeafArgs(i)["word"].StringValue())), " ")
+func (p *Plugin) removeWord(ctx context.Context, i *discordgo.InteractionCreate, raw string) outcome {
+	word := strings.Join(strings.Fields(strings.ToLower(raw)), " ")
 	cfg, err := p.store.Config(ctx, i.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
+		return failed("Failed to read the configuration", err)
 	}
 	next := make([]BannedWord, 0, len(cfg.WordList))
 	for _, w := range cfg.WordList {
@@ -301,51 +287,13 @@ func (p *Plugin) handleWordsRemove(ctx context.Context, s *discordgo.Session, i 
 		}
 	}
 	if len(next) == len(cfg.WordList) {
-		core.RespondInfo(s, i, "No change", fmt.Sprintf("%q isn't on this server's word list.", word))
-		return
+		return outcome{core.ColorInfo, "No change", fmt.Sprintf("%q isn't on this server's word list.", word)}
 	}
 	if err := p.store.SetWordList(ctx, i.GuildID, next); err != nil {
-		core.RespondErr(s, i, "Failed to update the word list", err)
-		return
+		return failed("Failed to update the word list", err)
 	}
 	p.auditConfig(ctx, i, "aimod.word_list", "", fmt.Sprintf("removed %q", word))
-	core.RespondOK(s, i, "Word removed", fmt.Sprintf("%q is no longer on this server's word list.", word))
-}
-
-func (p *Plugin) handleWordsList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg, err := p.store.Config(ctx, i.GuildID)
-	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
-		return
-	}
-	if len(cfg.WordList) == 0 {
-		core.RespondInfo(s, i, "Word list", "Nothing listed. Add one with `/aimod words add`.")
-		return
-	}
-	lines := make([]string, 0, len(cfg.WordList))
-	for _, w := range cfg.WordList {
-		lines = append(lines, "- "+describeWord(w))
-	}
-	core.RespondInfo(s, i, fmt.Sprintf("Word list (%d)", len(cfg.WordList)),
-		core.TruncateEmbedDescription(strings.Join(lines, "\n")))
-}
-
-func (p *Plugin) autocompleteWord(ctx context.Context, i *discordgo.InteractionCreate, _, focused string) []*discordgo.ApplicationCommandOptionChoice {
-	cfg, err := p.store.Config(ctx, i.GuildID)
-	if err != nil {
-		return nil
-	}
-	needle := strings.ToLower(focused)
-	var out []*discordgo.ApplicationCommandOptionChoice
-	for _, w := range cfg.WordList {
-		if len(out) == 25 {
-			break
-		}
-		if strings.Contains(w.Word, needle) {
-			out = append(out, &discordgo.ApplicationCommandOptionChoice{Name: w.Word, Value: w.Word})
-		}
-	}
-	return out
+	return outcome{core.ColorSuccess, "Word removed", fmt.Sprintf("%q is no longer on this server's word list.", word)}
 }
 
 func describeWord(w BannedWord) string {

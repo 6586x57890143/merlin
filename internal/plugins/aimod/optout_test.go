@@ -264,7 +264,7 @@ func TestMemberOptOutSwitchIsOwnerOrBootstrapOnly(t *testing.T) {
 
 		i := interaction("g1", "configure", "member-opt-out", boolOpt("enabled", true))
 		i.Member.User.ID = actorID
-		p.handleSetMemberOptOut(context.Background(), testSession(t), i)
+		p.setMemberOptOut(context.Background(), i, enabled(i))
 
 		cfg, _ := store.Config(context.Background(), "g1")
 		if cfg.MemberOptOut {
@@ -281,7 +281,7 @@ func TestMemberOptOutSwitchIsOwnerOrBootstrapOnly(t *testing.T) {
 
 		i := interaction("g1", "configure", "member-opt-out", boolOpt("enabled", true))
 		i.Member.User.ID = actorID
-		p.handleSetMemberOptOut(context.Background(), testSession(t), i)
+		p.setMemberOptOut(context.Background(), i, enabled(i))
 
 		cfg, _ := store.Config(context.Background(), "g1")
 		if !cfg.MemberOptOut {
@@ -301,7 +301,7 @@ func TestMemberOptOutSwitchFailsClosedOnAnUnreadableGuild(t *testing.T) {
 
 	i := interaction("g1", "configure", "member-opt-out", boolOpt("enabled", true))
 	i.Member.User.ID = "owner"
-	p.handleSetMemberOptOut(context.Background(), testSession(t), i)
+	p.setMemberOptOut(context.Background(), i, enabled(i))
 
 	if cfg, _ := store.Config(context.Background(), "g1"); cfg.MemberOptOut {
 		t.Error("turned the opt-out on despite not being able to read who owns the guild")
@@ -317,7 +317,7 @@ func TestTurningTheSwitchOffKeepsTheList(t *testing.T) {
 
 	i := interaction("g1", "configure", "member-opt-out", boolOpt("enabled", false))
 	i.Member.User.ID = "owner"
-	p.handleSetMemberOptOut(context.Background(), testSession(t), i)
+	p.setMemberOptOut(context.Background(), i, enabled(i))
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if cfg.MemberOptOut {

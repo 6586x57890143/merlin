@@ -71,6 +71,7 @@ type PrivilegeChecker interface {
 }
 
 type Plugin struct {
+	commands  *core.CommandRouter
 	session   *discordgo.Session
 	source    messageSource
 	store     Store
@@ -140,14 +141,14 @@ func (p *Plugin) Init(deps core.Deps) error {
 	deps.Commands.Handle("statistics", "channels", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleChannels)
 	deps.Commands.Handle("statistics", "members", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleMembers)
 	deps.Commands.Handle("statistics", "status", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleStatus)
-	deps.Commands.Handle("statistics", "configure/retention", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.configure"}, p.handleRetention)
+	p.registerPanel(deps.Commands)
 	return nil
 }
 
 // command is the /statistics definition, kept out of Init so the permission
 // decision in it can be pinned by a test.
 func command() *discordgo.ApplicationCommand {
-	minTop, minDays := 1.0, 1.0
+	minTop := 1.0
 	// Discord's own default_member_permissions is left unset everywhere else
 	// in this bot (spec.MD §4a), so the internal checks are the sole gate and
 	// cannot be bypassed by a mismatched permission bit. That reasoning is
@@ -243,27 +244,7 @@ func command() *discordgo.ApplicationCommand {
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "status",
-				Description: "What is being counted, since when, and for how long it is kept",
-			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
-				Name:        "configure",
-				Description: "Statistics settings",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "retention",
-						Description: "How many days of hourly counts to keep",
-						Options: []*discordgo.ApplicationCommandOption{{
-							Type:        discordgo.ApplicationCommandOptionInteger,
-							Name:        "days",
-							Description: fmt.Sprintf("1 to %d. Default %d", maxRetentionDays, defaultRetentionDays),
-							Required:    true,
-							MinValue:    &minDays,
-							MaxValue:    maxRetentionDays,
-						}},
-					},
-				},
+				Description: "What is being counted, since when, and for how long it is kept (and change that)",
 			},
 		},
 	}
@@ -644,51 +625,6 @@ func (p *Plugin) handleMembers(ctx context.Context, s *discordgo.Session, i *dis
 		}
 	}
 	core.RespondInfo(s, i, "Members", core.TruncateEmbedDescription(b.String()))
-}
-
-func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg, err := p.store.Config(ctx, i.GuildID)
-	if err != nil {
-		core.RespondErr(s, i, "Could not read the statistics", err)
-		return
-	}
-	oldest, _ := p.store.OldestHour(ctx, i.GuildID)
-	back, _ := p.store.BackfillStatus(ctx, i.GuildID)
-
-	var b strings.Builder
-	if cfg.LiveSince.IsZero() {
-		b.WriteString("counting has not started for this server yet.\n")
-	} else {
-		fmt.Fprintf(&b, "counting since `%s` utc\n", cfg.LiveSince.Format("2006-01-02 15:04"))
-	}
-	if !oldest.IsZero() {
-		fmt.Fprintf(&b, "oldest hour held: `%s` utc\n", oldest.Format("2006-01-02 15:04"))
-	}
-	fmt.Fprintf(&b, "retention: `%d` days\n", cfg.RetentionDays)
-	switch {
-	case back.Pending > 0:
-		fmt.Fprintf(&b, "backfill: `%d` channels still to read, `%d` done, from `%s`\n", back.Pending, back.Done, back.From.Format("2006-01-02"))
-	case back.Done > 0 || back.Failed > 0:
-		fmt.Fprintf(&b, "backfill: done, `%d` channels from `%s`", back.Done, back.From.Format("2006-01-02"))
-		if back.Failed > 0 {
-			fmt.Fprintf(&b, ", `%d` could not be read", back.Failed)
-		}
-		b.WriteString("\n")
-	}
-	core.RespondInfo(s, i, "Statistics", b.String())
-}
-
-func (p *Plugin) handleRetention(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	days := int(core.LeafArgs(i)["days"].IntValue())
-	if days < 1 || days > maxRetentionDays {
-		core.RespondErr(s, i, "Out of range", fmt.Errorf("retention must be between 1 and %d days", maxRetentionDays))
-		return
-	}
-	if err := p.store.SetRetention(ctx, i.GuildID, days); err != nil {
-		core.RespondErr(s, i, "Could not save", err)
-		return
-	}
-	core.RespondOK(s, i, "Retention set", fmt.Sprintf("hourly counts are kept for `%d` days. anything older goes on the next prune, within the hour.", days))
 }
 
 func (p *Plugin) handleBackfill(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {

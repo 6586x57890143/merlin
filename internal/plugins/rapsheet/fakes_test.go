@@ -16,6 +16,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
@@ -31,7 +32,7 @@ var testNow = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 // enforces that the code relies on: the partial unique index on (guild,
 // source, ref), and the predicate behind the ban-due index.
 type fakeStore struct {
-	mu      sync.Mutex
+	mu sync.Mutex
 	// now is the clock ActiveBan judges expiry by, wired to the plugin's own
 	// so a 1d ban cut at testNow does not expire on the wall clock a day after
 	// the test was written, which is precisely how it took CI down once.
@@ -1012,4 +1013,19 @@ func componentClick(userID, customID string) *discordgo.InteractionCreate {
 		},
 		Data: discordgo.MessageComponentInteractionData{CustomID: customID},
 	}}
+}
+
+// panelClick is modID clicking customID on /rapsheet settings, picking
+// values.
+func panelClick(p *Plugin, s *discordgo.Session, customID string, values ...string) {
+	i := paneltest.Click(modID, customID, nil, values...)
+	i.GuildID = testGuild
+	p.handlePanelSet(context.Background(), s, i, customID)
+}
+
+// panelForm is modID submitting one of /rapsheet settings' forms.
+func panelForm(p *Plugin, s *discordgo.Session, customID string, fields map[string]string) {
+	i := paneltest.Submit(modID, customID, fields)
+	i.GuildID = testGuild
+	p.handleForm(context.Background(), s, i, customID)
 }

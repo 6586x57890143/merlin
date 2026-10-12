@@ -65,10 +65,10 @@ var ErrAlreadyLive = errors.New("contest: this server already has a contest runn
 var ErrUngated = errors.New(
 	"contest: nobody has said who the contest forum is for. " +
 		"point merlin at a channel that is already gated the way you want it " +
-		"(/contest configure set gate-like:#your-members-channel), or name the " +
-		"roles outright (/contest configure access-role add @role). " +
+		"(on /contest settings, copy who can see your members' channel), or name the " +
+		"roles outright there. " +
 		"a server where everyone can see everything answers this too, by " +
-		"pointing gate-like at a channel everyone can see")
+		"copying a channel everyone can see")
 
 // Config is the per-guild setup. Deliberately small: everything that varies
 // per contest is on Contest itself, and everything that varies per

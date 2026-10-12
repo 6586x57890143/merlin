@@ -331,7 +331,7 @@ func TestPriorsCountScoredOffencesAcrossTheGroupAndDeferWhenDisabled(t *testing.
 func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 	h := newHarness()
 	s, rt := stubSession()
-	h.p.handleConfigureMode(context.Background(), s, interaction("configure/mode", strOpt("mode", "auto")))
+	panelClick(h.p, s, panelSet+"mode", "auto")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.EscalationMode != ModeAuto {
 		t.Errorf("mode = %s", cfg.EscalationMode)
 	}
@@ -340,13 +340,12 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 	}
 
 	s2, _ := stubSession()
-	h.p.handleConfigureModChannel(context.Background(), s2, interaction("configure/mod-channel",
-		&discordgo.ApplicationCommandInteractionDataOption{Name: "channel", Type: discordgo.ApplicationCommandOptionChannel, Value: "mods"}))
+	panelClick(h.p, s2, panelSet+"modch", "mods")
 
 	s3, rt3 := stubSession()
-	h.p.handleConfigureHalfLife(context.Background(), s3, interaction("configure/half-life", strOpt("duration", "14d")))
+	panelForm(h.p, s3, formSet+"halflife", map[string]string{"half_life": "14d"})
 	s4, rt4 := stubSession()
-	h.p.handleConfigureHalfLife(context.Background(), s4, interaction("configure/half-life", strOpt("duration", "2h")))
+	panelForm(h.p, s4, formSet+"halflife", map[string]string{"half_life": "2h"})
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.HalfLife != 14*24*time.Hour || cfg.ModChannelID != "mods" {
 		t.Errorf("cfg = %+v", cfg)
 	}
@@ -355,9 +354,9 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 	}
 
 	s5, _ := stubSession()
-	h.p.handleConfigurePoints(context.Background(), s5, interaction("configure/points", strOpt("category", "spam"), intOpt("points", 3)))
+	panelForm(h.p, s5, formSet+"points:spam", map[string]string{"points": "3"})
 	s6, _ := stubSession()
-	h.p.handleConfigurePoints(context.Background(), s6, interaction("configure/points", strOpt("category", "gore")))
+	panelForm(h.p, s6, formSet+"points:gore", map[string]string{"points": ""})
 	cfg, _ := h.store.Config(context.Background(), testGuild)
 	if cfg.CategoryPoints[CategorySpam] != 3 {
 		t.Errorf("points = %v", cfg.CategoryPoints)
@@ -367,7 +366,7 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 	}
 
 	s7, rt7 := stubSession()
-	h.p.handleConfigureBands(context.Background(), s7, interaction("configure/bands", strOpt("ladder", "20 notice, 40 timeout 1h, 80 jail 2h, 160 ban 24h")))
+	panelForm(h.p, s7, formSet+"bands", map[string]string{"ladder": "20 notice, 40 timeout 1h, 80 jail 2h, 160 ban 24h"})
 	cfg, _ = h.store.Config(context.Background(), testGuild)
 	if len(cfg.Bands) != 5 || cfg.Bands[2].Action != ActionTimeout || cfg.Bands[4].Duration != 24*time.Hour {
 		t.Errorf("bands = %+v", cfg.Bands)
@@ -376,12 +375,12 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 		t.Errorf("got %s", rt7.said())
 	}
 	s8, rt8 := stubSession()
-	h.p.handleConfigureBands(context.Background(), s8, interaction("configure/bands", strOpt("ladder", "50 ban")))
+	panelForm(h.p, s8, formSet+"bands", map[string]string{"ladder": "50 ban"})
 	if !strings.Contains(rt8.said(), "never bans permanently") {
 		t.Errorf("a permanent ban band was accepted: %s", rt8.said())
 	}
 	s9, _ := stubSession()
-	h.p.handleConfigureBands(context.Background(), s9, interaction("configure/bands", strOpt("ladder", "default")))
+	panelForm(h.p, s9, formSet+"bands", map[string]string{"ladder": "default"})
 	if cfg, _ := h.store.Config(context.Background(), testGuild); len(cfg.Bands) != 0 {
 		t.Error("default did not clear the bands")
 	}

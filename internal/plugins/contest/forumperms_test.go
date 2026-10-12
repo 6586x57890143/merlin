@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -239,7 +240,7 @@ func TestNewRefusesUntilSomebodySaysWhoContestsAreFor(t *testing.T) {
 		t.Error("an ungated guild got a forum channel")
 	}
 	said := rt.said()
-	if !strings.Contains(said, "gate-like") || !strings.Contains(said, "access-role") {
+	if !strings.Contains(said, "/contest settings") || !strings.Contains(said, "roles outright") {
 		t.Errorf("the refusal does not name the way out of it: %s", said)
 	}
 }
@@ -284,9 +285,9 @@ func TestSyncForumAppliesTheGateToARunningContest(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	s, _ := stubSession()
 
-	p.handleSyncForum(context.Background(), s, interaction("configure", &discordgo.ApplicationCommandInteractionDataOption{
-		Name: "sync-forum", Type: discordgo.ApplicationCommandOptionSubCommand,
-	}))
+	i := paneltest.Click("u1", panelSet+"sync", nil)
+	i.GuildID = "g1"
+	p.handlePanelSet(context.Background(), s, i, panelSet+"sync")
 
 	ch, _ := ops.Channel(c.ForumChannelID)
 	if denyOn(ch.PermissionOverwrites, "g1", discordgo.PermissionOverwriteTypeRole)&discordgo.PermissionViewChannel == 0 {
