@@ -14,6 +14,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/paneltest"
 )
 
 // The handlers are driven against a discordgo session whose transport
@@ -242,26 +243,26 @@ func TestHandleStatusAndRetention(t *testing.T) {
 	p, store := seeded(t)
 	s, rt := handlerSession(t)
 	p.handleStatus(context.Background(), s, interaction("admin", "", "status"))
-	if !rt.said("counting since `2026-09-01 14:00`") || !rt.said("retention: `90` days") {
+	if !rt.said("since 2026-09-01 14:00 utc") || !rt.said("90 days") {
 		t.Fatalf("status: %v", rt.bodies)
 	}
 
-	p.handleRetention(context.Background(), s, interaction("admin", "configure", "retention", intArg("days", 30)))
-	if !rt.said("Retention set") {
+	p.handleForm(context.Background(), s, retentionForm("30"), formSet+"retention")
+	if !rt.said("kept for 30 days") {
 		t.Fatal("expected confirmation")
 	}
 	if cfg, _ := store.Config(context.Background(), "g1"); cfg.RetentionDays != 30 {
 		t.Fatalf("retention not saved: %+v", cfg)
 	}
-	p.handleRetention(context.Background(), s, interaction("admin", "configure", "retention", intArg("days", 0)))
-	if !rt.said("Out of range") {
+	p.handleForm(context.Background(), s, retentionForm("0"), formSet+"retention")
+	if !rt.said("must be between 1 and") {
 		t.Fatal("zero days must be refused")
 	}
 
 	// A guild the bot has not seen yet.
 	fresh := newTestPlugin(newFakeStore(), &fakeSource{})
 	fresh.handleStatus(context.Background(), s, interaction("admin", "", "status"))
-	if !rt.said("counting has not started") {
+	if !rt.said("not started yet") {
 		t.Fatal("status before counting should say so")
 	}
 }
@@ -278,7 +279,7 @@ func TestHandleBackfillQueuesUpToTheLiveHour(t *testing.T) {
 		t.Fatalf("queued row should stop at the hour counting began: %+v", pending)
 	}
 	p.handleStatus(context.Background(), s, interaction("admin", "", "status"))
-	if !rt.said("backfill: `1` channels still to read") {
+	if !rt.said("1 to read, 0 done") {
 		t.Fatal("status should show the queue")
 	}
 
@@ -337,4 +338,11 @@ func TestBuildFoldsVoiceIn(t *testing.T) {
 	if _, ok := p.MessagesPerDay(context.Background(), "nowhere", 7); ok {
 		t.Fatal("a guild with nothing counted has no rate")
 	}
+}
+
+// retentionForm is the operator submitting the retention form.
+func retentionForm(days string) *discordgo.InteractionCreate {
+	i := paneltest.Submit("admin", formSet+"retention", map[string]string{"days": days})
+	i.GuildID = "g1"
+	return i
 }
