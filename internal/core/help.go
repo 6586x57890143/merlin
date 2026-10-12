@@ -1,8 +1,6 @@
 package core
 
 import (
-	"runtime/debug"
-
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -52,31 +50,6 @@ func (r *CommandRouter) LeafTier(topLevel, path string) PermTier {
 		return leaf.spec.Tier
 	}
 	return tierUnset
-}
-
-// Revision is the commit this binary was built from, short, or "dev".
-func Revision() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "dev"
-	}
-	rev, dirty := "", false
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			rev = s.Value
-		case "vcs.modified":
-			dirty = s.Value == "true"
-		}
-	}
-	if rev == "" {
-		return "dev"
-	}
-	rev = rev[:min(len(rev), 7)]
-	if dirty {
-		rev += "+"
-	}
-	return rev
 }
 
 // AvatarIcon is merlin's avatar for a thumbnail, as an attachment.

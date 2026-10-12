@@ -19,6 +19,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/fleet"
 	"github.com/6586x57890143/merlin/internal/obs"
 )
 
@@ -95,7 +96,7 @@ func (p *Plugin) panel() core.Panel {
 			core.Text(p.readout()),
 			core.Row(core.Button("Refresh", refreshID, discordgo.SecondaryButton, false)),
 		},
-		Footer: "in: gateway to dispatch · run: handler or job · http: round trip · wait: a 429's hold · build " + core.Revision(),
+		Footer: "in: gateway to dispatch · run: handler or job · http: round trip · wait: a 429's hold · build " + fleet.Build(),
 	}
 }
 
