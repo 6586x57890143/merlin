@@ -21,6 +21,10 @@ services:
     # database is the only thing here holding state that can't be rebuilt.
     mem_limit: 512m
     cpus: 1.0
+    # fleet is cygnet's hub network, shared by every bird on this host and
+    # never published: merlin dials ws://cygnet:7700/v1/link on it. The
+    # deploy creates it if cygnet's stack hasn't yet.
+    networks: [default, fleet]
     logging:
       driver: json-file
       options:
@@ -110,3 +114,7 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  fleet:
+    external: true

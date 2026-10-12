@@ -144,6 +144,20 @@ func (r *CommandRouter) Plugins() []string {
 	return out
 }
 
+// Tiers is each top-level command and the lowest tier any leaf under it
+// asks for: who can run something there. It's what merlin tells cygnet
+// about her commands; read it after Finalize.
+func (r *CommandRouter) Tiers() map[string]PermTier {
+	out := make(map[string]PermTier, len(r.topLevel))
+	for key, leaf := range r.leaves {
+		name, _, _ := strings.Cut(key, "/")
+		if have, ok := out[name]; !ok || leaf.spec.Tier < have {
+			out[name] = leaf.spec.Tier
+		}
+	}
+	return out
+}
+
 // Handle registers the handler and required PermSpec for one leaf path.
 // path is empty for a bare top-level command (e.g. "ping"), a single
 // segment for a direct subcommand ("run-now"), or "group/subcommand" for a

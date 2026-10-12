@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -20,6 +21,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
+	"github.com/6586x57890143/merlin/internal/fleet"
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
@@ -116,6 +118,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	if err != nil {
 		return err
 	}
+	// The link to cygnet, the fleet's hub, only where it is configured.
+	// Every request Discord refuses for want of a permission is reported
+	// to her, whichever plugin made it, so she can grant it.
+	hub := fleet.Dial(os.Getenv("MERLIN_CYGNET_URL"), os.Getenv("MERLIN_CYGNET_TOKEN"), log)
+	session.Client = &http.Client{Timeout: 20 * time.Second, Transport: hub.Transport(nil, log)}
 
 	bus := core.NewEventBus(log)
 	settingsStore := settings.New(db.Pool, bus)
@@ -299,6 +306,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	if err := commands.Finalize(); err != nil {
 		return fmt.Errorf("finalize commands: %w", err)
 	}
+	hub.Describe(cfg.Discord.AppID, uint64(session.Identify.Intents), commands.Tiers())
+	// On ctx, so a shutdown says goaway to the hub before the gateway closes.
+	go hub.Run(ctx)
 	// This bot registers commands exclusively per-guild (RegisterGuild below,
 	// on every GuildCreate), so nothing here should ever leave a global command
 	// behind. Clears any that pre-Milestone-4 code left registered (a REST
