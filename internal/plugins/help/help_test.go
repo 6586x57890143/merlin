@@ -11,6 +11,7 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
+	"github.com/6586x57890143/merlin/internal/fleet"
 )
 
 type toggles struct {
@@ -110,6 +111,11 @@ func TestIndexListsWhatTheViewerMaySee(t *testing.T) {
 	admin := text(p.index("g1", true))
 	if !strings.Contains(admin, "**Contest** · `off here`") || !strings.Contains(admin, "-# does rotation") {
 		t.Errorf("admin index:\n%s", admin)
+	}
+	// The build named here is the one cygnet is told, stamped in by the
+	// Dockerfile, so the two can never disagree about what is running.
+	if !strings.Contains(admin, "build `"+fleet.Build()+"`") {
+		t.Errorf("index does not name fleet's build:\n%s", admin)
 	}
 	if member := text(p.index("g1", false)); strings.Contains(member, "Contest") {
 		t.Errorf("a switched-off plugin was listed to a member:\n%s", member)

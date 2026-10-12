@@ -18,6 +18,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/fleet"
 )
 
 const (
@@ -196,7 +197,7 @@ func (p *Plugin) index(guildID string, admin bool) core.Panel {
 		Icon: url, IconFile: file,
 		Body: []discordgo.MessageComponent{
 			core.Text(strings.TrimSuffix(list.String(), "\n")),
-			core.Text(fmt.Sprintf("-# %d parts · %d commands · build `%s` · nothing i post pings anyone", len(es), commands, core.Revision())),
+			core.Text(fmt.Sprintf("-# %d parts · %d commands · build `%s` · nothing i post pings anyone", len(es), commands, fleet.Build())),
 			core.Row(menu(es, "")),
 			core.Row(discordgo.Button{Label: "Source", Style: discordgo.LinkButton, URL: source}),
 		},
