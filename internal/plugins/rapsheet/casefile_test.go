@@ -197,7 +197,7 @@ func TestConfigureForumCreatesAHiddenForumForTheModRoles(t *testing.T) {
 	h := newHarness()
 	h.p.botID = "merlin-1"
 	s, rt := stubSession()
-	h.p.handleConfigureForum(context.Background(), s, interaction("configure/forum"))
+	panelClick(h.p, s, panelSet+"forumnew")
 	if len(h.ops.created) != 1 {
 		t.Fatalf("created %d channels", len(h.ops.created))
 	}
@@ -235,8 +235,7 @@ func TestConfigureForumAcceptsAnExistingForumAndWarnsAboutItsPermissions(t *test
 	seedEntries(h, "u1", 3)
 
 	s, rt := stubSession()
-	h.p.handleConfigureForum(context.Background(), s, interaction("configure/forum", &discordgo.ApplicationCommandInteractionDataOption{
-		Name: "channel", Type: discordgo.ApplicationCommandOptionChannel, Value: "their-forum"}))
+	panelClick(h.p, s, panelSet+"forum", "their-forum")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.ForumChannelID != "their-forum" {
 		t.Errorf("config forum = %q", cfg.ForumChannelID)
 	}
@@ -245,8 +244,7 @@ func TestConfigureForumAcceptsAnExistingForumAndWarnsAboutItsPermissions(t *test
 	}
 
 	s2, rt2 := stubSession()
-	h.p.handleConfigureForum(context.Background(), s2, interaction("configure/forum", &discordgo.ApplicationCommandInteractionDataOption{
-		Name: "channel", Type: discordgo.ApplicationCommandOptionChannel, Value: "text"}))
+	panelClick(h.p, s2, panelSet+"forum", "text")
 	if !strings.Contains(rt2.said(), "not a forum") {
 		t.Errorf("got %s", rt2.said())
 	}
@@ -259,7 +257,7 @@ func TestConfigureForumRefusesNearTheChannelCap(t *testing.T) {
 		h.ops.channels[strings.Repeat("c", i+1)] = &discordgo.Channel{}
 	}
 	s, rt := stubSession()
-	h.p.handleConfigureForum(context.Background(), s, interaction("configure/forum"))
+	panelClick(h.p, s, panelSet+"forumnew")
 	if len(h.ops.created) != 0 || !strings.Contains(rt.said(), "500 cap") {
 		t.Errorf("created %d, said %s", len(h.ops.created), rt.said())
 	}
@@ -272,7 +270,7 @@ func TestConfigureShowListsTheConfiguration(t *testing.T) {
 	cfg.CategoryPoints[CategorySpam] = 3
 	_ = h.store.SetConfig(context.Background(), cfg)
 	s, rt := stubSession()
-	h.p.handleConfigureShow(context.Background(), s, interaction("configure/show"))
+	h.p.handleSettings(context.Background(), s, interaction("settings"))
 	for _, want := range []string{"#mods", "not set", "spam=3", "defaults"} {
 		if !strings.Contains(rt.said(), want) {
 			t.Errorf("want %q in %s", want, rt.said())

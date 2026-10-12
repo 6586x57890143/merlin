@@ -163,7 +163,7 @@ func covers(st Entry, rec Recommendation, now time.Time) bool {
 func (p *Plugin) suggest(ctx context.Context, cfg Config, trigger Entry, rec Recommendation, sh sheet) string {
 	userID := trigger.UserID
 	if cfg.ModChannelID == "" {
-		p.log.Warn("rapsheet: ladder has a suggestion and no mod channel to post it in; set one with /rapsheet configure mod-channel",
+		p.log.Warn("rapsheet: ladder has a suggestion and no mod channel to post it in; set one on /rapsheet settings",
 			"guild", cfg.GuildID, "user", userID, "action", rec.Action)
 		return fmt.Sprintf("Their record reached %s, but no mod channel is set to suggest it in.", recWords(rec))
 	}

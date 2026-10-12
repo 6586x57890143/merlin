@@ -199,12 +199,12 @@ func TestTheAltNoticeButtonsLinkOrDismiss(t *testing.T) {
 func TestConfigureAltHintsRoundTrips(t *testing.T) {
 	h := newHarness()
 	s, _ := stubSession()
-	h.p.handleConfigureAltHints(context.Background(), s, interaction("configure/alt-hints", boolOpt("enabled", false)))
+	panelClick(h.p, s, panelSet+"alts:off")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.AltHints {
 		t.Error("still on")
 	}
 	s2, _ := stubSession()
-	h.p.handleConfigureAltHints(context.Background(), s2, interaction("configure/alt-hints", boolOpt("enabled", true)))
+	panelClick(h.p, s2, panelSet+"alts:on")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); !cfg.AltHints {
 		t.Error("still off")
 	}

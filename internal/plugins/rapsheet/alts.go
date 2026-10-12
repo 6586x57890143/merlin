@@ -374,16 +374,3 @@ func (p *Plugin) handleUnlink(ctx context.Context, s *discordgo.Session, i *disc
 	}
 	core.RespondOK(s, i, "Unlinked", fmt.Sprintf("%s is on their own sheet again, with the entries recorded against them; the rest of the group keeps theirs.", core.MentionUser(userID)))
 }
-
-func (p *Plugin) handleConfigureAltHints(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	on := core.LeafArgs(i)["enabled"].BoolValue()
-	cfg := p.config(ctx, i.GuildID)
-	old := cfg.AltHints
-	cfg.AltHints = on
-	p.setConfig(ctx, s, i, cfg, "alt_hints", fmt.Sprint(old), fmt.Sprint(on))
-	if on {
-		core.RespondOK(s, i, "Alt hints", "When somebody joins who resembles a member on record, merlin notes it on both sheets and, if it looks strong, posts it to the mod channel. Nothing is linked without a moderator.")
-		return
-	}
-	core.RespondOK(s, i, "Alt hints", "Joins are no longer compared with members on record. Existing hints and links are kept.")
-}
