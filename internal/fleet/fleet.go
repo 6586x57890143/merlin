@@ -113,8 +113,20 @@ func (l *Link) Transport(base http.RoundTripper, log *slog.Logger) http.RoundTri
 	})
 }
 
-// Build is the commit merlin was built from, when Go recorded it.
-func Build() string {
+// revision is the commit the image was built from, set at link time by the
+// Dockerfile (-X .../internal/fleet.revision=$REVISION, which CI passes as
+// github.sha). The Docker build context has no .git, so without it Go
+// records no vcs.revision and every deployed merlin reported "dev".
+var revision string
+
+// Build is the commit merlin was built from: the one the build stamped in,
+// else the one Go recorded from a local checkout, else "dev".
+func Build() string { return build(revision) }
+
+func build(stamped string) string {
+	if len(stamped) >= 7 {
+		return stamped[:7]
+	}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, s := range info.Settings {
 			if s.Key == "vcs.revision" && len(s.Value) >= 7 {

@@ -6,7 +6,11 @@ RUN go mod download
 COPY . .
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/merlin ./cmd/bot
+# The commit, stamped in because the build context has no .git for Go to
+# read it from. CI passes github.sha; a local build leaves it empty and
+# reports "dev".
+ARG REVISION
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X github.com/6586x57890143/merlin/internal/fleet.revision=$REVISION" -o /out/merlin ./cmd/bot
 
 # Pinned by digest, not just by tag.
 #
