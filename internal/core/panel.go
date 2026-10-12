@@ -278,6 +278,14 @@ func EntitySelect(kind discordgo.SelectMenuType, customID, placeholder string, i
 	return m
 }
 
+// Clearable lets a single-value picker be emptied, which is how a member
+// says "none" for a setting that may be unset.
+func Clearable(m discordgo.SelectMenu) discordgo.SelectMenu {
+	zero := 0
+	m.MinValues = &zero
+	return m
+}
+
 // ChannelSelect is EntitySelect for channels of the given types, one pick.
 func ChannelSelect(customID, placeholder, current string, disabled bool, types ...discordgo.ChannelType) discordgo.SelectMenu {
 	m := EntitySelect(discordgo.ChannelSelectMenu, customID, placeholder, []string{current}, 1, disabled)

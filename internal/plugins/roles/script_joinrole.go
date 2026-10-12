@@ -119,7 +119,7 @@ func (p *Plugin) giveJoinRole(ctx context.Context, guildID, userID string) {
 func (p *Plugin) joinRoleLine(guildID string) string {
 	ids := p.joinRoles(guildID)
 	if len(ids) == 0 {
-		return "no join roles configured, so it does nothing (`/roles configure member-role`, `/roles configure join-role-add`)"
+		return "no join roles configured, so it does nothing (set them on `/roles settings`)"
 	}
 	mentions := make([]string, len(ids))
 	for i, id := range ids {
@@ -225,7 +225,7 @@ func (p *Plugin) joinRoleDeleted(ctx context.Context, guildID, roleID string) {
 	}
 	p.auditJoinRole(ctx, guildID, "roles.join_role_deleted",
 		"**"+name+"** was deleted in Discord. It was given to every new member, and new members no longer get it. "+
-			"Recreate it, then add it back with `/roles configure join-role-add` (or `member-role` if it was the member role).")
+			"Recreate it, then add it back on `/roles settings`.")
 }
 
 func (p *Plugin) auditJoinRole(ctx context.Context, guildID, action, detail string) {

@@ -14,6 +14,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/paneltest"
 )
 
 // The slash-command handlers are driven end to end against a discordgo
@@ -101,8 +102,28 @@ func userArg(name, v string) *discordgo.ApplicationCommandInteractionDataOption 
 func roleArg(name, v string) *discordgo.ApplicationCommandInteractionDataOption {
 	return optOf(name, discordgo.ApplicationCommandOptionRole, v)
 }
-func channelArg(name, v string) *discordgo.ApplicationCommandInteractionDataOption {
-	return optOf(name, discordgo.ApplicationCommandOptionChannel, v)
+
+// setOn clicks a /roles settings control as actor: picked is what the
+// select submits and drawn what it showed preselected, which is what
+// core.SelectDiff compares.
+func setOn(p *Plugin, s *discordgo.Session, guild, actor, customID string, drawn []string, picked ...string) {
+	msg := paneltest.Received(core.Panel{Body: []discordgo.MessageComponent{core.Row(core.EntitySelect(discordgo.ChannelSelectMenu, customID, "", drawn, core.MaxSelectValues, false))}})
+	i := paneltest.Click(actor, customID, msg, picked...)
+	i.GuildID = guild
+	p.handlePanelSet(context.Background(), s, i, customID)
+}
+
+func set(p *Plugin, s *discordgo.Session, customID string, drawn []string, picked ...string) {
+	setOn(p, s, "g1", "actor", customID, drawn, picked...)
+}
+
+// showPage draws one page of /roles settings in g1 through s.
+func showPage(p *Plugin, s *discordgo.Session, page string) { showPageIn(p, s, "g1", page) }
+
+func showPageIn(p *Plugin, s *discordgo.Session, guild, page string) {
+	i := paneltest.Click("actor", panelView+"page", nil, page)
+	i.GuildID = guild
+	p.handlePanelView(context.Background(), s, i, panelView+"page")
 }
 
 // handlerFixture is a plugin with one ordinary member and a guild whose
@@ -491,7 +512,7 @@ func TestConfigureAllowAndDisallowChannel(t *testing.T) {
 	p.jailRoleID["g1"] = "jail-role"
 	s, rt := handlerSession(t)
 
-	p.handleAllowChannel(context.Background(), s, rolesInteraction("configure", "allow-channel", channelArg("channel", "c1")))
+	set(p, s, panelJail+"allow", nil, "c1")
 	if got := settings.JailAllowedChannelIDs("g1"); len(got) != 1 || got[0] != "c1" {
 		t.Fatalf("expected c1 allowed, got %v", got)
 	}
@@ -499,7 +520,7 @@ func TestConfigureAllowAndDisallowChannel(t *testing.T) {
 		t.Fatalf("expected c1 made visible to the jail role, got %+v", ow)
 	}
 
-	p.handleDisallowChannel(context.Background(), s, rolesInteraction("configure", "disallow-channel", channelArg("channel", "c1")))
+	set(p, s, panelJail+"allow", []string{"c1"})
 	if got := settings.JailAllowedChannelIDs("g1"); len(got) != 0 {
 		t.Fatalf("expected c1 removed, got %v", got)
 	}
@@ -525,7 +546,8 @@ func TestConfigureAllowChannelWithMarkerRoleSyncsEverything(t *testing.T) {
 	p.jailRoleID["g1"] = "jail-role"
 	s, _ := handlerSession(t)
 
-	p.handleAllowChannel(context.Background(), s, rolesInteraction("configure", "allow-channel", channelArg("channel", "c1"), roleArg("marker_role", "role-b")))
+	set(p, s, panelJail+"marker", nil, "role-b")
+	set(p, s, panelJail+"allow", nil, "c1")
 
 	if settings.JailMarkerRoleID("g1") != "role-b" {
 		t.Fatal("expected the marker role saved")
@@ -549,7 +571,7 @@ func TestConfigureMarkerRoleSetAndClear(t *testing.T) {
 	ops.channel["c1"] = &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
 	s, rt := handlerSession(t)
 
-	p.handleMarkerRole(context.Background(), s, rolesInteraction("configure", "marker-role", roleArg("marker_role", "role-b")))
+	set(p, s, panelJail+"marker", nil, "role-b")
 	if settings.JailMarkerRoleID("g1") != "role-b" || !rt.said("Configured jail role") {
 		t.Fatal("expected the marker role saved and confirmed")
 	}
@@ -558,7 +580,7 @@ func TestConfigureMarkerRoleSetAndClear(t *testing.T) {
 	}
 
 	p.jailRoleID["g1"] = "role-b"
-	p.handleMarkerRole(context.Background(), s, rolesInteraction("configure", "marker-role"))
+	set(p, s, panelJail+"marker", nil)
 	if settings.JailMarkerRoleID("g1") != "" || !rt.said("Cleared jail role") {
 		t.Fatal("expected the marker role cleared and confirmed")
 	}
@@ -576,11 +598,11 @@ func TestConfigureAnnounceChannelSetAndClear(t *testing.T) {
 	p, _, _, audit, _, settings := handlerFixture()
 	s, rt := handlerSession(t)
 
-	p.handleAnnounceChannel(context.Background(), s, rolesInteraction("configure", "announce-channel", channelArg("channel", "mod-log")))
+	set(p, s, panelJail+"announce", nil, "mod-log")
 	if settings.JailAnnounceChannelID("g1") != "mod-log" || !rt.said("Announcement channel set") {
 		t.Fatal("expected the announce channel saved and confirmed")
 	}
-	p.handleAnnounceChannel(context.Background(), s, rolesInteraction("configure", "announce-channel"))
+	set(p, s, panelJail+"announce", nil)
 	if settings.JailAnnounceChannelID("g1") != "" || !rt.said("Announcement channel cleared") {
 		t.Fatal("expected the announce channel cleared and confirmed")
 	}
@@ -595,15 +617,15 @@ func TestConfigureListChannels(t *testing.T) {
 	p, _, _, _, _, settings := handlerFixture()
 	s, rt := handlerSession(t)
 
-	p.handleListChannels(context.Background(), s, rolesInteraction("configure", "list-channels"))
-	if !rt.said("No allowed channels") || !rt.said("the invoking channel only") {
+	showPage(p, s, "jail")
+	if !rt.said("Now: nothing") || !rt.said("only where the command was run") {
 		t.Fatal("expected the empty reply")
 	}
 
 	settings.allowed["g1"] = []string{"c1", "c2"}
 	settings.announce["g1"] = "mod-log"
-	p.handleListChannels(context.Background(), s, rolesInteraction("configure", "list-channels"))
-	for _, want := range []string{"Channels visible while jailed", "<#c1>", "<#c2>", "<#mod-log>"} {
+	showPage(p, s, "jail")
+	for _, want := range []string{"Visible while jailed", "<#c1> <#c2>", "also <#mod-log>"} {
 		if !rt.said(want) {
 			t.Fatalf("expected the list to mention %q in %q", want, rt.bodies)
 		}
@@ -619,7 +641,7 @@ func TestConfigureSyncChannels(t *testing.T) {
 	ops.channel["c1"] = &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
 	s, rt := handlerSession(t)
 
-	p.handleSyncChannels(context.Background(), s, rolesInteraction("configure", "sync-channels"))
+	set(p, s, panelJail+"sync:", nil)
 	if !rt.said("Channels synced") {
 		t.Fatal("expected the success reply")
 	}
@@ -628,7 +650,7 @@ func TestConfigureSyncChannels(t *testing.T) {
 	}
 
 	ops.guildChannelsErr = transientErr()
-	p.handleSyncChannels(context.Background(), s, rolesInteraction("configure", "sync-channels"))
+	set(p, s, panelJail+"sync:", nil)
 	if !rt.said("Sync completed with errors") {
 		t.Fatal("expected the failure reported")
 	}
