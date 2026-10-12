@@ -84,7 +84,7 @@ func (p *Plugin) redraw(ctx context.Context, s *discordgo.Session, i *discordgo.
 func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page, arg, note string) core.Panel {
 	can := p.perms.Allows(i, mutateSpec)
 	gs := p.settings.GuildSettings(i.GuildID)
-	pn := core.Panel{Color: core.ColorInfo, Title: "Settings", Note: note,
+	pn := core.Panel{Color: core.ColorInfo, Title: "Settings", Plugin: p.Name(), Note: note,
 		Footer: "Mods can read this; only admins can change it. Every change is written to the audit log."}
 	if !can {
 		pn.Footer = "You can read this, but only admins can change it."

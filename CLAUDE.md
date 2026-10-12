@@ -15,6 +15,7 @@ golangci-lint run                           # matches CI's golangci-lint v2.13.1
 go test ./...  -cover                       # full suite
 go test ./... -race -cover -covermode=atomic  # matches CI exactly (needs CGO_ENABLED=1 / a C toolchain)
 go test ./internal/plugins/rotation/... -run TestRotateFullCycle -v   # single package / single test
+go run ./tools/icons                        # redraw every plugin icon into internal/core/assets/emoji
 govulncheck ./...
 
 go test ./... -coverprofile=coverage.out && scripts/coverage-floor.sh coverage.out   # the CI coverage gate
@@ -76,6 +77,12 @@ A plugin's configuration is a **panel**, not a tree of `configure` subcommands: 
 - **Two prefixes, two specs**: a `view:` prefix for navigation at the read tier, a `set:` prefix for every mutation at the mutate tier, both re-checked by the router on every click. The panel additionally draws mutating controls `Disabled` for anyone `Authorize` would refuse. Keep each control's action name identical to the subcommand it replaced, so stored tier overrides, allows and blocks keep applying; `CommandRouter.Actions` lists component and modal actions for that reason.
 - **Set pickers diff against what was drawn** (`core.SelectDiff`), read back off the interaction's message, never against current settings. Diffing against settings lets the second of two admins silently remove what the first just added. Every add and remove is still its own settings call and its own audit line.
 - A click answers by redrawing with a `Note` (`✓ ...`/`✗ ...`), not with a separate embed. Anything that can outrun 3 seconds uses `DeferPanelUpdate` + `FollowUpPanel`.
+
+### Plugin icons (`tools/icons`, `internal/core/emoji.go`)
+
+**Every plugin has an icon**, and `TestEveryPluginHasAnIcon` fails a plugin whose `Name()` has no `assets/emoji/plugin_<name>.png`. Each is an 11 by 11 glyph kept as a text grid in `tools/icons/main.go` (reviewable as text; `balanced` refuses one that sits off centre), painted at 2 cells a pixel onto a 32-cell tile in merlin's own palette: an umber ground, a bronze frame with cut corners lit top-left and shaded bottom-right like the mood badges, a cream glyph with a one-cell shadow. Edit the grid and run `go run ./tools/icons`; never edit the PNGs. `TestIconsAreOnTheirGrid` holds them to 128 px, flat 4 px cells and a few hundred bytes.
+
+At boot `core.SyncEmoji` uploads any missing icon as an **application emoji**, named `<key>_<hash>` so a redrawn icon is a new emoji and an unchanged one is never uploaded twice (one list call when nothing changed). Once synced, `PluginEmoji` writes it inline, `PluginComponentEmoji` puts it on a select option, and `PluginIcon` gives a CDN URL for a thumbnail; before that a heading is text alone and a thumbnail is attached, so nothing points at an emoji that is not there. A panel leads its title with its plugin's icon (`Panel.Plugin`); its thumbnail stays merlin's mood, which is the art.
 
 ### Self-serve, DB-backed config, not `config.yaml`
 

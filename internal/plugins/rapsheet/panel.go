@@ -85,7 +85,7 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, cate
 		catOpts = append(catOpts, discordgo.SelectMenuOption{Label: categoryLabel(c), Value: string(c), Default: c == category})
 	}
 
-	pn := core.Panel{Color: core.ColorInfo, Title: "Rapsheets", Note: note,
+	pn := core.Panel{Color: core.ColorInfo, Title: "Rapsheets", Plugin: p.Name(), Note: note,
 		Line:   "Every warning, jail, timeout, kick, ban and AI removal, scored",
 		Footer: "Recording stays commands: /rapsheet warn, /timeout, /kick, /ban. /rapsheet status checks the setup. Every change is audited."}
 	pn.Body = []discordgo.MessageComponent{

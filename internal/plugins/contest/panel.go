@@ -33,7 +33,7 @@ func (p *Plugin) handleSettings(ctx context.Context, s *discordgo.Session, i *di
 
 func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, note string) core.Panel {
 	can := p.commands.Perms().Allows(i, configureSpec)
-	pn := core.Panel{Color: core.ColorInfo, Title: "Contests", Note: note,
+	pn := core.Panel{Color: core.ColorInfo, Title: "Contests", Plugin: p.Name(), Note: note,
 		Line:   "Art contests: entries in a forum, a gallery, a vote",
 		Footer: "Running one stays commands: /contest new, advance, cancel, status. Every change here is audited."}
 	cfg, err := p.store.GetConfig(ctx, i.GuildID)

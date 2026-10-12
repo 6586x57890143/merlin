@@ -42,6 +42,10 @@ type Panel struct {
 	Footer string
 	// Mood overrides the one Color implies (WithMood's counterpart).
 	Mood Mood
+	// Plugin is whose panel this is: its icon leads the title once the
+	// emoji are synced. The thumbnail stays merlin's mood, which is the
+	// art; the icon says which part of her this is.
+	Plugin string
 }
 
 // Components renders p as the message's single top-level container.
@@ -51,6 +55,9 @@ func (p Panel) Components() []discordgo.MessageComponent {
 		mood = moodForColor(p.Color)
 	}
 	head := "## " + p.Title
+	if e := PluginEmoji(p.Plugin); e != "" {
+		head = "## " + e + " " + p.Title
+	}
 	if p.Line != "" {
 		head += "\n-# " + p.Line
 	}

@@ -103,7 +103,7 @@ func (p *Plugin) redraw(ctx context.Context, s *discordgo.Session, i *discordgo.
 func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page, arg, note string) core.Panel {
 	perms := p.commands.Perms()
 	canCfg, canPol := perms.Allows(i, cfgSpec), perms.Allows(i, policySpec)
-	pn := core.Panel{Color: core.ColorInfo, Title: "AI moderation", Note: note,
+	pn := core.Panel{Color: core.ColorInfo, Title: "AI moderation", Plugin: p.Name(), Note: note,
 		Line:   "Checks messages against Discord's Community Guidelines",
 		Footer: "Reports stay commands: /aimod status, /aimod models show, /aimod calibrate show. Every change is audited."}
 	cfg, err := p.store.Config(ctx, i.GuildID)

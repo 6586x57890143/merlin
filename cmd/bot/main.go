@@ -316,6 +316,14 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	if err := commands.PurgeGlobalCommands(session, cfg.Discord.AppID); err != nil {
 		log.Error("purge global commands", "err", err)
 	}
+	// Plugin icons as application emoji, in the background: one list call
+	// when nothing changed, and until it lands every icon goes as text or an
+	// attachment, so nothing waits on it.
+	go func() {
+		if err := core.SyncEmoji(session, cfg.Discord.AppID); err != nil {
+			log.Warn("sync plugin icons", "err", err)
+		}
+	}()
 
 	// One dispatcher for every plugin's commands (spec.MD §4a), replacing
 	// each plugin calling session.AddHandler itself. Guild-scoped command

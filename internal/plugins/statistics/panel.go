@@ -35,7 +35,7 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 }
 
 func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, note string) core.Panel {
-	pn := core.Panel{Color: core.ColorInfo, Title: "Statistics", Note: note,
+	pn := core.Panel{Color: core.ColorInfo, Title: "Statistics", Plugin: p.Name(), Note: note,
 		Line:   "who was talking where, counted by the hour",
 		Footer: "/statistics channels and members read it; only merlin's operator can name people."}
 	cfg, err := p.store.Config(ctx, i.GuildID)
