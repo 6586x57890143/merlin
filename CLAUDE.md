@@ -16,6 +16,7 @@ go test ./...  -cover                       # full suite
 go test ./... -race -cover -covermode=atomic  # matches CI exactly (needs CGO_ENABLED=1 / a C toolchain)
 go test ./internal/plugins/rotation/... -run TestRotateFullCycle -v   # single package / single test
 go run ./tools/icons                        # redraw every plugin icon into internal/core/assets/emoji
+go test ./internal/obs -bench . -run x      # what a /perf sample costs
 govulncheck ./...
 
 go test ./... -coverprofile=coverage.out && scripts/coverage-floor.sh coverage.out   # the CI coverage gate
@@ -89,6 +90,12 @@ At boot `core.SyncEmoji` uploads any missing icon as an **application emoji**, n
 `/help` is skua's field guide in merlin's art: an index with merlin's avatar, every plugin as its icon and title on a short line with what it does as `-#` subtext below, and a page per plugin wearing its icon tile, its `About` first at full width and then a code-block grid of its commands branching into subcommands, each marked `mod` or `admin` from its compiled-in `PermSpec` (`CommandRouter.LeafTier`; the panels say what a guild changed). **Every plugin implements `core.Helper`** and `TestEveryPluginHasAHelpPage` fails one that doesn't. Pages are written in her voice: lowercase, first person, plain where somebody is trying to find out how a thing works.
 
 It holds no state, so any guide ever posted keeps working. Clicking a guide an admin posted (`/help post:true`) answers with a private copy rather than editing the one everybody is reading. A plugin switched off here is listed to admins marked `off here` and hidden from everyone else; its page carries the same switch as `/config`'s plugins page, behind the same `config.mutate`, and `adminconfig` and `help` are never offered.
+
+### Observability (`internal/obs`, `/perf`)
+
+Ported from skua and always on: a sample is one read lock and a few atomic adds with no allocation (`BenchmarkAdd`, about 45 ns). Every interaction is timed in the router (`timed` in `commands.go`) as **in**, from the snowflake's own timestamp to dispatch, and **run**, the handler, both against the owning plugin; every scheduled job as **run** against `job <kind>` (no guild, no slot ID, so one kind of work is one row); every REST call as **http** by route through the session's transport (IDs and interaction tokens dropped from the name). **Wait is the one stage that differs from skua's**: discordgo's rate limiter is not pluggable, so time queued behind a bucket cannot be seen from outside, and what is recorded instead is each 429's `Retry-After`, the part of waiting that means Discord pushed back. Each run sits in a trace region named for its plugin.
+
+`/perf` shows it slowest first in a 40-column grid with eighth-block bars, the Go scheduler's and GC's p99 underneath and the build revision. The numbers are the whole process's, so it is **the bootstrap operator's alone** (TierAdmin is the floor, the handler checks the identity) and `default_member_permissions` is 0. `MERLIN_DEBUG_ADDR` starts pprof and a ten-second flight recorder (`/debug/merlin/flight`, open with `go tool trace`); it **refuses any non-loopback address**, because merlin is outbound-only and profiles carry message content. Reach it with `ssh -L`.
 
 ### Self-serve, DB-backed config, not `config.yaml`
 

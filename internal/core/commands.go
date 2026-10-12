@@ -9,6 +9,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/6586x57890143/merlin/internal/obs"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
@@ -506,7 +507,7 @@ func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.Int
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	matched.handler(ctx, s, i, customID)
+	timed(matched.pluginName, i, func() { matched.handler(ctx, s, i, customID) })
 }
 
 // matchModal is matchComponent for modal submissions. Split out for the same
@@ -562,7 +563,7 @@ func (r *CommandRouter) dispatchModal(s *discordgo.Session, i *discordgo.Interac
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	matched.handler(ctx, s, i, customID)
+	timed(matched.pluginName, i, func() { matched.handler(ctx, s, i, customID) })
 }
 
 func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -606,7 +607,19 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	leaf.handler(ctx, s, i)
+	timed(r.topLevelPlugin[data.Name], i, func() { leaf.handler(ctx, s, i) })
+}
+
+// timed records an interaction's two legs against plugin: in, from Discord
+// creating it to merlin dispatching it (the gateway, decoding, scheduling),
+// and run, the handler itself, in a trace region named for the plugin.
+func timed(plugin string, i *discordgo.InteractionCreate, fn func()) {
+	if d, ok := obs.Since(i.ID); ok {
+		obs.Default.Add(plugin, obs.In, d)
+	}
+	start := time.Now()
+	obs.Region(plugin, fn)
+	obs.Default.Add(plugin, obs.Run, time.Since(start))
 }
 
 func (r *CommandRouter) dispatchAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
