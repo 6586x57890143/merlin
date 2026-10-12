@@ -209,6 +209,8 @@ jobs:
 
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose -f docker-compose.prod.yml pull
+            # cygnet's hub network, made here if cygnet's stack hasn't yet.
+            docker network inspect fleet >/dev/null 2>&1 || docker network create fleet
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
             # Prune dangling layers only. A bare `docker image prune -f` on a
             # host that has just retagged images can remove the previous

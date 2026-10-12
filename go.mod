@@ -14,6 +14,8 @@ require (
 )
 
 require (
+	github.com/6586x57890143/cygnet/link v0.6.0 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
