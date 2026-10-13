@@ -230,6 +230,15 @@ status` rather than appearing to work.
   guild word list gets it too. A hit publishes the folded text as the
   rewrite (a disguised slur costs the message its accents); a miss returns
   the original untouched.
+- **Rung 1 is gated, and the gate may never change an answer** (`gate.go`).
+  Each pattern's required characters, and the letters a slur match can start
+  with, are read off its own parsed syntax at init, so a table entry needs no
+  gate written for it. A clean message costs ~2us and no allocations instead
+  of 15us and 62. `gate_test.go` holds gated and ungated rung 1 equal over
+  every string literal in this package's tests and under fuzzing, and walks
+  every rune through `squash` for the n-word shape gate: a new evasion test
+  is automatically a gate test. `HandleMessage` reads rung 1 once and hands
+  it to `scan`.
 - **The policy catalogue is data, validated like `internal/voice`'s.** Ten
   `policy/*.yaml` files, `go:embed`ed, each carrying `violations` **and**
   `not_violations`, both with a `minListItems` floor. The second list is the

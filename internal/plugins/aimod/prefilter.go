@@ -317,6 +317,8 @@ var hardPatterns = []struct {
 	// notIf, when set and matching, cancels the hit. For narrowing a shape
 	// that is right most of the time but has known innocent forms.
 	notIf *regexp.Regexp
+	// need is what pattern needs the text to contain, set at init (gate.go).
+	need needs
 }{
 	{
 		bucket: BucketMalicious,
@@ -495,6 +497,10 @@ var hardSlurs = []struct {
 	// phrase marks the entry that is several ordinary words by design, so
 	// acrossWords, which exists to refuse exactly that shape, does not apply.
 	phrase bool
+	// need is what pattern needs the folded text to contain, and start
+	// searches it from where a match can begin, both set at init (gate.go).
+	need  needs
+	start starter
 }{
 	{
 		// The g is a class because swapping it is the evasion: "nibbers",
@@ -625,6 +631,16 @@ var hardSlurs = []struct {
 	},
 }
 
+func init() {
+	for i := range hardPatterns {
+		hardPatterns[i].need = needsOf(hardPatterns[i].pattern)
+	}
+	for i := range hardSlurs {
+		hardSlurs[i].need = needsOf(hardSlurs[i].pattern)
+		hardSlurs[i].start = starterOf(hardSlurs[i].pattern)
+	}
+}
+
 var nWordSubs = []sub{
 	{"ninja", "ninjas"},
 	{"ninjago", "ninjagos"},
@@ -658,18 +674,26 @@ var innocentCompounds = regexp.MustCompile(`(?i)^(?:snigger|niggard|gobbledygook
 // why that is the right price. A miss returns content untouched.
 func redactSlurs(content string) (string, bool) {
 	out, hit := fold(content), false
+	// Re-read after every entry that replaced something, since a replacement
+	// brings letters of its own.
+	p := profileOf(out)
 	for _, s := range hardSlurs {
-		if s.notIf != nil && s.notIf.MatchString(out) {
+		if !s.need.admits(p) {
 			continue
 		}
 		var b strings.Builder
-		last := 0
+		last, replaced := 0, false
 		// Searched one match at a time rather than with FindAll, because a
 		// match refused for running into the next word is retried inside
 		// its first word, and the search resumes from wherever that leaves.
 		for pos := 0; pos < len(out); {
-			loc := s.pattern.FindStringIndex(out[pos:])
+			loc := s.start.find(out[pos:])
 			if loc == nil {
+				break
+			}
+			// notIf vetoes the whole entry, so it is read once there is a
+			// match for it to veto rather than on every message.
+			if pos == 0 && s.notIf != nil && s.notIf.MatchString(out) {
 				break
 			}
 			start, end := pos+loc[0], trimTail(out, pos+loc[0], pos+loc[1])
@@ -712,27 +736,48 @@ func redactSlurs(content string) (string, bool) {
 			b.WriteString(out[last:start])
 			b.WriteString(word)
 			last = end
-			hit = true
+			hit, replaced = true, true
 		}
-		b.WriteString(out[last:])
-		out = b.String()
+		if replaced {
+			b.WriteString(out[last:])
+			out = b.String()
+			p = profileOf(out)
+		}
 	}
 	// Last, word by word, the n-word by shape rather than by spelling. See
-	// nWordShape.
-	out = shapeToken.ReplaceAllStringFunc(out, func(tok string) string {
-		core := strings.Trim(tok, tokenEdge)
-		if core == "" || !nWordShape(core) {
-			return tok
+	// nWordShape. A token can only have that shape if it holds an n, a g and
+	// an r, or what squash turns into them, so the text is checked for those
+	// first and then each token. Tokens are what `\S+` matches:
+	// runs of bytes other than Go's \s, [\t\n\f\r ], none of which can sit
+	// inside a multi-byte rune.
+	if shapeNeeds.admits(p) {
+		var b strings.Builder
+		last := 0
+		for at, j := nextToken(out, 0); at < len(out); at, j = nextToken(out, j) {
+			tok := out[at:j]
+			if !shapeNeeds.admits(profileOf(tok)) {
+				continue
+			}
+			core := strings.Trim(tok, tokenEdge)
+			if core == "" || !nWordShape(core) {
+				continue
+			}
+			hit = true
+			r := pickSub(nWordSubs, false)
+			word := r.one
+			if n := nWordNormal(core); n[len(n)-1] == 's' {
+				word = r.many
+			}
+			c := strings.Index(tok, core)
+			b.WriteString(out[last:at])
+			b.WriteString(tok[:c] + word + tok[c+len(core):])
+			last = j
 		}
-		hit = true
-		r := pickSub(nWordSubs, false)
-		word := r.one
-		if n := nWordNormal(core); n[len(n)-1] == 's' {
-			word = r.many
+		if last > 0 {
+			b.WriteString(out[last:])
+			out = b.String()
 		}
-		i := strings.Index(tok, core)
-		return tok[:i] + word + tok[i+len(core):]
-	})
+	}
 	if !hit {
 		return content, false
 	}
@@ -796,10 +841,25 @@ func isGlued(s string, start, end int) bool {
 	return ws < start || we > end
 }
 
-// shapeToken is one whitespace-separated token, and tokenEdge the
-// punctuation trimmed off either end of it before its shape is read, so
-// "Nibber!" and "(nibbers)" are judged as the word inside.
-var shapeToken = regexp.MustCompile(`\S+`)
+// A token is one whitespace-separated run, and tokenEdge the punctuation
+// trimmed off either end of it before its shape is read, so "Nibber!" and
+// "(nibbers)" are judged as the word inside.
+func isShapeSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'
+}
+
+// nextToken is the next token at or after i, as s[start:end], or
+// start == len(s) when there is none.
+func nextToken(s string, i int) (start, end int) {
+	for i < len(s) && isShapeSpace(s[i]) {
+		i++
+	}
+	end = i
+	for end < len(s) && !isShapeSpace(s[end]) {
+		end++
+	}
+	return i, end
+}
 
 const tokenEdge = `.,!?;:'"()[]{}<>`
 
@@ -1039,6 +1099,10 @@ func slurNote(text string) string {
 	return ""
 }
 
+// pickIndex is rand.IntN, swapped for a fixed pick by the tests that need
+// two runs over one message to agree.
+var pickIndex = rand.IntN
+
 // pickSub chooses one replacement at random, from the single-word ones when
 // the match is glued into a longer word.
 //
@@ -1060,7 +1124,7 @@ func pickSub(subs []sub, glued bool) sub {
 			subs = solo
 		}
 	}
-	return subs[rand.IntN(len(subs))]
+	return subs[pickIndex(len(subs))]
 }
 
 // wordBounds widens a match to the whole word around it, by the same
@@ -1091,8 +1155,9 @@ func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) 
 // publishable version of the message: only the slur patterns produce one,
 // since a credential or a phishing link has no cleaned-up form.
 func hardHit(content string) (bucket Bucket, reason, rewrite string, hit bool) {
+	p := profileOf(content)
 	for _, h := range hardPatterns {
-		if !h.pattern.MatchString(content) {
+		if !h.need.admits(p) || !h.pattern.MatchString(content) {
 			continue
 		}
 		if h.notIf != nil && h.notIf.MatchString(content) {
