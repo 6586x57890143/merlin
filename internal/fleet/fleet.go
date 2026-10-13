@@ -71,7 +71,7 @@ func (l *Link) Describe(app string, intents uint64, tiers map[string]core.PermTi
 	if l == nil {
 		return
 	}
-	m := link.Manifest{Build: Build(), App: app, Perms: strconv.FormatUint(Perms, 10), Intents: intents, Wants: intents, Commands: []link.Command{}}
+	m := link.Manifest{Build: Build(), App: app, Perms: strconv.FormatUint(Perms, 10), Intents: intents, Wants: intents, Serves: []string{"ping"}, Commands: []link.Command{}}
 	for name, t := range tiers {
 		m.Commands = append(m.Commands, link.Command{Name: name, Tier: tier(t)})
 	}

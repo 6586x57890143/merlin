@@ -1,5 +1,5 @@
-github.com/6586x57890143/cygnet/link v0.6.0 h1:/KBfu8Eu/Pkzw2kE7U4nChL72HbPvXWdmIDa/6KftBc=
-github.com/6586x57890143/cygnet/link v0.6.0/go.mod h1:uJRZai/tIy8hcDxYvgIvWm1vP0nBg/LZi7HcSZeq5Yw=
+github.com/6586x57890143/cygnet/link v0.8.0 h1:nAfnNd6S37RJEo3+o+q4GMCh6+rJKa7SZ24ExHRrAUQ=
+github.com/6586x57890143/cygnet/link v0.8.0/go.mod h1:uJRZai/tIy8hcDxYvgIvWm1vP0nBg/LZi7HcSZeq5Yw=
 github.com/bwmarrin/discordgo v0.29.0 h1:FmWeXFaKUwrcL3Cx65c20bTRW+vOb6k8AnaP+EgjDno=
 github.com/bwmarrin/discordgo v0.29.0/go.mod h1:NJZpH+1AfhIcyQsPeuBKsUtYrRnjkyu0kIVMCHkZtRY=
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
