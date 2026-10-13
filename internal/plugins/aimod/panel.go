@@ -103,7 +103,7 @@ func (p *Plugin) redraw(ctx context.Context, ix *core.Ix, page, arg, note string
 
 func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string) core.Panel {
 	perms := p.commands.Perms()
-	canCfg, canPol := perms.AllowsIx(ix, cfgSpec), perms.AllowsIx(ix, policySpec)
+	canCfg, canPol := perms.Allows(ix, cfgSpec), perms.Allows(ix, policySpec)
 	pn := core.Panel{Color: core.ColorInfo, Title: "AI moderation", Plugin: p.Name(), Note: note,
 		Line:   "Checks messages against Discord's Community Guidelines",
 		Footer: "Reports stay commands: /aimod status, /aimod models show, /aimod calibrate show. Every change is audited."}

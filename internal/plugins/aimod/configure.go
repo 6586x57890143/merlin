@@ -267,7 +267,7 @@ func (p *Plugin) handleWhy(ctx context.Context, ix *core.Ix) {
 	// them paste any message and learn whether the filter had quietly
 	// flagged it, and the full view below carries the original text, which
 	// for a rewrite is the very words that were taken out of the channel.
-	mod := p.privilege != nil && p.privilege.AuthorizeIx(ix, core.PermSpec{Tier: core.TierMod, Action: actionRead}) == nil
+	mod := p.privilege != nil && p.privilege.Authorize(ix, core.PermSpec{Tier: core.TierMod, Action: actionRead}) == nil
 	inc, err := p.store.IncidentByCode(ctx, ix.GuildID, strings.ToLower(ref))
 	if errors.Is(err, ErrNoIncident) && mod {
 		inc, err = p.store.IncidentByMessage(ctx, ix.GuildID, ref)

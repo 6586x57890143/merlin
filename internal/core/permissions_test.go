@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 )
 
@@ -37,27 +37,32 @@ func (f *fakeAuthData) ActionPolicy(guildID, action string) ActionPolicy {
 	return byAction[action]
 }
 
-func memberInteraction(guildID, userID string, roles []string) *discordgo.InteractionCreate {
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		GuildID: guildID,
-		Member:  &discordgo.Member{Roles: roles, User: &discordgo.User{ID: userID}},
-	}}
+// asked is one member asking in one guild: what Authorize reads off an
+// interaction. who is nil for an interaction with no member.
+type asked struct {
+	guildID string
+	who     *invoker
 }
 
-// memberInteractionWithPerms is memberInteraction plus a Discord permission
-// bitmask, mirroring what Discord itself attaches to Member.Permissions on
-// every real interaction, used to test the Administrator-bit path to
-// TierAdmin independent of the DB-listed admin/mod-role paths.
-func memberInteractionWithPerms(guildID, userID string, roles []string, perms int64) *discordgo.InteractionCreate {
-	i := memberInteraction(guildID, userID, roles)
-	i.Member.Permissions = perms
-	return i
+// ask is Authorize's decision for a.
+func (p *Permissions) ask(a asked, spec PermSpec) error { return p.authorize(a.guildID, a.who, spec) }
+
+func memberInteraction(guildID, userID string, roles []string) asked {
+	return asked{guildID, &invoker{userID: userID, roles: roles}}
+}
+
+// memberInteractionWithPerms is memberInteraction plus the Discord
+// permissions Discord attaches to every real interaction, to test the
+// Administrator-bit path to TierAdmin apart from the DB-listed ones.
+func memberInteractionWithPerms(guildID, userID string, roles []string, perms discord.Permissions) asked {
+	a := memberInteraction(guildID, userID, roles)
+	a.who.administrator = perms.Has(discord.PermissionAdministrator)
+	return a
 }
 
 func TestAuthorizePublicTierAlwaysPasses(t *testing.T) {
 	perms := NewPermissions(nil, newFakeAuthData(), "")
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{}}
-	if err := perms.Authorize(i, PermSpec{Tier: TierPublic}); err != nil {
+	if err := perms.ask(asked{}, PermSpec{Tier: TierPublic}); err != nil {
 		t.Fatalf("expected TierPublic to always pass, got %v", err)
 	}
 }
@@ -67,10 +72,10 @@ func TestAuthorizeModTierRequiresModRoleOrAdmin(t *testing.T) {
 	auth.modRoles["g1"] = []string{"modrole"}
 	perms := NewPermissions(nil, auth, "")
 
-	if err := perms.Authorize(memberInteraction("g1", "u1", []string{"modrole"}), PermSpec{Tier: TierMod, Action: "test"}); err != nil {
+	if err := perms.ask(memberInteraction("g1", "u1", []string{"modrole"}), PermSpec{Tier: TierMod, Action: "test"}); err != nil {
 		t.Fatalf("expected mod role to pass TierMod, got %v", err)
 	}
-	if err := perms.Authorize(memberInteraction("g1", "u1", []string{"otherrole"}), PermSpec{Tier: TierMod, Action: "test"}); err == nil {
+	if err := perms.ask(memberInteraction("g1", "u1", []string{"otherrole"}), PermSpec{Tier: TierMod, Action: "test"}); err == nil {
 		t.Fatal("expected a non-mod, non-whitelisted member to fail TierMod")
 	}
 }
@@ -80,7 +85,7 @@ func TestAuthorizeAdminSatisfiesModTier(t *testing.T) {
 	auth.admins["g1"] = []string{"adminuser"}
 	perms := NewPermissions(nil, auth, "")
 
-	if err := perms.Authorize(memberInteraction("g1", "adminuser", nil), PermSpec{Tier: TierMod, Action: "test"}); err != nil {
+	if err := perms.ask(memberInteraction("g1", "adminuser", nil), PermSpec{Tier: TierMod, Action: "test"}); err != nil {
 		t.Fatalf("expected admin to satisfy TierMod, got %v", err)
 	}
 }
@@ -90,14 +95,14 @@ func TestAuthorizeAdminTierRejectsMod(t *testing.T) {
 	auth.modRoles["g1"] = []string{"modrole"}
 	perms := NewPermissions(nil, auth, "")
 
-	if err := perms.Authorize(memberInteraction("g1", "u1", []string{"modrole"}), PermSpec{Tier: TierAdmin, Action: "test"}); err == nil {
+	if err := perms.ask(memberInteraction("g1", "u1", []string{"modrole"}), PermSpec{Tier: TierAdmin, Action: "test"}); err == nil {
 		t.Fatal("expected a mod (non-admin) to fail TierAdmin")
 	}
 }
 
 func TestAuthorizeBootstrapAdminAlwaysSatisfiesAdminTier(t *testing.T) {
 	perms := NewPermissions(nil, newFakeAuthData(), "bootstrap-user")
-	if err := perms.Authorize(memberInteraction("unconfigured-guild", "bootstrap-user", nil), PermSpec{Tier: TierAdmin, Action: "test"}); err != nil {
+	if err := perms.ask(memberInteraction("unconfigured-guild", "bootstrap-user", nil), PermSpec{Tier: TierAdmin, Action: "test"}); err != nil {
 		t.Fatalf("expected bootstrap admin to satisfy TierAdmin even in an unconfigured guild, got %v", err)
 	}
 }
@@ -110,19 +115,19 @@ func TestAuthorizeWhitelistGrantsAccessIndependentOfTier(t *testing.T) {
 	perms := NewPermissions(nil, auth, "")
 
 	// Not a mod, not an admin, but explicitly whitelisted for this action.
-	if err := perms.Authorize(memberInteraction("g1", "whitelisted-user", nil), PermSpec{Tier: TierAdmin, Action: "rotation.configure"}); err != nil {
+	if err := perms.ask(memberInteraction("g1", "whitelisted-user", nil), PermSpec{Tier: TierAdmin, Action: "rotation.configure"}); err != nil {
 		t.Fatalf("expected whitelisted user to pass even TierAdmin for their granted action, got %v", err)
 	}
 	// The same user has no grant for a different action.
-	if err := perms.Authorize(memberInteraction("g1", "whitelisted-user", nil), PermSpec{Tier: TierAdmin, Action: "other.action"}); err == nil {
+	if err := perms.ask(memberInteraction("g1", "whitelisted-user", nil), PermSpec{Tier: TierAdmin, Action: "other.action"}); err == nil {
 		t.Fatal("expected the whitelist grant to be scoped to its own action only")
 	}
 }
 
 func TestAuthorizeDiscordAdministratorSatisfiesAdminTier(t *testing.T) {
 	perms := NewPermissions(nil, newFakeAuthData(), "")
-	i := memberInteractionWithPerms("g1", "u1", nil, discordgo.PermissionAdministrator)
-	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "test"}); err != nil {
+	i := memberInteractionWithPerms("g1", "u1", nil, discord.PermissionAdministrator)
+	if err := perms.ask(i, PermSpec{Tier: TierAdmin, Action: "test"}); err != nil {
 		t.Fatalf("expected a Discord Administrator to satisfy TierAdmin with no DB admin entry, got %v", err)
 	}
 }
@@ -134,8 +139,8 @@ func TestAuthorizeModRoleWithoutAdministratorBitStillFailsAdminTier(t *testing.T
 
 	// Holding a lesser Discord permission (not Administrator) must not widen
 	// the mod path into satisfying TierAdmin.
-	i := memberInteractionWithPerms("g1", "u1", []string{"modrole"}, discordgo.PermissionManageGuild)
-	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "test"}); err == nil {
+	i := memberInteractionWithPerms("g1", "u1", []string{"modrole"}, discord.PermissionManageGuild)
+	if err := perms.ask(i, PermSpec{Tier: TierAdmin, Action: "test"}); err == nil {
 		t.Fatal("expected a mod role holder without the Administrator bit to fail TierAdmin")
 	}
 }
@@ -149,8 +154,8 @@ func TestAuthorizeDenyWinsOverAllowAndAdministratorBit(t *testing.T) {
 
 	// u1 is both allow-granted and Discord Administrator, but explicitly
 	// denied for this specific action: deny must still win.
-	i := memberInteractionWithPerms("g1", "u1", nil, discordgo.PermissionAdministrator)
-	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "rotation.configure"}); err == nil {
+	i := memberInteractionWithPerms("g1", "u1", nil, discord.PermissionAdministrator)
+	if err := perms.ask(i, PermSpec{Tier: TierAdmin, Action: "rotation.configure"}); err == nil {
 		t.Fatal("expected an explicit deny to override both the allow-grant and the Administrator bit")
 	}
 }
@@ -162,7 +167,7 @@ func TestAuthorizeDenyNeverAppliesToBootstrapAdmin(t *testing.T) {
 	}
 	perms := NewPermissions(nil, auth, "bootstrap-user")
 
-	if err := perms.Authorize(memberInteraction("g1", "bootstrap-user", nil), PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err != nil {
+	if err := perms.ask(memberInteraction("g1", "bootstrap-user", nil), PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err != nil {
 		t.Fatalf("expected the bootstrap admin to be immune to deny-listing, got %v", err)
 	}
 }
@@ -178,7 +183,7 @@ func TestAuthorizeTierOverrideTightensModToAdmin(t *testing.T) {
 	// The command's own PermSpec says TierMod, but the guild has overridden
 	// this action to TierAdmin: a plain mod role must no longer be enough.
 	i := memberInteraction("g1", "u1", []string{"modrole"})
-	if err := perms.Authorize(i, PermSpec{Tier: TierMod, Action: "rotation.configure"}); err == nil {
+	if err := perms.ask(i, PermSpec{Tier: TierMod, Action: "rotation.configure"}); err == nil {
 		t.Fatal("expected the guild's Admin-only override to reject a mod-role holder")
 	}
 }
@@ -194,15 +199,14 @@ func TestAuthorizeTierOverrideLoosensAdminToMod(t *testing.T) {
 	// The command's own PermSpec says TierAdmin, but the guild has loosened
 	// this action to TierMod: a plain mod role should now be enough.
 	i := memberInteraction("g1", "u1", []string{"modrole"})
-	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "rotation.configure_structural"}); err != nil {
+	if err := perms.ask(i, PermSpec{Tier: TierAdmin, Action: "rotation.configure_structural"}); err != nil {
 		t.Fatalf("expected the guild's Mod-allowed override to accept a mod-role holder, got %v", err)
 	}
 }
 
 func TestAuthorizeNoMemberContextFails(t *testing.T) {
 	perms := NewPermissions(nil, newFakeAuthData(), "")
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{GuildID: "g1"}}
-	if err := perms.Authorize(i, PermSpec{Tier: TierMod, Action: "test"}); err == nil {
+	if err := perms.ask(asked{guildID: "g1"}, PermSpec{Tier: TierMod, Action: "test"}); err == nil {
 		t.Fatal("expected a missing Member to fail authorization")
 	}
 }
@@ -262,29 +266,16 @@ func TestAuthorizeTierOverrideCanRaiseAPublicAction(t *testing.T) {
 	perms := NewPermissions(nil, auth, "")
 	spec := PermSpec{Tier: TierPublic, Action: "public.thing"}
 
-	if err := perms.Authorize(memberInteraction("g1", "nobody", nil), spec); err == nil {
+	if err := perms.ask(memberInteraction("g1", "nobody", nil), spec); err == nil {
 		t.Fatal("guild raised this public action to Admins only, but a random member still passed")
 	}
-	if err := perms.Authorize(memberInteraction("g1", "adminuser", nil), spec); err != nil {
+	if err := perms.ask(memberInteraction("g1", "adminuser", nil), spec); err != nil {
 		t.Fatalf("expected an admin to pass the raised tier, got %v", err)
 	}
 	// A guild that never customized the action must still get plain public
 	// behavior: the override is the exception, not a new default.
-	if err := perms.Authorize(memberInteraction("g2", "nobody", nil), spec); err != nil {
+	if err := perms.ask(memberInteraction("g2", "nobody", nil), spec); err != nil {
 		t.Fatalf("expected an un-overridden public action to stay public, got %v", err)
-	}
-}
-
-// TestAuthorizeRejectsMemberWithoutUser covers a malformed interaction on a
-// security path: no identity to check means refuse, not panic.
-func TestAuthorizeRejectsMemberWithoutUser(t *testing.T) {
-	perms := NewPermissions(nil, newFakeAuthData(), "")
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		GuildID: "g1",
-		Member:  &discordgo.Member{Roles: []string{"modrole"}},
-	}}
-	if err := perms.Authorize(i, PermSpec{Tier: TierMod, Action: "test"}); err == nil {
-		t.Fatal("expected a member with no User to be refused")
 	}
 }
 
@@ -400,7 +391,7 @@ func TestAuthorizeIgnoresStoredPublicTierOverride(t *testing.T) {
 	perms := NewPermissions(nil, auth, "bootstrap-user")
 
 	i := memberInteraction("g1", "nobody", nil)
-	if err := perms.Authorize(i, PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err == nil {
+	if err := perms.ask(i, PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err == nil {
 		t.Fatal("a stored public tier override made an admin-only action available to everyone")
 	}
 }
@@ -410,25 +401,20 @@ func TestAuthorizeIgnoresStoredPublicTierOverride(t *testing.T) {
 // target who left and Unknown Role for a deleted role), and a caller reacting
 // to the wrong one acts on the wrong state.
 func TestHasDiscordErrorCodeDistinguishesAbsences(t *testing.T) {
-	roleGone := restErr(http.StatusNotFound, discordgo.ErrCodeUnknownRole)
-	memberGone := restErr(http.StatusNotFound, discordgo.ErrCodeUnknownMember)
+	roleGone := restErr(http.StatusNotFound, rest.JSONErrorCodeUnknownRole)
+	memberGone := restErr(http.StatusNotFound, rest.JSONErrorCodeUnknownMember)
 
-	if !HasDiscordErrorCode(roleGone, discordgo.ErrCodeUnknownRole) {
+	if !HasDiscordErrorCode(roleGone, int(rest.JSONErrorCodeUnknownRole)) {
 		t.Error("expected the unknown-role error to match the unknown-role code")
 	}
-	if HasDiscordErrorCode(memberGone, discordgo.ErrCodeUnknownRole) {
+	if HasDiscordErrorCode(memberGone, int(rest.JSONErrorCodeUnknownRole)) {
 		t.Error("an unknown *member* must not read as an unknown role")
 	}
-	if !HasDiscordErrorCode(fmt.Errorf("edit: %w", roleGone), discordgo.ErrCodeUnknownRole) {
+	if !HasDiscordErrorCode(fmt.Errorf("edit: %w", roleGone), int(rest.JSONErrorCodeUnknownRole)) {
 		t.Error("expected a wrapped error to still match")
 	}
-	if HasDiscordErrorCode(errors.New("dial tcp"), discordgo.ErrCodeUnknownRole) {
+	if HasDiscordErrorCode(errors.New("dial tcp"), int(rest.JSONErrorCodeUnknownRole)) {
 		t.Error("a non-REST error must not match any code")
-	}
-	// disgo's errors answer the same.
-	if !HasDiscordErrorCode(disgoErr(http.StatusNotFound, discordgo.ErrCodeUnknownRole), discordgo.ErrCodeUnknownRole) ||
-		HasDiscordErrorCode(disgoErr(http.StatusNotFound, discordgo.ErrCodeUnknownMember), discordgo.ErrCodeUnknownRole) {
-		t.Error("disgo's errors are told apart by code differently")
 	}
 	// Both are still "gone" for the coarser question.
 	if !IsUnknownResource(memberGone) || !IsUnknownResource(roleGone) {

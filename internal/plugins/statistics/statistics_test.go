@@ -13,6 +13,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 )
 
 var windowStart = time.Date(2026, 9, 1, 14, 0, 0, 0, time.UTC)
@@ -52,9 +53,9 @@ func (f *fakeSource) messagePage(channelID, beforeID string, limit int) ([]post,
 	f.calls++
 	f.mu.Unlock()
 	if f.unreadable[channelID] {
-		return nil, &discordgo.RESTError{
+		return nil, &rest.Error{
 			Response: &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden"},
-			Message:  &discordgo.APIErrorMessage{Code: 50001, Message: "Missing Access"},
+			Code:     rest.JSONErrorCodeMissingAccess, Message: "Missing Access",
 		}
 	}
 	before, _ := strconv.ParseInt(beforeID, 10, 64)

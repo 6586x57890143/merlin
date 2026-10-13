@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/6586x57890143/merlin/internal/core"
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 )
 
 // TestReleaseJailRestoresSnapshotFilteredToExistingRoles verifies release
@@ -349,9 +349,9 @@ func TestApplyJailSucceedsAndTracks(t *testing.T) {
 // marker role. Treating them alike threw away a good cache entry on the wrong
 // signal.
 func TestApplyJailForgetsCachedRoleOnlyWhenTheRoleIsGone(t *testing.T) {
-	roleGone := &discordgo.RESTError{
+	roleGone := &rest.Error{
 		Response: &http.Response{StatusCode: http.StatusNotFound},
-		Message:  &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownRole, Message: "Unknown Role"},
+		Code:     rest.JSONErrorCodeUnknownRole, Message: "Unknown Role",
 	}
 
 	for _, tc := range []struct {

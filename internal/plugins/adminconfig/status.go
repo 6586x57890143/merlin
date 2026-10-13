@@ -213,7 +213,7 @@ func (p *Plugin) channelState(channelID string) (string, severity) {
 // because it drifts: a channel that was private when an admin picked it
 // stops being private the moment someone removes the overwrite, and nothing
 // about the audit log continuing to fill up says otherwise. The wizard's
-// own "create it for me" path applies core.DenyEveryoneExceptBot, but
+// own "create it for me" path applies core.DenyEveryone, but
 // picking an existing channel deliberately changes no permissions on a
 // channel the guild already uses for something, so that path can leave a
 // perfectly public channel configured as the audit log.

@@ -94,7 +94,7 @@ func (p *Plugin) handleHelp(ctx context.Context, ix *core.Ix) {
 	if o, ok := ix.Args()["post"]; ok {
 		post = o.Bool()
 	}
-	admin := p.commands.Perms().AllowsIx(ix, switchSpec)
+	admin := p.commands.Perms().Allows(ix, switchSpec)
 	if post && !admin {
 		ix.RespondErr("Not yours to post", fmt.Errorf("only this server's admins can post the guide; `/help` on its own shows it to you"))
 		return
@@ -125,7 +125,7 @@ func (p *Plugin) handleView(ctx context.Context, ix *core.Ix, customID string) {
 // show draws the index (name "") or one plugin's page on the guide that was
 // clicked: in place on a private one, as a private copy of a posted one.
 func (p *Plugin) show(ix *core.Ix, name, note string) {
-	admin := p.commands.Perms().AllowsIx(ix, switchSpec)
+	admin := p.commands.Perms().Allows(ix, switchSpec)
 	pn, ok := p.page(ix.GuildID, name, admin)
 	if name == "" || !ok {
 		pn = p.index(ix.GuildID, admin)
