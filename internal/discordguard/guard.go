@@ -115,19 +115,16 @@ type Guard struct {
 	// breaker cooldown) is testable without sleeping.
 	now func() time.Time
 
-	rateMu   sync.Mutex
-	buckets  map[string]*bucket  // guildID:op -> token bucket
-	breakers map[string]*breaker // guildID -> circuit breaker
+	buckets  sync.Map // bucketKey -> *atomic.Int64, the cell's arrival time
+	breakers sync.Map // guildID -> *breaker
 }
 
 func New(session Session, gate GuildGate, log *slog.Logger, pauseAllWrites bool) *Guard {
 	g := &Guard{
-		session:  session,
-		gate:     gate,
-		log:      log,
-		now:      func() time.Time { return time.Now().UTC() },
-		buckets:  make(map[string]*bucket),
-		breakers: make(map[string]*breaker),
+		session: session,
+		gate:    gate,
+		log:     log,
+		now:     func() time.Time { return time.Now().UTC() },
 	}
 	g.global.Store(pauseAllWrites)
 	return g
