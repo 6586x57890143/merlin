@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // PageSize is the number of list entries shown per page across every
@@ -50,37 +48,4 @@ func ParsePaginationPage(customID, prefix string) (int, error) {
 		return 0, fmt.Errorf("core: invalid pagination page in custom ID %q: %w", customID, err)
 	}
 	return n, nil
-}
-
-// PaginationRow builds the Prev/Next button row for page (0-based) out of
-// totalPages, disabling whichever end is already at its limit, with a
-// disabled middle button showing "page X/Y" for orientation. Returns nil if
-// there's only one page: no controls needed at all, so a short list stays
-// exactly as plain as it was before pagination existed.
-func PaginationRow(prefix string, page, totalPages int) []discordgo.MessageComponent {
-	if totalPages <= 1 {
-		return nil
-	}
-	return []discordgo.MessageComponent{
-		discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-			discordgo.Button{
-				Label:    "◀ Prev",
-				Style:    discordgo.SecondaryButton,
-				CustomID: PaginationCustomID(prefix, page-1),
-				Disabled: page <= 0,
-			},
-			discordgo.Button{
-				Label:    fmt.Sprintf("Page %d/%d", page+1, totalPages),
-				Style:    discordgo.SecondaryButton,
-				CustomID: prefix + "noop",
-				Disabled: true,
-			},
-			discordgo.Button{
-				Label:    "Next ▶",
-				Style:    discordgo.SecondaryButton,
-				CustomID: PaginationCustomID(prefix, page+1),
-				Disabled: page >= totalPages-1,
-			},
-		}},
-	}
 }

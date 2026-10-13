@@ -1,11 +1,9 @@
 package core
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 )
 
@@ -18,7 +16,7 @@ import (
 // everything else goes below at full width, since beside a thumbnail a phone
 // gives text a narrow column. What is merlin's own is the art: the mood is
 // still derived from the colour (moodForColor), and the rule is the same
-// barred line NewEmbed carries, here as the divider under the head. It is
+// barred line Embed carries, here as the divider under the head. It is
 // there for its width as much as its look, exactly as on an embed: a
 // container is sized to its content, so a panel whose page is two short lines
 // would otherwise render narrower than the one before it and every click
@@ -36,31 +34,25 @@ type Panel struct {
 	// Note says what the last click did ("✓ ...", "✗ ..."). Shown under the
 	// rule, gone on the next render.
 	Note string
-	// Body is the page: TextDisplays, ActionsRows, Separators.
-	Body []discordgo.MessageComponent
+	// Parts is the page: text, rows of controls, separators.
+	Parts []discord.ContainerSubComponent
 	// Footer is a closing subtext line.
 	Footer string
-	// Mood overrides the one Color implies (WithMood's counterpart).
+	// Mood overrides the one Color implies (SetMood's counterpart).
 	Mood Mood
 	// Plugin is whose panel this is: its icon leads the title once the
 	// emoji are synced. The thumbnail stays merlin's mood, which is the
 	// art; the icon says which part of her this is.
 	Plugin string
 	// Icon replaces the mood thumbnail, for a page that is about the thing
-	// it shows (a /help page wears its plugin's tile). IconFile is its
+	// it shows (a /help page wears its plugin's tile). IconUpload is its
 	// upload, nil when Icon is already a URL Discord can fetch.
-	Icon     string
-	IconFile *discordgo.File
-
-	// Parts and IconUpload are Body and IconFile on disgo's types, for a
-	// plugin answering through an Ix, which draws with Layout and Uploads.
-	// Both shapes live here until the last plugin is off discordgo.
-	Parts      []discord.ContainerSubComponent
+	Icon       string
 	IconUpload *discord.File
 }
 
-// Components renders p as the message's single top-level container.
-func (p Panel) Components() []discordgo.MessageComponent {
+// Layout renders p as the message's single top-level container.
+func (p Panel) Layout() []discord.LayoutComponent {
 	mood := p.Mood
 	if mood == MoodNone {
 		mood = moodForColor(p.Color)
@@ -72,22 +64,21 @@ func (p Panel) Components() []discordgo.MessageComponent {
 	if p.Line != "" {
 		head += "\n-# " + p.Line
 	}
-	parts := []discordgo.MessageComponent{
-		discordgo.Section{
-			Components: []discordgo.MessageComponent{discordgo.TextDisplay{Content: head}},
-			Accessory:  discordgo.Thumbnail{Media: discordgo.UnfurledMediaItem{URL: p.thumbnail(mood)}},
+	parts := []discord.ContainerSubComponent{
+		discord.SectionComponent{
+			Components: []discord.SectionSubComponent{discord.TextDisplayComponent{Content: head}},
+			Accessory:  discord.ThumbnailComponent{Media: discord.UnfurledMediaItem{URL: p.thumbnail(mood)}},
 		},
-		discordgo.MediaGallery{Items: []discordgo.MediaGalleryItem{{Media: discordgo.UnfurledMediaItem{URL: ruleAttachmentURL}}}},
+		discord.MediaGalleryComponent{Items: []discord.MediaGalleryItem{{Media: discord.UnfurledMediaItem{URL: ruleAttachmentURL}}}},
 	}
 	if p.Note != "" {
-		parts = append(parts, discordgo.TextDisplay{Content: p.Note})
+		parts = append(parts, discord.TextDisplayComponent{Content: p.Note})
 	}
-	parts = append(parts, p.Body...)
+	parts = append(parts, p.Parts...)
 	if p.Footer != "" {
-		parts = append(parts, discordgo.TextDisplay{Content: "-# " + p.Footer})
+		parts = append(parts, discord.TextDisplayComponent{Content: "-# " + p.Footer})
 	}
-	color := p.Color
-	return []discordgo.MessageComponent{discordgo.Container{AccentColor: &color, Components: parts}}
+	return []discord.LayoutComponent{discord.ContainerComponent{AccentColor: p.Color, Components: parts}}
 }
 
 func (p Panel) thumbnail(mood Mood) string {
@@ -97,35 +88,24 @@ func (p Panel) thumbnail(mood Mood) string {
 	return moodAttachmentURL(mood)
 }
 
-// Files is what p points at: its thumbnail and the rule, never anything
+// Uploads is what p points at: its thumbnail and the rule, never anything
 // else, so an attachment:// URL can never be left without its upload.
-func (p Panel) Files() []*discordgo.File {
+func (p Panel) Uploads() []*discord.File {
 	mood := p.Mood
 	if mood == MoodNone {
 		mood = moodForColor(p.Color)
 	}
-	thumb := moodFile(mood)
+	files := []*discord.File{asset{ruleAttachmentName, rulePNG}.upload()}
 	if p.Icon != "" {
-		thumb = p.IconFile
+		if p.IconUpload != nil {
+			files = append(files, p.IconUpload)
+		}
+		return files
 	}
-	files := []*discordgo.File{{Name: ruleAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(rulePNG)}}
-	if thumb != nil {
-		files = append(files, thumb)
+	if a, ok := moodAssets[mood]; ok {
+		files = append(files, asset{a.name, a.png}.upload())
 	}
 	return files
-}
-
-// Text is a TextDisplay, for building a Panel's Body.
-func Text(s string) discordgo.TextDisplay { return discordgo.TextDisplay{Content: s} }
-
-// Row is an ActionsRow, for building a Panel's Body.
-func Row(c ...discordgo.MessageComponent) discordgo.ActionsRow {
-	return discordgo.ActionsRow{Components: c}
-}
-
-// Gap is a small divider between a panel's sections.
-func Gap() discordgo.Separator {
-	return discordgo.Separator{}
 }
 
 // Readout lays facts out as a code block grid: the label column is the
@@ -149,77 +129,3 @@ func Readout(rows [][2]string) string {
 
 // MaxSelectValues is Discord's cap on a select's options and picks.
 const MaxSelectValues = 25
-
-// StringSelect is a select over fixed options. multi lets any number be
-// picked, none included, which is what a set drawn with its current members
-// preselected needs.
-func StringSelect(customID, placeholder string, opts []discordgo.SelectMenuOption, multi, disabled bool) discordgo.SelectMenu {
-	m := discordgo.SelectMenu{MenuType: discordgo.StringSelectMenu, CustomID: customID, Placeholder: placeholder, Options: opts[:min(len(opts), MaxSelectValues)], Disabled: disabled}
-	if multi {
-		zero := 0
-		m.MinValues, m.MaxValues = &zero, len(m.Options)
-	}
-	return m
-}
-
-// EntitySelect is a user, role or channel picker drawn with ids
-// preselected, so the set is what the member sees and edits as one; what
-// changed comes back from SelectDiff. max is how many may be picked (1 for
-// a single value). A list longer than the cap shows its first 25 and the
-// rest are untouched by a submit, because SelectDiff only removes what was
-// drawn.
-func EntitySelect(kind discordgo.SelectMenuType, customID, placeholder string, ids []string, max int, disabled bool) discordgo.SelectMenu {
-	dv := map[discordgo.SelectMenuType]discordgo.SelectMenuDefaultValueType{
-		discordgo.UserSelectMenu:    discordgo.SelectMenuDefaultValueUser,
-		discordgo.RoleSelectMenu:    discordgo.SelectMenuDefaultValueRole,
-		discordgo.ChannelSelectMenu: discordgo.SelectMenuDefaultValueChannel,
-	}[kind]
-	m := discordgo.SelectMenu{MenuType: kind, CustomID: customID, Placeholder: placeholder, MaxValues: min(max, MaxSelectValues), Disabled: disabled}
-	if max > 1 {
-		zero := 0
-		m.MinValues = &zero
-	}
-	for _, id := range ids[:min(len(ids), MaxSelectValues)] {
-		if id != "" {
-			m.DefaultValues = append(m.DefaultValues, discordgo.SelectMenuDefaultValue{ID: id, Type: dv})
-		}
-	}
-	return m
-}
-
-// Clearable lets a single-value picker be emptied, which is how a member
-// says "none" for a setting that may be unset.
-func Clearable(m discordgo.SelectMenu) discordgo.SelectMenu {
-	zero := 0
-	m.MinValues = &zero
-	return m
-}
-
-// ChannelSelect is EntitySelect for channels of the given types, one pick.
-func ChannelSelect(customID, placeholder, current string, disabled bool, types ...discordgo.ChannelType) discordgo.SelectMenu {
-	m := EntitySelect(discordgo.ChannelSelectMenu, customID, placeholder, []string{current}, 1, disabled)
-	m.ChannelTypes = types
-	return m
-}
-
-// Button is a panel button. A disabled one is still drawn, so a member who
-// may not press it can see that it exists.
-func Button(label, customID string, style discordgo.ButtonStyle, disabled bool) discordgo.Button {
-	return discordgo.Button{Label: label, Style: style, CustomID: customID, Disabled: disabled}
-}
-
-// Switch is a section with a button beside its text: a setting, its state,
-// and the one control that changes it.
-func Switch(text string, b discordgo.Button) discordgo.Section {
-	return discordgo.Section{Components: []discordgo.MessageComponent{Text(text)}, Accessory: b}
-}
-
-// Field is one text input in a modal, prefilled with value.
-func Field(id, label, value, placeholder string, paragraph, required bool) discordgo.ActionsRow {
-	style := discordgo.TextInputShort
-	maxLen := 200
-	if paragraph {
-		style, maxLen = discordgo.TextInputParagraph, 4000
-	}
-	return Row(discordgo.TextInput{CustomID: id, Label: label, Value: value, Placeholder: placeholder, Style: style, Required: required, MaxLength: maxLen})
-}

@@ -1,7 +1,6 @@
 package core
 
 import (
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 )
 
@@ -51,9 +50,4 @@ func (r *CommandRouter) LeafTier(topLevel, path string) PermTier {
 		return leaf.spec.Tier
 	}
 	return tierUnset
-}
-
-// AvatarIcon is merlin's avatar for a thumbnail, as an attachment.
-func AvatarIcon() (string, *discordgo.File) {
-	return avatarAttachmentURL, avatarFile()
 }

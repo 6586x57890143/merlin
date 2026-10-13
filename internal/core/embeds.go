@@ -5,7 +5,7 @@ import (
 	_ "embed"
 	"unicode/utf8"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // merlin's brand palette (spec.MD §4a), shared across every plugin's command
@@ -33,7 +33,7 @@ var avatarPNG []byte
 //go:embed assets/merlin_banner.png
 var bannerPNG []byte
 
-// rulePNG is the thin separator every NewEmbed carries as its image: a small
+// rulePNG is the thin separator every Embed carries as its image: a small
 // falcon over a barred line that fades out at both ends, transparent so it
 // sits on either theme. It is there for its width as much as its look.
 // Discord sizes an embed to its content, so a one-line confirmation and a
@@ -175,79 +175,93 @@ func moodAttachmentURL(m Mood) string {
 	return "attachment://" + a.name
 }
 
-func moodFile(m Mood) *discordgo.File {
-	a, ok := moodAssets[m]
-	if !ok {
-		return nil
-	}
-	return &discordgo.File{Name: a.name, ContentType: "image/png", Reader: bytes.NewReader(a.png)}
+// asset is one compiled-in image an embed can point at.
+type asset struct {
+	name string
+	png  []byte
 }
 
-// WithMood overrides the mood an embed's colour implied, for the few states
+func (a asset) upload() *discord.File {
+	return discord.NewFile(a.name, "", bytes.NewReader(a.png))
+}
+
+// referencedAssets is every brand image an embed with these URLs points at:
+// the avatar, the mood, the banner or rule. Each is listed once however many
+// slots reference it, since Discord rejects a message carrying the same
+// filename twice.
+func referencedAssets(footerIcon, authorIcon, thumb, image string) []asset {
+	var out []asset
+	if footerIcon == avatarAttachmentURL || authorIcon == avatarAttachmentURL || thumb == avatarAttachmentURL || image == avatarAttachmentURL {
+		out = append(out, asset{avatarAttachmentName, avatarPNG})
+	}
+	if thumb != "" {
+		for _, a := range moodAssets {
+			if thumb == "attachment://"+a.name {
+				out = append(out, asset{a.name, a.png})
+				break
+			}
+		}
+	}
+	switch image {
+	case bannerAttachmentURL:
+		out = append(out, asset{bannerAttachmentName, bannerPNG})
+	case ruleAttachmentURL:
+		out = append(out, asset{ruleAttachmentName, rulePNG})
+	}
+	return out
+}
+
+// SetMood overrides the mood an embed's colour implied, for the few states
 // the palette cannot express on its own. Pause and dry-run are the reason
 // it exists: both are reported as ordinary informational responses, and
 // both should show merlin asleep rather than attentive.
-func WithMood(embed *discordgo.MessageEmbed, m Mood) *discordgo.MessageEmbed {
+func SetMood(e *discord.Embed, m Mood) {
 	if url := moodAttachmentURL(m); url != "" {
-		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: url}
+		e.Thumbnail = &discord.EmbedResource{URL: url}
 	} else {
-		embed.Thumbnail = nil
+		e.Thumbnail = nil
 	}
-	return embed
 }
 
-// embedFiles returns every attachment an embed references.
+// EmbedUploads is every upload e points at, for sending with it.
 //
 // Derived from the embed rather than tracked alongside it, because the two
 // getting out of step is exactly the bug that shows a broken-image icon to
 // a whole server: an attachment:// URL with no matching upload renders as a
 // blank frame, and nothing about the code that built the embed would look
 // wrong. Reading the URLs back off the finished embed means they cannot
-// disagree.
-func embedFiles(embed *discordgo.MessageEmbed) []*discordgo.File {
-	if embed == nil {
-		return nil
-	}
-	// The avatar is attached only where something actually points at it.
-	// It used to go out unconditionally, which was right while NewEmbed set a
-	// footer icon and became a wasted upload on every single response the
-	// moment that footer went away. Discord also rejects a message carrying
-	// the same filename twice, so each asset is listed once however many
-	// slots reference it. referencedAssets is shared with EmbedUploads, so
-	// the discordgo and disgo builders cannot disagree about what to upload.
+// disagree. The avatar goes only where something points at it.
+func EmbedUploads(e discord.Embed) []*discord.File {
 	var footer, author, thumb, image string
-	if embed.Footer != nil {
-		footer = embed.Footer.IconURL
+	if e.Footer != nil {
+		footer = e.Footer.IconURL
 	}
-	if embed.Author != nil {
-		author = embed.Author.IconURL
+	if e.Author != nil {
+		author = e.Author.IconURL
 	}
-	if embed.Thumbnail != nil {
-		thumb = embed.Thumbnail.URL
+	if e.Thumbnail != nil {
+		thumb = e.Thumbnail.URL
 	}
-	if embed.Image != nil {
-		image = embed.Image.URL
+	if e.Image != nil {
+		image = e.Image.URL
 	}
-	var files []*discordgo.File
+	var files []*discord.File
 	for _, a := range referencedAssets(footer, author, thumb, image) {
-		files = append(files, &discordgo.File{Name: a.name, ContentType: "image/png", Reader: bytes.NewReader(a.png)})
+		files = append(files, a.upload())
 	}
 	return files
 }
 
-func avatarFile() *discordgo.File {
-	return &discordgo.File{Name: avatarAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(avatarPNG)}
+// AvatarUpload is merlin's avatar for a thumbnail: its attachment:// URL
+// and the upload it names.
+func AvatarUpload() (string, *discord.File) {
+	return avatarAttachmentURL, asset{avatarAttachmentName, avatarPNG}.upload()
 }
 
-func bannerFile() *discordgo.File {
-	return &discordgo.File{Name: bannerAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(bannerPNG)}
-}
-
-// NewEmbed builds a MessageEmbed with the given color/title/description and
-// optional fields. Plugins should always use this (or RespondOK/Err/Info/Warn
-// below) instead of constructing discordgo.MessageEmbed literals directly, so
-// every plugin's responses read as one cohesive bot rather than a pile of ad
-// hoc messages.
+// Embed builds an embed with the given colour, title, description and
+// fields, the rule as its image and the colour's mood as its thumbnail.
+// Plugins use this (or the Ix Respond helpers) rather than embed literals,
+// so every reply reads as one bot.
 //
 // Deliberately no footer and no timestamp. Both used to be set, and together
 // they rendered as a second "merlin, today at 14:32" line directly underneath
@@ -256,30 +270,34 @@ func bannerFile() *discordgo.File {
 // it was there to establish now comes from the mood thumbnail and the palette
 // instead. An embed footer should carry something the reader would otherwise
 // not know; repeating the author and the clock is furniture.
-func NewEmbed(color int, title, description string, fields ...*discordgo.MessageEmbedField) *discordgo.MessageEmbed {
-	e := &discordgo.MessageEmbed{
-		Title:       title,
-		Description: description,
-		Color:       color,
-		Fields:      fields,
-		// Any caller that sets its own image (the landmark banner, a chart)
-		// simply replaces this; the width it pins comes along with theirs.
-		Image: &discordgo.MessageEmbedImage{URL: ruleAttachmentURL},
+//
+// A caller that sets its own image (a chart) replaces the rule, and the
+// width it pins comes along with theirs.
+func Embed(color int, title, description string, fields ...discord.EmbedField) discord.Embed {
+	e := discord.Embed{
+		Title: title, Description: description, Color: color, Fields: fields,
+		Image: &discord.EmbedResource{URL: ruleAttachmentURL},
 	}
-	return WithMood(e, moodForColor(color))
+	SetMood(&e, moodForColor(color))
+	return e
 }
 
-// NewLandmarkEmbed is NewEmbed's richer sibling, reserved for the handful of
+// LandmarkEmbed is Embed's richer sibling, reserved for the handful of
 // moments that genuinely warrant visual weight (first-time setup, the
-// onboarding DM), not every routine response (a banner image on every
-// one-line confirmation would be noise, not polish). Adds merlin's banner
-// as the embed's large image; everything else matches NewEmbed exactly.
-func NewLandmarkEmbed(color int, title, description string, fields ...*discordgo.MessageEmbedField) *discordgo.MessageEmbed {
-	e := NewEmbed(color, title, description, fields...)
-	e.Image = &discordgo.MessageEmbedImage{URL: bannerAttachmentURL}
-	// No mood thumbnail here. The banner already carries the visual weight,
-	// and an embed with both reads as cluttered rather than considered.
-	return WithMood(e, MoodNone)
+// onboarding DM), not every routine response. merlin's banner is its image,
+// and it has no mood thumbnail: the banner already carries the weight, and
+// an embed with both reads as cluttered rather than considered.
+func LandmarkEmbed(color int, title, description string, fields ...discord.EmbedField) discord.Embed {
+	e := Embed(color, title, description, fields...)
+	e.Image = &discord.EmbedResource{URL: bannerAttachmentURL}
+	SetMood(&e, MoodNone)
+	return e
+}
+
+// Inline is an embed field's Inline, which disgo takes as a pointer.
+func Inline() *bool {
+	t := true
+	return &t
 }
 
 // maxEmbedFieldValue is Discord's hard limit on one embed field's value.
@@ -332,19 +350,3 @@ func TruncateEmbedDescription(s string) string {
 	}
 	return s[:cut] + ellipsis
 }
-
-// AvatarFile and BannerFile let callers outside this package (e.g. a DM sent
-// via ChannelMessageSendComplex, which isn't an interaction response) attach
-// the same brand images without duplicating the embed byte constants.
-func AvatarFile() *discordgo.File { return avatarFile() }
-func BannerFile() *discordgo.File { return bannerFile() }
-
-// EmbedFiles returns every attachment embed references, for senders outside
-// an interaction response (a DM, a channel post).
-//
-// Prefer this over listing files by hand. NewEmbed now attaches a mood
-// thumbnail by attachment:// URL, so a caller that hand-lists only the
-// avatar ends up sending an embed that references an image it did not
-// upload, which Discord renders as a broken frame. Asking the embed what it
-// needs cannot go out of step with what the embed actually has.
-func EmbedFiles(embed *discordgo.MessageEmbed) []*discordgo.File { return embedFiles(embed) }

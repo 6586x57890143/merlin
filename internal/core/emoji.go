@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
@@ -75,20 +73,24 @@ func PluginEmoji(plugin string) string {
 	return "<:" + r.name + ":" + r.id + ">"
 }
 
-// PluginComponentEmoji is plugin's icon for a select option or a button, or
+// PluginOptionEmoji is plugin's icon for a select option or a button, or
 // nil until the emoji are synced.
-func PluginComponentEmoji(plugin string) *discordgo.ComponentEmoji {
+func PluginOptionEmoji(plugin string) *discord.ComponentEmoji {
 	r, ok := emojiFor("plugin_" + plugin)
 	if !ok {
 		return nil
 	}
-	return &discordgo.ComponentEmoji{ID: r.id, Name: r.name}
+	id, err := snowflake.Parse(r.id)
+	if err != nil {
+		return nil
+	}
+	return &discord.ComponentEmoji{ID: id, Name: r.name}
 }
 
-// PluginIcon is plugin's icon for a thumbnail: its CDN URL and no file once
-// synced, otherwise the PNG and the attachment:// URL that names it. A
+// PluginUpload is plugin's icon for a thumbnail: its CDN URL and no file
+// once synced, otherwise the PNG and the attachment:// URL that names it. A
 // plugin with no icon gets ("", nil).
-func PluginIcon(plugin string) (string, *discordgo.File) {
+func PluginUpload(plugin string) (string, *discord.File) {
 	key := "plugin_" + plugin
 	if r, ok := emojiFor(key); ok {
 		// PNG rather than WebP: Discord does not take WebP in every image slot.
@@ -98,7 +100,7 @@ func PluginIcon(plugin string) (string, *discordgo.File) {
 	if err != nil {
 		return "", nil
 	}
-	return "attachment://" + key + ".png", &discordgo.File{Name: key + ".png", ContentType: "image/png", Reader: bytes.NewReader(png)}
+	return "attachment://" + key + ".png", asset{key + ".png", png}.upload()
 }
 
 // EmojiREST is the REST SyncEmoji calls; disgo's client satisfies it.

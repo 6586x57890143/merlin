@@ -424,3 +424,22 @@ func preselected(comp discord.Component, customID string) []string {
 	}
 	return out
 }
+
+// ResolvedUser is the user a command's user option named, as Discord
+// resolved it on the interaction; nil if it did not.
+func (ix *Ix) ResolvedUser(id string) *discord.User {
+	c, ok := ix.I.(discord.ApplicationCommandInteraction)
+	if !ok {
+		return nil
+	}
+	d, ok := c.Data.(discord.SlashCommandInteractionData)
+	if !ok {
+		return nil
+	}
+	for sf, u := range d.Resolved.Users {
+		if sf.String() == id {
+			return &u
+		}
+	}
+	return nil
+}

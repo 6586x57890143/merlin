@@ -446,3 +446,19 @@ func hasAnyRole(memberRoles, allowed []string) bool {
 	}
 	return false
 }
+
+// Actor is who is acting, as CanModerate reads them: an ID and the roles
+// they hold. Nil means nobody, as for an automatic action.
+type Actor struct {
+	ID      string
+	RoleIDs []string
+}
+
+// Actor is the invoking member as an Actor, nil outside a server.
+func (ix *Ix) Actor() *Actor {
+	m := ix.Member()
+	if m == nil {
+		return nil
+	}
+	return &Actor{ID: ix.UserID, RoleIDs: IDStrings(m.RoleIDs)}
+}
