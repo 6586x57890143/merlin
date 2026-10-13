@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sync/atomic"
 
+	"github.com/6586x57890143/merlin/internal/obs"
+	"github.com/6586x57890143/merlin/internal/ratelimit"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
@@ -87,8 +89,15 @@ func NoPings() *discord.AllowedMentions { return noPings() }
 // session's own so every interaction reply is timed for /perf and reported
 // to cygnet when refused, as every other request is. A nil client is
 // disgo's default.
+//
+// Its rate limiter is skua's: a 429 waits the millisecond retry_after in
+// its body rather than Retry-After's rounded-up second, a user-scope 429
+// waits its bucket's reset (measured faster in skua with no more 429s), and
+// every wait for a bucket is recorded for /perf.
 func NewRest(token string, client *http.Client) rest.Rest {
-	var opts []rest.ClientConfigOpt
+	opts := []rest.ClientConfigOpt{
+		rest.WithRateLimiter(obs.Limiter(ratelimit.Precise(rest.NewRateLimiter(), true), obs.Default)),
+	}
 	if client != nil {
 		opts = append(opts, rest.WithHTTPClient(client))
 	}

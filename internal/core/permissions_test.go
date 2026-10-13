@@ -425,6 +425,11 @@ func TestHasDiscordErrorCodeDistinguishesAbsences(t *testing.T) {
 	if HasDiscordErrorCode(errors.New("dial tcp"), discordgo.ErrCodeUnknownRole) {
 		t.Error("a non-REST error must not match any code")
 	}
+	// disgo's errors answer the same.
+	if !HasDiscordErrorCode(disgoErr(http.StatusNotFound, discordgo.ErrCodeUnknownRole), discordgo.ErrCodeUnknownRole) ||
+		HasDiscordErrorCode(disgoErr(http.StatusNotFound, discordgo.ErrCodeUnknownMember), discordgo.ErrCodeUnknownRole) {
+		t.Error("disgo's errors are told apart by code differently")
+	}
 	// Both are still "gone" for the coarser question.
 	if !IsUnknownResource(memberGone) || !IsUnknownResource(roleGone) {
 		t.Error("both absences must still count as unknown resources")

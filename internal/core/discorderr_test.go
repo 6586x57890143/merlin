@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 )
 
 // restErr returns error, not *discordgo.RESTError, so a %w call site takes a
@@ -19,6 +20,11 @@ func restErr(status int, code int) error {
 		e.Message = &discordgo.APIErrorMessage{Code: code, Message: "test"}
 	}
 	return e
+}
+
+// disgoErr is restErr as disgo's REST client returns it.
+func disgoErr(status, code int) error {
+	return &rest.Error{Response: &http.Response{StatusCode: status}, Code: rest.JSONErrorCode(code)}
 }
 
 // TestIsUnknownResource pins down the distinction every cleanup path in this
@@ -45,6 +51,12 @@ func TestIsUnknownResource(t *testing.T) {
 		{"missing access", restErr(http.StatusForbidden, discordgo.ErrCodeMissingAccess), false},
 		{"plain error", errors.New("dial tcp: connection refused"), false},
 		{"nil", nil, false},
+
+		{"disgo: unknown channel", disgoErr(http.StatusNotFound, discordgo.ErrCodeUnknownChannel), true},
+		{"disgo: 404 with no code", disgoErr(http.StatusNotFound, 0), true},
+		{"disgo: wrapped unknown role", fmt.Errorf("edit: %w", disgoErr(http.StatusNotFound, discordgo.ErrCodeUnknownRole)), true},
+		{"disgo: rate limited", disgoErr(http.StatusTooManyRequests, 0), false},
+		{"disgo: missing permissions", disgoErr(http.StatusForbidden, discordgo.ErrCodeMissingPermissions), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsUnknownResource(tc.err); got != tc.want {

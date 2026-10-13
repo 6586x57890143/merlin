@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 )
 
 // ErrRateLimited and ErrCircuitOpen report that a call was refused by this
@@ -214,6 +215,14 @@ func isTransient(err error) bool {
 	var rl *discordgo.RateLimitError
 	if errors.As(err, &rl) {
 		return true
+	}
+	// disgo's: a response, with the status Discord gave.
+	if re, ok := errors.AsType[*rest.Error](err); ok {
+		if re.Response == nil {
+			return false
+		}
+		code := re.Response.StatusCode
+		return code >= http.StatusInternalServerError || code == http.StatusTooManyRequests
 	}
 	var restErr *discordgo.RESTError
 	if !errors.As(err, &restErr) {
