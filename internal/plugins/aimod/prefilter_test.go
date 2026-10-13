@@ -5,22 +5,18 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // The free rungs decide the overwhelming majority of messages, so a bug here
 // is either a cost regression measured in dollars a day or a silent hole in
 // the filter, and neither announces itself.
 
-func msg(content string) *discordgo.Message {
-	return &discordgo.Message{
-		ID:        "m1",
-		GuildID:   "g1",
-		ChannelID: "c1",
-		Content:   content,
-		Author:    &discordgo.User{ID: "u1"},
-		Member:    &discordgo.Member{Roles: []string{"r-member"}},
+func msg(content string) message {
+	return message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1",
+		Content:  content,
+		AuthorID: "u1",
+		RoleIDs:  []string{"r-member"},
 	}
 }
 
@@ -30,7 +26,7 @@ func TestShouldSkip(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  Config
-		msg  func(*discordgo.Message)
+		msg  func(*message)
 		want skipReason
 	}{
 		{"ordinary message is scanned", enforcing, nil, skipNone},
@@ -46,13 +42,13 @@ func TestShouldSkip(t *testing.T) {
 			// plugin classifies its own output, forever, at full price.
 			"webhook message is skipped",
 			enforcing,
-			func(m *discordgo.Message) { m.WebhookID = "w1" },
+			func(m *message) { m.Webhook = true },
 			skipWebhook,
 		},
 		{
 			"bot author is skipped",
 			enforcing,
-			func(m *discordgo.Message) { m.Author.Bot = true },
+			func(m *message) { m.Bot = true },
 			skipBot,
 		},
 		{
@@ -70,13 +66,13 @@ func TestShouldSkip(t *testing.T) {
 		{
 			"attachment-only message is skipped",
 			enforcing,
-			func(m *discordgo.Message) { m.Content = "   " },
+			func(m *message) { m.Content = "   " },
 			skipEmpty,
 		},
 		{
 			"one-word acknowledgement is skipped",
 			enforcing,
-			func(m *discordgo.Message) { m.Content = "ok" },
+			func(m *message) { m.Content = "ok" },
 			skipShort,
 		},
 		{
@@ -85,13 +81,13 @@ func TestShouldSkip(t *testing.T) {
 			// by anything, and it is the single most reported miss.
 			"a six-character slur reaches the model",
 			enforcing,
-			func(m *discordgo.Message) { m.Content = "nigger" },
+			func(m *message) { m.Content = "nigger" },
 			skipNone,
 		},
 		{
 			"kys reaches the model",
 			enforcing,
-			func(m *discordgo.Message) { m.Content = "kys" },
+			func(m *message) { m.Content = "kys" },
 			skipNone,
 		},
 	}
@@ -101,9 +97,9 @@ func TestShouldSkip(t *testing.T) {
 			p := &Plugin{dedupe: newDedupeCache()}
 			m := msg("this is a long enough message to be scanned")
 			if tc.msg != nil {
-				tc.msg(m)
+				tc.msg(&m)
 			}
-			if got := p.shouldSkipGo(tc.cfg, m, testNow); got != tc.want {
+			if got := p.shouldSkip(tc.cfg, m, testNow); got != tc.want {
 				t.Errorf("shouldSkip = %q, want %q", got, tc.want)
 			}
 		})
@@ -118,25 +114,25 @@ func TestCleanDuplicateTextIsScannedOnce(t *testing.T) {
 	cfg := Config{GuildID: "g1", Mode: ModeEnforce}
 	const line = "join my server for free nitro now"
 
-	if got := p.shouldSkipGo(cfg, msg(line), testNow); got != skipNone {
+	if got := p.shouldSkip(cfg, msg(line), testNow); got != skipNone {
 		t.Fatalf("first sighting = %q, want it scanned", got)
 	}
 	// Nothing is deduped until a scan has actually cleared it.
-	if got := p.shouldSkipGo(cfg, msg(line), testNow); got != skipNone {
+	if got := p.shouldSkip(cfg, msg(line), testNow); got != skipNone {
 		t.Fatalf("second sighting before any verdict = %q, want it scanned too", got)
 	}
 	p.dedupe.markClean("g1", line, testNow)
 
-	if got := p.shouldSkipGo(cfg, msg(line), testNow.Add(time.Minute)); got != skipDuplicate {
+	if got := p.shouldSkip(cfg, msg(line), testNow.Add(time.Minute)); got != skipDuplicate {
 		t.Errorf("repeat of cleared text = %q, want skipDuplicate", got)
 	}
 	// Case and surrounding whitespace are not a way around it.
-	if got := p.shouldSkipGo(cfg, msg("  JOIN MY SERVER FOR FREE NITRO NOW  "), testNow.Add(2*time.Minute)); got != skipDuplicate {
+	if got := p.shouldSkip(cfg, msg("  JOIN MY SERVER FOR FREE NITRO NOW  "), testNow.Add(2*time.Minute)); got != skipDuplicate {
 		t.Errorf("case variant = %q, want skipDuplicate", got)
 	}
 	// Past the window it is a fresh message again: the same words genuinely
 	// can mean something different in a different conversation.
-	if got := p.shouldSkipGo(cfg, msg(line), testNow.Add(dedupeWindow+time.Second)); got != skipNone {
+	if got := p.shouldSkip(cfg, msg(line), testNow.Add(dedupeWindow+time.Second)); got != skipNone {
 		t.Errorf("after the window = %q, want it scanned again", got)
 	}
 }
@@ -161,9 +157,10 @@ func TestRepeatedViolationIsActedOnWithoutPayingAgain(t *testing.T) {
 
 	const line = "a message that trips the filter every single time"
 	send := func(id string) {
-		p.handleGo(&discordgo.Message{
-			ID: id, GuildID: "g1", ChannelID: "c1", Content: line,
-			Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+		p.handle(message{
+			ID: id, GuildID: "g1", ChannelID: "c1",
+			Content:  line,
+			AuthorID: "u1",
 		})
 		p.flush("c1")
 		p.wg.Wait()
@@ -274,9 +271,10 @@ func TestCachedVerdictHonoursACurrentPolicyChange(t *testing.T) {
 	cfg.BucketActions[BucketGore] = ActionOff
 	store.setConfig(cfg)
 
-	p.handleGo(&discordgo.Message{
-		ID: "m1", GuildID: "g1", ChannelID: "c1", Content: line,
-		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+	p.handle(message{
+		ID: "m1", GuildID: "g1", ChannelID: "c1",
+		Content:  line,
+		AuthorID: "u1",
 	})
 	p.wg.Wait()
 

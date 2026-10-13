@@ -2,8 +2,6 @@ package aimod
 
 import (
 	"testing"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // A regex slur hit is checked by the deep model before it is acted on, and
@@ -38,9 +36,10 @@ func TestSecondLookGatesRegexSlurHits(t *testing.T) {
 			cfg.BucketActions[BucketHateSpeech] = ActionRewrite
 			store.setConfig(cfg)
 
-			p.handleGo(&discordgo.Message{
-				ID: "m1", GuildID: "g1", ChannelID: "c1", Content: tc.content,
-				Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+			p.handle(message{
+				ID: "m1", GuildID: "g1", ChannelID: "c1",
+				Content:  tc.content,
+				AuthorID: "u1",
 			})
 			p.wg.Wait()
 

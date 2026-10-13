@@ -10,8 +10,6 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/disgoorg/disgo/discord"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // The model catalogue and the cost surfaces built on it.
@@ -346,8 +344,6 @@ func TestModelAutocompleteIsSilentWithoutAKey(t *testing.T) {
 		t.Errorf("returned %d choices with no key configured", len(got))
 	}
 }
-
-var _ = discordgo.ApplicationCommandOptionChoice{}
 
 // A spend cap is not a balance, and the gauge used to draw one as the other:
 // a $50 cap on an account holding nothing reported $50 remaining forever, so
