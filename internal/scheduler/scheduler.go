@@ -156,22 +156,19 @@ func (s *Scheduler) Init(deps core.Deps) error {
 	s.session = deps.Session
 	s.commands = deps.Commands
 
-	cmd := &discordgo.ApplicationCommand{
+	cmd := discord.SlashCommandCreate{
 		Name:        "scheduler",
 		Description: "Inspect and manually trigger registered background jobs",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "list",
 				Description: "List every background job registered for this server, with its status",
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "run-now",
 				Description: "Immediately run a job, bypassing its normal interval",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:         discordgo.ApplicationCommandOptionString,
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionString{
 						Name:         "job",
 						Description:  "Which job to run",
 						Required:     true,

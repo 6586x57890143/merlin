@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/omit"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/ui"
@@ -56,12 +56,11 @@ func (p *Plugin) Help() core.Help {
 
 func (p *Plugin) Init(deps core.Deps) error {
 	p.commands, p.perms = deps.Commands, deps.Perms
-	adminOnly := int64(0)
-	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+	p.commands.RegisterCommand(p.Name(), discord.SlashCommandCreate{
 		Name:        "perf",
 		Description: "Where merlin spends her time, slowest first (operator only)",
 		// Hidden from members in the picker; the operator check is the gate.
-		DefaultMemberPermissions: &adminOnly,
+		DefaultMemberPermissions: omit.NewPtr(discord.Permissions(0)),
 	})
 	p.commands.HandleIx("perf", "", spec, p.handlePerf)
 	p.commands.HandleComponentIx(p.Name(), refreshID, spec, p.handleRefresh)

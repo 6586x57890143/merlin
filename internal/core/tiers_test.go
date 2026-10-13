@@ -4,14 +4,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // A command's tier is the lowest any leaf under it asks for.
 func TestTiers(t *testing.T) {
 	r := NewCommandRouter(nil, nil, nil)
-	r.RegisterCommand("roles", &discordgo.ApplicationCommand{Name: "roles"})
-	r.RegisterCommand("ping", &discordgo.ApplicationCommand{Name: "ping"})
+	r.RegisterCommand("roles", discord.SlashCommandCreate{Name: "roles"})
+	r.RegisterCommand("ping", discord.SlashCommandCreate{Name: "ping"})
 	noop := func(context.Context, *Ix) {}
 	r.HandleIx("roles", "jail", PermSpec{Tier: TierMod, Action: "roles.jail"}, noop)
 	r.HandleIx("roles", "configure/sync-channels", PermSpec{Tier: TierAdmin, Action: "roles.configure"}, noop)

@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/omit"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -39,118 +39,118 @@ const (
 )
 
 func (p *Plugin) registerCommands() {
-	userOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
-		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionUser, Name: name, Description: desc, Required: true}
+	userOpt := func(name, desc string) discord.ApplicationCommandOption {
+		return discord.ApplicationCommandOptionUser{Name: name, Description: desc, Required: true}
 	}
-	reasonOpt := func() *discordgo.ApplicationCommandOption {
-		return &discordgo.ApplicationCommandOption{
-			Type: discordgo.ApplicationCommandOptionString, Name: "reason", Required: true, MaxLength: maxReasonLen,
+	reasonOpt := func() discord.ApplicationCommandOption {
+		return discord.ApplicationCommandOptionString{
+			Name: "reason", Required: true, MaxLength: omit.Ptr(maxReasonLen),
 			Description: "Why. The member sees this, and so does the next moderator.",
 		}
 	}
-	caseOpt := &discordgo.ApplicationCommandOption{
-		Type: discordgo.ApplicationCommandOptionInteger, Name: "case", Required: true, MinValue: ptr(1.0),
+	caseOpt := discord.ApplicationCommandOptionInt{
+		Name: "case", Required: true, MinValue: omit.Ptr(1),
 		Description: "The case number, as shown on the sheet (#12 is 12).",
 	}
-	pageOpt := &discordgo.ApplicationCommandOption{
-		Type: discordgo.ApplicationCommandOptionInteger, Name: "page", MinValue: ptr(1.0),
+	pageOpt := discord.ApplicationCommandOptionInt{
+		Name: "page", MinValue: omit.Ptr(1),
 		Description: "Page of entries to open at (newest first).",
 	}
 
-	cmd := &discordgo.ApplicationCommand{
+	cmd := discord.SlashCommandCreate{
 		Name:        "rapsheet",
 		Description: "Per-member moderation history: warnings, jails, timeouts, bans and what they add up to.",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "view",
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "view",
 				Description: "Read a member's rapsheet.",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOption{
 					// Text, not a User option, because the user picker only
 					// lists current members and a sheet outlives membership.
 					// Typing @ still opens Discord's member picker here,
 					// which inserts <@id>; a bare ID reaches anyone.
-					{
-						Type: discordgo.ApplicationCommandOptionString, Name: "user", Required: true, MaxLength: 32,
+					discord.ApplicationCommandOptionString{
+						Name: "user", Required: true, MaxLength: omit.Ptr(32),
 						Description: "Whose sheet to read: @name, or a Discord user ID for somebody who has left.",
 					},
 					pageOpt,
-					{
-						Type: discordgo.ApplicationCommandOptionBoolean, Name: "public",
+					discord.ApplicationCommandOptionBool{
+						Name:        "public",
 						Description: "Post it in this channel so it can be forwarded. Leaves out linked accounts and alt hints.",
 					},
 				},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "me",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "me",
 				Description: "Read your own record in this server.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "warn",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "warn",
 				Description: "Warn a member. Goes on their sheet, DMs them, and counts toward the ladder.",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOption{
 					userOpt("user", "Who to warn."),
 					categoryOption(),
 					reasonOpt(),
-					{
-						Type: discordgo.ApplicationCommandOptionInteger, Name: "points",
+					discord.ApplicationCommandOptionInt{
+						Name:        "points",
 						Description: fmt.Sprintf("Override the category's points for this one (1-%d).", maxPoints),
-						MinValue:    ptr(1.0), MaxValue: maxPoints,
+						MinValue:    omit.Ptr(1), MaxValue: omit.Ptr(maxPoints),
 					},
 				},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "note",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "note",
 				Description: "Add a note to a member's sheet. Mods only, no points, no DM.",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who the note is about."), reasonOpt()},
+				Options:     []discord.ApplicationCommandOption{userOpt("user", "Who the note is about."), reasonOpt()},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "unban",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "unban",
 				Description: "Lift a ban, whoever placed it.",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to unban."), reasonOpt()},
+				Options:     []discord.ApplicationCommandOption{userOpt("user", "Who to unban."), reasonOpt()},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "summary",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "summary",
 				Description: "A short written summary of a member's record, from the guild's AI moderation model.",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Whose record to summarise.")},
+				Options:     []discord.ApplicationCommandOption{userOpt("user", "Whose record to summarise.")},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "link",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "link",
 				Description: "Say two accounts are the same person. They share one sheet and one score from then on.",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOption{
 					userOpt("user", "The account to link."),
 					userOpt("other", "The account already on record."),
 					reasonOpt(),
 				},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "unlink",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "unlink",
 				Description: "Take an account back out of a linked group.",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "The account to unlink.")},
+				Options:     []discord.ApplicationCommandOption{userOpt("user", "The account to unlink.")},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "void",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "void",
 				Description: "Strike an entry. It stays visible, struck through, and counts for nothing.",
-				Options:     []*discordgo.ApplicationCommandOption{caseOpt, reasonOpt()},
+				Options:     []discord.ApplicationCommandOption{caseOpt, reasonOpt()},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "edit",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "edit",
 				Description: "Rewrite an entry's reason.",
-				Options:     []*discordgo.ApplicationCommandOption{caseOpt, reasonOpt()},
+				Options:     []discord.ApplicationCommandOption{caseOpt, reasonOpt()},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "list",
+			discord.ApplicationCommandOptionSubCommandGroup{
+				Name:        "list",
 				Description: "The categories and the ladder, as configured here.",
-				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "categories", Description: "Every category and what one offence in it is worth."},
-					{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "bands", Description: "The ladder: which score owes which consequence."},
+				Options: []discord.ApplicationCommandOptionSubCommand{
+					{Name: "categories", Description: "Every category and what one offence in it is worth."},
+					{Name: "bands", Description: "The ladder: which score owes which consequence."},
 				},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "status",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "status",
 				Description: "How rapsheets are set up in this server.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "settings",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "settings",
 				Description: "The ladder, half-life, mod channel, case files, alt hints and points, on one panel.",
 			},
 		},
@@ -162,31 +162,31 @@ func (p *Plugin) registerCommands() {
 	// name. They stay this plugin's (disabling rapsheet disables them) and
 	// keep their rapsheet.* action names, so a guild's existing tier, allow
 	// and deny settings still apply.
-	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+	p.commands.RegisterCommand(p.Name(), discord.SlashCommandCreate{
 		Name:        cmdTimeout,
 		Description: "Time a member out (Discord's own mute, up to 28 days). Goes on their rapsheet.",
-		Options: []*discordgo.ApplicationCommandOption{
+		Options: []discord.ApplicationCommandOption{
 			userOpt("user", "Who to time out."),
-			{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Required: true, Description: "How long: 10m, 2h, 3d, up to 28d."},
+			discord.ApplicationCommandOptionString{Name: "duration", Required: true, Description: "How long: 10m, 2h, 3d, up to 28d."},
 			categoryOption(),
 			reasonOpt(),
 		},
 	})
-	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+	p.commands.RegisterCommand(p.Name(), discord.SlashCommandCreate{
 		Name:        cmdKick,
 		Description: "Remove a member from the server. They can rejoin. Goes on their rapsheet.",
-		Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "Who to kick."), categoryOption(), reasonOpt()},
+		Options:     []discord.ApplicationCommandOption{userOpt("user", "Who to kick."), categoryOption(), reasonOpt()},
 	})
-	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+	p.commands.RegisterCommand(p.Name(), discord.SlashCommandCreate{
 		Name:        cmdBan,
 		Description: "Ban a member, for a while or for good. merlin lifts a temporary ban itself.",
-		Options: []*discordgo.ApplicationCommandOption{
+		Options: []discord.ApplicationCommandOption{
 			userOpt("user", "Who to ban."),
 			categoryOption(),
 			reasonOpt(),
-			{Type: discordgo.ApplicationCommandOptionString, Name: "duration", Description: "How long: 7d, 30d, up to 365d. Leave out for a permanent ban, and say so."},
-			{Type: discordgo.ApplicationCommandOptionBoolean, Name: "permanent", Description: "A ban with no end date. Required if no duration is given."},
-			{Type: discordgo.ApplicationCommandOptionInteger, Name: "delete_message_days", Description: "Also delete their messages from the last N days (0-7).", MinValue: ptr(0.0), MaxValue: maxDeleteDays},
+			discord.ApplicationCommandOptionString{Name: "duration", Description: "How long: 7d, 30d, up to 365d. Leave out for a permanent ban, and say so."},
+			discord.ApplicationCommandOptionBool{Name: "permanent", Description: "A ban with no end date. Required if no duration is given."},
+			discord.ApplicationCommandOptionInt{Name: "delete_message_days", Description: "Also delete their messages from the last N days (0-7).", MinValue: omit.Ptr(0), MaxValue: omit.Ptr(maxDeleteDays)},
 		},
 	})
 
@@ -226,22 +226,20 @@ func (p *Plugin) registerCommands() {
 // categoryOption is the fixed category picker. Twelve values known at
 // compile time, so a plain Choices list rather than autocomplete (spec.MD
 // §4a's autocomplete rule is for values that come from bot state).
-func categoryOption() *discordgo.ApplicationCommandOption {
-	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(categories))
+func categoryOption() discord.ApplicationCommandOption {
+	choices := make([]discord.ApplicationCommandOptionChoiceString, 0, len(categories))
 	for _, c := range categories {
-		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: categoryLabel(c), Value: string(c)})
+		choices = append(choices, discord.ApplicationCommandOptionChoiceString{Name: categoryLabel(c), Value: string(c)})
 	}
 	if len(choices) > maxOptionChoices {
 		panic("rapsheet: more categories than Discord allows choices")
 	}
-	return &discordgo.ApplicationCommandOption{
-		Type: discordgo.ApplicationCommandOptionString, Name: "category", Required: true,
+	return discord.ApplicationCommandOptionString{
+		Name: "category", Required: true,
 		Description: "Which rule it broke. Decides the points.",
 		Choices:     choices,
 	}
 }
-
-func ptr[T any](v T) *T { return &v }
 
 func actorID(ix *core.Ix) string {
 	if ix.Member() != nil {

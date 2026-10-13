@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -76,7 +75,7 @@ func newPanelPlugin(t *testing.T, st SettingsAdmin) *Plugin {
 	perms := core.NewPermissions(nil, fakeAuthData{}, bootstrapID)
 	router := core.NewCommandRouter(perms, fakeGate{}, log)
 	router.HandleIx("other", "", core.PermSpec{Tier: core.TierMod, Action: "rotation.configure"}, nil)
-	router.RegisterCommand("rotation", &discordgo.ApplicationCommand{Name: "other", Description: "x"})
+	router.RegisterCommand("rotation", discord.SlashCommandCreate{Name: "other", Description: "x"})
 	r, _ := paneltest.Rest()
 	p := New(st, "does-not-exist.yaml", nil, nil)
 	if err := p.Init(core.Deps{Commands: router, Logger: log, Perms: perms, Audit: nopAudit{}, Rest: r, BotID: 2}); err != nil {

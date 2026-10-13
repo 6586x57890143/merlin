@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 )
@@ -30,7 +29,7 @@ func newTestRouter() (*CommandRouter, *fakeAuthData) {
 
 func TestFinalizeRejectsUnsetTier(t *testing.T) {
 	r, _ := newTestRouter()
-	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{Name: "foo"})
+	r.RegisterCommand("testplugin", discord.SlashCommandCreate{Name: "foo"})
 	r.HandleIx("foo", "", PermSpec{}, func(ctx context.Context, ix *Ix) {})
 
 	if err := r.Finalize(); err == nil {
@@ -40,7 +39,7 @@ func TestFinalizeRejectsUnsetTier(t *testing.T) {
 
 func TestFinalizeRejectsMissingActionAboveTierPublic(t *testing.T) {
 	r, _ := newTestRouter()
-	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{Name: "foo"})
+	r.RegisterCommand("testplugin", discord.SlashCommandCreate{Name: "foo"})
 	r.HandleIx("foo", "", PermSpec{Tier: TierMod}, func(ctx context.Context, ix *Ix) {})
 
 	if err := r.Finalize(); err == nil {
@@ -50,10 +49,10 @@ func TestFinalizeRejectsMissingActionAboveTierPublic(t *testing.T) {
 
 func TestFinalizeRejectsSubcommandWithNoHandler(t *testing.T) {
 	r, _ := newTestRouter()
-	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{
+	r.RegisterCommand("testplugin", discord.SlashCommandCreate{
 		Name: "foo",
-		Options: []*discordgo.ApplicationCommandOption{
-			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "bar"},
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{Name: "bar"},
 		},
 	})
 	// No Handle call for "foo/bar" at all.
@@ -65,13 +64,13 @@ func TestFinalizeRejectsSubcommandWithNoHandler(t *testing.T) {
 
 func TestFinalizePassesForFullyWiredTree(t *testing.T) {
 	r, _ := newTestRouter()
-	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{
+	r.RegisterCommand("testplugin", discord.SlashCommandCreate{
 		Name: "foo", Description: "a test command",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "grp", Description: "a group",
-				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf", Description: "a leaf"},
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommandGroup{
+				Name: "grp", Description: "a group",
+				Options: []discord.ApplicationCommandOptionSubCommand{
+					{Name: "leaf", Description: "a leaf"},
 				},
 			},
 		},
@@ -135,9 +134,9 @@ func TestCommandsRouteToTheirLeaf(t *testing.T) {
 
 func TestPluginsDedupes(t *testing.T) {
 	r, _ := newTestRouter()
-	r.RegisterCommand("rotation", &discordgo.ApplicationCommand{Name: "rotation"})
-	r.RegisterCommand("rotation", &discordgo.ApplicationCommand{Name: "rotation-other"})
-	r.RegisterCommand("scheduler", &discordgo.ApplicationCommand{Name: "scheduler"})
+	r.RegisterCommand("rotation", discord.SlashCommandCreate{Name: "rotation"})
+	r.RegisterCommand("rotation", discord.SlashCommandCreate{Name: "rotation-other"})
+	r.RegisterCommand("scheduler", discord.SlashCommandCreate{Name: "scheduler"})
 
 	plugins := r.Plugins()
 	if len(plugins) != 2 {
@@ -192,9 +191,9 @@ func TestMatchComponentReturnsNilWhenNoPrefixMatches(t *testing.T) {
 
 func TestActionsDedupesAndSkipsEmpty(t *testing.T) {
 	r, _ := newTestRouter()
-	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{Name: "a"})
-	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{Name: "b"})
-	r.RegisterCommand("testplugin", &discordgo.ApplicationCommand{Name: "c"})
+	r.RegisterCommand("testplugin", discord.SlashCommandCreate{Name: "a"})
+	r.RegisterCommand("testplugin", discord.SlashCommandCreate{Name: "b"})
+	r.RegisterCommand("testplugin", discord.SlashCommandCreate{Name: "c"})
 	noop := func(ctx context.Context, ix *Ix) {}
 	r.HandleIx("a", "", PermSpec{Tier: TierPublic}, noop)
 	r.HandleIx("b", "", PermSpec{Tier: TierMod, Action: "shared.action"}, noop)
@@ -269,14 +268,16 @@ func TestModalValuesReadsEveryFieldAndToleratesJunk(t *testing.T) {
 // startup instead. Each case is one thing Discord would 400 on.
 func TestFinalizeRefusesWhatDiscordWouldReject(t *testing.T) {
 	long := strings.Repeat("x", 101)
-	cases := map[string]*discordgo.ApplicationCommand{
+	cases := map[string]discord.SlashCommandCreate{
 		"empty description": {Name: "foo", Description: ""},
 		"long description":  {Name: "foo", Description: long},
 		"uppercase name":    {Name: "Foo", Description: "d"},
-		"long option desc":  {Name: "foo", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf", Description: long}}},
-		"too many choices":  {Name: "foo", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionString, Name: "pick", Description: "d", Choices: make26()}}}}},
-		"long choice name":  {Name: "foo", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "leaf", Description: "d", Options: []*discordgo.ApplicationCommandOption{{Type: discordgo.ApplicationCommandOptionString, Name: "pick", Description: "d", Choices: []*discordgo.ApplicationCommandOptionChoice{{Name: long, Value: "v"}}}}}}},
+		"long option desc":  {Name: "foo", Description: "d", Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionSubCommand{Name: "leaf", Description: long}}},
+		"too many choices":  {Name: "foo", Description: "d", Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionSubCommand{Name: "leaf", Description: "d", Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionString{Name: "pick", Description: "d", Choices: make26()}}}}},
+		"long choice name":  {Name: "foo", Description: "d", Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionSubCommand{Name: "leaf", Description: "d", Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionString{Name: "pick", Description: "d", Choices: []discord.ApplicationCommandOptionChoiceString{{Name: long, Value: "v"}}}}}}},
 		"too many options":  {Name: "foo", Description: "d", Options: make26Subcommands()},
+		"long choice value": {Name: "foo", Description: "d", Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionSubCommand{Name: "leaf", Description: "d", Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionString{Name: "pick", Description: "d", Choices: []discord.ApplicationCommandOptionChoiceString{{Name: "c", Value: long}}}}}}},
+		"group too wide":    {Name: "foo", Description: "d", Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionSubCommandGroup{Name: "g", Description: "d", Options: []discord.ApplicationCommandOptionSubCommand{{Name: "Leaf", Description: "d"}}}}},
 	}
 	for name, cmd := range cases {
 		r, _ := newTestRouter()
@@ -291,18 +292,18 @@ func TestFinalizeRefusesWhatDiscordWouldReject(t *testing.T) {
 	}
 }
 
-func make26() []*discordgo.ApplicationCommandOptionChoice {
-	out := make([]*discordgo.ApplicationCommandOptionChoice, 26)
+func make26() []discord.ApplicationCommandOptionChoiceString {
+	out := make([]discord.ApplicationCommandOptionChoiceString, 26)
 	for i := range out {
-		out[i] = &discordgo.ApplicationCommandOptionChoice{Name: fmt.Sprintf("c%d", i), Value: fmt.Sprintf("v%d", i)}
+		out[i] = discord.ApplicationCommandOptionChoiceString{Name: fmt.Sprintf("c%d", i), Value: fmt.Sprintf("v%d", i)}
 	}
 	return out
 }
 
-func make26Subcommands() []*discordgo.ApplicationCommandOption {
-	out := make([]*discordgo.ApplicationCommandOption, 26)
+func make26Subcommands() []discord.ApplicationCommandOption {
+	out := make([]discord.ApplicationCommandOption, 26)
 	for i := range out {
-		out[i] = &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionSubCommand, Name: fmt.Sprintf("s%d", i), Description: "d"}
+		out[i] = discord.ApplicationCommandOptionSubCommand{Name: fmt.Sprintf("s%d", i), Description: "d"}
 	}
 	return out
 }

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/omit"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/secret"
@@ -70,67 +70,67 @@ func actorName(ix *core.Ix) string {
 }
 
 func (p *Plugin) registerCommands() {
-	durationOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
-		return &discordgo.ApplicationCommandOption{
-			Type: discordgo.ApplicationCommandOptionString, Name: name, Description: desc,
+	durationOpt := func(name, desc string) discord.ApplicationCommandOption {
+		return discord.ApplicationCommandOptionString{
+			Name: name, Description: desc,
 		}
 	}
 
-	cmd := &discordgo.ApplicationCommand{
+	cmd := discord.SlashCommandCreate{
 		Name:        "contest",
 		Description: "Run a server contest: submissions, voting, prizes.",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "new",
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "new",
 				Description: "Start a contest. Only a title is required.",
-				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionString, Name: "title", Description: "What the contest is called.", Required: true},
-					{Type: discordgo.ApplicationCommandOptionString, Name: "theme", Description: "The brief, if there is one."},
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionString{Name: "title", Description: "What the contest is called.", Required: true},
+					discord.ApplicationCommandOptionString{Name: "theme", Description: "The brief, if there is one."},
 					durationOpt("announce-for", "Hype window before submissions open. e.g. 1h, 30m, 0 for none."),
 					durationOpt("submit-for", "How long submissions stay open. e.g. 48h, 3d."),
 					durationOpt("vote-for", "How long voting stays open. e.g. 24h."),
-					{Type: discordgo.ApplicationCommandOptionInteger, Name: "picks", Description: "How many entries each member may vote for.", MinValue: ptr(1.0), MaxValue: maxPicks},
-					{Type: discordgo.ApplicationCommandOptionChannel, Name: "channel", Description: "Where announcements go. Defaults to here.",
-						ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText}},
+					discord.ApplicationCommandOptionInt{Name: "picks", Description: "How many entries each member may vote for.", MinValue: omit.Ptr(1), MaxValue: omit.Ptr(maxPicks)},
+					discord.ApplicationCommandOptionChannel{Name: "channel", Description: "Where announcements go. Defaults to here.",
+						ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildText}},
 				},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "prize",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "prize",
 				Description: "Pledge a prize for the winner. Opens a private form.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "unpledge",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "unpledge",
 				Description: "Take back a prize you pledged.",
-				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionString, Name: "which", Description: "Which pledge. Leave empty for your most recent.", Autocomplete: true},
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionString{Name: "which", Description: "Which pledge. Leave empty for your most recent.", Autocomplete: true},
 				},
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "link",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "link",
 				Description: "Get your link for whatever the contest is doing right now.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "claim",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "claim",
 				Description: "Pick up a prize you won, if the DM did not reach you.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "status",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "status",
 				Description: "Where the contest is up to, and whether anything is broken.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "review",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "review",
 				Description: "Approve or reject pledged prizes. You never see the code.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "advance",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "advance",
 				Description: "Move the contest to its next phase now, without waiting for the deadline.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "cancel",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "cancel",
 				Description: "Call the contest off. Nothing is deleted.",
 			},
-			{
-				Type: discordgo.ApplicationCommandOptionSubCommand, Name: "settings",
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "settings",
 				Description: "Who contests are for, where they're announced and filed, and picks per member.",
 			},
 		},
@@ -160,8 +160,6 @@ func (p *Plugin) registerCommands() {
 		core.PermSpec{Tier: core.TierMod, Action: actionReview}, p.handleReviewButton)
 	p.commands.HandleModalIx(p.Name(), prizeModalPrefix, public, p.handlePrizeModal)
 }
-
-func ptr(f float64) *float64 { return &f }
 
 // handleNew creates a contest, its forum, and the opening announcement.
 // Defers first: this makes a channel, writes an overwrite and posts a
