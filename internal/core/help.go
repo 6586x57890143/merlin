@@ -2,6 +2,7 @@ package core
 
 import (
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // Helper is a plugin with a page in /help. Optional: a plugin without one is
@@ -31,8 +32,8 @@ func (r *Registry) Plugins() []Plugin {
 
 // CommandsOf is every top-level command plugin registered, for a page's
 // command grid.
-func (r *CommandRouter) CommandsOf(plugin string) []*discordgo.ApplicationCommand {
-	var out []*discordgo.ApplicationCommand
+func (r *CommandRouter) CommandsOf(plugin string) []discord.SlashCommandCreate {
+	var out []discord.SlashCommandCreate
 	for _, cmd := range r.topLevel {
 		if r.topLevelPlugin[cmd.Name] == plugin {
 			out = append(out, cmd)

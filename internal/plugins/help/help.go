@@ -15,7 +15,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -73,11 +72,11 @@ func (p *Plugin) Help() core.Help {
 
 func (p *Plugin) Init(deps core.Deps) error {
 	p.commands, p.audit, p.log = deps.Commands, deps.Audit, deps.Logger
-	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+	p.commands.RegisterCommand(p.Name(), discord.SlashCommandCreate{
 		Name:        "help",
 		Description: "What merlin does here, and every command she answers to",
-		Options: []*discordgo.ApplicationCommandOption{{
-			Type: discordgo.ApplicationCommandOptionBoolean, Name: "post",
+		Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionBool{
+			Name:        "post",
 			Description: "Admins: post it in the channel for everyone",
 		}},
 	})
@@ -291,11 +290,11 @@ func (p *Plugin) grid(plugin string) string {
 	var rows [][2]string
 	for _, cmd := range p.commands.CommandsOf(plugin) {
 		var leaves []string
-		for _, o := range cmd.Options {
-			switch o.Type {
-			case discordgo.ApplicationCommandOptionSubCommand:
+		for _, opt := range cmd.Options {
+			switch o := opt.(type) {
+			case discord.ApplicationCommandOptionSubCommand:
 				leaves = append(leaves, o.Name)
-			case discordgo.ApplicationCommandOptionSubCommandGroup:
+			case discord.ApplicationCommandOptionSubCommandGroup:
 				for _, sub := range o.Options {
 					leaves = append(leaves, o.Name+" "+sub.Name)
 				}

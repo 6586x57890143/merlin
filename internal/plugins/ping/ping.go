@@ -6,10 +6,9 @@ package ping
 import (
 	"context"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
+	"github.com/disgoorg/disgo/discord"
 )
 
 type Plugin struct {
@@ -21,7 +20,7 @@ func New(speaker voice.Source) *Plugin { return &Plugin{voice: speaker} }
 func (p *Plugin) Name() string { return "ping" }
 
 func (p *Plugin) Init(deps core.Deps) error {
-	deps.Commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+	deps.Commands.RegisterCommand(p.Name(), discord.SlashCommandCreate{
 		Name:        "ping",
 		Description: "Health check - replies pong",
 	})

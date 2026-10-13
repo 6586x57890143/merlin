@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/rest"
@@ -57,15 +56,13 @@ type registeredModal struct {
 }
 
 // CommandRouter is the single owner of slash-command registration and
-// dispatch (spec.MD §4a). Plugins never call session.AddHandler or
-// discordgo's ApplicationCommand{Create,BulkOverwrite} themselves. This
-// fixes two real gaps in the pre-Milestone-4 code: (1) two plugins each
-// calling ApplicationCommandBulkOverwrite independently would silently wipe
-// out each other's commands, since bulk-overwrite replaces the entire scope,
-// not just the caller's own commands; (2) discordgo's own event dispatch has
-// no recover() of its own (confirmed against the vendored source), so a
-// panic in any one plugin's handler could take down the whole process.
-// Every dispatch here runs under recover().
+// dispatch (spec.MD §4a). Plugins never listen for interactions or set
+// commands themselves. This fixes two real gaps in the pre-Milestone-4
+// code: (1) two plugins each bulk-overwriting commands independently would
+// silently wipe out each other's, since bulk-overwrite replaces the entire
+// scope, not just the caller's own commands; (2) a panic in any one
+// plugin's handler could take down the whole process. Every dispatch here
+// runs under recover().
 type CommandRouter struct {
 	perms *Permissions
 	gate  PluginGate
@@ -78,8 +75,8 @@ type CommandRouter struct {
 	// registers one: NewIx refuses without it, and the refusal is logged.
 	rest rest.Rest
 
-	topLevel       []*discordgo.ApplicationCommand
-	creates        []discord.ApplicationCommandCreate // topLevel as disgo sends it, from Finalize
+	topLevel       []discord.SlashCommandCreate
+	creates        []discord.ApplicationCommandCreate // topLevel as RegisterGuild sends it, from Finalize
 	topLevelPlugin map[string]string                  // top-level command name -> owning plugin name
 	leaves         map[string]*registeredLeaf
 	components     map[string]*registeredComponent // CustomID prefix -> handler
@@ -140,10 +137,9 @@ func (r *CommandRouter) Perms() *Permissions {
 
 // RegisterCommand adds one top-level command, owned by pluginName (used for
 // the per-guild plugin enable/disable gate, see PluginGate). cmd's Options
-// may nest subcommands/subcommand groups arbitrarily (as discordgo itself
-// requires); call Handle for every invocable leaf path underneath it before
-// Finalize.
-func (r *CommandRouter) RegisterCommand(pluginName string, cmd *discordgo.ApplicationCommand) {
+// may nest subcommands and subcommand groups as Discord allows; call Handle
+// for every invocable leaf path underneath it before Finalize.
+func (r *CommandRouter) RegisterCommand(pluginName string, cmd discord.SlashCommandCreate) {
 	r.topLevel = append(r.topLevel, cmd)
 	r.topLevelPlugin[cmd.Name] = pluginName
 }
@@ -302,11 +298,10 @@ func (r *CommandRouter) Finalize() error {
 			return err
 		}
 	}
-	c, err := creates(r.topLevel)
-	if err != nil {
-		return err
+	r.creates = make([]discord.ApplicationCommandCreate, len(r.topLevel))
+	for i, cmd := range r.topLevel {
+		r.creates[i] = cmd
 	}
-	r.creates = c
 	return nil
 }
 
@@ -329,7 +324,7 @@ const (
 	maxChoiceStringValueLen  = 100
 )
 
-func validateCommandShape(cmd *discordgo.ApplicationCommand) error {
+func validateCommandShape(cmd discord.SlashCommandCreate) error {
 	if err := validateNameAndDescription(cmd.Name, cmd.Name, cmd.Description); err != nil {
 		return err
 	}
@@ -349,28 +344,51 @@ func validateNameAndDescription(path, name, description string) error {
 	return nil
 }
 
-func validateOptions(path string, opts []*discordgo.ApplicationCommandOption) error {
+func validateOptions(path string, opts []discord.ApplicationCommandOption) error {
 	if len(opts) > maxCommandOptions {
 		return fmt.Errorf("core: command %q has %d options; Discord allows %d", path, len(opts), maxCommandOptions)
 	}
 	for _, o := range opts {
-		p := path + "/" + o.Name
-		if err := validateNameAndDescription(p, o.Name, o.Description); err != nil {
+		p := path + "/" + o.OptionName()
+		if err := validateNameAndDescription(p, o.OptionName(), o.OptionDescription()); err != nil {
 			return err
 		}
-		if len(o.Choices) > maxOptionChoices {
-			return fmt.Errorf("core: option %q has %d choices; Discord allows %d", p, len(o.Choices), maxOptionChoices)
-		}
-		for _, c := range o.Choices {
-			if n := len(c.Name); n == 0 || n > maxChoiceNameLen {
-				return fmt.Errorf("core: option %q: choice name %q is %d characters; Discord allows 1-%d", p, c.Name, n, maxChoiceNameLen)
+		var err error
+		switch o := o.(type) {
+		case discord.ApplicationCommandOptionSubCommand:
+			err = validateOptions(p, o.Options)
+		case discord.ApplicationCommandOptionSubCommandGroup:
+			subs := make([]discord.ApplicationCommandOption, len(o.Options))
+			for i, s := range o.Options {
+				subs[i] = s
 			}
-			if v, ok := c.Value.(string); ok && len(v) > maxChoiceStringValueLen {
-				return fmt.Errorf("core: option %q: choice value %q is over %d characters", p, v, maxChoiceStringValueLen)
-			}
+			err = validateOptions(p, subs)
+		case discord.ApplicationCommandOptionString:
+			err = validateChoices(p, o.Choices, func(c discord.ApplicationCommandOptionChoiceString) int { return len(c.Value) })
+		case discord.ApplicationCommandOptionInt:
+			err = validateChoices(p, o.Choices, func(discord.ApplicationCommandOptionChoiceInt) int { return 0 })
+		case discord.ApplicationCommandOptionFloat:
+			err = validateChoices(p, o.Choices, func(discord.ApplicationCommandOptionChoiceFloat) int { return 0 })
 		}
-		if err := validateOptions(p, o.Options); err != nil {
+		if err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateChoices holds an option's choices to Discord's limits; valueLen
+// is a string choice's value length, zero for a number.
+func validateChoices[C discord.ApplicationCommandOptionChoice](p string, choices []C, valueLen func(C) int) error {
+	if len(choices) > maxOptionChoices {
+		return fmt.Errorf("core: option %q has %d choices; Discord allows %d", p, len(choices), maxOptionChoices)
+	}
+	for _, c := range choices {
+		if n := len(c.ChoiceName()); n == 0 || n > maxChoiceNameLen {
+			return fmt.Errorf("core: option %q: choice name %q is %d characters; Discord allows 1-%d", p, c.ChoiceName(), n, maxChoiceNameLen)
+		}
+		if valueLen(c) > maxChoiceStringValueLen {
+			return fmt.Errorf("core: option %q: choice %q has a value over %d characters", p, c.ChoiceName(), maxChoiceStringValueLen)
 		}
 	}
 	return nil
@@ -379,33 +397,22 @@ func validateOptions(path string, opts []*discordgo.ApplicationCommandOption) er
 // leafPaths walks cmd's Options tree and returns every invocable leaf path
 // beneath it (mirroring resolveLeaf's own walk, so registration-time
 // validation and dispatch-time resolution can never disagree).
-func leafPaths(cmd *discordgo.ApplicationCommand) []string {
-	hasSub := false
-	for _, opt := range cmd.Options {
-		if opt.Type == discordgo.ApplicationCommandOptionSubCommand || opt.Type == discordgo.ApplicationCommandOptionSubCommandGroup {
-			hasSub = true
-			break
-		}
-	}
-	if !hasSub {
-		return []string{""}
-	}
+func leafPaths(cmd discord.SlashCommandCreate) []string {
 	var paths []string
 	for _, opt := range cmd.Options {
-		walkOption(opt, nil, &paths)
+		switch o := opt.(type) {
+		case discord.ApplicationCommandOptionSubCommand:
+			paths = append(paths, o.Name)
+		case discord.ApplicationCommandOptionSubCommandGroup:
+			for _, sub := range o.Options {
+				paths = append(paths, o.Name+"/"+sub.Name)
+			}
+		}
+	}
+	if paths == nil {
+		return []string{""}
 	}
 	return paths
-}
-
-func walkOption(opt *discordgo.ApplicationCommandOption, prefix []string, out *[]string) {
-	segs := append(append([]string(nil), prefix...), opt.Name)
-	if opt.Type == discordgo.ApplicationCommandOptionSubCommandGroup {
-		for _, child := range opt.Options {
-			walkOption(child, segs, out)
-		}
-		return
-	}
-	*out = append(*out, strings.Join(segs, "/"))
 }
 
 // OnInteraction is the gateway listener for every interaction, registered
