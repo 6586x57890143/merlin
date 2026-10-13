@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // JobHealth and DBHealth are the narrow views /config status needs of the
@@ -191,10 +190,10 @@ func (p *Plugin) channelState(channelID string) (string, severity) {
 	if channelID == "" {
 		return "⚠️ not configured; pick one under Channels", sevWarn
 	}
-	if p.session == nil {
+	if p.rest == nil {
 		return fmt.Sprintf("<#%s>", channelID), sevOK
 	}
-	ch, err := p.session.Channel(channelID)
+	ch, err := p.guildChannel(channelID)
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			return fmt.Sprintf("❌ configured as `%s`, but that channel no longer exists. Re-pick one under Channels", channelID), sevError
@@ -227,18 +226,11 @@ func (p *Plugin) channelState(channelID string) (string, severity) {
 // Reading the channel's own overwrites is sufficient, including for
 // category-synced channels, since syncing copies the category's overwrites
 // onto the channel rather than leaving them to be inherited at read time.
-func everyoneCanRead(ch *discordgo.Channel) bool {
+func everyoneCanRead(ch discord.GuildChannel) bool {
 	if ch == nil {
 		return true
 	}
 	// The @everyone role's ID is the guild's own ID.
-	for _, ow := range ch.PermissionOverwrites {
-		if ow.Type != discordgo.PermissionOverwriteTypeRole || ow.ID != ch.GuildID {
-			continue
-		}
-		if ow.Deny&discordgo.PermissionViewChannel != 0 {
-			return false
-		}
-	}
-	return true
+	ow, ok := ch.PermissionOverwrites().Role(ch.GuildID())
+	return !ok || !ow.Deny.Has(discord.PermissionViewChannel)
 }

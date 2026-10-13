@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
 )
@@ -104,7 +102,7 @@ func TestInitRegistersAFullyWiredCommandTree(t *testing.T) {
 	router := core.NewCommandRouter(perms, fakeGate{}, log)
 
 	p := New(fakeSettingsAdmin{}, "config.yaml", nil, nil)
-	deps := core.Deps{Commands: router, Logger: log, Session: &discordgo.Session{}}
+	deps := core.Deps{Commands: router, Logger: log}
 	if err := p.Init(deps); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

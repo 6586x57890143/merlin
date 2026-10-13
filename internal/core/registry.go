@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/config"
 	"github.com/6586x57890143/merlin/internal/storage"
@@ -95,7 +97,13 @@ type Plugin interface {
 // at Init time, so plugins reach for nothing global and never call each
 // other directly; they only publish/subscribe on Bus.
 type Deps struct {
-	Session   *discordgo.Session
+	Session *discordgo.Session
+	// Rest is disgo's REST client, through the same transport and rate
+	// limiter as everything else; a plugin moving off Session sends
+	// through it.
+	Rest rest.Rest
+	// BotID is merlin's own user.
+	BotID     snowflake.ID
 	Bus       *EventBus
 	Config    *config.Loader
 	Perms     *Permissions

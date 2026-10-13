@@ -15,6 +15,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
@@ -53,8 +55,12 @@ const (
 )
 
 type Plugin struct {
-	settings    SettingsAdmin
-	session     *discordgo.Session
+	settings SettingsAdmin
+	// rest is what adminconfig does as merlin, outside the guard: setup
+	// creating its channels and role, granting mods view of them, and the
+	// onboarding DM.
+	rest        discordREST
+	botID       snowflake.ID
 	auditWriter core.AuditWriter
 	commands    *core.CommandRouter
 	perms       *core.Permissions
@@ -77,7 +83,10 @@ func New(settingsStore SettingsAdmin, legacyConfigPath string, db DBHealth, jobs
 func (p *Plugin) Name() string { return "adminconfig" }
 
 func (p *Plugin) Init(deps core.Deps) error {
-	p.session = deps.Session
+	if deps.Rest != nil {
+		p.rest = deps.Rest
+	}
+	p.botID = deps.BotID
 	p.auditWriter = deps.Audit
 	p.commands = deps.Commands
 	p.log = deps.Logger
@@ -105,8 +114,36 @@ func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 // meant to have access to; the channels themselves only deny @everyone by
 // default (see core.DenyEveryoneExceptBot), they don't proactively grant mod
 // roles, since a mod role may not exist yet at channel-creation time.
-func (p *Plugin) grantModRoleChannelAccess(s *discordgo.Session, guildID, roleID string) {
-	p.grantRolesChannelAccess(s, guildID, []string{roleID})
+func (p *Plugin) grantModRoleChannelAccess(guildID, roleID string) {
+	p.grantRolesChannelAccess(guildID, []string{roleID})
+}
+
+// discordREST is the slice of disgo's REST client adminconfig uses.
+type discordREST interface {
+	GetChannel(channelID snowflake.ID, opts ...rest.RequestOpt) (discord.Channel, error)
+	UpdatePermissionOverwrite(channelID, overwriteID snowflake.ID, update discord.PermissionOverwriteUpdate, opts ...rest.RequestOpt) error
+	CreateGuildChannel(guildID snowflake.ID, create discord.GuildChannelCreate, opts ...rest.RequestOpt) (discord.GuildChannel, error)
+	CreateRole(guildID snowflake.ID, create discord.RoleCreate, opts ...rest.RequestOpt) (*discord.Role, error)
+	CreateDMChannel(userID snowflake.ID, opts ...rest.RequestOpt) (*discord.DMChannel, error)
+	CreateMessage(channelID snowflake.ID, create discord.MessageCreate, opts ...rest.RequestOpt) (*discord.Message, error)
+}
+
+// guildChannel reads channelID, nil if it cannot be read or is not a guild
+// channel.
+func (p *Plugin) guildChannel(channelID string) (discord.GuildChannel, error) {
+	id, err := snowflake.Parse(channelID)
+	if err != nil {
+		return nil, err
+	}
+	ch, err := p.rest.GetChannel(id)
+	if err != nil {
+		return nil, err
+	}
+	gc, ok := ch.(discord.GuildChannel)
+	if !ok {
+		return nil, fmt.Errorf("channel %s is not a server channel", channelID)
+	}
+	return gc, nil
 }
 
 // grantRolesChannelAccess is the shared body: for each configured channel it
@@ -123,19 +160,25 @@ func (p *Plugin) grantModRoleChannelAccess(s *discordgo.Session, guildID, roleID
 // mods can see their own moderation trail, which matters more than a tidy
 // audit log, so an unreadable channel falls back to the old unconditional
 // write rather than skipping it.
-func (p *Plugin) grantRolesChannelAccess(s *discordgo.Session, guildID string, roleIDs []string) {
+func (p *Plugin) grantRolesChannelAccess(guildID string, roleIDs []string) {
 	gs := p.settings.GuildSettings(guildID)
 	for _, channelID := range []string{gs.AuditLogChannelID, gs.StatusChannelID} {
 		if channelID == "" {
 			continue
 		}
-		ch, err := s.Channel(channelID)
+		ch, err := p.guildChannel(channelID)
 		if err != nil {
 			p.log.Warn("adminconfig: could not read channel before granting mod access", "guild", guildID, "channel", channelID, "err", err)
 			ch = nil
 		}
+		cid, _ := snowflake.Parse(channelID)
 		for _, roleID := range rolesMissingViewAccess(ch, roleIDs) {
-			if err := s.ChannelPermissionSet(channelID, roleID, discordgo.PermissionOverwriteTypeRole, discordgo.PermissionViewChannel, 0); err != nil {
+			rid, perr := snowflake.Parse(roleID)
+			if perr != nil {
+				continue
+			}
+			view, none := discord.PermissionViewChannel, discord.Permissions(0)
+			if err := p.rest.UpdatePermissionOverwrite(cid, rid, discord.RolePermissionOverwriteUpdate{Allow: &view, Deny: &none}); err != nil {
 				p.log.Error("adminconfig: grant mod role channel access failed", "guild", guildID, "channel", channelID, "role", roleID, "err", err)
 			}
 		}
@@ -150,14 +193,14 @@ func (p *Plugin) grantRolesChannelAccess(s *discordgo.Session, guildID string, r
 // that has added its own extra allows or denies to a mod role on the audit
 // channel is expressing a preference, and rewriting the overwrite to exactly
 // view-and-nothing-else would quietly undo it.
-func rolesMissingViewAccess(ch *discordgo.Channel, roleIDs []string) []string {
+func rolesMissingViewAccess(ch discord.GuildChannel, roleIDs []string) []string {
 	if ch == nil {
 		return roleIDs
 	}
-	granted := make(map[string]bool, len(ch.PermissionOverwrites))
-	for _, ow := range ch.PermissionOverwrites {
-		if ow.Type == discordgo.PermissionOverwriteTypeRole && ow.Allow&discordgo.PermissionViewChannel != 0 {
-			granted[ow.ID] = true
+	granted := map[string]bool{}
+	for _, ow := range ch.PermissionOverwrites() {
+		if r, ok := ow.(discord.RolePermissionOverwrite); ok && r.Allow.Has(discord.PermissionViewChannel) {
+			granted[r.RoleID.String()] = true
 		}
 	}
 	var out []string
@@ -268,23 +311,27 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 		return
 	}
 
-	dmChannel, err := p.session.UserChannelCreate(gc.OwnerID)
+	owner, err := snowflake.Parse(gc.OwnerID)
+	if err != nil {
+		p.log.Warn("adminconfig: guild owner ID unreadable, skipping onboarding nudge", "guild", gc.ID, "owner", gc.OwnerID)
+		return
+	}
+	dmChannel, err := p.rest.CreateDMChannel(owner)
 	if err != nil {
 		p.log.Warn("adminconfig: could not open a DM with the guild owner for the onboarding nudge",
 			"guild", gc.ID, "owner", gc.OwnerID, "err", err)
 		return
 	}
 
-	embed := core.NewLandmarkEmbed(core.ColorInfo, "Thanks for adding merlin!",
+	embed := core.LandmarkEmbed(core.ColorInfo, "Thanks for adding merlin!",
 		fmt.Sprintf("Run **/config setup** in **%s** and I'll walk you through it: an audit-log channel, "+
 			"a status channel, a mod role, and admins, one step at a time. I only ever change what you pick on each "+
 			"step, and it's safe to re-run any time.", gc.Name))
-	_, err = p.session.ChannelMessageSendComplex(dmChannel.ID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed},
-		Files:  core.EmbedFiles(embed),
-		// Raw session, so the discordguard suppression does not apply here.
-		// Zeroed explicitly, as audit.Writer.Record and scheduler.alert do.
-		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	_, err = p.rest.CreateMessage(dmChannel.ID(), discord.MessageCreate{
+		Embeds: []discord.Embed{embed},
+		Files:  core.EmbedUploads(embed),
+		// Outside the guard, so stated here as everywhere else.
+		AllowedMentions: &discord.AllowedMentions{},
 	})
 	if err != nil {
 		p.log.Warn("adminconfig: onboarding DM failed, owner may have DMs closed",

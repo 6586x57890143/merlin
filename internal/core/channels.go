@@ -1,6 +1,44 @@
 package core
 
-import "github.com/bwmarrin/discordgo"
+import (
+	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
+)
+
+// DenyEveryone is DenyEveryoneExceptBot on disgo's types: @everyone denied
+// View Channel and the bot granted botAllow, merged into src's own
+// overwrites for either rather than added beside them.
+func DenyEveryone(src []discord.PermissionOverwrite, guildID, botID snowflake.ID, botAllow discord.Permissions) []discord.PermissionOverwrite {
+	out := make([]discord.PermissionOverwrite, 0, len(src)+2)
+	foundEveryone, foundBot := false, false
+	for _, ow := range src {
+		switch o := ow.(type) {
+		case discord.RolePermissionOverwrite:
+			if o.RoleID == guildID {
+				o.Deny |= discord.PermissionViewChannel
+				o.Allow &^= discord.PermissionViewChannel
+				foundEveryone = true
+			}
+			ow = o
+		case discord.MemberPermissionOverwrite:
+			if o.UserID == botID {
+				o.Allow |= botAllow
+				o.Deny &^= botAllow
+				foundBot = true
+			}
+			ow = o
+		}
+		out = append(out, ow)
+	}
+	if !foundEveryone {
+		out = append(out, discord.RolePermissionOverwrite{RoleID: guildID, Deny: discord.PermissionViewChannel})
+	}
+	if !foundBot {
+		out = append(out, discord.MemberPermissionOverwrite{UserID: botID, Allow: botAllow})
+	}
+	return out
+}
 
 // DenyEveryoneExceptBot returns a permission-overwrite list that denies
 // @everyone VIEW_CHANNEL while guaranteeing the bot itself keeps whatever

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/ui"
@@ -299,7 +299,7 @@ func (p *Plugin) setupChannelPicked(ctx context.Context, ix *core.Ix, step int, 
 		p.updateSetupStep(ix, step, fmt.Sprintf("⚠️ Couldn't save that channel: %v", err))
 		return
 	}
-	p.grantModRolesChannelAccess(p.session, ix.GuildID)
+	p.grantModRolesChannelAccess(ix.GuildID)
 	p.audit(ctx, ix, "config.setup", "", fmt.Sprintf("%s=<#%s> (existing)", label, channelID))
 
 	// Picking an existing channel deliberately changes no permissions on it,
@@ -312,7 +312,7 @@ func (p *Plugin) setupChannelPicked(ctx context.Context, ix *core.Ix, step int, 
 	// meant it. A failed lookup says nothing either way, so it stays quiet
 	// rather than crying wolf; /config status re-checks this on every run.
 	notice := fmt.Sprintf("✅ %s is now <#%s>.", label, channelID)
-	if ch, err := p.session.Channel(channelID); err == nil && everyoneCanRead(ch) {
+	if ch, err := p.guildChannel(channelID); err == nil && everyoneCanRead(ch) {
 		notice += " ⚠️ Everyone can read that channel, so anything recorded there is public."
 	}
 	p.updateSetupStep(ix, step+1, notice)
@@ -327,19 +327,25 @@ func (p *Plugin) handleSetupStatusCreate(ctx context.Context, ix *core.Ix, custo
 }
 
 func (p *Plugin) setupChannelCreate(ctx context.Context, ix *core.Ix, step int, label, channelName string, set func(ctx context.Context, guildID, channelID string) error) {
-	ch, err := p.session.GuildChannelCreateComplex(ix.GuildID, discordgo.GuildChannelCreateData{
+	gid, err := snowflake.Parse(ix.GuildID)
+	if err != nil {
+		p.updateSetupStep(ix, step, fmt.Sprintf("⚠️ Couldn't create #%s: %v", channelName, err))
+		return
+	}
+	created, err := p.rest.CreateGuildChannel(gid, discord.GuildTextChannelCreate{
 		Name:                 channelName,
-		PermissionOverwrites: core.DenyEveryoneExceptBot(nil, ix.GuildID, p.session.State.User.ID, botChannelAllow),
+		PermissionOverwrites: core.DenyEveryone(nil, gid, p.botID, botChannelAllow),
 	})
 	if err != nil {
 		p.updateSetupStep(ix, step, fmt.Sprintf("⚠️ Couldn't create #%s: %v", channelName, err))
 		return
 	}
+	ch := struct{ ID string }{created.ID().String()}
 	if err := set(ctx, ix.GuildID, ch.ID); err != nil {
 		p.updateSetupStep(ix, step, fmt.Sprintf("⚠️ #%s was created but I couldn't save it: %v", channelName, err))
 		return
 	}
-	p.grantModRolesChannelAccess(p.session, ix.GuildID)
+	p.grantModRolesChannelAccess(ix.GuildID)
 	p.audit(ctx, ix, "config.setup", "", fmt.Sprintf("%s=<#%s> (created)", label, ch.ID))
 	p.updateSetupStep(ix, step+1, fmt.Sprintf("✅ Created <#%s> and set it as the %s.", ch.ID, strings.ToLower(label)))
 }
@@ -353,13 +359,19 @@ func (p *Plugin) handleSetupModRoleSelect(ctx context.Context, ix *core.Ix, cust
 }
 
 func (p *Plugin) handleSetupModRoleCreate(ctx context.Context, ix *core.Ix, customID string) {
-	mentionable := false
-	role, err := p.session.GuildRoleCreate(ix.GuildID, &discordgo.RoleParams{Name: merlinModRoleName, Mentionable: &mentionable})
+	gid, err := snowflake.Parse(ix.GuildID)
 	if err != nil {
 		p.updateSetupStep(ix, setupStepModRole, fmt.Sprintf("⚠️ Couldn't create the %s role: %v", merlinModRoleName, err))
 		return
 	}
-	p.setupAddModRole(ctx, ix, role.ID, fmt.Sprintf("✅ Created <@&%s>. Assign it to your moderators.", role.ID))
+	// Not mentionable, which is Discord's default when unsaid.
+	created, err := p.rest.CreateRole(gid, discord.RoleCreate{Name: merlinModRoleName})
+	if err != nil {
+		p.updateSetupStep(ix, setupStepModRole, fmt.Sprintf("⚠️ Couldn't create the %s role: %v", merlinModRoleName, err))
+		return
+	}
+	roleID := created.ID.String()
+	p.setupAddModRole(ctx, ix, roleID, fmt.Sprintf("✅ Created <@&%s>. Assign it to your moderators.", roleID))
 }
 
 func (p *Plugin) setupAddModRole(ctx context.Context, ix *core.Ix, roleID, notice string) {
@@ -367,7 +379,7 @@ func (p *Plugin) setupAddModRole(ctx context.Context, ix *core.Ix, roleID, notic
 		p.updateSetupStep(ix, setupStepModRole, fmt.Sprintf("⚠️ Couldn't save that mod role: %v", err))
 		return
 	}
-	p.grantModRoleChannelAccess(p.session, ix.GuildID, roleID)
+	p.grantModRoleChannelAccess(ix.GuildID, roleID)
 	p.audit(ctx, ix, "config.setup", "", "mod_role="+core.MentionRole(roleID))
 	p.updateSetupStep(ix, setupStepModRole+1, notice)
 }
@@ -391,12 +403,12 @@ func (p *Plugin) handleSetupAdminsSelect(ctx context.Context, ix *core.Ix, custo
 // the audit/status channels are configured. Run after either channel
 // changes, not just when a mod role is added: a mod role configured before
 // the channels existed would otherwise never get access once they show up.
-func (p *Plugin) grantModRolesChannelAccess(s *discordgo.Session, guildID string) {
+func (p *Plugin) grantModRolesChannelAccess(guildID string) {
 	// One call, not one per role: grantRolesChannelAccess reads each channel
 	// once and writes only the roles actually missing the grant, so re-running
 	// this on an already-correct guild costs no permission writes and no
 	// Discord audit-log entries.
-	p.grantRolesChannelAccess(p.session, guildID, p.settings.GuildSettings(guildID).ModRoleIDs)
+	p.grantRolesChannelAccess(guildID, p.settings.GuildSettings(guildID).ModRoleIDs)
 }
 
 // botChannelAllow is what the bot needs on the audit-log/status channels:
@@ -405,4 +417,4 @@ func (p *Plugin) grantModRolesChannelAccess(s *discordgo.Session, guildID string
 // never needs Manage Messages, so there's no risk of Discord rejecting the
 // overwrite for granting a bit the bot doesn't actually hold (see
 // core.DenyEveryoneExceptBot's doc comment for why that matters).
-const botChannelAllow = discordgo.PermissionViewChannel | discordgo.PermissionSendMessages | discordgo.PermissionEmbedLinks
+const botChannelAllow = discord.PermissionViewChannel | discord.PermissionSendMessages | discord.PermissionEmbedLinks
