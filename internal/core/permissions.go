@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // PermTier is how restrictive a command/subcommand is. The zero value,
@@ -172,13 +173,52 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 		// rather than nil-deref our way through a security check.
 		return ErrForbidden{Reason: "member has no user identity"}
 	}
+	var who *invoker
+	if member != nil {
+		who = &invoker{userID: member.User.ID, roles: member.Roles, administrator: member.Permissions&discordgo.PermissionAdministrator != 0}
+	}
+	return p.authorize(i.GuildID, who, spec)
+}
 
+// AuthorizeIx is Authorize for an interaction decoded by disgo. Both build
+// the same invoker and share one decision, so a plugin moved to disgo is
+// checked by exactly the code that checked it before.
+func (p *Permissions) AuthorizeIx(ix *Ix, spec PermSpec) error {
+	var who *invoker
+	if m := ix.Member(); m != nil {
+		if m.User.ID == 0 {
+			return ErrForbidden{Reason: "member has no user identity"}
+		}
+		roles := make([]string, len(m.RoleIDs))
+		for n, id := range m.RoleIDs {
+			roles[n] = id.String()
+		}
+		who = &invoker{userID: m.User.ID.String(), roles: roles, administrator: m.Permissions.Has(discord.PermissionAdministrator)}
+	}
+	return p.authorize(ix.GuildID, who, spec)
+}
+
+// AllowsIx is Allows for an Ix.
+func (p *Permissions) AllowsIx(ix *Ix, spec PermSpec) bool {
+	return p != nil && p.AuthorizeIx(ix, spec) == nil
+}
+
+// invoker is the three facts about a member Authorize reads, however the
+// interaction was decoded: who they are, their roles, and whether Discord
+// computed the Administrator bit for them. nil is no member at all.
+type invoker struct {
+	userID        string
+	roles         []string
+	administrator bool
+}
+
+func (p *Permissions) authorize(guildID string, member *invoker, spec PermSpec) error {
 	var policy ActionPolicy
 	if spec.Action != "" {
-		policy = p.settings.ActionPolicy(i.GuildID, spec.Action)
-		if member != nil && member.User.ID != p.bootstrapID {
-			userID := member.User.ID
-			if slices.Contains(policy.DenyUserIDs, userID) || hasAnyRole(member.Roles, policy.DenyRoleIDs) {
+		policy = p.settings.ActionPolicy(guildID, spec.Action)
+		if member != nil && member.userID != p.bootstrapID {
+			userID := member.userID
+			if slices.Contains(policy.DenyUserIDs, userID) || hasAnyRole(member.roles, policy.DenyRoleIDs) {
 				return ErrForbidden{Reason: "denied for " + spec.Action}
 			}
 		}
@@ -209,11 +249,11 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 	if member == nil {
 		return ErrForbidden{Reason: "no guild member context"}
 	}
-	userID := member.User.ID
+	userID := member.userID
 
 	isAdmin := userID == p.bootstrapID ||
-		slices.Contains(p.settings.AdminUserIDs(i.GuildID), userID) ||
-		member.Permissions&discordgo.PermissionAdministrator != 0
+		slices.Contains(p.settings.AdminUserIDs(guildID), userID) ||
+		member.administrator
 
 	switch effectiveTier {
 	case TierAdmin:
@@ -221,7 +261,7 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 			return nil
 		}
 	case TierMod:
-		if isAdmin || hasAnyRole(member.Roles, p.settings.ModRoleIDs(i.GuildID)) {
+		if isAdmin || hasAnyRole(member.roles, p.settings.ModRoleIDs(guildID)) {
 			return nil
 		}
 	}
@@ -229,7 +269,7 @@ func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) e
 	// Additive whitelist path: independent of (effective) tier, so a
 	// specific role/user can be granted exactly this one action without
 	// becoming a full mod or admin.
-	if hasAnyRole(member.Roles, policy.AllowRoleIDs) || slices.Contains(policy.AllowUserIDs, userID) {
+	if hasAnyRole(member.roles, policy.AllowRoleIDs) || slices.Contains(policy.AllowUserIDs, userID) {
 		return nil
 	}
 	return ErrForbidden{Reason: "not authorized for " + spec.Action}

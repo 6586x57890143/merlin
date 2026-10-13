@@ -16,8 +16,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 	"github.com/6586x57890143/merlin/internal/fleet"
 )
 
@@ -79,38 +81,32 @@ func (p *Plugin) Init(deps core.Deps) error {
 			Description: "Admins: post it in the channel for everyone",
 		}},
 	})
-	p.commands.Handle("help", "", core.PermSpec{Tier: core.TierPublic}, p.handleHelp)
-	p.commands.HandleComponent(p.Name(), viewPrefix, core.PermSpec{Tier: core.TierPublic}, p.handleView)
-	p.commands.HandleComponent(p.Name(), switchPrefix, switchSpec, p.handleSwitch)
+	p.commands.HandleIx("help", "", core.PermSpec{Tier: core.TierPublic}, p.handleHelp)
+	p.commands.HandleComponentIx(p.Name(), viewPrefix, core.PermSpec{Tier: core.TierPublic}, p.handleView)
+	p.commands.HandleComponentIx(p.Name(), switchPrefix, switchSpec, p.handleSwitch)
 	return nil
 }
 
 func (p *Plugin) Start(context.Context) error    { return nil }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
-func (p *Plugin) handleHelp(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (p *Plugin) handleHelp(ctx context.Context, ix *core.Ix) {
 	post := false
-	if o, ok := core.LeafArgs(i)["post"]; ok {
-		post = o.BoolValue()
+	if o, ok := ix.Args()["post"]; ok {
+		post = o.Bool()
 	}
-	admin := p.commands.Perms().Allows(i, switchSpec)
+	admin := p.commands.Perms().AllowsIx(ix, switchSpec)
 	if post && !admin {
-		core.RespondErr(s, i, "Not yours to post", fmt.Errorf("only this server's admins can post the guide; `/help` on its own shows it to you"))
+		ix.RespondErr("Not yours to post", fmt.Errorf("only this server's admins can post the guide; `/help` on its own shows it to you"))
 		return
 	}
 	// A posted guide is read by everyone, so it lists only what's on.
-	pn := p.index(i.GuildID, admin && !post)
+	pn := p.index(ix.GuildID, admin && !post)
 	var err error
 	if post {
-		err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Components: pn.Components(), Files: pn.Files(),
-				Flags: discordgo.MessageFlagsIsComponentsV2, AllowedMentions: &discordgo.MessageAllowedMentions{},
-			},
-		})
+		err = ix.RespondPanelPublic(pn)
 	} else {
-		err = core.RespondPanel(s, i, pn)
+		err = ix.RespondPanel(pn)
 	}
 	if err != nil {
 		p.log.Error("help: respond", "err", err)
@@ -119,21 +115,21 @@ func (p *Plugin) handleHelp(ctx context.Context, s *discordgo.Session, i *discor
 
 // handleView is the page select (help:view:page) and the index button
 // (help:view:index).
-func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleView(ctx context.Context, ix *core.Ix, customID string) {
 	name := ""
 	if strings.TrimPrefix(customID, viewPrefix) == "page" {
-		name = core.FirstValue(i)
+		name = ix.FirstValue()
 	}
-	p.show(s, i, name, "")
+	p.show(ix, name, "")
 }
 
 // show draws the index (name "") or one plugin's page on the guide that was
 // clicked: in place on a private one, as a private copy of a posted one.
-func (p *Plugin) show(s *discordgo.Session, i *discordgo.InteractionCreate, name, note string) {
-	admin := p.commands.Perms().Allows(i, switchSpec)
-	pn, ok := p.page(i.GuildID, name, admin)
+func (p *Plugin) show(ix *core.Ix, name, note string) {
+	admin := p.commands.Perms().AllowsIx(ix, switchSpec)
+	pn, ok := p.page(ix.GuildID, name, admin)
 	if name == "" || !ok {
-		pn = p.index(i.GuildID, admin)
+		pn = p.index(ix.GuildID, admin)
 		if name != "" {
 			pn.Note = "✗ That page isn't here anymore."
 		}
@@ -142,10 +138,10 @@ func (p *Plugin) show(s *discordgo.Session, i *discordgo.InteractionCreate, name
 		pn.Note = note
 	}
 	var err error
-	if i.Message != nil && i.Message.Flags&discordgo.MessageFlagsEphemeral == 0 {
-		err = core.RespondPanel(s, i, pn)
+	if !ix.OnPrivateMessage() {
+		err = ix.RespondPanel(pn)
 	} else {
-		err = core.UpdatePanel(s, i, pn)
+		err = ix.UpdatePanel(pn)
 	}
 	if err != nil {
 		p.log.Error("help: show", "page", name, "err", err)
@@ -191,15 +187,15 @@ func (p *Plugin) index(guildID string, admin bool) core.Panel {
 		}
 		fmt.Fprintf(&list, "\n-# %s\n", e.help.Line)
 	}
-	url, file := core.AvatarIcon()
+	url, file := core.AvatarUpload()
 	return core.Panel{
 		Color: core.ColorPrimary, Title: "merlin", Line: "a merlin falcon, perched in this server",
-		Icon: url, IconFile: file,
-		Body: []discordgo.MessageComponent{
-			core.Text(strings.TrimSuffix(list.String(), "\n")),
-			core.Text(fmt.Sprintf("-# %d parts · %d commands · build `%s` · nothing i post pings anyone", len(es), commands, fleet.Build())),
-			core.Row(menu(es, "")),
-			core.Row(discordgo.Button{Label: "Source", Style: discordgo.LinkButton, URL: source}),
+		Icon: url, IconUpload: file,
+		Parts: []discord.ContainerSubComponent{
+			ui.Text(strings.TrimSuffix(list.String(), "\n")),
+			ui.Text(fmt.Sprintf("-# %d parts · %d commands · build `%s` · nothing i post pings anyone", len(es), commands, fleet.Build())),
+			ui.Row(menu(es, "")),
+			ui.Row(discord.ButtonComponent{Label: "Source", Style: discord.ButtonStyleLink, URL: source}),
 		},
 	}
 }
@@ -214,43 +210,43 @@ func (p *Plugin) page(guildID, name string, admin bool) (core.Panel, bool) {
 		if e.name != name {
 			continue
 		}
-		url, file := core.PluginIcon(name)
-		pn := core.Panel{Color: core.ColorInfo, Title: e.help.Title, Line: e.help.Line, Icon: url, IconFile: file,
-			Body: []discordgo.MessageComponent{core.Text(e.help.About)}}
+		url, file := core.PluginUpload(name)
+		pn := core.Panel{Color: core.ColorInfo, Title: e.help.Title, Line: e.help.Line, Icon: url, IconUpload: file,
+			Parts: []discord.ContainerSubComponent{ui.Text(e.help.About)}}
 		if g := p.grid(name); g != "" {
-			pn.Body = append(pn.Body, core.Text(g))
+			pn.Parts = append(pn.Parts, ui.Text(g))
 		} else {
-			pn.Body = append(pn.Body, core.Text("-# no commands: it works on its own"))
+			pn.Parts = append(pn.Parts, ui.Text("-# no commands: it works on its own"))
 		}
 		if admin && !fixed[name] {
-			state, b := "**on** in this server", core.Button("Switch off", switchPrefix+"off:"+name, discordgo.DangerButton, false)
+			state, b := "**on** in this server", ui.Button("Switch off", switchPrefix+"off:"+name, discord.ButtonStyleDanger, false)
 			if !p.toggles.PluginEnabled(guildID, name) {
-				state, b = "**off** in this server", core.Button("Switch on", switchPrefix+"on:"+name, discordgo.SuccessButton, false)
+				state, b = "**off** in this server", ui.Button("Switch on", switchPrefix+"on:"+name, discord.ButtonStyleSuccess, false)
 			}
-			pn.Body = append(pn.Body, core.Gap(), core.Switch(state+"\n-# off answers nobody here and stops its scheduled work; other servers keep it", b))
+			pn.Parts = append(pn.Parts, ui.Gap(), ui.Switch(state+"\n-# off answers nobody here and stops its scheduled work; other servers keep it", b))
 		}
-		pn.Body = append(pn.Body, core.Gap(), core.Row(menu(es, name)),
-			core.Row(core.Button("◂ Index", viewPrefix+"index", discordgo.SecondaryButton, false)))
+		pn.Parts = append(pn.Parts, ui.Gap(), ui.Row(menu(es, name)),
+			ui.Row(ui.Button("◂ Index", viewPrefix+"index", discord.ButtonStyleSecondary, false)))
 		return pn, true
 	}
 	return core.Panel{}, false
 }
 
-func menu(es []entry, current string) discordgo.SelectMenu {
-	opts := make([]discordgo.SelectMenuOption, 0, len(es))
+func menu(es []entry, current string) discord.StringSelectMenuComponent {
+	opts := make([]discord.StringSelectMenuOption, 0, len(es))
 	for _, e := range es {
-		opts = append(opts, discordgo.SelectMenuOption{
+		opts = append(opts, discord.StringSelectMenuOption{
 			Label: e.help.Title, Value: e.name, Description: clip(e.help.Line, 100),
-			Emoji: core.PluginComponentEmoji(e.name), Default: e.name == current,
+			Emoji: core.PluginOptionEmoji(e.name), Default: e.name == current,
 		})
 	}
-	return core.StringSelect(viewPrefix+"page", "Pick a page", opts, false, false)
+	return ui.StringSelect(viewPrefix+"page", "Pick a page", opts, false, false)
 }
 
 // handleSwitch turns a plugin on or off for this guild, behind the same lock
 // as /config's plugins page and audited the same way. The name came from the
 // member's client, so it is checked against what is really registered.
-func (p *Plugin) handleSwitch(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleSwitch(ctx context.Context, ix *core.Ix, customID string) {
 	verb, name, _ := strings.Cut(strings.TrimPrefix(customID, switchPrefix), ":")
 	known := false
 	for _, pl := range p.plugins() {
@@ -261,29 +257,29 @@ func (p *Plugin) handleSwitch(ctx context.Context, s *discordgo.Session, i *disc
 	case !known || fixed[name]:
 		note = "✗ That can't be switched here."
 	case verb == "on":
-		if err := p.toggles.EnablePlugin(ctx, i.GuildID, name); err != nil {
+		if err := p.toggles.EnablePlugin(ctx, ix.GuildID, name); err != nil {
 			note = "✗ Couldn't switch it on: " + err.Error()
 			break
 		}
-		p.record(ctx, i, "config.plugin_enabled", name)
+		p.record(ctx, ix, "config.plugin_enabled", name)
 		note = "✓ On here again."
 	default:
-		if err := p.toggles.DisablePlugin(ctx, i.GuildID, name); err != nil {
+		if err := p.toggles.DisablePlugin(ctx, ix.GuildID, name); err != nil {
 			note = "✗ Couldn't switch it off: " + err.Error()
 			break
 		}
-		p.record(ctx, i, "config.plugin_disabled", name)
+		p.record(ctx, ix, "config.plugin_disabled", name)
 		note = "✓ Off here. Nobody, admins included, can use it until it's switched back on."
 	}
-	p.show(s, i, name, note)
+	p.show(ix, name, note)
 }
 
-func (p *Plugin) record(ctx context.Context, i *discordgo.InteractionCreate, action, name string) {
+func (p *Plugin) record(ctx context.Context, ix *core.Ix, action, name string) {
 	actor := ""
-	if i.Member != nil && i.Member.User != nil {
-		actor = i.Member.User.ID
+	if ix.Member() != nil {
+		actor = ix.UserID
 	}
-	if err := p.audit.Record(ctx, i.GuildID, actor, action, "", name); err != nil {
+	if err := p.audit.Record(ctx, ix.GuildID, actor, action, "", name); err != nil {
 		p.log.Error("help: audit switch", "err", err)
 	}
 }

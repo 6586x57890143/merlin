@@ -56,7 +56,8 @@ func (f fake) Help() core.Help {
 	return core.Help{Title: strings.ToUpper(f.name[:1]) + f.name[1:], Line: "does " + f.name, About: "about " + f.name}
 }
 
-const boss = "boss"
+// boss is the bootstrap identity; member is anybody else.
+const boss, member = "900", "11"
 
 func setup(t *testing.T) (*Plugin, *toggles, *audit) {
 	t.Helper()
@@ -84,24 +85,7 @@ func setup(t *testing.T) (*Plugin, *toggles, *audit) {
 	return p, tg, au
 }
 
-func text(pn core.Panel) string {
-	var b strings.Builder
-	var walk func([]discordgo.MessageComponent)
-	walk = func(cs []discordgo.MessageComponent) {
-		for _, c := range cs {
-			switch v := c.(type) {
-			case discordgo.Container:
-				walk(v.Components)
-			case discordgo.Section:
-				walk(v.Components)
-			case discordgo.TextDisplay:
-				b.WriteString(v.Content + "\n")
-			}
-		}
-	}
-	walk(pn.Components())
-	return b.String()
-}
+func text(pn core.Panel) string { return paneltest.IxTexts(pn) }
 
 // A plugin switched off here is listed to its admins, marked, and hidden
 // from everyone else; a posted guide is read by everyone, so it lists only
@@ -134,15 +118,15 @@ func TestPageShowsWhoMayRunEachCommand(t *testing.T) {
 			t.Errorf("page missing %q:\n%s", want, got)
 		}
 	}
-	if _, ok := paneltest.Buttons(pn)[switchPrefix+"off:rotation"]; ok {
+	if _, ok := paneltest.IxButtons(pn)[switchPrefix+"off:rotation"]; ok {
 		t.Error("a member was offered the switch")
 	}
 	pn, _ = p.page("g1", "rotation", true)
-	if _, ok := paneltest.Buttons(pn)[switchPrefix+"off:rotation"]; !ok {
+	if _, ok := paneltest.IxButtons(pn)[switchPrefix+"off:rotation"]; !ok {
 		t.Error("an admin was not offered the switch")
 	}
 	pn, _ = p.page("g1", "adminconfig", true)
-	if _, ok := paneltest.Buttons(pn)[switchPrefix+"off:adminconfig"]; ok {
+	if _, ok := paneltest.IxButtons(pn)[switchPrefix+"off:adminconfig"]; ok {
 		t.Error("adminconfig can be switched off from help")
 	}
 	if _, ok := p.page("g1", "contest", false); ok {
@@ -154,15 +138,13 @@ func TestPageShowsWhoMayRunEachCommand(t *testing.T) {
 // changes the posted one under everybody else.
 func TestAPostedGuideAnswersPrivately(t *testing.T) {
 	p, _, _ := setup(t)
-	s, wire := paneltest.Session()
-	i := paneltest.Click("member", viewPrefix+"page", &discordgo.Message{}, "rotation")
-	p.handleView(context.Background(), s, i, viewPrefix+"page")
+	ix, wire := paneltest.IxPublicClick(t, member, viewPrefix+"page", nil, "rotation")
+	p.handleView(context.Background(), ix, viewPrefix+"page")
 	if !strings.Contains(wire.All(), `"type":4`) || !strings.Contains(wire.All(), `"flags":32832`) {
 		t.Errorf("posted guide was not answered with a private copy:\n%.300s", wire.All())
 	}
-	s, wire = paneltest.Session()
-	i = paneltest.Click("member", viewPrefix+"index", &discordgo.Message{Flags: discordgo.MessageFlagsEphemeral})
-	p.handleView(context.Background(), s, i, viewPrefix+"index")
+	ix, wire = paneltest.IxClick(t, member, viewPrefix+"index", nil)
+	p.handleView(context.Background(), ix, viewPrefix+"index")
 	if !strings.Contains(wire.All(), `"type":7`) {
 		t.Errorf("a private guide was not turned in place:\n%.300s", wire.All())
 	}
@@ -171,8 +153,8 @@ func TestAPostedGuideAnswersPrivately(t *testing.T) {
 func TestSwitchIsAuditedAndGuarded(t *testing.T) {
 	p, tg, au := setup(t)
 	for _, id := range []string{"off:rotation", "on:contest", "off:adminconfig", "off:help", "off:nonesuch"} {
-		s, wire := paneltest.Session()
-		p.handleSwitch(context.Background(), s, paneltest.Click(boss, switchPrefix+id, nil), switchPrefix+id)
+		ix, wire := paneltest.IxClick(t, boss, switchPrefix+id, nil)
+		p.handleSwitch(context.Background(), ix, switchPrefix+id)
 		if !wire.Answered() {
 			t.Errorf("%s left unanswered", id)
 		}
@@ -187,24 +169,23 @@ func TestSwitchIsAuditedAndGuarded(t *testing.T) {
 
 func TestHelpCommand(t *testing.T) {
 	p, _, _ := setup(t)
-	cmd := func(user string, post bool) *discordgo.InteractionCreate {
-		return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-			ID: "i", Token: "t", GuildID: "g1", Type: discordgo.InteractionApplicationCommand,
-			Member: &discordgo.Member{User: &discordgo.User{ID: user}},
-			Data: discordgo.ApplicationCommandInteractionData{Name: "help", Options: []*discordgo.ApplicationCommandInteractionDataOption{
-				{Name: "post", Type: discordgo.ApplicationCommandOptionBoolean, Value: post},
-			}},
-		}}
+	post := func(p map[string]any) {
+		p["data"].(map[string]any)["options"] = []any{map[string]any{"name": "post", "type": 5, "value": true}}
 	}
-	s, wire := paneltest.Session()
-	p.handleHelp(context.Background(), s, cmd("member", true))
+	ix, wire := paneltest.IxCommand(t, member, "help", post)
+	p.handleHelp(context.Background(), ix)
 	if !strings.Contains(wire.All(), "only this server") {
 		t.Error("a member posted the guide")
 	}
-	s, wire = paneltest.Session()
-	p.handleHelp(context.Background(), s, cmd(boss, true))
-	if !strings.Contains(wire.All(), `"flags":32768`) {
+	ix, wire = paneltest.IxCommand(t, boss, "help", post)
+	p.handleHelp(context.Background(), ix)
+	if !strings.Contains(wire.All(), `"flags":32768`) || strings.Contains(wire.All(), `"flags":32832`) {
 		t.Errorf("a posted guide must not be ephemeral:\n%.300s", wire.All())
+	}
+	ix, wire = paneltest.IxCommand(t, member, "help", nil)
+	p.handleHelp(context.Background(), ix)
+	if !strings.Contains(wire.All(), `"flags":32832`) {
+		t.Errorf("/help on its own was not private:\n%.300s", wire.All())
 	}
 	if p.Help().Title != "Help" {
 		t.Error("help has no page of its own")

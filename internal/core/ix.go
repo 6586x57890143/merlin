@@ -186,6 +186,22 @@ func (ix *Ix) RespondPanel(p Panel) error {
 	})
 }
 
+// RespondPanelPublic posts p in the channel for everyone, for the one
+// surface meant to be read by the whole server (/help post).
+func (ix *Ix) RespondPanelPublic(p Panel) error {
+	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
+		Components: p.Layout(), Files: p.Uploads(), Flags: discord.MessageFlagIsComponentsV2, AllowedMentions: noPings(),
+	})
+}
+
+// OnPrivateMessage is whether a click came from a message only the clicker
+// can see. A click on a public one is answered with a private copy rather
+// than by redrawing what everyone sees.
+func (ix *Ix) OnPrivateMessage() bool {
+	c, ok := ix.I.(discord.ComponentInteraction)
+	return ok && c.Message.Flags.Has(discord.MessageFlagEphemeral)
+}
+
 func (ix *Ix) UpdatePanel(p Panel) error {
 	c, flags := p.Layout(), discord.MessageFlagIsComponentsV2
 	return ix.respond(discord.InteractionResponseTypeUpdateMessage, discord.MessageUpdate{

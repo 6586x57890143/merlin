@@ -2,9 +2,12 @@ package paneltest
 
 import (
 	"encoding/json"
+	"iter"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -79,8 +82,25 @@ func IxPick(t testing.TB, user, customID string, pn *core.Panel, values ...strin
 }
 
 // IxComponent is a component interaction of Discord's componentType (2 a
-// button, 3 a string select, 5 a user, 6 a role, 8 a channel select).
+// button, 3 a string select, 5 a user, 6 a role, 8 a channel select) on a
+// private message.
 func IxComponent(t testing.TB, user, customID string, componentType int, pn *core.Panel, values ...string) (*core.Ix, *Wire) {
+	t.Helper()
+	return IxComponentOn(t, user, customID, componentType, 64, pn, values...)
+}
+
+// IxPublicClick is IxClick on a message everyone can see.
+func IxPublicClick(t testing.TB, user, customID string, pn *core.Panel, values ...string) (*core.Ix, *Wire) {
+	t.Helper()
+	componentType := 2
+	if values != nil {
+		componentType = 3
+	}
+	return IxComponentOn(t, user, customID, componentType, 0, pn, values...)
+}
+
+// IxComponentOn is IxComponent on a message with the given flags.
+func IxComponentOn(t testing.TB, user, customID string, componentType, flags int, pn *core.Panel, values ...string) (*core.Ix, *Wire) {
 	t.Helper()
 	data := map[string]any{"custom_id": customID, "component_type": componentType}
 	if values != nil {
@@ -88,7 +108,7 @@ func IxComponent(t testing.TB, user, customID string, componentType int, pn *cor
 	}
 	p := payload(3, user, data)
 	msg := map[string]any{
-		"id": "102", "channel_id": "101", "content": "", "flags": 64,
+		"id": "102", "channel_id": "101", "content": "", "flags": flags,
 		"author": map[string]any{"id": "2", "username": "merlin"},
 	}
 	if pn != nil {
@@ -108,4 +128,63 @@ func IxSubmit(t testing.TB, user, customID string, fields map[string]string) (*c
 		}})
 	}
 	return decode(t, payload(5, user, map[string]any{"custom_id": customID, "components": rows}))
+}
+
+// walkIx calls fn on every component of a panel drawn from Parts, nested
+// ones included.
+func walkIx(pn core.Panel, fn func(discord.Component)) {
+	var walk func(discord.Component)
+	walk = func(c discord.Component) {
+		fn(c)
+		if parent, ok := c.(interface {
+			SubComponents() iter.Seq[discord.Component]
+		}); ok {
+			for sub := range parent.SubComponents() {
+				walk(sub)
+			}
+		}
+	}
+	for _, l := range pn.Layout() {
+		walk(l)
+	}
+}
+
+// IxButtons and IxSelects are Buttons and Selects for a panel drawn from
+// Parts, by CustomID.
+func IxButtons(pn core.Panel) map[string]discord.ButtonComponent {
+	out := map[string]discord.ButtonComponent{}
+	walkIx(pn, func(c discord.Component) {
+		if b, ok := c.(discord.ButtonComponent); ok {
+			out[b.CustomID] = b
+		}
+	})
+	return out
+}
+
+func IxSelects(pn core.Panel) map[string]discord.InteractiveComponent {
+	out := map[string]discord.InteractiveComponent{}
+	walkIx(pn, func(c discord.Component) {
+		switch m := c.(type) {
+		case discord.StringSelectMenuComponent:
+			out[m.CustomID] = m
+		case discord.UserSelectMenuComponent:
+			out[m.CustomID] = m
+		case discord.RoleSelectMenuComponent:
+			out[m.CustomID] = m
+		case discord.ChannelSelectMenuComponent:
+			out[m.CustomID] = m
+		}
+	})
+	return out
+}
+
+// IxTexts is every TextDisplay on a panel drawn from Parts, one per line.
+func IxTexts(pn core.Panel) string {
+	var b strings.Builder
+	walkIx(pn, func(c discord.Component) {
+		if t, ok := c.(discord.TextDisplayComponent); ok {
+			b.WriteString(t.Content + "\n")
+		}
+	})
+	return b.String()
 }

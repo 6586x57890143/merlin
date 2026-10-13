@@ -4,6 +4,7 @@ import (
 	"bytes"
 
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 // The embed builders on disgo's types, for plugins answering through an
@@ -95,4 +96,37 @@ func EmbedUploads(e discord.Embed) []*discord.File {
 		files = append(files, a.upload())
 	}
 	return files
+}
+
+// AvatarUpload is AvatarIcon on disgo's types.
+func AvatarUpload() (string, *discord.File) {
+	return avatarAttachmentURL, asset{avatarAttachmentName, avatarPNG}.upload()
+}
+
+// PluginUpload is PluginIcon on disgo's types: the CDN URL and no file once
+// the emoji are synced, otherwise the PNG and its attachment:// URL.
+func PluginUpload(plugin string) (string, *discord.File) {
+	key := "plugin_" + plugin
+	if r, ok := emojiFor(key); ok {
+		return "https://cdn.discordapp.com/emojis/" + r.id + ".png", nil
+	}
+	png, err := emojiArt.ReadFile("assets/emoji/" + key + ".png")
+	if err != nil {
+		return "", nil
+	}
+	return "attachment://" + key + ".png", asset{key + ".png", png}.upload()
+}
+
+// PluginOptionEmoji is PluginComponentEmoji on disgo's types, nil until the
+// emoji are synced.
+func PluginOptionEmoji(plugin string) *discord.ComponentEmoji {
+	r, ok := emojiFor("plugin_" + plugin)
+	if !ok {
+		return nil
+	}
+	id, err := snowflake.Parse(r.id)
+	if err != nil {
+		return nil
+	}
+	return &discord.ComponentEmoji{ID: id, Name: r.name}
 }
