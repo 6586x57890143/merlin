@@ -20,6 +20,7 @@ go test ./internal/obs -bench . -run x      # what a /perf sample costs
 govulncheck ./...
 
 go test ./... -coverprofile=coverage.out && scripts/coverage-floor.sh coverage.out   # the CI coverage gate
+go test ./internal/... -run x -bench . -benchmem                                  # hot paths: aimod intake and rung 1, statistics, event bus, write guard
 ```
 
 Every package under `internal/plugins/` must hold at least 70% statement coverage (`scripts/coverage-floor.sh`, run by CI). Plugins that predate the floor are pinned in that script at the coverage they had and may only go up; anything new gets the full 70% with no way to opt out but an edit somebody reviews.
