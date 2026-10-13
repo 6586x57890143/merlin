@@ -19,7 +19,6 @@ import (
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
-	"github.com/disgoorg/disgo/gateway"
 	"github.com/disgoorg/snowflake/v2"
 	"github.com/joho/godotenv"
 
@@ -370,8 +369,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// and whenever the bot is added to a new guild later, so this one
 	// handler covers "known at startup" and "joined while running" the same
 	// way, with no restart required for the latter.
-	fromRaw := newLegacy(log)
-	on(fromRaw, gateway.EventTypeGuildCreate, func(gc *discordgo.GuildCreate) {
+	var typed []bot.EventListener
+	guildUp := func(gc *discordgo.GuildCreate) {
 		guildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -440,7 +439,18 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			// "couldn't be read", and the nudge only fires once.
 			adminconfigPlugin.NudgeIfUnconfigured(guildCtx, gc)
 		}
-	})
+	}
+	// Ready is a guild the connection came up with, Join one merlin was
+	// added to, Available one back from an outage: discordgo called all
+	// three GuildCreate, and each needs the same wiring.
+	arrived := func(g discord.GatewayGuild) {
+		guildUp(&discordgo.GuildCreate{Guild: &discordgo.Guild{ID: g.ID.String(), OwnerID: g.OwnerID.String(), Name: g.Name}})
+	}
+	typed = append(typed,
+		bot.NewListenerFunc(func(e *events.GuildReady) { arrived(e.Guild) }),
+		bot.NewListenerFunc(func(e *events.GuildJoin) { arrived(e.Guild) }),
+		bot.NewListenerFunc(func(e *events.GuildAvailable) { arrived(e.Guild) }),
+	)
 
 	// The bot was removed from a guild (or the guild was deleted). Without
 	// this, that guild's rotation and sweep jobs keep ticking against a
@@ -460,7 +470,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// on the one-minute sweep is the whole protection instead of the backstop.
 	if cfg.GuildMembersIntent {
 		log.Info("GUILD_MEMBERS intent requested: jails re-apply the moment an evader rejoins")
-		on(fromRaw, gateway.EventTypeGuildMemberAdd, func(ma *discordgo.GuildMemberAdd) {
+		typed = append(typed, bot.NewListenerFunc(func(e *events.GuildMemberJoin) {
+			ma := &discordgo.GuildMemberAdd{Member: legacy[discordgo.Member](e.Member)}
+			if ma.Member != nil {
+				ma.GuildID = e.GuildID.String()
+			}
 			if ma.Member == nil || ma.User == nil {
 				return
 			}
@@ -472,12 +486,13 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			// for a mod, never a link. Takes the whole member: the avatar
 			// hash, the names and the join time are the signals.
 			rapsheetPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.Member)
-		})
+		}))
 		// Counted, and nothing else: see the note on GuildRoleDelete below for
 		// why roles deliberately has no handler here.
-		on(fromRaw, gateway.EventTypeGuildMemberRemove, func(mr *discordgo.GuildMemberRemove) {
+		typed = append(typed, bot.NewListenerFunc(func(e *events.GuildMemberLeave) {
+			mr := struct{ GuildID string }{e.GuildID.String()}
 			statisticsPlugin.HandleMemberLeave(mr.GuildID)
-		})
+		}))
 
 		// A guild's Onboarding or Membership Screening flow grants a member
 		// its configured roles the moment they complete it, arriving here as
@@ -488,14 +503,17 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// real server access. reapplyEvadedJails' sweep is the backstop for
 		// this too (bounded to one minute), so it still closes even with the
 		// intent off, just not instantly.
-		on(fromRaw, gateway.EventTypeGuildMemberUpdate, func(mu *discordgo.GuildMemberUpdate) {
+		typed = append(typed, bot.NewListenerFunc(func(e *events.GuildMemberUpdate) {
+			mu := &discordgo.GuildMemberUpdate{Member: &discordgo.Member{
+				GuildID: e.GuildID.String(), User: &discordgo.User{ID: e.Member.User.ID.String()}, Roles: ids(e.Member.RoleIDs),
+			}}
 			if mu.Member == nil || mu.User == nil {
 				return
 			}
 			updateCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			rolesPlugin.HandleMemberUpdate(updateCtx, mu.GuildID, mu.User.ID, mu.Roles)
-		})
+		}))
 	} else {
 		log.Warn("GUILD_MEMBERS intent disabled by MERLIN_DISABLE_GUILD_MEMBERS_INTENT: " +
 			"a jailed member who rejoins keeps full access until the next sweep, and roles regranted by " +
@@ -510,11 +528,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// Voice time is booked from channel changes (member, channel, hour;
 	// never a session log). Same map write under the same lock. The state
 	// before is the cache's, which is how a move is told from a mute.
-	typed := []bot.EventListener{
+	typed = append(typed,
 		bot.NewListenerFunc(func(e *events.GuildVoiceStateUpdate) {
 			statisticsPlugin.HandleVoiceState(e.VoiceState, e.OldVoiceState, e.Member)
 		}),
-	}
+	)
 
 	// Message scanning. Registered only when the intent was actually
 	// requested, so the handler's presence always matches reality: without
@@ -538,7 +556,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 
 	// A channel disappearing under a rotation config is otherwise only
 	// noticed as a job that quietly fails for five runs before alerting.
-	on(fromRaw, gateway.EventTypeChannelDelete, func(cd *discordgo.ChannelDelete) {
+	typed = append(typed, bot.NewListenerFunc(func(e *events.GuildChannelDelete) {
+		cd := struct{ GuildID, ID string }{e.GuildID.String(), e.ChannelID.String()}
 		if cd.GuildID == "" {
 			return
 		}
@@ -548,7 +567,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// Drops the cached webhook for that channel, which would otherwise
 		// keep failing every rewrite until the process restarted.
 		aimodPlugin.HandleChannelDeleted(cd.ID)
-	})
+	}))
 
 	// A new forum post in a contest's forum is an entry. This handler is
 	// latency, not correctness: the contest tick re-derives the whole entry
@@ -560,19 +579,29 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// are message-content fields, so it arrives with no privileged intent.
 	// The plugin then reads that one starter message over REST. contest
 	// deliberately does not join aimod on the gateway firehose.
-	on(fromRaw, gateway.EventTypeThreadCreate, func(tc *discordgo.ThreadCreate) {
+	typed = append(typed, bot.NewListenerFunc(func(e *events.ThreadCreate) {
+		ch := legacy[discordgo.Channel](e.Thread)
+		if ch == nil {
+			return
+		}
+		tc := &discordgo.ThreadCreate{Channel: ch, NewlyCreated: e.NewlyCreated}
 		contestPlugin.HandleThreadCreate(session, tc)
-	})
+	}))
 	// Bans, kicks and timeouts done through the Discord client, not through
 	// merlin, so the rapsheet does not lie by omission. Arrives under the
 	// always-on GUILD_MODERATION intent, but only if the bot holds View
 	// Audit Log in the guild; /rapsheet status says when it does not.
-	on(fromRaw, gateway.EventTypeGuildAuditLogEntryCreate, func(e *discordgo.GuildAuditLogEntryCreate) {
+	typed = append(typed, bot.NewListenerFunc(func(ev *events.GuildAuditLogEntryCreate) {
+		entry := legacy[discordgo.AuditLogEntry](ev.AuditLogEntry)
+		if entry == nil {
+			return
+		}
+		e := &discordgo.GuildAuditLogEntryCreate{AuditLogEntry: entry, GuildID: ev.GuildID.String()}
 		botID := session.State.User.ID
 		entryCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		rapsheetPlugin.HandleAuditLogEntry(entryCtx, botID, e)
-	})
+	}))
 
 	// A deleted role is invisible to this bot otherwise, and it leaves two
 	// distinct traces: entries in the guild's settings that name a role
@@ -585,7 +614,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// re-applies the marker if they come back inside their window. Dropping
 	// or flagging it on leave is precisely the evasion bug that was fixed
 	// once already, and evasion_test.go asserts the row survives.
-	on(fromRaw, gateway.EventTypeGuildRoleDelete, func(rd *discordgo.GuildRoleDelete) {
+	typed = append(typed, bot.NewListenerFunc(func(e *events.RoleDelete) {
+		rd := struct{ GuildID, RoleID string }{e.GuildID.String(), e.RoleID.String()}
 		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		rolesPlugin.HandleRoleDeleted(guildCtx, rd.GuildID, rd.RoleID)
@@ -607,30 +637,31 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			// post must not be reported as a failed prune.
 			log.Error("audit role prune", "guild", rd.GuildID, "err", err)
 		}
-	})
+	}))
 
 	// An edited role interests the eternal-role script, which answers an
 	// edit with a fresh copy of the original (latency only: the roles sweep
 	// re-checks every minute regardless), and the join-role script, which
 	// reports an edit to a role every new member is given.
-	on(fromRaw, gateway.EventTypeGuildRoleUpdate, func(ru *discordgo.GuildRoleUpdate) {
+	typed = append(typed, bot.NewListenerFunc(func(e *events.RoleUpdate) {
+		ru := &discordgo.GuildRoleUpdate{GuildRole: &discordgo.GuildRole{GuildID: e.GuildID.String(), Role: legacy[discordgo.Role](e.Role)}}
 		if ru.GuildRole == nil {
 			return
 		}
 		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		rolesPlugin.HandleRoleUpdated(guildCtx, ru.GuildID, ru.Role)
-	})
+	}))
 
-	on(fromRaw, gateway.EventTypeGuildDelete, func(gd *discordgo.GuildDelete) {
-		// Discord sends the same event for "this guild is temporarily
-		// unavailable" (an outage on their side) as for "you were removed",
-		// distinguished only by this flag. Tearing down on an outage would
-		// mean an unrelated Discord incident silently stopped rotations.
-		if gd.Unavailable {
-			log.Warn("guild unavailable, keeping jobs registered", "guild", gd.ID)
-			return
-		}
+	// Discord sends the same event for "this guild is temporarily
+	// unavailable" (an outage on their side) as for "you were removed";
+	// disgo tells them apart. Tearing down on an outage would mean an
+	// unrelated Discord incident silently stopped rotations.
+	typed = append(typed, bot.NewListenerFunc(func(e *events.GuildUnavailable) {
+		log.Warn("guild unavailable, keeping jobs registered", "guild", e.GuildID)
+	}))
+	typed = append(typed, bot.NewListenerFunc(func(e *events.GuildLeave) {
+		gd := struct{ ID string }{e.GuildID.String()}
 		dropped := sched.UnregisterGuild(gd.ID)
 		rotationPlugin.ForgetGuild(gd.ID)
 		rolesPlugin.ForgetGuild(gd.ID)
@@ -640,7 +671,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		statisticsPlugin.ForgetGuild(gd.ID)
 		settingsStore.Forget(gd.ID)
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
-	})
+	}))
 
 	typed = append(typed,
 		bot.NewListenerFunc(func(e *events.MessageCreate) {
@@ -656,7 +687,6 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	)
 	gw.EventManager.AddEventListeners(append(typed,
 		bot.NewListenerFunc(commands.OnInteraction),
-		bot.NewListenerFunc(fromRaw.OnRaw),
 	)...)
 	if err := core.OpenGateway(ctx, gw); err != nil {
 		return err

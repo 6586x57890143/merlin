@@ -2,50 +2,32 @@ package main
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 
-	"github.com/disgoorg/disgo/events"
-	"github.com/disgoorg/disgo/gateway"
+	"github.com/disgoorg/snowflake/v2"
 )
 
-// legacy routes the gateway events whose handlers still take discordgo's
-// types. Each is Discord's own JSON decoded into the struct discordgo
-// decoded it into, so those handlers see exactly what they saw when
-// discordgo held the connection. One raw listener reads each payload once
-// and runs its handlers in order.
-type legacy struct {
-	log      *slog.Logger
-	handlers map[gateway.EventType][]func([]byte)
-}
-
-func newLegacy(log *slog.Logger) *legacy {
-	return &legacy{log: log, handlers: map[gateway.EventType][]func([]byte){}}
-}
-
-// on registers f for event t, decoded into T.
-func on[T any](l *legacy, t gateway.EventType, f func(*T)) {
-	l.handlers[t] = append(l.handlers[t], func(raw []byte) {
-		var v T
-		if err := json.Unmarshal(raw, &v); err != nil {
-			l.log.Error("gateway event not decoded", "event", t, "err", err)
-			return
-		}
-		f(&v)
-	})
-}
-
-func (l *legacy) OnRaw(e *events.Raw) {
-	hs := l.handlers[e.EventType]
-	if len(hs) == 0 {
-		return
-	}
-	raw, err := io.ReadAll(e.Payload)
+// legacy is v in discordgo's type T, through JSON, for a plugin entry point
+// that still takes discordgo's types. Only for events too rare for the
+// round trip to matter (a member joining, an audit-log entry, a role edit, a
+// new thread); each goes when its plugin moves to disgo. nil if v does not
+// convert.
+func legacy[T any](v any) *T {
+	b, err := json.Marshal(v)
 	if err != nil {
-		l.log.Error("gateway event not read", "event", e.EventType, "err", err)
-		return
+		return nil
 	}
-	for _, h := range hs {
-		h(raw)
+	var t T
+	if err := json.Unmarshal(b, &t); err != nil {
+		return nil
 	}
+	return &t
+}
+
+// ids is snowflakes as merlin's string IDs.
+func ids(in []snowflake.ID) []string {
+	out := make([]string, len(in))
+	for i, id := range in {
+		out[i] = id.String()
+	}
+	return out
 }
