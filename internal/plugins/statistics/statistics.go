@@ -39,9 +39,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/omit"
 	snow "github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -157,102 +157,89 @@ func (p *Plugin) Init(deps core.Deps) error {
 
 // command is the /statistics definition, kept out of Init so the permission
 // decision in it can be pinned by a test.
-func command() *discordgo.ApplicationCommand {
-	minTop := 1.0
-	// Discord's own default_member_permissions is left unset everywhere else
-	// in this bot (spec.MD §4a), so the internal checks are the sole gate and
-	// cannot be bypassed by a mismatched permission bit. That reasoning is
-	// about a command being *reachable*; this one is about it being *listed*.
-	//
-	// Every registered command shows in every member's picker regardless of
-	// who may run it, so without this the whole server sees that somebody can
-	// ask merlin who was talking and when. That is a fact about the server's
-	// surveillance surface, published to the people it is about, for a command
-	// none of them can run. Zero means nobody but a holder of Discord's
-	// Administrator bit, which is a floor under the operator check rather than
-	// a replacement for it: the handlers still refuse everybody but the
-	// bootstrap identity where it matters, so this cannot widen anything.
-	//
-	// It can narrow, though, and that is the trade. An operator who is not an
-	// administrator of the guild loses the command from their own picker; the
-	// way back is the guild's Integrations settings, where an owner can grant
-	// an explicit overwrite, which is exactly what a zero here leaves room for.
-	adminOnly := int64(0)
-	window := []*discordgo.ApplicationCommandOption{
-		{
-			Type:        discordgo.ApplicationCommandOptionString,
+func command() discord.SlashCommandCreate {
+	window := []discord.ApplicationCommandOption{
+		discord.ApplicationCommandOptionString{
 			Name:        "from",
 			Description: "Window start, UTC: 2026-09-01, 2026-09-01 14:00, or an RFC3339 timestamp",
 			Required:    true,
 		},
-		{
-			Type:        discordgo.ApplicationCommandOptionString,
+		discord.ApplicationCommandOptionString{
 			Name:        "to",
 			Description: "Window end, same formats. Defaults to now",
 		},
 	}
-	return &discordgo.ApplicationCommand{
-		Name:                     "statistics",
-		Description:              "Activity and membership statistics for this server",
-		DefaultMemberPermissions: &adminOnly,
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+	return discord.SlashCommandCreate{
+		Name:        "statistics",
+		Description: "Activity and membership statistics for this server",
+		// Discord's own default_member_permissions is left unset everywhere else
+		// in this bot (spec.MD §4a), so the internal checks are the sole gate and
+		// cannot be bypassed by a mismatched permission bit. That reasoning is
+		// about a command being *reachable*; this one is about it being *listed*.
+		//
+		// Every registered command shows in every member's picker regardless of
+		// who may run it, so without this the whole server sees that somebody can
+		// ask merlin who was talking and when. That is a fact about the server's
+		// surveillance surface, published to the people it is about, for a command
+		// none of them can run. Zero means nobody but a holder of Discord's
+		// Administrator bit, which is a floor under the operator check rather than
+		// a replacement for it: the handlers still refuse everybody but the
+		// bootstrap identity where it matters, so this cannot widen anything.
+		//
+		// It can narrow, though, and that is the trade. An operator who is not an
+		// administrator of the guild loses the command from their own picker; the
+		// way back is the guild's Integrations settings, where an owner can grant
+		// an explicit overwrite, which is exactly what a zero here leaves room for.
+		DefaultMemberPermissions: omit.NewPtr(discord.Permissions(0)),
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "report",
 				Description: "Who was talking in a window of time",
-				Options: append(append([]*discordgo.ApplicationCommandOption{}, window...),
-					&discordgo.ApplicationCommandOption{
+				Options: append(append([]discord.ApplicationCommandOption{}, window...),
+					discord.ApplicationCommandOptionChannel{
 						// A native Channel option rather than a raw ID string
 						// (spec.MD §4a), which also gets the picker for free.
-						Type:        discordgo.ApplicationCommandOptionChannel,
 						Name:        "channel",
 						Description: "Only look at this channel",
-						ChannelTypes: []discordgo.ChannelType{
-							discordgo.ChannelTypeGuildText,
-							discordgo.ChannelTypeGuildNews,
-							discordgo.ChannelTypeGuildPublicThread,
-							discordgo.ChannelTypeGuildPrivateThread,
+						ChannelTypes: []discord.ChannelType{
+							discord.ChannelTypeGuildText,
+							discord.ChannelTypeGuildNews,
+							discord.ChannelTypeGuildPublicThread,
+							discord.ChannelTypeGuildPrivateThread,
 						},
 					},
-					&discordgo.ApplicationCommandOption{
-						Type:        discordgo.ApplicationCommandOptionInteger,
+					discord.ApplicationCommandOptionInt{
 						Name:        "top",
 						Description: fmt.Sprintf("How many people to show, 1 to %d. Default %d", maxTop, defaultTop),
-						MinValue:    &minTop,
-						MaxValue:    maxTop,
+						MinValue:    omit.Ptr(1),
+						MaxValue:    omit.Ptr(maxTop),
 					},
-					&discordgo.ApplicationCommandOption{
-						Type:        discordgo.ApplicationCommandOptionBoolean,
+					discord.ApplicationCommandOptionBool{
 						Name:        "share",
 						Description: "Post the report in this channel instead of answering only you",
 					},
-					&discordgo.ApplicationCommandOption{
-						Type:        discordgo.ApplicationCommandOptionBoolean,
+					discord.ApplicationCommandOptionBool{
 						Name:        "show-channels",
 						Description: "Name the channels each person posted or sat in. Off by default, so private channels stay off it",
 					},
 				),
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "channels",
 				Description: "Which channels carried the traffic in a window of time",
 				Options:     window,
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "members",
 				Description: "Joins and departures over a window of time",
 				Options:     window,
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "backfill",
 				Description: "Count history from before merlin was counting, from this date",
 				Options:     window[:1],
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "status",
 				Description: "What is being counted, since when, and for how long it is kept (and change that)",
 			},

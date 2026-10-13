@@ -2,13 +2,9 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"maps"
-	"reflect"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
 )
@@ -36,93 +32,6 @@ func (r *CommandRouter) PurgeGlobalCommands(appID snowflake.ID) error {
 		return fmt.Errorf("purge global commands: %w", err)
 	}
 	return nil
-}
-
-// creates is every command as disgo sends it, converted once at Finalize.
-// The plugins still define theirs on discordgo's types; a definition whose
-// JSON changes on the way is refused at boot rather than registered wrong.
-func creates(cmds []*discordgo.ApplicationCommand) ([]discord.ApplicationCommandCreate, error) {
-	out := make([]discord.ApplicationCommandCreate, 0, len(cmds))
-	for _, cmd := range cmds {
-		// discordgo leaves out a slash command's type, 1, as its zero.
-		typed := *cmd
-		if typed.Type == 0 {
-			typed.Type = discordgo.ChatApplicationCommand
-		}
-		raw, err := json.Marshal(typed)
-		if err != nil {
-			return nil, fmt.Errorf("core: command %q: %w", cmd.Name, err)
-		}
-		// Options are interfaces in disgo, read through its own decoder.
-		var in struct {
-			discord.SlashCommandCreate
-			Options []discord.UnmarshalApplicationCommandOption `json:"options"`
-		}
-		if err := json.Unmarshal(raw, &in); err != nil {
-			return nil, fmt.Errorf("core: command %q does not read as a slash command: %w", cmd.Name, err)
-		}
-		c := in.SlashCommandCreate
-		for _, o := range in.Options {
-			c.Options = append(c.Options, o.ApplicationCommandOption)
-		}
-		back, err := json.Marshal(c)
-		if err != nil {
-			return nil, fmt.Errorf("core: command %q: %w", cmd.Name, err)
-		}
-		if !sameJSON(raw, back) {
-			return nil, fmt.Errorf("core: command %q changes on its way to disgo:\n%s\n%s", cmd.Name, raw, back)
-		}
-		out = append(out, c)
-	}
-	return out, nil
-}
-
-// sameJSON is whether a and b say the same, counting an absent field and a
-// zero one alike: each library omits a different set of zeros.
-func sameJSON(a, b []byte) bool {
-	var x, y any
-	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
-		return false
-	}
-	return reflect.DeepEqual(meaningful(x), meaningful(y))
-}
-
-func meaningful(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		out := map[string]any{}
-		for k, e := range maps.All(t) {
-			if e = meaningful(e); e != nil {
-				out[k] = e
-			}
-		}
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	case []any:
-		out := make([]any, 0, len(t))
-		for _, e := range t {
-			out = append(out, meaningful(e))
-		}
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	case bool:
-		if !t {
-			return nil
-		}
-	case string:
-		if t == "" {
-			return nil
-		}
-	case float64:
-		if t == 0 {
-			return nil
-		}
-	}
-	return v
 }
 
 // respondBy is Discord's 3s window for an interaction's first response,

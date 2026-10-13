@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -59,35 +59,34 @@ const (
 var pluginScripts = []string{scriptEternalRole, scriptVacation, scriptJoinRole}
 
 func (p *Plugin) registerCommands() {
-	userOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
-		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionUser, Name: name, Description: desc, Required: true}
+	userOpt := func(name, desc string) discord.ApplicationCommandOption {
+		return discord.ApplicationCommandOptionUser{Name: name, Description: desc, Required: true}
 	}
-	optionalUserOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
-		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionUser, Name: name, Description: desc}
+	optionalUserOpt := func(name, desc string) discord.ApplicationCommandOption {
+		return discord.ApplicationCommandOptionUser{Name: name, Description: desc}
 	}
-	roleOpt := func(name, desc string) *discordgo.ApplicationCommandOption {
-		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionRole, Name: name, Description: desc, Required: true}
+	roleOpt := func(name, desc string) discord.ApplicationCommandOption {
+		return discord.ApplicationCommandOptionRole{Name: name, Description: desc, Required: true}
 	}
-	durationOpt := func(name, desc string, required bool) *discordgo.ApplicationCommandOption {
-		return &discordgo.ApplicationCommandOption{Type: discordgo.ApplicationCommandOptionString, Name: name, Description: desc, Required: required}
+	durationOpt := func(name, desc string, required bool) discord.ApplicationCommandOption {
+		return discord.ApplicationCommandOptionString{Name: name, Description: desc, Required: required}
 	}
-	reasonOpt := &discordgo.ApplicationCommandOption{
-		Type: discordgo.ApplicationCommandOptionString, Name: "reason", Description: "Why (recorded in the audit log)", Required: true,
+	reasonOpt := discord.ApplicationCommandOptionString{
+		Name: "reason", Description: "Why (recorded in the audit log)", Required: true,
 	}
 
-	cmd := &discordgo.ApplicationCommand{
+	cmd := discord.SlashCommandCreate{
 		Name:        "roles",
 		Description: "Temporarily manage a member's roles, with full audit logging (spec.MD §4)",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "jail",
 				Description: "Strip up to 5 members' roles and channel access for a period, then automatically restore them",
 				// Discord requires required options ahead of optional ones,
 				// so the extra member slots follow duration and reason. They are plain
 				// optional User pickers rather than a free-text list of IDs.
 				// See collectJailUserIDs.
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOption{
 					userOpt("user", "The member to jail; paste an ID to sentence an account that isn't here yet"),
 					durationOpt("duration", "How long before automatic release: \"3d\", \"24h\", \"90m\", or \"forever\"", true),
 					reasonOpt,
@@ -97,11 +96,10 @@ func (p *Plugin) registerCommands() {
 					optionalUserOpt("user5", "A fifth member"),
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "vacation",
 				Description: "vacation script: strip up to 5 members to the island's role for a period, then restore them",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOption{
 					userOpt("user", "The member to send on vacation; paste an ID for an account that isn't here yet"),
 					durationOpt("duration", "How long before they come back: \"3d\", \"24h\", \"90m\", or \"forever\"", true),
 					reasonOpt,
@@ -111,50 +109,44 @@ func (p *Plugin) registerCommands() {
 					optionalUserOpt("user5", "A fifth member"),
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "jail-role",
 				Description: "Jail everyone holding one role, for shutting down a raid",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOption{
 					roleOpt("role", "Every member holding this role will be jailed"),
 					durationOpt("duration", "How long before automatic release: \"3d\", \"24h\", \"90m\", or \"forever\"", true),
 					reasonOpt,
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "release",
 				Description: "Release a jailed member early, restoring their prior roles",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "The jailed member to release")},
+				Options:     []discord.ApplicationCommandOption{userOpt("user", "The jailed member to release")},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "grant",
 				Description: "Grant a member one role, optionally for a limited time",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOption{
 					userOpt("user", "The member to grant a role to"),
 					roleOpt("role", "The role to grant"),
 					reasonOpt,
 					durationOpt("duration", "How long before automatic revocation. Needs a unit: \"3d\", \"24h\", \"90m\". Omit for permanent.", false),
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "revoke",
 				Description: "Revoke a role merlin previously granted",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOption{
 					userOpt("user", "The member to revoke a granted role from"),
 					roleOpt("role", "The granted role to revoke"),
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "list",
 				Description: "Show a member's active jail (if any) and tracked role grants",
-				Options:     []*discordgo.ApplicationCommandOption{userOpt("user", "The member to inspect")},
+				Options:     []discord.ApplicationCommandOption{userOpt("user", "The member to inspect")},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "settings",
 				Description: "Jail and vacation channels, new members' roles, and scripts, on one panel",
 			},

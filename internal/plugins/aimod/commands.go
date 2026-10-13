@@ -1,9 +1,8 @@
 package aimod
 
 import (
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // Action namespaces for the permission whitelist (core.PermSpec.Action).
@@ -24,106 +23,96 @@ const (
 
 func (p *Plugin) registerCommands() {
 
-	messageOpt := &discordgo.ApplicationCommandOption{
-		Type: discordgo.ApplicationCommandOptionString, Name: "message_id",
+	messageOpt := discord.ApplicationCommandOptionString{
+		Name:        "message_id",
 		Description: "The message's ID (Developer Mode: right-click the message, Copy Message ID)", Required: true,
 	}
 
-	cmd := &discordgo.ApplicationCommand{
+	cmd := discord.SlashCommandCreate{
 		Name:        "aimod",
 		Description: "AI moderation against Discord's Community Guidelines",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "settings",
 				Description: "Mode, key, budget, exemptions, policy, models, word list and calibration, on one panel",
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "status",
 				Description: "What this server is scanning, what it has spent today, and whether anything is wrong",
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "why",
 				Description: "Show why a message was rewritten, using the code under it",
-				Options: []*discordgo.ApplicationCommandOption{{
-					Type: discordgo.ApplicationCommandOptionString, Name: "id",
+				Options: []discord.ApplicationCommandOption{discord.ApplicationCommandOptionString{
+					Name:        "id",
 					Description: "The code under a rewritten message (mods may also give a message ID)", Required: true,
 				}},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "undo",
 				Description: "Reverse a false positive: repost the original message and mark the incident undone",
-				Options:     []*discordgo.ApplicationCommandOption{messageOpt},
+				Options:     []discord.ApplicationCommandOption{messageOpt},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "moderate-me",
 				Description: "Ask to be jailed by the automatic sanctions like anyone else, even if you are staff",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled",
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionBool{
+						Name:        "enabled",
 						Description: "True to opt in, false to go back to the default", Required: true,
 					},
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "opt-out",
 				Description: "Ask not to have your messages read by the AI filter (if this server allows it)",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled",
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionBool{
+						Name:        "enabled",
 						Description: "True to opt out, false to be covered again", Required: true,
 					},
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			discord.ApplicationCommandOptionSubCommand{
 				Name:        "moderate-user",
 				Description: "Operator only: put somebody else on the automatic-sanction list",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type: discordgo.ApplicationCommandOptionUser, Name: "user",
+				Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionUser{
+						Name:        "user",
 						Description: "The member", Required: true,
 					},
-					{
-						Type: discordgo.ApplicationCommandOptionBoolean, Name: "enabled",
+					discord.ApplicationCommandOptionBool{
+						Name:        "enabled",
 						Description: "True to opt them in, false to remove them", Required: true,
 					},
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+			discord.ApplicationCommandOptionSubCommandGroup{
 				Name:        "models",
 				Description: "Which models each pass uses, what they cost, and what that projects to per day",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOptionSubCommand{
 					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "show",
 						Description: "Current models with live prices, this server's spend, and a projected daily cost",
-						Options: []*discordgo.ApplicationCommandOption{
-							{
-								Type: discordgo.ApplicationCommandOptionInteger, Name: "messages_per_day",
+						Options: []discord.ApplicationCommandOption{
+							discord.ApplicationCommandOptionInt{
+								Name:        "messages_per_day",
 								Description: "Project against this volume instead of this server's measured traffic",
 							},
 						},
 					},
 					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "compare",
 						Description: "Price a model against this server's measured traffic before switching to it",
-						Options: []*discordgo.ApplicationCommandOption{
-							{
-								Type: discordgo.ApplicationCommandOptionString, Name: "model",
+						Options: []discord.ApplicationCommandOption{
+							discord.ApplicationCommandOptionString{
+								Name:        "model",
 								Description: "The model to price", Required: true, Autocomplete: true,
 							},
-							{
-								Type: discordgo.ApplicationCommandOptionString, Name: "pass",
+							discord.ApplicationCommandOptionString{
+								Name:        "pass",
 								Description: "Which pass it would run (default: fast)",
-								Choices: []*discordgo.ApplicationCommandOptionChoice{
+								Choices: []discord.ApplicationCommandOptionChoiceString{
 									{Name: "fast", Value: "fast"},
 									{Name: "deep", Value: "deep"},
 								},
@@ -132,42 +121,36 @@ func (p *Plugin) registerCommands() {
 					},
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+			discord.ApplicationCommandOptionSubCommandGroup{
 				Name:        "funding",
 				Description: "The tip jar that pays for the scanning, and how much credit is left",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOptionSubCommand{
 					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "show",
 						Description: "How much scanning credit is left, and where to chip in",
 					},
 					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "set-address",
 						Description: "Point the tip jar at a wallet (server owner only)",
-						Options: []*discordgo.ApplicationCommandOption{
-							{
-								Type: discordgo.ApplicationCommandOptionString, Name: "address",
+						Options: []discord.ApplicationCommandOption{
+							discord.ApplicationCommandOptionString{
+								Name:        "address",
 								Description: "An EVM (0x...), TRON (T...) or Solana wallet address",
 								Required:    true,
 							},
 						},
 					},
 					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "clear",
 						Description: "Remove the tip jar and stop reading its balance",
 					},
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+			discord.ApplicationCommandOptionSubCommandGroup{
 				Name:        "calibrate",
 				Description: "The weekly review that tunes the filter to how this server actually talks",
-				Options: []*discordgo.ApplicationCommandOption{
+				Options: []discord.ApplicationCommandOptionSubCommand{
 					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "show",
 						Description: "What the filter has learned, and anything waiting to be applied",
 					},
