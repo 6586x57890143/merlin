@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 )
 
 // unknownResourceCodeMin/Max bound Discord's "Unknown <thing>" JSON error
@@ -27,6 +28,12 @@ const (
 // retention window, a jailed member never released. Callers must fail and
 // retry on anything this returns false for.
 func IsUnknownResource(err error) bool {
+	if re, ok := errors.AsType[*rest.Error](err); ok {
+		if code := int(re.Code); code >= unknownResourceCodeMin && code <= unknownResourceCodeMax {
+			return true
+		}
+		return re.Code == 0 && re.Response != nil && re.Response.StatusCode == http.StatusNotFound
+	}
 	var restErr *discordgo.RESTError
 	if !errors.As(err, &restErr) {
 		return false
@@ -49,6 +56,9 @@ func IsUnknownResource(err error) bool {
 // target who left and Unknown Role for a deleted role), and a caller that
 // treats them alike acts on the wrong one.
 func HasDiscordErrorCode(err error, code int) bool {
+	if re, ok := errors.AsType[*rest.Error](err); ok {
+		return int(re.Code) == code
+	}
 	var restErr *discordgo.RESTError
 	if !errors.As(err, &restErr) {
 		return false

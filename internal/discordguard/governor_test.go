@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 )
 
 // testClock lets the governor's time-based behavior be exercised without
@@ -194,6 +195,11 @@ func TestPauseDoesNotConsumeRateBudget(t *testing.T) {
 	}
 }
 
+// disgoErr is restErr as disgo's REST client returns it.
+func disgoErr(status, code int) error {
+	return &rest.Error{Response: &http.Response{StatusCode: status}, Code: rest.JSONErrorCode(code)}
+}
+
 func TestIsTransient(t *testing.T) {
 	cases := []struct {
 		name string
@@ -207,6 +213,10 @@ func TestIsTransient(t *testing.T) {
 		{"403 missing permissions", restErr(http.StatusForbidden, 50013), false},
 		{"404 unknown channel", restErr(http.StatusNotFound, 10003), false},
 		{"bare network error", errors.New("dial tcp: connection refused"), true},
+		{"disgo 500", disgoErr(http.StatusInternalServerError, 0), true},
+		{"disgo 429", disgoErr(http.StatusTooManyRequests, 0), true},
+		{"disgo 403 missing permissions", disgoErr(http.StatusForbidden, 50013), false},
+		{"disgo 404 unknown channel", disgoErr(http.StatusNotFound, 10003), false},
 	}
 	for _, tc := range cases {
 		if got := isTransient(tc.err); got != tc.want {
