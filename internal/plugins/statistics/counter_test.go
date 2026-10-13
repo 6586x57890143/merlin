@@ -5,8 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 func newTestPlugin(store *fakeStore, src *fakeSource) *Plugin {
@@ -16,9 +14,9 @@ func newTestPlugin(store *fakeStore, src *fakeSource) *Plugin {
 	return p
 }
 
-func guildMsg(at time.Time, seq int, guild, channel, author, name string) *discordgo.Message {
+func guildMsg(at time.Time, seq int, guild, channel, author, name string) post {
 	m := msgAt(at, seq, author, name)
-	m.GuildID, m.ChannelID = guild, channel
+	m.guildID, m.channelID = guild, channel
 	return m
 }
 
@@ -29,18 +27,17 @@ func TestCounterBucketsByHourAndSkipsNonPeople(t *testing.T) {
 	store := newFakeStore()
 	p := newTestPlugin(store, &fakeSource{})
 
-	p.messageGo(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
-	p.messageGo(guildMsg(windowStart.Add(20*time.Minute), 2, "g1", "c1", "u1", "zoe"))
-	p.messageGo(guildMsg(windowStart.Add(time.Hour), 3, "g1", "c2", "u1", "zoe"))
-	p.messageGo(guildMsg(windowStart, 4, "g1", "c1", "u2", "abe"))
+	p.count1(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
+	p.count1(guildMsg(windowStart.Add(20*time.Minute), 2, "g1", "c1", "u1", "zoe"))
+	p.count1(guildMsg(windowStart.Add(time.Hour), 3, "g1", "c2", "u1", "zoe"))
+	p.count1(guildMsg(windowStart, 4, "g1", "c1", "u2", "abe"))
 	bot := guildMsg(windowStart, 5, "g1", "c1", "bot", "bot")
-	bot.Author.Bot = true
-	p.messageGo(bot)
+	bot.skip = true
+	p.count1(bot)
 	hook := guildMsg(windowStart, 6, "g1", "c1", "u3", "hook")
-	hook.WebhookID = "w"
-	p.messageGo(hook)
-	p.messageGo(msgAt(windowStart, 7, "u4", "dm")) // no guild
-	p.messageGo(nil)
+	hook.skip = true
+	p.count1(hook)
+	p.count1(msgAt(windowStart, 7, "u4", "dm")) // no guild
 
 	p.flush(context.Background())
 
@@ -72,14 +69,14 @@ func TestCounterBucketsByHourAndSkipsNonPeople(t *testing.T) {
 func TestCounterKeepsCountsAcrossAFailedFlush(t *testing.T) {
 	store := newFakeStore()
 	p := newTestPlugin(store, &fakeSource{})
-	p.messageGo(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
+	p.count1(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
 
 	store.addErr = errors.New("db down")
 	p.flush(context.Background())
 	if store.total("g1", "") != 0 {
 		t.Fatal("nothing should have landed")
 	}
-	p.messageGo(guildMsg(windowStart, 2, "g1", "c1", "u1", "zoe"))
+	p.count1(guildMsg(windowStart, 2, "g1", "c1", "u1", "zoe"))
 	store.addErr = nil
 	p.flush(context.Background())
 	if got := store.total("g1", "u1"); got != 2 {
@@ -114,7 +111,7 @@ func TestFlushLoopFlushesOnShutdown(t *testing.T) {
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	p.messageGo(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
+	p.count1(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
 	if err := p.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +151,8 @@ func TestCounterHonoursThePluginGate(t *testing.T) {
 	store := newFakeStore()
 	p := newTestPlugin(store, &fakeSource{})
 	p.gate = fakeGate{"on": true}
-	p.messageGo(guildMsg(windowStart, 1, "on", "c", "u", "u"))
-	p.messageGo(guildMsg(windowStart, 2, "off", "c", "u", "u"))
+	p.count1(guildMsg(windowStart, 1, "on", "c", "u", "u"))
+	p.count1(guildMsg(windowStart, 2, "off", "c", "u", "u"))
 	p.HandleMemberJoin("off")
 	p.flush(context.Background())
 	if store.total("on", "") != 1 || store.total("off", "") != 0 || len(store.members) != 0 {
@@ -163,11 +160,8 @@ func TestCounterHonoursThePluginGate(t *testing.T) {
 	}
 }
 
-func voiceState(guild, user, channel string) *discordgo.VoiceStateUpdate {
-	return &discordgo.VoiceStateUpdate{VoiceState: &discordgo.VoiceState{
-		GuildID: guild, UserID: user, ChannelID: channel,
-		Member: &discordgo.Member{User: &discordgo.User{ID: user, Username: user}},
-	}}
+func voiceState(guild, user, channel string) move {
+	return move{guildID: guild, userID: user, channelID: channel, named: true, name: user}
 }
 
 // TestVoiceIsBookedByTheHour: a sitting is split at hour boundaries into
@@ -180,17 +174,17 @@ func TestVoiceIsBookedByTheHour(t *testing.T) {
 	clock := windowStart.Add(30 * time.Minute) // 14:30
 	p.now = func() time.Time { return clock }
 
-	p.voiceGo(voiceState("g1", "u1", "v1"))
+	p.voice1(voiceState("g1", "u1", "v1"))
 	clock = clock.Add(time.Hour) // 15:30, one hour in v1 across two buckets
 	muted := voiceState("g1", "u1", "v1")
-	muted.SelfMute = true
-	muted.BeforeUpdate = &discordgo.VoiceState{ChannelID: "v1"}
-	p.voiceGo(muted)
-	p.voiceGo(voiceState("g1", "u1", "v2")) // switch rooms
-	clock = clock.Add(10 * time.Minute)     // 15:40
+	was := "v1"
+	muted.before = &was
+	p.voice1(muted)
+	p.voice1(voiceState("g1", "u1", "v2")) // switch rooms
+	clock = clock.Add(10 * time.Minute)    // 15:40
 	p.flush(context.Background())
-	clock = clock.Add(5 * time.Minute)    // 15:45
-	p.voiceGo(voiceState("g1", "u1", "")) // leave
+	clock = clock.Add(5 * time.Minute)   // 15:45
+	p.voice1(voiceState("g1", "u1", "")) // leave
 	clock = clock.Add(time.Hour)
 	p.flush(context.Background())
 
@@ -217,8 +211,8 @@ func TestVoiceIsBookedByTheHour(t *testing.T) {
 	// Bots are not people here either, and a guild that turned the plugin
 	// off is not watched.
 	bot := voiceState("g1", "b1", "v1")
-	bot.Member.User.Bot = true
-	p.voiceGo(bot)
+	bot.bot = true
+	p.voice1(bot)
 	if _, open := p.count.open["g1:b1"]; open {
 		t.Fatal("a bot is on the clock")
 	}
@@ -232,7 +226,7 @@ func TestSyncVoiceSeedsWhoIsAlreadyThere(t *testing.T) {
 	clock := windowStart
 	p.now = func() time.Time { return clock }
 
-	p.voiceGo(voiceState("g1", "u1", "v1"))
+	p.voice1(voiceState("g1", "u1", "v1"))
 	clock = clock.Add(10 * time.Minute)
 	p.syncVoice("g1", [][2]string{
 		{"u1", "v1"},
@@ -264,10 +258,10 @@ func TestVoiceStopsWhenTheGuildTurnsThePluginOff(t *testing.T) {
 	clock := windowStart
 	p.now = func() time.Time { return clock }
 
-	p.voiceGo(voiceState("g1", "u1", "v1"))
+	p.voice1(voiceState("g1", "u1", "v1"))
 	clock = clock.Add(time.Minute)
 	gate["g1"] = false
-	p.voiceGo(voiceState("g1", "u1", "")) // not heard
+	p.voice1(voiceState("g1", "u1", "")) // not heard
 	p.flush(context.Background())
 	clock = clock.Add(time.Hour)
 	p.flush(context.Background())
@@ -287,7 +281,7 @@ func TestVoiceSurvivesAFailedFlush(t *testing.T) {
 	clock := windowStart
 	p.now = func() time.Time { return clock }
 
-	p.voiceGo(voiceState("g1", "u1", "v1"))
+	p.voice1(voiceState("g1", "u1", "v1"))
 	clock = clock.Add(time.Minute)
 	store.addErr = errors.New("down")
 	p.flush(context.Background())

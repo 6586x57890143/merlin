@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
 )
@@ -38,20 +36,26 @@ func run(t *testing.T, actor, sub string, args ...map[string]any) (*core.Ix, *pa
 	})
 }
 
-func strArg(name, v string) map[string]any { return map[string]any{"name": name, "type": 3, "value": v} }
+func strArg(name, v string) map[string]any {
+	return map[string]any{"name": name, "type": 3, "value": v}
+}
 
-func intArg(name string, v int) map[string]any { return map[string]any{"name": name, "type": 4, "value": v} }
+func intArg(name string, v int) map[string]any {
+	return map[string]any{"name": name, "type": 4, "value": v}
+}
 
 // unescape undoes JSON's escaping of < > and &, which every mention carries.
 var unescape = strings.NewReplacer("\\u003c", "<", "\\u003e", ">", "\\u0026", "&")
 
-func said(w *paneltest.Wire, text string) bool { return strings.Contains(unescape.Replace(w.All()), text) }
+func said(w *paneltest.Wire, text string) bool {
+	return strings.Contains(unescape.Replace(w.All()), text)
+}
 
 // seeded is a plugin with a week of counted history for guild.
 func seeded(t *testing.T) (*Plugin, *fakeStore) {
 	t.Helper()
 	store := newFakeStore()
-	p := newTestPlugin(store, &fakeSource{channels: []*discordgo.Channel{textChannel("c1", "general")}, msgs: map[string][]*discordgo.Message{}})
+	p := newTestPlugin(store, &fakeSource{channels: []ChannelSeen{textChannel("c1", "general")}, msgs: map[string][]post{}})
 	p.privilege = fakePrivilege{operator: op}
 	p.sched = newFakeScheduler()
 	_ = store.MarkLive(context.Background(), guild, windowStart)

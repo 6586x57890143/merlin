@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	sf "github.com/disgoorg/snowflake/v2"
 )
 
 var windowStart = time.Date(2026, 9, 1, 14, 0, 0, 0, time.UTC)
@@ -20,9 +21,8 @@ var windowStart = time.Date(2026, 9, 1, 14, 0, 0, 0, time.UTC)
 // fakeSource is the whole Discord side of the scan, so the paging, the window
 // bound and the exclusions can be exercised without a network.
 type fakeSource struct {
-	channels    []*discordgo.Channel
-	threads     []*discordgo.Channel
-	msgs        map[string][]*discordgo.Message // newest first, as Discord returns them
+	channels    []ChannelSeen
+	msgs        map[string][]post // newest first, as Discord returns them
 	unreadable  map[string]bool
 	channelsErr error
 
@@ -30,17 +30,16 @@ type fakeSource struct {
 	calls int
 }
 
-// channelList lists the fixtures' readable channels and threads, as
-// restSource does Discord's.
+// channelList lists the fixtures' channels in guildID; which kinds are
+// readable is restSource's, tested against Discord's JSON.
 func (f *fakeSource) channelList(guildID string) ([]ChannelSeen, error) {
 	if f.channelsErr != nil {
 		return nil, f.channelsErr
 	}
-	var out []ChannelSeen
-	for _, ch := range append(append([]*discordgo.Channel{}, f.channels...), f.threads...) {
-		if readable(discord.ChannelType(ch.Type)) {
-			out = append(out, ChannelSeen{GuildID: guildID, ChannelID: ch.ID, Name: ch.Name})
-		}
+	out := make([]ChannelSeen, len(f.channels))
+	for i, ch := range f.channels {
+		ch.GuildID = guildID
+		out[i] = ch
 	}
 	return out, nil
 }
@@ -52,26 +51,20 @@ func (f *fakeSource) messagePage(channelID, beforeID string, limit int) ([]post,
 	f.calls++
 	f.mu.Unlock()
 	if f.unreadable[channelID] {
-		return nil, &discordgo.RESTError{
+		return nil, &rest.Error{
 			Response: &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden"},
-			Message:  &discordgo.APIErrorMessage{Code: 50001, Message: "Missing Access"},
+			Code:     rest.JSONErrorCodeMissingAccess, Message: "Missing Access",
 		}
 	}
 	before, _ := strconv.ParseInt(beforeID, 10, 64)
 	var out []post
 	for _, m := range f.msgs[channelID] {
-		id, _ := strconv.ParseInt(m.ID, 10, 64)
+		id, _ := strconv.ParseInt(m.id, 10, 64)
 		if before != 0 && id >= before {
 			continue
 		}
-		in := post{id: m.ID, channelID: channelID, at: m.Timestamp, skip: m.Author == nil || m.WebhookID != ""}
-		if m.Author != nil {
-			in.authorID, in.avatar, in.name, in.skip = m.Author.ID, m.Author.Avatar, m.Author.Username, in.skip || m.Author.Bot
-			if m.Author.GlobalName != "" {
-				in.name = m.Author.GlobalName
-			}
-		}
-		out = append(out, in)
+		m.channelID = channelID
+		out = append(out, m)
 		if len(out) == limit {
 			break
 		}
@@ -79,29 +72,22 @@ func (f *fakeSource) messagePage(channelID, beforeID string, limit int) ([]post,
 	return out, nil
 }
 
-func textChannel(id, name string) *discordgo.Channel {
-	return &discordgo.Channel{ID: id, Name: name, Type: discordgo.ChannelTypeGuildText}
+func textChannel(id, name string) ChannelSeen {
+	return ChannelSeen{ChannelID: id, Name: name}
 }
 
 // msgAt mints a message with a real snowflake for at, so the window bound is
 // tested against the same arithmetic the scan uses.
-func msgAt(at time.Time, seq int, author, name string) *discordgo.Message {
-	return &discordgo.Message{
-		ID:        strconv.FormatInt(snowflake(at)+int64(seq), 10),
-		Author:    &discordgo.User{ID: author, Username: name},
-		Timestamp: at,
-	}
+func msgAt(at time.Time, seq int, author, name string) post {
+	return post{id: strconv.FormatInt(snowflake(at)+int64(seq), 10), authorID: author, name: name, at: at}
 }
 
 // TestSnowflakeBoundsTheWindow is the arithmetic the whole report rests on:
 // get the epoch or the shift wrong and every window silently scans the wrong
-// span, with a perfectly plausible looking list to show for it. discordgo's
+// span, with a perfectly plausible looking list to show for it. disgo's
 // own reverse function is the check.
 func TestSnowflakeBoundsTheWindow(t *testing.T) {
-	got, err := discordgo.SnowflakeTimestamp(strconv.FormatInt(snowflake(windowStart), 10))
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := sf.ID(snowflake(windowStart)).Time()
 	if !got.UTC().Equal(windowStart) {
 		t.Fatalf("snowflake round trip: want %s, got %s", windowStart, got.UTC())
 	}
