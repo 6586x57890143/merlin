@@ -25,8 +25,8 @@ type recordingSettings struct {
 }
 
 func (r *recordingSettings) GuildSettings(string) settings.GuildSettings { return r.gs }
-func (r *recordingSettings) PluginEnabled(_, name string) bool          { return !r.disabled[name] }
-func (r *recordingSettings) rec(s string) error                         { r.calls = append(r.calls, s); return nil }
+func (r *recordingSettings) PluginEnabled(_, name string) bool           { return !r.disabled[name] }
+func (r *recordingSettings) rec(s string) error                          { r.calls = append(r.calls, s); return nil }
 func (r *recordingSettings) AddAdmin(_ context.Context, _, id string) error {
 	return r.rec("add-admin " + id)
 }
@@ -77,9 +77,9 @@ func newPanelPlugin(t *testing.T, st SettingsAdmin) *Plugin {
 	router := core.NewCommandRouter(perms, fakeGate{}, log)
 	router.HandleIx("other", "", core.PermSpec{Tier: core.TierMod, Action: "rotation.configure"}, nil)
 	router.RegisterCommand("rotation", &discordgo.ApplicationCommand{Name: "other", Description: "x"})
-	session, _ := paneltest.Session()
+	r, _ := paneltest.Rest()
 	p := New(st, "does-not-exist.yaml", nil, nil)
-	if err := p.Init(core.Deps{Commands: router, Logger: log, Perms: perms, Audit: nopAudit{}, Session: session}); err != nil {
+	if err := p.Init(core.Deps{Commands: router, Logger: log, Perms: perms, Audit: nopAudit{}, Rest: r, BotID: 2}); err != nil {
 		t.Fatal(err)
 	}
 	if err := router.Finalize(); err != nil {

@@ -2,14 +2,14 @@ package adminconfig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/settings"
+	"github.com/disgoorg/disgo/discord"
 )
 
 type stubDB struct{ err error }
@@ -130,59 +130,41 @@ func TestStatusDBHealthSurfacesTheError(t *testing.T) {
 // spurious warning wastes a moment, a missed one is a privacy failure
 // nobody finds out about.
 func TestEveryoneCanReadLeansTowardWarning(t *testing.T) {
-	const guildID = "g1"
-	everyone := guildID // @everyone's role ID is the guild ID
-
+	// @everyone's role ID is the guild ID, 100.
 	cases := []struct {
-		name string
-		ch   *discordgo.Channel
-		want bool
+		name       string
+		overwrites string
+		nilChannel bool
+		want       bool
 	}{
-		{
-			name: "no overwrites at all is a plain public channel",
-			ch:   &discordgo.Channel{GuildID: guildID},
-			want: true,
-		},
-		{
-			name: "explicit @everyone view deny is the private case",
-			ch: &discordgo.Channel{GuildID: guildID, PermissionOverwrites: []*discordgo.PermissionOverwrite{
-				{ID: everyone, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
-			}},
-			want: false,
-		},
-		{
-			name: "a deny on some other permission does not hide the channel",
-			ch: &discordgo.Channel{GuildID: guildID, PermissionOverwrites: []*discordgo.PermissionOverwrite{
-				{ID: everyone, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionSendMessages},
-			}},
-			want: true,
-		},
-		{
-			name: "denying one role is not denying everyone",
-			ch: &discordgo.Channel{GuildID: guildID, PermissionOverwrites: []*discordgo.PermissionOverwrite{
-				{ID: "some-other-role", Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
-			}},
-			want: true,
-		},
-		{
-			name: "a member overwrite sharing the guild ID is not the @everyone role",
-			ch: &discordgo.Channel{GuildID: guildID, PermissionOverwrites: []*discordgo.PermissionOverwrite{
-				{ID: everyone, Type: discordgo.PermissionOverwriteTypeMember, Deny: discordgo.PermissionViewChannel},
-			}},
-			want: true,
-		},
-		{
-			name: "unknown channel warns rather than reassuring",
-			ch:   nil,
-			want: true,
-		},
+		{"no overwrites at all is a plain public channel", `[]`, false, true},
+		{"explicit @everyone view deny is the private case", `[{"id":"100","type":0,"allow":"0","deny":"1024"}]`, false, false},
+		{"a deny on some other permission does not hide the channel", `[{"id":"100","type":0,"allow":"0","deny":"2048"}]`, false, true},
+		{"denying one role is not denying everyone", `[{"id":"201","type":0,"allow":"0","deny":"1024"}]`, false, true},
+		{"a member overwrite sharing the guild ID is not the @everyone role", `[{"id":"100","type":1,"allow":"0","deny":"1024"}]`, false, true},
+		{"unknown channel warns rather than reassuring", ``, true, true},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := everyoneCanRead(c.ch); got != c.want {
+			var ch discord.GuildChannel
+			if !c.nilChannel {
+				ch = textChannel(t, c.overwrites)
+			}
+			if got := everyoneCanRead(ch); got != c.want {
 				t.Errorf("everyoneCanRead = %v, want %v", got, c.want)
 			}
 		})
 	}
+}
+
+// textChannel is a text channel in guild 100 with overwrites, as Discord
+// sends it.
+func textChannel(t *testing.T, overwrites string) discord.GuildChannel {
+	t.Helper()
+	var ch discord.GuildTextChannel
+	if err := json.Unmarshal([]byte(`{"id":"300","type":0,"guild_id":"100","name":"c","permission_overwrites":`+overwrites+`}`), &ch); err != nil {
+		t.Fatal(err)
+	}
+	return ch
 }

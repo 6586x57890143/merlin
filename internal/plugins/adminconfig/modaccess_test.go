@@ -3,8 +3,6 @@ package adminconfig
 import (
 	"slices"
 	"testing"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // Granting a mod role view access is a permission write, and every permission
@@ -13,22 +11,19 @@ import (
 // reconfigured, so the roles that already have the grant must be filtered out
 // before anything is written.
 func TestRolesMissingViewAccess(t *testing.T) {
-	view := int64(discordgo.PermissionViewChannel)
-	ch := &discordgo.Channel{ID: "c1", PermissionOverwrites: []*discordgo.PermissionOverwrite{
-		{ID: "mod-a", Type: discordgo.PermissionOverwriteTypeRole, Allow: view},
-		// Allowed something else, but not view: still needs the grant.
-		{ID: "mod-b", Type: discordgo.PermissionOverwriteTypeRole, Allow: int64(discordgo.PermissionSendMessages)},
-		// A member overwrite with the same ID as a role must not count.
-		{ID: "mod-c", Type: discordgo.PermissionOverwriteTypeMember, Allow: view},
-	}}
-
-	got := rolesMissingViewAccess(ch, []string{"mod-a", "mod-b", "mod-c", "mod-d"})
-	want := []string{"mod-b", "mod-c", "mod-d"}
+	ch := textChannel(t, `[
+		{"id":"201","type":0,"allow":"1024","deny":"0"},
+		{"id":"202","type":0,"allow":"2048","deny":"0"},
+		{"id":"203","type":1,"allow":"1024","deny":"0"}]`)
+	// 202 is allowed something else but not view; 203 is a member overwrite
+	// sharing a role's ID, which must not count.
+	got := rolesMissingViewAccess(ch, []string{"201", "202", "203", "204"})
+	want := []string{"202", "203", "204"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("rolesMissingViewAccess = %v, want %v", got, want)
 	}
 
-	if got := rolesMissingViewAccess(ch, []string{"mod-a"}); len(got) != 0 {
+	if got := rolesMissingViewAccess(ch, []string{"201"}); len(got) != 0 {
 		t.Fatalf("expected an already-granted role to need no write, got %v", got)
 	}
 }

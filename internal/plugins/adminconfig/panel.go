@@ -156,8 +156,8 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string)
 			dryState, dryBtn = "🧪 **Rehearsing.** Nothing is being changed.", discord.ButtonComponent{Label: "Act for real", Style: discord.ButtonStyleSuccess, CustomID: panelSet + "dryrun:off", Disabled: !can}
 		}
 		pn.Parts = []discord.ContainerSubComponent{
-			ui.Switch("**Pause** refuses every rotation, archive deletion, jail and role change in this server. Reading keeps working.\n-# " + pauseState, pauseBtn),
-			ui.Switch("**Dry-run** writes to the audit log what rotation, sweeps and jails *would* do, and does none of it.\n-# " + dryState, dryBtn),
+			ui.Switch("**Pause** refuses every rotation, archive deletion, jail and role change in this server. Reading keeps working.\n-# "+pauseState, pauseBtn),
+			ui.Switch("**Dry-run** writes to the audit log what rotation, sweeps and jails *would* do, and does none of it.\n-# "+dryState, dryBtn),
 		}
 		if _, err := os.Stat(p.legacyPath); err == nil {
 			pn.Parts = append(pn.Parts, ui.Switch("**Import** seeds this server's settings, once, from the legacy config file on disk.", discord.ButtonComponent{Label: "Import", Style: discord.ButtonStyleSecondary, CustomID: panelSet + "import", Disabled: !can}))
@@ -315,7 +315,7 @@ func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID strin
 }
 
 func (p *Plugin) applyAdmins(ctx context.Context, ix *core.Ix) string {
-	added, removed := ix.SelectDiff(panelSet+"admins")
+	added, removed := ix.SelectDiff(panelSet + "admins")
 	for _, id := range added {
 		if err := p.settings.AddAdmin(ctx, ix.GuildID, id); err != nil {
 			return fmt.Sprintf("✗ Couldn't add <@%s> as an admin: %v", id, err)
@@ -332,7 +332,7 @@ func (p *Plugin) applyAdmins(ctx context.Context, ix *core.Ix) string {
 }
 
 func (p *Plugin) applyModRoles(ctx context.Context, ix *core.Ix) string {
-	added, removed := ix.SelectDiff(panelSet+"modroles")
+	added, removed := ix.SelectDiff(panelSet + "modroles")
 	for _, id := range added {
 		if err := p.settings.AddModRole(ctx, ix.GuildID, id); err != nil {
 			return fmt.Sprintf("✗ Couldn't add <@&%s> as a mod role: %v", id, err)
@@ -340,7 +340,7 @@ func (p *Plugin) applyModRoles(ctx context.Context, ix *core.Ix) string {
 		p.audit(ctx, ix, "config.mod_role_added", "", core.MentionRole(id))
 	}
 	if len(added) > 0 {
-		p.grantRolesChannelAccess(p.session, ix.GuildID, added)
+		p.grantRolesChannelAccess(ix.GuildID, added)
 	}
 	for _, id := range removed {
 		if err := p.settings.RemoveModRole(ctx, ix.GuildID, id); err != nil {
@@ -378,17 +378,17 @@ func (p *Plugin) applyChannel(ctx context.Context, ix *core.Ix, label string, se
 	if err := set(ctx, ix.GuildID, channelID); err != nil {
 		return fmt.Sprintf("✗ Couldn't save that channel: %v", err)
 	}
-	p.grantModRolesChannelAccess(p.session, ix.GuildID)
+	p.grantModRolesChannelAccess(ix.GuildID)
 	p.audit(ctx, ix, "config.setup", "", fmt.Sprintf("%s=<#%s> (existing)", label, channelID))
 	note := fmt.Sprintf("✓ %s is now <#%s>.", label, channelID)
-	if ch, err := p.session.Channel(channelID); err == nil && everyoneCanRead(ch) {
+	if ch, err := p.guildChannel(channelID); err == nil && everyoneCanRead(ch) {
 		note += " ⚠️ Everyone can read that channel, so anything recorded there is public."
 	}
 	return note
 }
 
 func (p *Plugin) applyPlugins(ctx context.Context, ix *core.Ix) string {
-	added, removed := ix.SelectDiff(panelSet+"plugins")
+	added, removed := ix.SelectDiff(panelSet + "plugins")
 	known := map[string]bool{}
 	for _, n := range p.commands.Plugins() {
 		known[n] = true
@@ -513,7 +513,7 @@ func (p *Plugin) applyOverride(ctx context.Context, ix *core.Ix, what, action st
 	if !p.knownAction(action) {
 		return "✗ That action isn't registered anymore."
 	}
-	added, removed := ix.SelectDiff(panelSet+what+":"+action)
+	added, removed := ix.SelectDiff(panelSet + what + ":" + action)
 	roles := strings.HasSuffix(what, "-roles")
 	target := func(id string) (string, string) {
 		if roles {

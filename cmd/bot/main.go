@@ -192,8 +192,14 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	aimodStore := aimod.NewPostgresStore(db.Pool)
 	auditWriter.StartRetention(ctx, log, journal, aimodStore)
 
+	botID, err := core.SelfID(cfg.Discord.Token)
+	if err != nil {
+		return err
+	}
 	deps := core.Deps{
 		Session:   session,
+		Rest:      ixRest,
+		BotID:     botID,
 		Bus:       bus,
 		Config:    cfgLoader,
 		Perms:     perms,
