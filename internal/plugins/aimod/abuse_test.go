@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // The meters are what stop one member spending a server's whole daily
@@ -373,11 +371,10 @@ func TestClearingSkipsWhatAModeratorReversed(t *testing.T) {
 func TestSpamNeverReachesTheModelOrSpendsTheCeiling(t *testing.T) {
 	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps())
 	for i := range 10 {
-		p.handleGo(&discordgo.Message{
+		p.handle(message{
 			ID: fmt.Sprintf("m%d", i), GuildID: "g1", ChannelID: "c1",
-			Content: fmt.Sprintf("join my server for free robux, code %d, everyone is here", i),
-			Author:  &discordgo.User{ID: "u1"},
-			Member:  &discordgo.Member{},
+			Content:  fmt.Sprintf("join my server for free robux, code %d, everyone is here", i),
+			AuthorID: "u1",
 		})
 	}
 	p.batchMu.Lock()

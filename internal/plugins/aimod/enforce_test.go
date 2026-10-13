@@ -84,7 +84,7 @@ func TestFlagModeTouchesNothing(t *testing.T) {
 func TestRewriteRepostsUnderTheAuthorWithAMarker(t *testing.T) {
 	store := newFakeStore()
 	ops := newFakeOps()
-	ops.members["u1"] = &discordgo.Member{Nick: "Someguy", User: &discordgo.User{ID: "u1", Username: "someguy"}}
+	ops.members["u1"] = Member{Name: "Someguy"}
 	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 
 	v := confirmed("one line had a phone number in it")
@@ -295,7 +295,7 @@ func TestAuditFailureDoesNotBlockEnforcement(t *testing.T) {
 func TestUndoRepostsTheOriginal(t *testing.T) {
 	store := newFakeStore()
 	ops := newFakeOps()
-	ops.members["u1"] = &discordgo.Member{User: &discordgo.User{ID: "u1", Username: "someguy"}}
+	ops.members["u1"] = Member{Name: "someguy"}
 	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 
 	id, err := store.RecordIncident(context.Background(), Incident{
@@ -474,7 +474,7 @@ func TestNonEmptyRewriteStaysARewrite(t *testing.T) {
 // the message being cleaned up.
 func TestAModelRewriteIsRedactedBeforeItIsPublished(t *testing.T) {
 	ops := newFakeOps()
-	ops.members["u1"] = &discordgo.Member{User: &discordgo.User{ID: "u1", Username: "someguy"}}
+	ops.members["u1"] = Member{Name: "someguy"}
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
 
 	v := confirmed("hate speech")

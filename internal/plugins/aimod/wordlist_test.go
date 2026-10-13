@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 )
 
@@ -71,10 +70,10 @@ func TestWordListRewritesWithoutSanctionOrModel(t *testing.T) {
 	cfg.WordList = jokeList
 	store.setConfig(cfg)
 
-	p.handleGo(&discordgo.Message{
+	p.handle(message{
 		ID: "m1", GuildID: cfg.GuildID, ChannelID: "c1",
-		Content: "anyone hiring? I need employment",
-		Author:  &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+		Content:  "anyone hiring? I need employment",
+		AuthorID: "u1",
 	})
 	p.wg.Wait()
 
@@ -96,9 +95,10 @@ func TestWordListRewritesWithoutSanctionOrModel(t *testing.T) {
 	other := sanctioningConfig()
 	other.GuildID = "g2"
 	store.setConfig(other)
-	p.handleGo(&discordgo.Message{
+	p.handle(message{
 		ID: "m2", GuildID: "g2", ChannelID: "c2",
-		Content: "back to work", Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+		Content:  "back to work",
+		AuthorID: "u1",
 	})
 	p.wg.Wait()
 	if deleted, _ := ops.snapshot(); len(deleted) != 1 {
@@ -206,9 +206,10 @@ func TestSkippedListedWordIsLogged(t *testing.T) {
 	cfg.ExemptChannelIDs = []string{"c1"}
 	store.setConfig(cfg)
 
-	p.handleGo(&discordgo.Message{
-		ID: "m1", GuildID: cfg.GuildID, ChannelID: "c1", Content: "work",
-		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+	p.handle(message{
+		ID: "m1", GuildID: cfg.GuildID, ChannelID: "c1",
+		Content:  "work",
+		AuthorID: "u1",
 	})
 	p.wg.Wait()
 	if out := buf.String(); !strings.Contains(out, "listed word skipped") || !strings.Contains(out, string(skipChannel)) {

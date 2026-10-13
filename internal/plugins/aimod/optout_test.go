@@ -5,8 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // The member opt-out, which is the one setting in this package that makes the
@@ -90,11 +88,10 @@ func TestOptedOutMessageIsNeverQueued(t *testing.T) {
 	client := &fakeClassifier{}
 	p := optOutIntake(t, store, client, true, "u1")
 
-	p.handleGo(&discordgo.Message{
+	p.handle(message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
-		Content: "honestly this whole patch is a mess and i hate it",
-		Author:  &discordgo.User{ID: "u1"},
-		Member:  &discordgo.Member{},
+		Content:  "honestly this whole patch is a mess and i hate it",
+		AuthorID: "u1",
 	})
 	p.wg.Wait()
 
@@ -115,11 +112,10 @@ func TestOptOutAppliesToTheMemberNotTheGuild(t *testing.T) {
 	store := newFakeStore()
 	p := optOutIntake(t, store, &fakeClassifier{}, true, "u1")
 
-	p.handleGo(&discordgo.Message{
+	p.handle(message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
-		Content: "honestly this whole patch is a mess and i hate it",
-		Author:  &discordgo.User{ID: "u2"},
-		Member:  &discordgo.Member{},
+		Content:  "honestly this whole patch is a mess and i hate it",
+		AuthorID: "u2",
 	})
 	p.wg.Wait()
 
@@ -145,9 +141,10 @@ func TestOptedOutIsTreatedLikeAnExemptRole(t *testing.T) {
 	store.setConfig(cfg)
 
 	post := func(id, content string) {
-		p.handleGo(&discordgo.Message{
-			ID: id, GuildID: "g1", ChannelID: "c1", Content: content,
-			Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
+		p.handle(message{
+			ID: id, GuildID: "g1", ChannelID: "c1",
+			Content:  content,
+			AuthorID: "u1",
 		})
 		p.wg.Wait()
 	}
@@ -172,11 +169,10 @@ func TestOptedOutChildSafetyVocabularyIsStillScanned(t *testing.T) {
 	store := newFakeStore()
 	p := optOutIntake(t, store, &fakeClassifier{}, true, "u1")
 
-	p.handleGo(&discordgo.Message{
+	p.handle(message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
-		Content: "anyone here into 14 year old girls",
-		Author:  &discordgo.User{ID: "u1"},
-		Member:  &discordgo.Member{},
+		Content:  "anyone here into 14 year old girls",
+		AuthorID: "u1",
 	})
 	p.wg.Wait()
 

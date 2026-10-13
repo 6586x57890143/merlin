@@ -9,8 +9,6 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/secret"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -332,9 +330,9 @@ func (f *fakeScheduler) NextDue(context.Context, string) (time.Time, bool, error
 func TestReviewGuildEndToEnd(t *testing.T) {
 	store := newFakeStore()
 	ops := newFakeOps()
-	ops.history = []*discordgo.Message{
-		{Content: "this update is retarded", Author: &discordgo.User{ID: "u1"}},
-		{Content: "lol yeah", Author: &discordgo.User{ID: "u2"}},
+	ops.history = []Line{
+		{Content: "this update is retarded", AuthorID: "u1"},
+		{Content: "lol yeah", AuthorID: "u2"},
 	}
 	client := &fakeClassifier{
 		calibration: []string{`{"examples":[
