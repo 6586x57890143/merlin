@@ -94,7 +94,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.perms = deps.Perms
 
 	// One command, no subcommands: the panel is the whole surface (panel.go).
-	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+	p.commands.RegisterCommand(p.Name(), discord.SlashCommandCreate{
 		Name:        "config",
 		Description: "merlin's settings for this server: admins, mod roles, channels, plugins, permissions",
 	})

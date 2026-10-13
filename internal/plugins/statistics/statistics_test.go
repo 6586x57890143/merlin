@@ -264,11 +264,12 @@ func TestOperatorOnly(t *testing.T) {
 // deletes for matching the §4a rule rather than the reasoning behind it.
 func TestCommandIsNotListedToTheServer(t *testing.T) {
 	cmd := command()
-	if cmd.DefaultMemberPermissions == nil {
+	perm := cmd.DefaultMemberPermissions.Or(nil)
+	if perm == nil {
 		t.Fatal("/statistics must not be listed to every member of the server")
 	}
-	if *cmd.DefaultMemberPermissions != 0 {
-		t.Fatalf("want 0 (administrators only), got %d", *cmd.DefaultMemberPermissions)
+	if *perm != 0 {
+		t.Fatalf("want 0 (administrators only), got %d", *perm)
 	}
 	// The picker is cosmetic; the gate is not. If this ever stops being
 	// TierAdmin-floored and operator-checked, the line above is not what

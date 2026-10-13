@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -34,7 +33,7 @@ var (
 )
 
 func (p *Plugin) registerCommands() {
-	p.commands.RegisterCommand(p.Name(), &discordgo.ApplicationCommand{
+	p.commands.RegisterCommand(p.Name(), discord.SlashCommandCreate{
 		Name:        "rotation",
 		Description: "Rotating channels: which ones, how often, and how long archives are kept",
 	})

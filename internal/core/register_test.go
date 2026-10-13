@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/omit"
 	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -25,18 +26,17 @@ func TestRegisterGuildSendsTheWholeTree(t *testing.T) {
 	wire := &puts{}
 	rt := core.NewCommandRouter(core.NewPermissions(nil, nil, ""), openGate{}, quiet()).
 		WithRest(core.NewRest("test", &http.Client{Transport: wire}))
-	admin := int64(discordgo.PermissionManageGuild)
-	min, max := 1.0, 30.0
-	rt.RegisterCommand("x", &discordgo.ApplicationCommand{Name: "x", Description: "d", DefaultMemberPermissions: &admin,
-		Options: []*discordgo.ApplicationCommandOption{
-			{Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "g", Description: "d", Options: []*discordgo.ApplicationCommandOption{
-				{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "s", Description: "d", Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionChannel, Name: "where", Description: "d", Required: true,
-						ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText}},
-					{Type: discordgo.ApplicationCommandOptionInteger, Name: "days", Description: "d", MinValue: &min, MaxValue: max},
-					{Type: discordgo.ApplicationCommandOptionString, Name: "kind", Description: "d", Choices: []*discordgo.ApplicationCommandOptionChoice{
+
+	rt.RegisterCommand("x", discord.SlashCommandCreate{Name: "x", Description: "d", DefaultMemberPermissions: omit.NewPtr(discord.PermissionManageGuild),
+		Options: []discord.ApplicationCommandOption{
+			discord.ApplicationCommandOptionSubCommandGroup{Name: "g", Description: "d", Options: []discord.ApplicationCommandOptionSubCommand{
+				{Name: "s", Description: "d", Options: []discord.ApplicationCommandOption{
+					discord.ApplicationCommandOptionChannel{Name: "where", Description: "d", Required: true,
+						ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildText}},
+					discord.ApplicationCommandOptionInt{Name: "days", Description: "d", MinValue: omit.Ptr(1), MaxValue: omit.Ptr(30)},
+					discord.ApplicationCommandOptionString{Name: "kind", Description: "d", Choices: []discord.ApplicationCommandOptionChoiceString{
 						{Name: "a", Value: "a"}, {Name: "b", Value: "b"}}},
-					{Type: discordgo.ApplicationCommandOptionString, Name: "who", Description: "d", Autocomplete: true},
+					discord.ApplicationCommandOptionString{Name: "who", Description: "d", Autocomplete: true},
 				}},
 			}},
 		}})
@@ -61,7 +61,7 @@ func TestRegisterGuildSendsTheWholeTree(t *testing.T) {
 func TestAnUnansweredHandlerIsCutAtTheWindow(t *testing.T) {
 	rt, _ := router()
 	done := make(chan time.Duration, 1)
-	rt.RegisterCommand("slow", &discordgo.ApplicationCommand{Name: "slow", Description: "d"})
+	rt.RegisterCommand("slow", discord.SlashCommandCreate{Name: "slow", Description: "d"})
 	rt.HandleIx("slow", "", core.PermSpec{Tier: core.TierPublic}, func(ctx context.Context, ix *core.Ix) {
 		start := time.Now()
 		<-ctx.Done()
@@ -81,7 +81,7 @@ func TestAnUnansweredHandlerIsCutAtTheWindow(t *testing.T) {
 func TestAnAnsweredHandlerOutlivesTheWindow(t *testing.T) {
 	rt, _ := router()
 	errs := make(chan error, 1)
-	rt.RegisterCommand("work", &discordgo.ApplicationCommand{Name: "work", Description: "d"})
+	rt.RegisterCommand("work", discord.SlashCommandCreate{Name: "work", Description: "d"})
 	rt.HandleIx("work", "", core.PermSpec{Tier: core.TierPublic}, func(ctx context.Context, ix *core.Ix) {
 		_ = ix.Defer()
 		time.Sleep(300 * time.Millisecond)
