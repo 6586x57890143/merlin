@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/cache"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 // fakeAuthData is an in-memory GuildAuthData for tests.
@@ -204,46 +207,43 @@ func TestAuthorizeNoMemberContextFails(t *testing.T) {
 	}
 }
 
+// gatewayState is a gateway cache holding one guild (100) with roles and
+// the bot (900) as a member with botRoles.
+func gatewayState(owner snowflake.ID, roles []discord.Role, botRoles ...snowflake.ID) cache.Caches {
+	c := cache.New(cache.WithCaches(cache.FlagGuilds, cache.FlagRoles, cache.FlagMembers))
+	c.SetSelfUser(discord.OAuth2User{User: discord.User{ID: 900}})
+	c.AddGuild(discord.Guild{ID: 100, OwnerID: owner})
+	for _, r := range roles {
+		r.GuildID = 100
+		c.AddRole(r)
+	}
+	c.AddMember(discord.Member{GuildID: 100, User: discord.User{ID: 900}, RoleIDs: botRoles})
+	return c
+}
+
 func TestCanManageRoleHierarchy(t *testing.T) {
-	session, err := discordgo.New("Bot faketoken")
-	if err != nil {
-		t.Fatalf("discordgo.New: %v", err)
-	}
-	session.State.User = &discordgo.User{ID: "bot"}
+	const low, botRole, high, boosted = "201", "205", "210", "301"
+	perms := NewPermissions(gatewayState(1, []discord.Role{
+		{ID: 201, Position: 1},
+		{ID: 205, Position: 5},
+		{ID: 210, Position: 10},
+		{ID: 301, Position: 1, Managed: true},
+	}, 205), newFakeAuthData(), "")
 
-	guild := &discordgo.Guild{
-		ID: "g1",
-		Roles: []*discordgo.Role{
-			{ID: "low", Position: 1},
-			{ID: "bot-role", Position: 5},
-			{ID: "high", Position: 10},
-			{ID: "boosted", Position: 1, Managed: true},
-		},
-	}
-	if err := session.State.GuildAdd(guild); err != nil {
-		t.Fatalf("GuildAdd: %v", err)
-	}
-	if err := session.State.MemberAdd(&discordgo.Member{
-		GuildID: "g1",
-		User:    &discordgo.User{ID: "bot"},
-		Roles:   []string{"bot-role"},
-	}); err != nil {
-		t.Fatalf("MemberAdd: %v", err)
-	}
-
-	perms := NewPermissions(session, newFakeAuthData(), "")
-
-	if err := perms.CanManageRole("g1", "low"); err != nil {
+	if err := perms.CanManageRole("100", low); err != nil {
 		t.Fatalf("expected bot to manage role below it, got %v", err)
 	}
-	if err := perms.CanManageRole("g1", "high"); err == nil {
+	if err := perms.CanManageRole("100", high); err == nil {
 		t.Fatal("expected denial for role above bot's top role")
 	}
-	if err := perms.CanManageRole("g1", "bot-role"); err == nil {
+	if err := perms.CanManageRole("100", botRole); err == nil {
 		t.Fatal("expected denial for role at same position as bot's top role")
 	}
-	if err := perms.CanManageRole("g1", "boosted"); err == nil {
+	if err := perms.CanManageRole("100", boosted); err == nil {
 		t.Fatal("expected denial for a role managed by an integration, even below bot's top role")
+	}
+	if err := perms.CanManageRole("100", "999"); err == nil {
+		t.Fatal("expected denial for a role the guild does not have")
 	}
 }
 
@@ -288,27 +288,16 @@ func TestAuthorizeRejectsMemberWithoutUser(t *testing.T) {
 	}
 }
 
-// moderationSession builds a session whose state holds one guild with an
-// Administrator-carrying role, an ordinary role, and a distinct owner, the
-// three things CanModerate has to tell apart for an arbitrary target.
-func moderationSession(t *testing.T) *discordgo.Session {
-	t.Helper()
-	session, err := discordgo.New("Bot faketoken")
-	if err != nil {
-		t.Fatalf("discordgo.New: %v", err)
-	}
-	if err := session.State.GuildAdd(&discordgo.Guild{
-		ID:      "g1",
-		OwnerID: "owner",
-		Roles: []*discordgo.Role{
-			{ID: "admin-role", Permissions: discordgo.PermissionAdministrator},
-			{ID: "mod-role", Permissions: discordgo.PermissionKickMembers},
-			{ID: "member-role"},
-		},
-	}); err != nil {
-		t.Fatalf("GuildAdd: %v", err)
-	}
-	return session
+// moderationState is a gateway cache holding one guild with an
+// Administrator-carrying role (201), an ordinary mod role (202), a member
+// role (203) and a distinct owner (500): the things CanModerate has to tell
+// apart for an arbitrary target.
+func moderationState() cache.Caches {
+	return gatewayState(500, []discord.Role{
+		{ID: 201, Permissions: discord.PermissionAdministrator},
+		{ID: 202, Permissions: discord.PermissionKickMembers},
+		{ID: 203},
+	})
 }
 
 func actorMember(userID string, roles []string) *discordgo.Member {
@@ -323,29 +312,29 @@ func actorMember(userID string, roles []string) *discordgo.Member {
 // team one jail at a time and every individual action would look authorized.
 func TestCanModerateProtectsAdminsFromMods(t *testing.T) {
 	auth := newFakeAuthData()
-	auth.admins["g1"] = []string{"db-listed-admin"}
-	perms := NewPermissions(moderationSession(t), auth, "bootstrap-user")
+	auth.admins["100"] = []string{"db-listed-admin"}
+	perms := NewPermissions(moderationState(), auth, "bootstrap-user")
 
-	mod := actorMember("mod", []string{"mod-role"})
+	mod := actorMember("mod", []string{"202"})
 
 	for _, tc := range []struct {
 		name         string
 		targetUserID string
 		targetRoles  []string
 	}{
-		{"admin by Discord's Administrator bit", "u1", []string{"admin-role"}},
+		{"admin by Discord's Administrator bit", "301", []string{"201"}},
 		{"admin listed in the guild's settings", "db-listed-admin", nil},
-		{"the guild owner", "owner", nil},
+		{"the guild owner", "500", nil},
 		{"the bootstrap admin", "bootstrap-user", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := perms.CanModerate("g1", mod, tc.targetUserID, tc.targetRoles); err == nil {
+			if err := perms.CanModerate("100", mod, tc.targetUserID, tc.targetRoles); err == nil {
 				t.Fatalf("a mod was allowed to act against %s", tc.name)
 			}
 		})
 	}
 
-	if err := perms.CanModerate("g1", mod, "regular", []string{"member-role"}); err != nil {
+	if err := perms.CanModerate("100", mod, "regular", []string{"203"}); err != nil {
 		t.Fatalf("a mod must still be able to act against an ordinary member, got %v", err)
 	}
 }
@@ -356,16 +345,16 @@ func TestCanModerateProtectsAdminsFromMods(t *testing.T) {
 // against a peer is ordinary moderation, and admins can always intervene.
 func TestCanModerateAllowsAdminsAndPeerMods(t *testing.T) {
 	auth := newFakeAuthData()
-	auth.admins["g1"] = []string{"db-listed-admin"}
-	perms := NewPermissions(moderationSession(t), auth, "bootstrap-user")
+	auth.admins["100"] = []string{"db-listed-admin"}
+	perms := NewPermissions(moderationState(), auth, "bootstrap-user")
 
 	admin := actorMember("db-listed-admin", nil)
-	if err := perms.CanModerate("g1", admin, "u1", []string{"admin-role"}); err != nil {
+	if err := perms.CanModerate("100", admin, "301", []string{"201"}); err != nil {
 		t.Fatalf("an admin must be able to act against a fellow admin, got %v", err)
 	}
 
-	mod := actorMember("mod", []string{"mod-role"})
-	if err := perms.CanModerate("g1", mod, "other-mod", []string{"mod-role"}); err != nil {
+	mod := actorMember("mod", []string{"202"})
+	if err := perms.CanModerate("100", mod, "other-mod", []string{"202"}); err != nil {
 		t.Fatalf("mod-on-mod moderation must stay allowed, got %v", err)
 	}
 }
@@ -375,11 +364,11 @@ func TestCanModerateAllowsAdminsAndPeerMods(t *testing.T) {
 // own carve-out, no in-guild action may disable it, not even an admin's.
 func TestCanModerateProtectsBootstrapFromAdminsToo(t *testing.T) {
 	auth := newFakeAuthData()
-	auth.admins["g1"] = []string{"db-listed-admin"}
-	perms := NewPermissions(moderationSession(t), auth, "bootstrap-user")
+	auth.admins["100"] = []string{"db-listed-admin"}
+	perms := NewPermissions(moderationState(), auth, "bootstrap-user")
 
 	admin := actorMember("db-listed-admin", nil)
-	if err := perms.CanModerate("g1", admin, "bootstrap-user", nil); err == nil {
+	if err := perms.CanModerate("100", admin, "bootstrap-user", nil); err == nil {
 		t.Fatal("the bootstrap admin must not be targetable, even by another admin")
 	}
 }
@@ -390,8 +379,8 @@ func TestCanModerateProtectsBootstrapFromAdminsToo(t *testing.T) {
 // turn a cache miss into the exact escalation this check exists to stop.
 func TestCanModerateFailsClosedWithoutGuildState(t *testing.T) {
 	perms := NewPermissions(nil, newFakeAuthData(), "bootstrap-user")
-	mod := actorMember("mod", []string{"mod-role"})
-	if err := perms.CanModerate("g1", mod, "target", []string{"whatever"}); err == nil {
+	mod := actorMember("mod", []string{"202"})
+	if err := perms.CanModerate("100", mod, "target", []string{"whatever"}); err == nil {
 		t.Fatal("expected a refusal when the guild's state can't be resolved")
 	}
 }

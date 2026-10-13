@@ -31,17 +31,13 @@ func (noSettings) ActionPolicy(string, string) core.ActionPolicy { return core.A
 
 // event is what discordgo hands the router for an interaction: Discord's
 // JSON, and discordgo's own decoding of it.
-func event(t *testing.T, p map[string]any) *discordgo.Event {
+func raw(t *testing.T, p map[string]any) []byte {
 	t.Helper()
-	raw, err := json.Marshal(p)
+	b, err := json.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ic discordgo.InteractionCreate
-	if err := json.Unmarshal(raw, &ic); err != nil {
-		t.Fatal(err)
-	}
-	return &discordgo.Event{Type: "INTERACTION_CREATE", RawData: raw, Struct: &ic}
+	return b
 }
 
 func command(name string) map[string]any {
@@ -69,8 +65,8 @@ func TestIxHandlerAnswersThroughDisgo(t *testing.T) {
 		got = ix
 		ix.RespondOK("done", "it worked")
 	})
-	s, sessionWire := paneltest.Session()
-	rt.HandleEvent(s, event(t, command("hi")))
+	_, sessionWire := paneltest.Session()
+	rt.HandleRaw(raw(t, command("hi")))
 	if got == nil || got.GuildID != "100" || got.UserID != "11" {
 		t.Fatalf("handler got %+v", got)
 	}
@@ -89,8 +85,8 @@ func TestIxHandlerIsBehindAuthorize(t *testing.T) {
 	rt, wire := router()
 	ran := false
 	rt.HandleIx("ban", "", core.PermSpec{Tier: core.TierAdmin, Action: "x.ban"}, func(context.Context, *core.Ix) { ran = true })
-	s, sessionWire := paneltest.Session()
-	rt.HandleEvent(s, event(t, command("ban")))
+	_, sessionWire := paneltest.Session()
+	rt.HandleRaw(raw(t, command("ban")))
 	if ran {
 		t.Fatal("an admin handler ran for a member with no permissions")
 	}

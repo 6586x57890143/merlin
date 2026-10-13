@@ -65,16 +65,14 @@ type Plugin struct {
 	// later without this plugin knowing (see internal/voice).
 	voice voice.Source
 	// voiceChannelOf looks up the voice channel userID is currently
-	// connected to in guildID, reading discordgo's gateway-cached
-	// session.State rather than a REST call. Used only to name the channel
+	// connected to in guildID, reading the gateway cache rather than a
+	// REST call. Used only to name the channel
 	// in disconnectFromVoice's log line: the disconnect itself always fires
 	// regardless of what this reports, so a cold or stale cache (nothing is
 	// tracked yet, or the GUILD_VOICE_STATES intent is off in a build that
 	// predates it) costs a less specific log line, never a missed kick. A
 	// function rather than a narrow interface for the same reason dryRun is
-	// one: this is the only piece of session.State this plugin ever reads,
-	// and *discordgo.Session has no method to satisfy structurally here
-	// (State is a field, not an embedded promoter of its methods).
+	// one: this is the only piece of the gateway cache this plugin reads.
 	voiceChannelOf func(guildID, userID string) (channelID string, ok bool)
 	// session is read for one thing: the bot's own user ID, from its gateway
 	// state, so a role-wide jail never includes the bot (excludeSelfAndBot).

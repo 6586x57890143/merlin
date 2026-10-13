@@ -7,8 +7,8 @@ import "github.com/bwmarrin/discordgo"
 // Session satisfies this structurally with zero glue code, while tests use
 // an in-memory fake instead of live Discord.
 type DiscordMemberOps interface {
-	// GuildMember is a live REST fetch, deliberately not session.State's
-	// cached view: every confused-deputy re-check in this plugin (release.go,
+	// GuildMember is a live REST fetch, deliberately not the gateway
+	// cache's view: every confused-deputy re-check in this plugin (release.go,
 	// sweep.go, handleRelease, handleRevoke) needs the member's actual current roles,
 	// not a possibly-stale gateway cache snapshot.
 	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)

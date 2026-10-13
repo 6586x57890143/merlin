@@ -35,15 +35,8 @@ type Ix struct {
 	UserID, ChannelID string
 }
 
-// errNoPayload is an Ix handler reached without the raw interaction it is
-// decoded from, which only a test calling HandleInteraction can do.
-var errNoPayload = errors.New("core: no raw interaction payload for an Ix handler")
-
-// NewIx decodes raw, an INTERACTION_CREATE's data, for a plugin on disgo.
+// NewIx decodes raw, an INTERACTION_CREATE's data, as the gateway would.
 func NewIx(raw []byte, r rest.Rest) (*Ix, error) {
-	if raw == nil {
-		return nil, errNoPayload
-	}
 	if r == nil {
 		return nil, errors.New("core: no REST client for an Ix handler (CommandRouter.WithRest)")
 	}
@@ -51,6 +44,12 @@ func NewIx(raw []byte, r rest.Rest) (*Ix, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core: decoding the interaction: %w", err)
 	}
+	return IxOf(i, r), nil
+}
+
+// IxOf is the Ix for an interaction the gateway has decoded, answered
+// through r.
+func IxOf(i discord.Interaction, r rest.Rest) *Ix {
 	ix := &Ix{I: i, Rest: r, UserID: i.User().ID.String()}
 	// The channel is optional in the payload, and disgo's wraps an interface
 	// that is nil without it: read it only when it is there, since a panic
@@ -61,7 +60,7 @@ func NewIx(raw []byte, r rest.Rest) (*Ix, error) {
 	if g := i.GuildID(); g != nil {
 		ix.GuildID = g.String()
 	}
-	return ix, nil
+	return ix
 }
 
 // Member is the invoking member, nil outside a server.
