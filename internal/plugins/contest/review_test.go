@@ -65,7 +65,7 @@ func seedPledge(t *testing.T, store *fakeStore, contestID string, pr Prize) Priz
 	t.Helper()
 	pr.ID, pr.ContestID = "prize-1", contestID
 	if pr.DonorID == "" {
-		pr.DonorID, pr.DonorName = "u9", "dana"
+		pr.DonorID, pr.DonorName = "4009", "dana"
 	}
 	if pr.Title == "" {
 		pr.Title = "a steam key"
@@ -100,7 +100,7 @@ func TestAPendingPledgeIsNotPushedToTheGallery(t *testing.T) {
 
 	p := newTestPlugin(t, store, ops, sched, audit, srv.URL)
 	p.now = func() time.Time { return base.Add(90 * time.Minute) }
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestAPendingPledgeIsNotAwarded(t *testing.T) {
 
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
-	subs := []Submission{{ID: "s1", ContestID: "c1", UserID: "u1", ThreadID: "t1", Author: "ana"}}
+	subs := []Submission{{ID: "s1", ContestID: "c1", UserID: "4001", ThreadID: "5001", Author: "ana"}}
 	p.awardPrizes(context.Background(), c, subs, []resultView{{ID: "s1", Votes: 4, Rank: 1}})
 
 	got, _ := store.Prizes(context.Background(), "c1")
@@ -134,7 +134,7 @@ func TestAPendingPledgeIsNotAwarded(t *testing.T) {
 	if !got[0].HasSecret() {
 		t.Error("the code was wiped for a delivery that never happened")
 	}
-	if len(ops.sentTo("dm-u1")) != 0 {
+	if len(ops.sentTo(dmWith("4001"))) != 0 {
 		t.Error("a winner was DMed a prize nobody had approved")
 	}
 }
@@ -168,14 +168,14 @@ func TestApprovingAPledgePublishesIt(t *testing.T) {
 	p.handleReviewButton(context.Background(), componentClick(id), id)
 
 	got, _ := store.Prizes(context.Background(), "c1")
-	if !got[0].Approved || got[0].ReviewedBy != "mod-1" {
+	if !got[0].Approved || got[0].ReviewedBy != "3003" {
 		t.Fatalf("the decision was not recorded: %+v", got[0])
 	}
 	if len(pushedPrizes) == 0 || pushedPrizes[len(pushedPrizes)-1] != 1 {
 		t.Errorf("the approved pledge never reached the gallery: pushes = %v", pushedPrizes)
 	}
-	if len(ops.sentTo("announce-1")) != 1 {
-		t.Errorf("announce posts = %d, want exactly 1", len(ops.sentTo("announce-1")))
+	if len(ops.sentTo("2002")) != 1 {
+		t.Errorf("announce posts = %d, want exactly 1", len(ops.sentTo("2002")))
 	}
 }
 
@@ -204,11 +204,11 @@ func TestRejectingAPledgeWipesTheCodeAndKeepsTheRow(t *testing.T) {
 	if got[0].HasSecret() {
 		t.Error("merlin is still holding the code of a pledge she turned down")
 	}
-	if len(ops.sentTo("dm-u9")) != 1 {
+	if len(ops.sentTo(dmWith("4009"))) != 1 {
 		t.Errorf("donor DMs = %d, want 1: a rejection nobody is told about is a disappearance",
-			len(ops.sentTo("dm-u9")))
+			len(ops.sentTo(dmWith("4009"))))
 	}
-	if len(ops.sentTo("announce-1")) != 0 {
+	if len(ops.sentTo("2002")) != 0 {
 		t.Error("a rejected pledge was announced to the server anyway")
 	}
 
@@ -216,7 +216,7 @@ func TestRejectingAPledgeWipesTheCodeAndKeepsTheRow(t *testing.T) {
 	// message a mod is looking at can be older than the queue it describes,
 	// and two mods can be working it at once.
 	p.handleReviewButton(context.Background(), componentClick(id), id)
-	if n := len(ops.sentTo("dm-u9")); n != 1 {
+	if n := len(ops.sentTo(dmWith("4009"))); n != 1 {
 		t.Errorf("a stale button re-ran the rejection: donor DMs = %d", n)
 	}
 }

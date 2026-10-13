@@ -623,12 +623,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// The plugin then reads that one starter message over REST. contest
 	// deliberately does not join aimod on the gateway firehose.
 	typed = append(typed, bot.NewListenerFunc(func(e *events.ThreadCreate) {
-		ch := legacy[discordgo.Channel](e.Thread)
-		if ch == nil {
-			return
-		}
-		tc := &discordgo.ThreadCreate{Channel: ch, NewlyCreated: e.NewlyCreated}
-		contestPlugin.HandleThreadCreate(session, tc)
+		contestPlugin.HandleThreadCreate(e.Thread)
 	}))
 	// Bans, kicks and timeouts done through the Discord client, not through
 	// merlin, so the rapsheet does not lie by omission. Arrives under the

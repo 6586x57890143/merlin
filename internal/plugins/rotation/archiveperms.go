@@ -1,7 +1,6 @@
 package rotation
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -133,10 +132,9 @@ func (a archiveAccess) grantsTo(id snowflake.ID, kind discord.PermissionOverwrit
 func desiredArchiveOverwrites(current []discord.PermissionOverwrite, guildID, botUserID snowflake.ID, access archiveAccess) []discord.PermissionOverwrite {
 	// Denies @everyone View and grants the bot itself View, merging into the
 	// existing entries for both rather than duplicating them.
-	var out []*overwrite
-	for _, ow := range core.DenyEveryone(current, guildID, botUserID, archiveModAllow) {
-		e := overwriteOf(ow)
-		out = append(out, &e)
+	var out []*core.Overwrite
+	for _, ow := range core.Overwrites(core.DenyEveryone(current, guildID, botUserID, archiveModAllow)) {
+		out = append(out, &ow)
 	}
 
 	grant := func(id snowflake.ID, kind discord.PermissionOverwriteType, allow, deny discord.Permissions) {
@@ -156,7 +154,7 @@ func desiredArchiveOverwrites(current []discord.PermissionOverwrite, guildID, bo
 				return
 			}
 		}
-		out = append(out, &overwrite{ID: id, Type: kind, Allow: allow, Deny: deny})
+		out = append(out, &core.Overwrite{ID: id, Type: kind, Allow: allow, Deny: deny})
 	}
 	for _, roleID := range append(slices.Clone(access.modRoleIDs), access.viewerRoleIDs...) {
 		if roleID == 0 || roleID == guildID { // @everyone is never granted archive access
@@ -173,7 +171,7 @@ func desiredArchiveOverwrites(current []discord.PermissionOverwrite, guildID, bo
 		grant(userID, discord.PermissionOverwriteTypeMember, allow, deny)
 	}
 
-	var kept []overwrite
+	var kept []core.Overwrite
 	for _, ow := range out {
 		if _, _, ok := access.grantsTo(ow.ID, ow.Type); !ok && ow.ID != botUserID && ow.ID != guildID {
 			// Not on the list: it may not reveal the archive. Its own denies,
@@ -189,59 +187,7 @@ func desiredArchiveOverwrites(current []discord.PermissionOverwrite, guildID, bo
 		}
 		kept = append(kept, *ow)
 	}
-	return disgoOverwrites(sorted(kept))
-}
-
-// overwrite is one permission overwrite as a value this file can edit in
-// place; disgo's are an interface over two struct types.
-type overwrite struct {
-	Type        discord.PermissionOverwriteType
-	ID          snowflake.ID
-	Allow, Deny discord.Permissions
-}
-
-func overwriteOf(ow discord.PermissionOverwrite) overwrite {
-	switch o := ow.(type) {
-	case discord.RolePermissionOverwrite:
-		return overwrite{discord.PermissionOverwriteTypeRole, o.RoleID, o.Allow, o.Deny}
-	case discord.MemberPermissionOverwrite:
-		return overwrite{discord.PermissionOverwriteTypeMember, o.UserID, o.Allow, o.Deny}
-	}
-	return overwrite{Type: ow.Type(), ID: ow.ID()}
-}
-
-func overwritesOf(ows []discord.PermissionOverwrite) []overwrite {
-	out := make([]overwrite, len(ows))
-	for i, ow := range ows {
-		out[i] = overwriteOf(ow)
-	}
-	return out
-}
-
-func disgoOverwrites(ows []overwrite) []discord.PermissionOverwrite {
-	out := make([]discord.PermissionOverwrite, len(ows))
-	for i, o := range ows {
-		if o.Type == discord.PermissionOverwriteTypeMember {
-			out[i] = discord.MemberPermissionOverwrite{UserID: o.ID, Allow: o.Allow, Deny: o.Deny}
-		} else {
-			out[i] = discord.RolePermissionOverwrite{RoleID: o.ID, Allow: o.Allow, Deny: o.Deny}
-		}
-	}
-	return out
-}
-
-func sorted(ows []overwrite) []overwrite {
-	slices.SortFunc(ows, func(a, b overwrite) int {
-		return cmp.Or(cmp.Compare(a.Type, b.Type), cmp.Compare(a.ID, b.ID), cmp.Compare(a.Allow, b.Allow), cmp.Compare(a.Deny, b.Deny))
-	})
-	return ows
-}
-
-// overwritesEqual compares two overwrite lists ignoring order. Both sides come
-// out of desiredArchiveOverwrites sorted, but Discord returns a channel's own
-// list in whatever order it likes, so the live side has to be sorted here.
-func overwritesEqual(a, b []discord.PermissionOverwrite) bool {
-	return slices.Equal(sorted(overwritesOf(a)), sorted(overwritesOf(b)))
+	return core.Disgo(core.SortOverwrites(kept))
 }
 
 // archiveViewers is who may see guildID's archives, split into the mod roles
@@ -294,7 +240,7 @@ func (p *Plugin) reconcileArchiveCategory(guildID string, categoryID snowflake.I
 		return nil, false, fmt.Errorf("fetch archive category %s: %w", categoryID, err)
 	}
 	desired := desiredArchiveOverwrites(cat.PermissionOverwrites(), core.ID(guildID), p.botID, p.archiveViewers(guildID, categoryID))
-	if overwritesEqual(cat.PermissionOverwrites(), desired) {
+	if core.SameOverwrites(cat.PermissionOverwrites(), desired) {
 		return desired, false, nil
 	}
 	// A whole-list PATCH, not per-target overwrite calls: removing a stray
@@ -326,7 +272,7 @@ func (p *Plugin) syncArchiveChannels(guildID string, categoryID snowflake.ID, de
 		if parent(ch) != categoryID || ch.Type() == discord.ChannelTypeGuildCategory {
 			continue
 		}
-		if overwritesEqual(ch.PermissionOverwrites(), desired) {
+		if core.SameOverwrites(ch.PermissionOverwrites(), desired) {
 			continue
 		}
 		if _, err := p.ops(guildID).UpdateChannel(ch.ID(), discord.GuildTextChannelUpdate{PermissionOverwrites: &desired}); err != nil {

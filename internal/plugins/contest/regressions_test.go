@@ -11,18 +11,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // entryThread is a forum post by one member, plus the starter message
 // readThread will find behind it.
-func entryThread(ops *fakeOps, id, owner string) *discordgo.Channel {
-	ops.messages[id] = []*discordgo.Message{{
-		ID: id, Content: "here it is",
-		Author: &discordgo.User{ID: owner, Username: owner},
+func entryThread(ops *fakeOps, id, owner string) *fch {
+	ops.messages[id] = []discord.Message{{
+		ID: core.ID(id), Content: "here it is",
+		Author: discord.User{ID: core.ID(owner), Username: owner},
 	}}
-	return &discordgo.Channel{
-		ID: id, GuildID: "g1", ParentID: "forum-1", OwnerID: owner, Name: "entry " + id,
+	return &fch{
+		ID: id, GuildID: "1000", ParentID: "2001", OwnerID: owner, Name: "entry " + id,
 	}
 }
 
@@ -42,7 +43,7 @@ func TestATransientReadFailureDoesNotWithdrawALiveEntry(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	c := seedLive(t, store, PhaseSubmit, base)
 
-	ops.threads = []*discordgo.Channel{entryThread(ops, "100", "u1")}
+	ops.threads = []*fch{entryThread(ops, "100", "4001")}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
 	if err := p.syncSubmissions(context.Background(), c); err != nil {
@@ -71,7 +72,7 @@ func TestAnArchivedForumPostIsStillAnEntry(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	c := seedLive(t, store, PhaseSubmit, base)
 
-	ops.threads = []*discordgo.Channel{entryThread(ops, "100", "u1")}
+	ops.threads = []*fch{entryThread(ops, "100", "4001")}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
 	if err := p.syncSubmissions(context.Background(), c); err != nil {
@@ -104,7 +105,7 @@ func TestDeletingAndRepostingInOneTickKeepsTheNewEntry(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	c := seedLive(t, store, PhaseSubmit, base)
 
-	ops.threads = []*discordgo.Channel{entryThread(ops, "100", "u1")}
+	ops.threads = []*fch{entryThread(ops, "100", "4001")}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
 	if err := p.syncSubmissions(context.Background(), c); err != nil {
@@ -114,7 +115,7 @@ func TestDeletingAndRepostingInOneTickKeepsTheNewEntry(t *testing.T) {
 	// Same member, new post, old one gone: both happen between two ticks, so
 	// one sync has to retire the old row before inserting the new one or the
 	// insert lands on contest_submissions_one_live_idx.
-	ops.threads = []*discordgo.Channel{entryThread(ops, "200", "u1")}
+	ops.threads = []*fch{entryThread(ops, "200", "4001")}
 	if err := p.syncSubmissions(context.Background(), c); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestMaxEntriesActuallyCapsTheEntryList(t *testing.T) {
 	// what snowflake order is) matches numeric order.
 	for i := range maxEntries + 20 {
 		id := strconv.Itoa(100000 + i)
-		ops.threads = append(ops.threads, entryThread(ops, id, "u"+id))
+		ops.threads = append(ops.threads, entryThread(ops, id, "4"+id))
 	}
 
 	p := newTestPlugin(t, store, ops, sched, audit, "")
@@ -174,10 +175,10 @@ func TestANewPostIsPickedUpWithoutWaitingForATick(t *testing.T) {
 
 	post := func(id, owner string) {
 		th := entryThread(ops, id, owner)
-		p.HandleThreadCreate(nil, &discordgo.ThreadCreate{Channel: th})
+		p.HandleThreadCreate(th.Thread())
 	}
 
-	post("100", "u1")
+	post("100", "4001")
 	subs, err := store.Submissions(context.Background(), "c1")
 	if err != nil {
 		t.Fatalf("read back: %v", err)
@@ -188,7 +189,7 @@ func TestANewPostIsPickedUpWithoutWaitingForATick(t *testing.T) {
 
 	// A second post by the same member is refused and told why, rather than
 	// replacing the first or colliding with the one-live-entry index.
-	post("200", "u1")
+	post("200", "4001")
 	subs, _ = store.Submissions(context.Background(), "c1")
 	if len(subs) != 1 || subs[0].ThreadID != "100" {
 		t.Fatalf("entries = %+v, want the first post to still be the entry", subs)
@@ -199,12 +200,10 @@ func TestANewPostIsPickedUpWithoutWaitingForATick(t *testing.T) {
 
 	// A post merlin cannot read is called out in the thread rather than
 	// dropped: an empty post and an unreadable one look identical here.
-	ops.messages["300"] = []*discordgo.Message{{
-		ID: "300", Author: &discordgo.User{ID: "u3", Username: "u3"},
+	ops.messages["300"] = []discord.Message{{
+		ID: 300, Author: discord.User{ID: 4003, Username: "4003"},
 	}}
-	p.HandleThreadCreate(nil, &discordgo.ThreadCreate{
-		Channel: &discordgo.Channel{ID: "300", GuildID: "g1", ParentID: "forum-1", OwnerID: "u3"},
-	})
+	p.HandleThreadCreate((&fch{ID: "300", GuildID: "1000", ParentID: "2001", OwnerID: "4003"}).Thread())
 	if len(ops.sent["300"]) == 0 {
 		t.Error("an unreadable post was dropped silently, which is the one thing it must not be")
 	}
@@ -216,9 +215,9 @@ func TestVotingDoesNotReReadEveryEntryEveryTick(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	seedLive(t, store, PhaseVote, base)
-	ops.threads = []*discordgo.Channel{
-		entryThread(ops, "100", "u1"),
-		entryThread(ops, "200", "u2"),
+	ops.threads = []*fch{
+		entryThread(ops, "100", "4001"),
+		entryThread(ops, "200", "4002"),
 	}
 
 	p := newTestPlugin(t, store, ops, sched, audit, "")
@@ -226,7 +225,7 @@ func TestVotingDoesNotReReadEveryEntryEveryTick(t *testing.T) {
 	p.now = func() time.Time { return now }
 
 	for range 5 {
-		if err := p.tick(context.Background(), "g1"); err != nil {
+		if err := p.tick(context.Background(), "1000"); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
 		now = now.Add(tickInterval)
@@ -240,7 +239,7 @@ func TestVotingDoesNotReReadEveryEntryEveryTick(t *testing.T) {
 	// These entries carry no signed URL, so there is no expiry to read and the
 	// fallback cadence is what governs. Past it, it runs again.
 	now = now.Add(refreshFallback)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("tick after the refresh window: %v", err)
 	}
 	if ops.messageReads != 2*len(ops.threads) {
@@ -256,8 +255,8 @@ func TestAContestNobodyVotedInCrownsNobodyAndAwardsNothing(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	seedLive(t, store, PhaseVote, base)
 	for _, s := range []Submission{
-		{ID: "s1", ContestID: "c1", UserID: "u1", ThreadID: "t1", Title: "one", Author: "ana"},
-		{ID: "s2", ContestID: "c1", UserID: "u2", ThreadID: "t2", Title: "two", Author: "bo"},
+		{ID: "s1", ContestID: "c1", UserID: "4001", ThreadID: "5001", Title: "one", Author: "ana"},
+		{ID: "s2", ContestID: "c1", UserID: "4002", ThreadID: "5002", Title: "two", Author: "bo"},
 	} {
 		if err := store.UpsertSubmission(context.Background(), s); err != nil {
 			t.Fatalf("seed submission: %v", err)
@@ -282,11 +281,11 @@ func TestAContestNobodyVotedInCrownsNobodyAndAwardsNothing(t *testing.T) {
 
 	p := newTestPlugin(t, store, ops, sched, audit, srv.URL)
 	p.now = func() time.Time { return base.Add(4 * time.Hour) }
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 
-	got, _ := store.LatestContest(context.Background(), "g1")
+	got, _ := store.LatestContest(context.Background(), "1000")
 	if got.Phase != PhaseResults {
 		t.Fatalf("phase = %s, want results", got.Phase)
 	}
@@ -333,7 +332,7 @@ func TestAContestThatGotNoEntriesStillTellsTheWorkerItIsOver(t *testing.T) {
 
 	p := newTestPlugin(t, store, ops, sched, audit, srv.URL)
 	p.now = func() time.Time { return base.Add(4 * time.Hour) }
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 
@@ -363,7 +362,7 @@ func TestAFailedForumCreateLeavesTheGuildAbleToTryAgain(t *testing.T) {
 		t.Fatalf("retire the stub contest: %v", err)
 	}
 
-	if _, err := store.LiveContest(context.Background(), "g1"); err != ErrNoLiveContest {
+	if _, err := store.LiveContest(context.Background(), "1000"); err != ErrNoLiveContest {
 		t.Fatal("a contest with no forum is still live, so /contest new refuses forever " +
 			"and it ticks through every phase collecting nothing")
 	}
@@ -382,7 +381,7 @@ func TestAPrizeStaysClaimableAfterTheNextContestStarts(t *testing.T) {
 		t.Fatalf("seed next contest: %v", err)
 	}
 
-	won := "u1"
+	won := "4001"
 	at := base
 	if err := store.AddPrize(context.Background(), Prize{
 		ID: "p1", ContestID: old.ID, DonorID: "d1", Title: "a key",
@@ -393,7 +392,7 @@ func TestAPrizeStaysClaimableAfterTheNextContestStarts(t *testing.T) {
 
 	// The DM bounced, which is the ordinary case, and a mod has since
 	// started the next contest.
-	prizes, err := store.PrizesAwardedTo(context.Background(), "g1", won)
+	prizes, err := store.PrizesAwardedTo(context.Background(), "1000", won)
 	if err != nil {
 		t.Fatalf("claim lookup: %v", err)
 	}
@@ -422,13 +421,13 @@ func TestForumCreateRefusesNearTheChannelCap(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 
 	for i := range 500 - channelCapHeadroom - 1 {
-		ops.channels = append(ops.channels, &discordgo.Channel{ID: "c" + strconv.Itoa(i)})
+		ops.channels = append(ops.channels, &fch{ID: strconv.Itoa(60000 + i)})
 	}
 	if _, err := p.createForum(gatedConfig(), c, false); err != nil {
 		t.Fatalf("one under the headroom should still create: %v", err)
 	}
 
-	ops.channels = append(ops.channels, &discordgo.Channel{ID: "one-more"})
+	ops.channels = append(ops.channels, &fch{ID: "69999"})
 	if _, err := p.createForum(gatedConfig(), c, false); !errors.Is(err, ErrForumFull) {
 		t.Fatalf("at the headroom, create error = %v, want ErrForumFull", err)
 	}
@@ -448,7 +447,7 @@ func TestAnUnrecordedForumRetiresTheContest(t *testing.T) {
 	stubSession()
 	p.handleNew(context.Background(), interaction("new", strOpt("title", "neon cats")))
 
-	if _, err := store.LiveContest(context.Background(), "g1"); err != ErrNoLiveContest {
+	if _, err := store.LiveContest(context.Background(), "1000"); err != ErrNoLiveContest {
 		t.Fatal("a contest whose forum was never recorded is still live, so it blocks " +
 			"/contest new forever and collects nothing")
 	}
@@ -468,9 +467,9 @@ func TestArchivedThreadsArePagedPastTheFirst(t *testing.T) {
 	const n = archivedPageSize + 20
 	for i := range n {
 		ts := base.Add(-time.Duration(i) * time.Minute)
-		ops.archived = append(ops.archived, &discordgo.Channel{
-			ID: "t" + strconv.Itoa(i), OwnerID: "u" + strconv.Itoa(i), ParentID: c.ForumChannelID,
-			ThreadMetadata: &discordgo.ThreadMetadata{ArchiveTimestamp: ts},
+		ops.archived = append(ops.archived, &fch{
+			ID: strconv.Itoa(50000 + i), OwnerID: strconv.Itoa(40000 + i), ParentID: c.ForumChannelID,
+			ArchivedAt: ts,
 		})
 	}
 
@@ -504,7 +503,7 @@ func TestAFinishedGalleryKeepsItsArtAlive(t *testing.T) {
 	if err := store.CreateContest(context.Background(), c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	ops.threads = append(ops.threads, entryThread(ops, "t1", "u1"))
+	ops.threads = append(ops.threads, entryThread(ops, "5001", "4001"))
 
 	now := base
 	p := newTestPlugin(t, store, ops, sched, audit, "")
@@ -512,13 +511,13 @@ func TestAFinishedGalleryKeepsItsArtAlive(t *testing.T) {
 
 	// The job survives the contest finishing, because the gallery it left
 	// behind still has links that expire.
-	p.SyncGuild(context.Background(), "g1")
-	if !sched.has("g1:contest-tick") {
+	p.SyncGuild(context.Background(), "1000")
+	if !sched.has("1000:contest-tick") {
 		t.Fatal("the tick job was dropped, so nothing will ever refresh the gallery again")
 	}
 
 	now = base.Add(time.Minute)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("tick inside the window: %v", err)
 	}
 	if ops.messageReads == 0 {
@@ -529,14 +528,14 @@ func TestAFinishedGalleryKeepsItsArtAlive(t *testing.T) {
 	// page nobody is looking at. Past here the page links the forum post.
 	now = base.Add(artRefreshWindow + time.Minute)
 	before := ops.messageReads
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("tick past the window: %v", err)
 	}
 	if ops.messageReads != before {
 		t.Error("a contest past the refresh window is still costing REST calls")
 	}
-	p.SyncGuild(context.Background(), "g1")
-	if sched.has("g1:contest-tick") {
+	p.SyncGuild(context.Background(), "1000")
+	if sched.has("1000:contest-tick") {
 		t.Error("the tick job outlived the refresh window")
 	}
 }
@@ -555,8 +554,8 @@ func TestACancelledContestRefreshesNothing(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base.Add(time.Minute) }
 
-	p.SyncGuild(context.Background(), "g1")
-	if sched.has("g1:contest-tick") {
+	p.SyncGuild(context.Background(), "1000")
+	if sched.has("1000:contest-tick") {
 		t.Error("a cancelled contest kept the tick job alive")
 	}
 }
@@ -591,16 +590,16 @@ func TestEntriesReachTheGalleryWhileSubmissionsAreOpen(t *testing.T) {
 	// Well inside the submission window: this tick must not advance a phase.
 	p.now = func() time.Time { return base.Add(90 * time.Minute) }
 
-	ops.threads = []*discordgo.Channel{entryThread(ops, "100", "u1")}
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	ops.threads = []*fch{entryThread(ops, "100", "4001")}
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("first tick: %v", err)
 	}
-	ops.threads = append(ops.threads, entryThread(ops, "101", "u2"))
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	ops.threads = append(ops.threads, entryThread(ops, "101", "4002"))
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("second tick: %v", err)
 	}
 
-	if got, _ := store.LatestContest(context.Background(), "g1"); got.Phase != PhaseSubmit {
+	if got, _ := store.LatestContest(context.Background(), "1000"); got.Phase != PhaseSubmit {
 		t.Fatalf("phase = %s, want submit: the test moved off the path it is checking", got.Phase)
 	}
 	if len(pushed) != 2 {

@@ -16,8 +16,8 @@ import (
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/6586x57890143/merlin/internal/voice"
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 const (
@@ -113,24 +113,26 @@ const (
 	maxArchivedPages = 4
 )
 
-// DiscordOps is the narrow slice of Discord this plugin touches.
+// DiscordOps is what contest does in Discord, on disgo's types.
 // *discordguard.GuildOps satisfies it structurally, which is what keeps
 // every destructive call behind the pause/dry-run/rate-limit gate without
 // this package importing the guard.
 type DiscordOps interface {
-	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
-	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
-	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
-	GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
-	ThreadsArchived(channelID string, before *time.Time, limit int, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
-	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
-	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
-	ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
-	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
+	GetChannel(channelID snowflake.ID) (discord.Channel, error)
+	GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel, error)
+	GetRoles(guildID snowflake.ID) ([]discord.Role, error)
+	GetActiveGuildThreads(guildID snowflake.ID) (*discord.GuildActiveThreads, error)
+	GetPublicArchivedThreads(channelID snowflake.ID, before time.Time, limit int) (*discord.GetThreads, error)
+	GetMessage(channelID, messageID snowflake.ID) (*discord.Message, error)
+	CreateGuildChannel(guildID snowflake.ID, c discord.GuildChannelCreate) (discord.GuildChannel, error)
+	UpdatePermissionOverwrite(channelID, targetID snowflake.ID, u discord.PermissionOverwriteUpdate) error
+	// UpdateChannel is always sent a GuildTextChannelUpdate carrying only
+	// overwrites, which mean the same on a forum. disgo's forum update
+	// writes rate_limit_per_user as null when unset.
+	UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate) (discord.Channel, error)
+	CreateMessage(channelID snowflake.ID, m discord.MessageCreate) (*discord.Message, error)
+	PinMessage(channelID, messageID snowflake.ID) error
+	CreateDMChannel(userID snowflake.ID) (*discord.DMChannel, error)
 }
 
 // OpsProvider hands back the guild-bound Discord view. Mirrors
@@ -155,7 +157,7 @@ type Plugin struct {
 	now func() time.Time
 
 	mu             sync.Mutex
-	botID          string // merlin's own user ID, resolved once (forumperms.go)
+	botID          snowflake.ID // merlin's own user, granted access to every forum
 	tickRegistered map[string]bool
 	lastRefresh    map[string]time.Time // contest ID -> last CDN refresh
 }
@@ -182,6 +184,7 @@ func (p *Plugin) Name() string { return "contest" }
 func (p *Plugin) Init(deps core.Deps) error {
 	p.audit = deps.Audit
 	p.log = deps.Logger
+	p.botID = deps.BotID
 	p.sched = deps.Scheduler
 	p.commands = deps.Commands
 	p.registerCommands()

@@ -1,11 +1,11 @@
 package contest
 
 import (
-	"cmp"
 	"fmt"
 	"slices"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -33,21 +33,21 @@ import (
 // granted rather than assumed, since ViewChannel alone shows an empty channel
 // to anyone whose roles do not already carry it -- the same reason rotation's
 // archiveViewerAllow spells it out.
-const forumViewAllow = discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory
+const forumViewAllow = discord.PermissionViewChannel | discord.PermissionReadMessageHistory
 
 // forumMediaAllow is what a media role gets on top of view. A contest forum is
 // where people post drawings, so unlike an archive there is deliberately no
 // read-only clamp anywhere in this file: it grants, it never restricts.
-const forumMediaAllow = discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks
+const forumMediaAllow = discord.PermissionAttachFiles | discord.PermissionEmbedLinks
 
 // forumBotAllow is what merlin needs in a forum she made: post the
 // announcements, pin the winner, and read the entries back.
-const forumBotAllow = discordgo.PermissionViewChannel |
-	discordgo.PermissionSendMessages |
-	discordgo.PermissionSendMessagesInThreads |
-	discordgo.PermissionReadMessageHistory |
-	discordgo.PermissionManageThreads |
-	discordgo.PermissionManageMessages
+const forumBotAllow = discord.PermissionViewChannel |
+	discord.PermissionSendMessages |
+	discord.PermissionSendMessagesInThreads |
+	discord.PermissionReadMessageHistory |
+	discord.PermissionManageThreads |
+	discord.PermissionManageMessages
 
 // forumAccess is the resolved answer to "who is this contest for".
 type forumAccess struct {
@@ -56,8 +56,8 @@ type forumAccess struct {
 	// that is correct: the job is to match the server, not to be strict for
 	// its own sake.
 	everyoneMayView bool
-	viewRoleIDs     []string
-	mediaRoleIDs    []string
+	viewRoleIDs     []snowflake.ID
+	mediaRoleIDs    []snowflake.ID
 }
 
 // resolveAccess works out who the forum is for.
@@ -68,22 +68,23 @@ type forumAccess struct {
 // would reject.
 func (p *Plugin) resolveAccess(cfg Config, guildID string) (forumAccess, error) {
 	ops := p.opsFor(guildID)
+	guild := core.ID(guildID)
 
-	roles, err := ops.GuildRoles(guildID)
+	roles, err := ops.GetRoles(guild)
 	if err != nil {
 		return forumAccess{}, fmt.Errorf("contest: read guild roles: %w", err)
 	}
-	exists := make(map[string]bool, len(roles))
+	exists := make(map[snowflake.ID]bool, len(roles))
 	for _, r := range roles {
 		exists[r.ID] = true
 	}
-	keep := func(ids []string) []string {
-		out := make([]string, 0, len(ids))
+	keep := func(ids []snowflake.ID) []snowflake.ID {
+		out := make([]snowflake.ID, 0, len(ids))
 		for _, id := range ids {
 			// @everyone is never granted access as a role: whether it sees
 			// the forum is everyoneMayView's single job, and an entry in both
 			// places is two answers to one question.
-			if id == "" || id == guildID || !exists[id] {
+			if id == 0 || id == guild || !exists[id] {
 				continue
 			}
 			out = append(out, id)
@@ -92,16 +93,16 @@ func (p *Plugin) resolveAccess(cfg Config, guildID string) (forumAccess, error) 
 		return slices.Compact(out)
 	}
 
-	access := forumAccess{mediaRoleIDs: keep(cfg.MediaRoleIDs)}
+	access := forumAccess{mediaRoleIDs: keep(ids(cfg.MediaRoleIDs))}
 
 	// An explicit list wins over the mirror. Somebody who named roles has
 	// already answered the question this function exists to ask.
 	if len(cfg.AccessRoleIDs) > 0 {
-		access.viewRoleIDs = keep(cfg.AccessRoleIDs)
+		access.viewRoleIDs = keep(ids(cfg.AccessRoleIDs))
 		return access, nil
 	}
 
-	ref, err := ops.Channel(cfg.GateChannelID)
+	ref, err := guildChannel(ops, core.ID(cfg.GateChannelID))
 	if err != nil {
 		// Fail rather than fall back to open. An unreadable reference channel
 		// says nothing about who should be let in, and the wrong guess in
@@ -129,37 +130,35 @@ func (p *Plugin) resolveAccess(cfg Config, guildID string) (forumAccess, error) 
 	// (developers/topics/permissions: base permissions, then the @everyone
 	// overwrite, then the role's). Nothing is stored either way, which is the
 	// property this whole file is built on.
-	roleOverwrite := func(id string) *discordgo.PermissionOverwrite {
-		return findIn(ref.PermissionOverwrites, id, discordgo.PermissionOverwriteTypeRole)
-	}
-	var everyoneBase int64
+	overwrites := ref.PermissionOverwrites()
+	var everyoneBase discord.Permissions
 	for _, r := range roles {
-		if r.ID == guildID {
+		if r.ID == guild {
 			everyoneBase = r.Permissions
 			break
 		}
 	}
-	canView := func(r *discordgo.Role) bool {
+	canView := func(r discord.Role) bool {
 		perms := everyoneBase | r.Permissions
 		// Administrator bypasses every overwrite, including a deny.
-		if perms&discordgo.PermissionAdministrator != 0 {
+		if perms&discord.PermissionAdministrator != 0 {
 			return true
 		}
-		if ow := roleOverwrite(guildID); ow != nil {
+		if ow, ok := overwrites.Role(guild); ok {
 			perms &^= ow.Deny
 			perms |= ow.Allow
 		}
-		if r.ID != guildID {
-			if ow := roleOverwrite(r.ID); ow != nil {
+		if r.ID != guild {
+			if ow, ok := overwrites.Role(r.ID); ok {
 				perms &^= ow.Deny
 				perms |= ow.Allow
 			}
 		}
-		return perms&discordgo.PermissionViewChannel != 0
+		return perms&discord.PermissionViewChannel != 0
 	}
 
 	for _, r := range roles {
-		if r.ID != guildID {
+		if r.ID != guild {
 			continue
 		}
 		access.everyoneMayView = canView(r)
@@ -175,12 +174,12 @@ func (p *Plugin) resolveAccess(cfg Config, guildID string) (forumAccess, error) 
 	// with /contest configure access-role, which already wins over the mirror.
 	if !access.everyoneMayView {
 		for _, r := range roles {
-			if r.ID == guildID {
+			if r.ID == guild {
 				continue
 			}
 			// An Administrator role needs no entry for the same reason it is
 			// allowed above: overwrites do not apply to it.
-			if (everyoneBase|r.Permissions)&discordgo.PermissionAdministrator != 0 {
+			if (everyoneBase|r.Permissions)&discord.PermissionAdministrator != 0 {
 				continue
 			}
 			if canView(r) {
@@ -207,37 +206,41 @@ func (p *Plugin) resolveAccess(cfg Config, guildID string) (forumAccess, error) 
 //
 // The result is sorted, and applying it to its own output is a no-op, which is
 // what lets sync-forum write only when something genuinely changed.
-func desiredForumOverwrites(current []*discordgo.PermissionOverwrite, guildID, botUserID string, access forumAccess, open bool) []*discordgo.PermissionOverwrite {
-	var out []*discordgo.PermissionOverwrite
-	if access.everyoneMayView {
-		out = make([]*discordgo.PermissionOverwrite, 0, len(current)+2)
-		for _, ow := range current {
-			clone := *ow
-			out = append(out, &clone)
-		}
-	} else {
+func desiredForumOverwrites(current []discord.PermissionOverwrite, guildID, botUserID snowflake.ID, access forumAccess, open bool) []discord.PermissionOverwrite {
+	start := current
+	if !access.everyoneMayView {
 		// Denies @everyone View and grants merlin herself access, merging
 		// into the existing entries for both rather than duplicating them.
-		out = core.DenyEveryoneExceptBot(current, guildID, botUserID, forumBotAllow)
+		start = core.DenyEveryone(current, guildID, botUserID, forumBotAllow)
 	}
-
-	grant := func(id string, kind discordgo.PermissionOverwriteType, allow int64) {
+	var out []*core.Overwrite
+	for _, ow := range core.Overwrites(start) {
+		out = append(out, &ow)
+	}
+	find := func(id snowflake.ID, kind discord.PermissionOverwriteType) *core.Overwrite {
 		for _, ow := range out {
 			if ow.ID == id && ow.Type == kind {
-				ow.Allow |= allow
-				ow.Deny &^= allow
-				return
+				return ow
 			}
 		}
-		out = append(out, &discordgo.PermissionOverwrite{ID: id, Type: kind, Allow: allow})
+		return nil
 	}
 
-	grant(botUserID, discordgo.PermissionOverwriteTypeMember, forumBotAllow)
+	grant := func(id snowflake.ID, kind discord.PermissionOverwriteType, allow discord.Permissions) {
+		if ow := find(id, kind); ow != nil {
+			ow.Allow |= allow
+			ow.Deny &^= allow
+			return
+		}
+		out = append(out, &core.Overwrite{ID: id, Type: kind, Allow: allow})
+	}
+
+	grant(botUserID, discord.PermissionOverwriteTypeMember, forumBotAllow)
 	for _, id := range access.viewRoleIDs {
-		grant(id, discordgo.PermissionOverwriteTypeRole, forumViewAllow)
+		grant(id, discord.PermissionOverwriteTypeRole, forumViewAllow)
 	}
 	for _, id := range access.mediaRoleIDs {
-		grant(id, discordgo.PermissionOverwriteTypeRole, forumMediaAllow)
+		grant(id, discord.PermissionOverwriteTypeRole, forumMediaAllow)
 	}
 
 	// The posting bit rides on @everyone whether or not @everyone can see the
@@ -245,9 +248,9 @@ func desiredForumOverwrites(current []*discordgo.PermissionOverwrite, guildID, b
 	// one setForumOpen flips. Keeping it here, and view on the role entries,
 	// is what lets "who is this for" and "is it taking entries" stay
 	// independent switches.
-	everyone := findIn(out, guildID, discordgo.PermissionOverwriteTypeRole)
+	everyone := find(guildID, discord.PermissionOverwriteTypeRole)
 	if everyone == nil {
-		everyone = &discordgo.PermissionOverwrite{ID: guildID, Type: discordgo.PermissionOverwriteTypeRole}
+		everyone = &core.Overwrite{ID: guildID, Type: discord.PermissionOverwriteTypeRole}
 		out = append(out, everyone)
 	}
 	if open {
@@ -259,81 +262,30 @@ func desiredForumOverwrites(current []*discordgo.PermissionOverwrite, guildID, b
 
 	// Drop entries that ended up saying nothing, then sort, so this is
 	// comparable with its own previous output.
-	out = slices.DeleteFunc(out, func(ow *discordgo.PermissionOverwrite) bool {
-		return ow.Allow == 0 && ow.Deny == 0
-	})
-	slices.SortFunc(out, func(a, b *discordgo.PermissionOverwrite) int {
-		if c := cmp.Compare(a.Type, b.Type); c != 0 {
-			return c
+	var kept []core.Overwrite
+	for _, ow := range out {
+		if ow.Allow != 0 || ow.Deny != 0 {
+			kept = append(kept, *ow)
 		}
-		return cmp.Compare(a.ID, b.ID)
-	})
+	}
+	return core.Disgo(core.SortOverwrites(kept))
+}
+
+// ids is ss as snowflakes.
+func ids(ss []string) []snowflake.ID {
+	out := make([]snowflake.ID, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, core.ID(s))
+	}
 	return out
-}
-
-func findIn(list []*discordgo.PermissionOverwrite, id string, kind discordgo.PermissionOverwriteType) *discordgo.PermissionOverwrite {
-	for _, ow := range list {
-		if ow.ID == id && ow.Type == kind {
-			return ow
-		}
-	}
-	return nil
-}
-
-// overwritesEqual compares two lists regardless of order, so a resync that
-// would change nothing writes nothing. Every permission write lands in the
-// guild's own Discord audit log, and a no-op write buries the entries a
-// moderator is looking for.
-func overwritesEqual(a, b []*discordgo.PermissionOverwrite) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	key := func(ow *discordgo.PermissionOverwrite) string {
-		return fmt.Sprintf("%d:%s:%d:%d", ow.Type, ow.ID, ow.Allow, ow.Deny)
-	}
-	seen := make(map[string]int, len(a))
-	for _, ow := range a {
-		seen[key(ow)]++
-	}
-	for _, ow := range b {
-		k := key(ow)
-		if seen[k] == 0 {
-			return false
-		}
-		seen[k]--
-	}
-	return true
-}
-
-// botUserID caches merlin's own ID for the life of the process, the way
-// rotation does. Every overwrite list needs it and it never changes.
-func (p *Plugin) botUserID(guildID string) (string, error) {
-	p.mu.Lock()
-	id := p.botID
-	p.mu.Unlock()
-	if id != "" {
-		return id, nil
-	}
-	u, err := p.opsFor(guildID).User("@me")
-	if err != nil {
-		return "", fmt.Errorf("contest: resolve bot user: %w", err)
-	}
-	p.mu.Lock()
-	p.botID = u.ID
-	p.mu.Unlock()
-	return u.ID, nil
 }
 
 // forumOverwritesFor is the whole resolution in one call: who the forum is
 // for, and what that means as a list Discord will take.
-func (p *Plugin) forumOverwritesFor(cfg Config, guildID string, current []*discordgo.PermissionOverwrite, open bool) ([]*discordgo.PermissionOverwrite, error) {
+func (p *Plugin) forumOverwritesFor(cfg Config, guildID string, current []discord.PermissionOverwrite, open bool) ([]discord.PermissionOverwrite, error) {
 	access, err := p.resolveAccess(cfg, guildID)
 	if err != nil {
 		return nil, err
 	}
-	botID, err := p.botUserID(guildID)
-	if err != nil {
-		return nil, err
-	}
-	return desiredForumOverwrites(current, guildID, botID, access, open), nil
+	return desiredForumOverwrites(current, core.ID(guildID), p.botID, access, open), nil
 }

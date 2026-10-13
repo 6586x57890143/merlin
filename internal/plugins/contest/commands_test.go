@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 
@@ -90,8 +89,8 @@ func stubSession() *recordingTransport {
 // decodeIx is Discord's JSON for an interaction of typ from a member shown
 // as nick, decoded by core.NewIx and answered through current.
 //
-// The fixtures predate disgo: the store and fakes key on "g1", "chan-1" and
-// members like "mod-1", none of them snowflakes. Ix.GuildID, UserID and
+// The fixtures predate disgo: the store and fakes key on "1000", "2007" and
+// members like "3003", none of them snowflakes. Ix.GuildID, UserID and
 // ChannelID are merlin's own string keys and every handler reads those, so
 // after decoding a real interaction they are pointed at the fixtures.
 func decodeIx(typ int, user, nick string, data map[string]any) *core.Ix {
@@ -118,7 +117,7 @@ func decodeIx(typ int, user, nick string, data map[string]any) *core.Ix {
 	if err != nil {
 		panic(err)
 	}
-	ix.GuildID, ix.UserID, ix.ChannelID = "g1", user, "chan-1"
+	ix.GuildID, ix.UserID, ix.ChannelID = "1000", user, "2007"
 	return ix
 }
 
@@ -128,7 +127,7 @@ func interaction(leaf string, opts ...map[string]any) *core.Ix {
 	for _, o := range opts {
 		args = append(args, o)
 	}
-	return decodeIx(2, "mod-1", "mod", map[string]any{"id": "6", "name": "contest", "type": 1,
+	return decodeIx(2, "3003", "3002", map[string]any{"id": "6", "name": "contest", "type": 1,
 		"options": []any{map[string]any{"name": leaf, "type": 1, "options": args}}})
 }
 
@@ -148,13 +147,13 @@ func modalSubmit(customID string, fields map[string]string) *core.Ix {
 			map[string]any{"type": 4, "custom_id": id, "value": v},
 		}})
 	}
-	return decodeIx(5, "u9", "dana", map[string]any{"custom_id": customID, "components": rows})
+	return decodeIx(5, "4009", "dana", map[string]any{"custom_id": customID, "components": rows})
 }
 
 // componentClick builds a button press by a mod, which is how the prize
 // review queue is driven.
 func componentClick(customID string) *core.Ix {
-	return decodeIx(3, "mod-1", "mod", map[string]any{"custom_id": customID, "component_type": 2})
+	return decodeIx(3, "3003", "3002", map[string]any{"custom_id": customID, "component_type": 2})
 }
 
 // --- /contest new ---------------------------------------------------------
@@ -172,7 +171,7 @@ func TestNewCreatesAForumAndAnnouncesIt(t *testing.T) {
 		strOpt("announce-for", "1h"), strOpt("submit-for", "48h"), strOpt("vote-for", "24h"),
 		intOpt("picks", 2)))
 
-	c, err := store.LiveContest(context.Background(), "g1")
+	c, err := store.LiveContest(context.Background(), "1000")
 	if err != nil {
 		t.Fatalf("no contest was created: %v", err)
 	}
@@ -185,11 +184,11 @@ func TestNewCreatesAForumAndAnnouncesIt(t *testing.T) {
 	if c.Phase != PhaseAnnounce {
 		t.Errorf("phase = %s, want announce", c.Phase)
 	}
-	if c.AnnounceChannelID != "chan-1" {
+	if c.AnnounceChannelID != "2007" {
 		t.Errorf("announcements went to %q, want the channel it was run in", c.AnnounceChannelID)
 	}
 
-	if len(ops.created) != 1 || ops.created[0].Type != discordgo.ChannelTypeGuildForum {
+	if len(ops.created) != 1 || ops.created[0].Type() != discord.ChannelTypeGuildForum {
 		t.Fatalf("created = %+v, want one forum channel", ops.created)
 	}
 	if ops.created[0].Name != "contest-neon-cats" {
@@ -200,20 +199,20 @@ func TestNewCreatesAForumAndAnnouncesIt(t *testing.T) {
 	// gate is on from the first instant the channel exists, because a forum
 	// that is ungated for even a moment is one every account can see.
 	ow := ops.created[0].PermissionOverwrites
-	everyone := findIn(ow, "g1", discordgo.PermissionOverwriteTypeRole)
+	everyone := findIn(ow, "1000", discord.PermissionOverwriteTypeRole)
 	if everyone == nil || everyone.Deny&postingPerms == 0 {
 		t.Errorf("forum did not start closed to posting: %+v", ow)
 	}
-	if everyone == nil || everyone.Deny&discordgo.PermissionViewChannel == 0 {
+	if everyone == nil || everyone.Deny&discord.PermissionViewChannel == 0 {
 		t.Errorf("forum was created visible to @everyone: %+v", ow)
 	}
-	if melted := findIn(ow, "melted", discordgo.PermissionOverwriteTypeRole); melted == nil ||
-		melted.Allow&discordgo.PermissionViewChannel == 0 {
+	if melted := findIn(ow, "3001", discord.PermissionOverwriteTypeRole); melted == nil ||
+		melted.Allow&discord.PermissionViewChannel == 0 {
 		t.Errorf("the gated role cannot see the contest: %+v", ow)
 	}
 
 	// The tick job has to exist now, or nothing ever moves the phase on.
-	if !sched.has("g1:contest-tick") {
+	if !sched.has("1000:contest-tick") {
 		t.Error("no tick job registered, so the contest would never advance")
 	}
 	if len(audit.all()) != 1 || !strings.Contains(audit.all()[0], "contest.created") {
@@ -232,7 +231,7 @@ func TestNewWithNoAnnounceWindowOpensSubmissionsImmediately(t *testing.T) {
 	p.handleNew(context.Background(), interaction("new",
 		strOpt("title", "quickfire"), strOpt("announce-for", "0")))
 
-	c, err := store.LiveContest(context.Background(), "g1")
+	c, err := store.LiveContest(context.Background(), "1000")
 	if err != nil {
 		t.Fatalf("no contest: %v", err)
 	}
@@ -245,13 +244,13 @@ func TestNewWithNoAnnounceWindowOpensSubmissionsImmediately(t *testing.T) {
 	if len(ops.overwrit) != 0 {
 		t.Errorf("the forum was patched open after being made: %v", ops.overwrit)
 	}
-	everyone := findIn(ops.created[0].PermissionOverwrites, "g1", discordgo.PermissionOverwriteTypeRole)
+	everyone := findIn(ops.created[0].PermissionOverwrites, "1000", discord.PermissionOverwriteTypeRole)
 	if everyone != nil && everyone.Deny&postingPerms != 0 {
 		t.Error("a contest that starts in submit was created closed to posting")
 	}
-	if len(ops.sentTo("chan-1")) != 2 {
+	if len(ops.sentTo("2007")) != 2 {
 		t.Errorf("announcements = %d, want the opening card and the submissions-open one",
-			len(ops.sentTo("chan-1")))
+			len(ops.sentTo("2007")))
 	}
 }
 
@@ -282,7 +281,7 @@ func TestNewRefusesAnUnparseableWindow(t *testing.T) {
 	p.handleNew(context.Background(), interaction("new",
 		strOpt("title", "x"), strOpt("submit-for", "banana")))
 
-	if _, err := store.LiveContest(context.Background(), "g1"); err == nil {
+	if _, err := store.LiveContest(context.Background(), "1000"); err == nil {
 		t.Error("a contest was created with a window that does not parse")
 	}
 }
@@ -334,7 +333,7 @@ func TestPledgingAPrizeSealsTheCodeAndNeverLogsIt(t *testing.T) {
 	if strings.Contains(rt.said(), "STEAM-KEY-1234") {
 		t.Error("a prize code was echoed back into the channel")
 	}
-	for _, m := range ops.sentTo("announce-1") {
+	for _, m := range ops.sentTo("2002") {
 		blob, _ := json.Marshal(m)
 		if strings.Contains(string(blob), "STEAM-KEY-1234") {
 			t.Error("a prize code reached the public announcement")
@@ -390,7 +389,7 @@ func TestAPledgeWithoutACodeIsFine(t *testing.T) {
 	// The announcement is the approval's job now. /contest prize is
 	// TierPublic, so anything it posts is a member's own words reaching a
 	// channel with nobody having read them.
-	if len(ops.sentTo("announce-1")) != 0 {
+	if len(ops.sentTo("2002")) != 0 {
 		t.Error("an unreviewed pledge was announced to the server")
 	}
 }
@@ -442,7 +441,7 @@ func TestOnlyTheDonorCanUnpledge(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	if err := store.AddPrize(context.Background(), Prize{
-		ID: "p1", ContestID: "c1", DonorID: "someone-else", Title: "not yours",
+		ID: "p1", ContestID: "c1", DonorID: "4015", Title: "not yours",
 	}); err != nil {
 		t.Fatalf("seed prize: %v", err)
 	}
@@ -463,8 +462,8 @@ func TestUnpledgeTakesBackYourMostRecentByDefault(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	for _, pr := range []Prize{
-		{ID: "p1", ContestID: "c1", DonorID: "mod-1", Title: "first"},
-		{ID: "p2", ContestID: "c1", DonorID: "mod-1", Title: "second"},
+		{ID: "p1", ContestID: "c1", DonorID: "3003", Title: "first"},
+		{ID: "p2", ContestID: "c1", DonorID: "3003", Title: "second"},
 	} {
 		if err := store.AddPrize(context.Background(), pr); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -494,7 +493,7 @@ func TestPledgeAutocompleteOffersOnlyYourOwn(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	for _, pr := range []Prize{
-		{ID: "p1", ContestID: "c1", DonorID: "mod-1", Title: "mine, a steam key"},
+		{ID: "p1", ContestID: "c1", DonorID: "3003", Title: "mine, a steam key"},
 		{ID: "p2", ContestID: "c1", DonorID: "other", Title: "theirs, a steam key"},
 	} {
 		if err := store.AddPrize(context.Background(), pr); err != nil {
@@ -531,10 +530,10 @@ func TestClaimHandsOverAPrizeAndWipesItAfter(t *testing.T) {
 	if err := store.CreateContest(context.Background(), liveContest(PhaseResults, base)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	winner := "mod-1"
+	winner := "3003"
 	when := base
 	if err := store.AddPrize(context.Background(), Prize{
-		ID: "p1", ContestID: "c1", DonorID: "u9", Title: "a steam key",
+		ID: "p1", ContestID: "c1", DonorID: "4009", Title: "a steam key",
 		SecretSealed: sealed, AwardedTo: &winner, AwardedAt: &when,
 	}); err != nil {
 		t.Fatalf("seed prize: %v", err)
@@ -560,10 +559,10 @@ func TestClaimShowsNothingToSomebodyWhoWonNothing(t *testing.T) {
 	if err := store.CreateContest(context.Background(), liveContest(PhaseResults, base)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	other := "somebody-else"
+	other := "4016"
 	when := base
 	if err := store.AddPrize(context.Background(), Prize{
-		ID: "p1", ContestID: "c1", DonorID: "u9", Title: "a steam key",
+		ID: "p1", ContestID: "c1", DonorID: "4009", Title: "a steam key",
 		SecretSealed: []byte("ciphertext"), AwardedTo: &other, AwardedAt: &when,
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -738,7 +737,7 @@ func TestAdvanceMovesThePhaseAndAuditsIt(t *testing.T) {
 
 	p.handleAdvance(context.Background(), interaction("advance"))
 
-	got, _ := store.LiveContest(context.Background(), "g1")
+	got, _ := store.LiveContest(context.Background(), "1000")
 	if got.Phase != PhaseSubmit {
 		t.Fatalf("phase = %s, want submit", got.Phase)
 	}
@@ -756,18 +755,18 @@ func TestCancelDeletesNothing(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	if err := store.UpsertSubmission(context.Background(), Submission{
-		ID: "s1", ContestID: "c1", UserID: "u1", ThreadID: "t1", Title: "one",
+		ID: "s1", ContestID: "c1", UserID: "4001", ThreadID: "5001", Title: "one",
 	}); err != nil {
 		t.Fatalf("seed submission: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
-	p.SyncGuild(context.Background(), "g1")
+	p.SyncGuild(context.Background(), "1000")
 	stubSession()
 
 	p.handleCancel(context.Background(), interaction("cancel"))
 
-	got, err := store.LiveContest(context.Background(), "g1")
+	got, err := store.LiveContest(context.Background(), "1000")
 	if err == nil {
 		t.Fatalf("contest is still live: %+v", got)
 	}
@@ -777,7 +776,7 @@ func TestCancelDeletesNothing(t *testing.T) {
 	if len(ops.overwrit) != 1 || ops.overwrit[0] != postingPerms {
 		t.Errorf("the forum was not closed to posting: %v", ops.overwrit)
 	}
-	if sched.has("g1:contest-tick") {
+	if sched.has("1000:contest-tick") {
 		t.Error("the tick job outlived the contest it existed for")
 	}
 	if len(audit.all()) != 1 || !strings.Contains(audit.all()[0], "contest.cancelled") {
@@ -804,10 +803,10 @@ func TestConfigureRoundTrips(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	rt := stubSession()
 
-	i := decodeIx(3, "u1", "u1", map[string]any{"custom_id": panelSet + "picks", "component_type": 3, "values": []any{"5"}})
+	i := decodeIx(3, "4001", "4001", map[string]any{"custom_id": panelSet + "picks", "component_type": 3, "values": []any{"5"}})
 	p.handlePanelSet(context.Background(), i, panelSet+"picks")
 
-	cfg, err := store.GetConfig(context.Background(), "g1")
+	cfg, err := store.GetConfig(context.Background(), "1000")
 	if err != nil || cfg.DefaultMaxVotes != 5 {
 		t.Fatalf("config = %+v, %v", cfg, err)
 	}
@@ -861,5 +860,5 @@ func TestPluginLifecycleIsInert(t *testing.T) {
 	if err := p.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown: %v", err)
 	}
-	p.ForgetGuild("g1")
+	p.ForgetGuild("1000")
 }

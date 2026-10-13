@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
+	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/secret"
 )
 
@@ -37,24 +38,23 @@ type member struct {
 }
 
 var testGroup = []member{
-	{"u-ana", "ana"}, {"u-bo", "bo"}, {"u-cal", "cal"}, {"u-dee", "dee"},
-	{"u-eli", "eli"}, {"u-fay", "fay"}, {"u-gus", "gus"}, {"u-hal", "hal"},
-	{"u-ivy", "ivy"}, {"u-jo", "jo"}, {"u-kit", "kit"}, {"u-lou", "lou"},
+	{"4101", "ana"}, {"4102", "bo"}, {"4103", "cal"}, {"4104", "dee"},
+	{"4105", "eli"}, {"4106", "fay"}, {"4107", "gus"}, {"4108", "hal"},
+	{"4109", "ivy"}, {"4110", "jo"}, {"4111", "kit"}, {"4112", "lou"},
 }
 
 // post puts one member's entry in the forum: a thread they own, with a
 // starter message carrying a drawing.
-func post(ops *fakeOps, threadID string, m member, title string) *discordgo.Channel {
-	ops.messages[threadID] = []*discordgo.Message{{
-		ID: threadID, Content: title + ", by " + m.name,
-		Author: &discordgo.User{ID: m.id, Username: m.name},
-		Attachments: []*discordgo.MessageAttachment{{
-			ID:  threadID + "-a",
+func post(ops *fakeOps, threadID string, m member, title string) *fch {
+	ops.messages[threadID] = []discord.Message{{
+		ID: core.ID(threadID), Content: title + ", by " + m.name,
+		Author: discord.User{ID: core.ID(m.id), Username: m.name},
+		Attachments: []discord.Attachment{{
 			URL: "https://cdn.discordapp.com/attachments/1/" + threadID + "/art.png?ex=deadbeef",
 		}},
 	}}
-	return &discordgo.Channel{
-		ID: threadID, GuildID: "g1", ParentID: "forum-1", OwnerID: m.id, Name: title,
+	return &fch{
+		ID: threadID, GuildID: "1000", ParentID: "2001", OwnerID: m.id, Name: title,
 	}
 }
 
@@ -131,21 +131,21 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 		strOpt("announce-for", "1h"), strOpt("submit-for", "48h"), strOpt("vote-for", "24h"),
 		intOpt("picks", 3)))
 
-	c, err := store.LiveContest(context.Background(), "g1")
+	c, err := store.LiveContest(context.Background(), "1000")
 	if err != nil {
 		t.Fatalf("no contest was created: %v", err)
 	}
 	if c.Phase != PhaseAnnounce {
 		t.Fatalf("phase = %s, want announce", c.Phase)
 	}
-	if !sched.has("g1:contest-tick") {
+	if !sched.has("1000:contest-tick") {
 		t.Fatal("no tick job, so nothing would ever advance the contest")
 	}
 
 	// The forum is gated from the instant it exists, which is the property
 	// the whole gate rests on.
 	created := ops.created[0].PermissionOverwrites
-	if denyOn(created, "g1", discordgo.PermissionOverwriteTypeRole)&discordgo.PermissionViewChannel == 0 {
+	if denyOn(created, "1000", discord.PermissionOverwriteTypeRole)&discord.PermissionViewChannel == 0 {
 		t.Error("the forum was created visible to accounts that have not passed the gate")
 	}
 
@@ -184,10 +184,10 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 	// --- submissions open --------------------------------------------------
 
 	now = base.Add(time.Hour + time.Second)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("open submissions: %v", err)
 	}
-	c, _ = store.LiveContest(context.Background(), "g1")
+	c, _ = store.LiveContest(context.Background(), "1000")
 	if c.Phase != PhaseSubmit {
 		t.Fatalf("phase = %s, want submit", c.Phase)
 	}
@@ -197,12 +197,12 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 	// Fourteen threads from twelve members: kit posts twice, and lou deletes
 	// their post partway through the window.
 	for n, m := range testGroup {
-		ops.threads = append(ops.threads, post(ops, "t"+strconv.Itoa(100+n), m, m.name+"'s cat"))
+		ops.threads = append(ops.threads, post(ops, strconv.Itoa(50000+100+n), m, m.name+"'s cat"))
 	}
-	ops.threads = append(ops.threads, post(ops, "t900", testGroup[10], "kit's second go"))
+	ops.threads = append(ops.threads, post(ops, "50900", testGroup[10], "kit's second go"))
 
 	now = base.Add(2 * time.Hour)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("sync entries: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 	// and the reason there is no /contest withdraw to keep in step.
 	ops.threads = ops.threads[:len(ops.threads)-2] // lou's post and kit's spare
 	now = base.Add(3 * time.Hour)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("sync after a withdrawal: %v", err)
 	}
 	subs, _ = store.Submissions(context.Background(), c.ID)
@@ -237,10 +237,10 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 	// --- voting opens ------------------------------------------------------
 
 	now = base.Add(49*time.Hour + time.Second)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("open voting: %v", err)
 	}
-	c, _ = store.LiveContest(context.Background(), "g1")
+	c, _ = store.LiveContest(context.Background(), "1000")
 	if c.Phase != PhaseVote {
 		t.Fatalf("phase = %s, want vote", c.Phase)
 	}
@@ -253,7 +253,7 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 	frozen := len(worker.last().Entries)
 	ops.threads = ops.threads[:1]
 	now = base.Add(50 * time.Hour)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("tick during voting: %v", err)
 	}
 	subs, _ = store.Submissions(context.Background(), c.ID)
@@ -285,20 +285,20 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 		byUser[s.UserID] = s.ID
 	}
 	worker.tally = map[string]int{
-		byUser["u-ana"]: 9,
-		byUser["u-bo"]:  6,
-		byUser["u-cal"]: 4,
+		byUser["4101"]: 9,
+		byUser["4102"]: 6,
+		byUser["4103"]: 4,
 	}
 
 	now = base.Add(73*time.Hour + time.Second)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	if !worker.closed {
 		t.Error("the contest finished without the ballot ever being frozen")
 	}
 
-	done, err := store.LatestContest(context.Background(), "g1")
+	done, err := store.LatestContest(context.Background(), "1000")
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
@@ -310,10 +310,10 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("results: %v", err)
 	}
-	if len(results) == 0 || results[0].ID != byUser["u-ana"] || results[0].Rank != 1 {
+	if len(results) == 0 || results[0].ID != byUser["4101"] || results[0].Rank != 1 {
 		t.Fatalf("ana did not win with the most votes: %+v", results)
 	}
-	if results[1].ID != byUser["u-bo"] || results[2].ID != byUser["u-cal"] {
+	if results[1].ID != byUser["4102"] || results[2].ID != byUser["4103"] {
 		t.Errorf("the podium is not in vote order: %+v", results[:3])
 	}
 
@@ -354,15 +354,15 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 
 	// A finished contest keeps its tick for the refresh window, because the
 	// CDN links in that last push expire in about a day.
-	if !sched.has("g1:contest-tick") {
+	if !sched.has("1000:contest-tick") {
 		t.Error("the tick was dropped at close, so the results gallery would go dead in a day")
 	}
 	now = base.Add(73*time.Hour + artRefreshWindow + time.Hour)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("tick past the window: %v", err)
 	}
-	p.SyncGuild(context.Background(), "g1")
-	if sched.has("g1:contest-tick") {
+	p.SyncGuild(context.Background(), "1000")
+	if sched.has("1000:contest-tick") {
 		t.Error("the tick outlived the refresh window, costing REST calls forever")
 	}
 
@@ -397,7 +397,7 @@ func TestAWholeContestWithNoVotesCrownsNobody(t *testing.T) {
 
 	p.handleNew(context.Background(), interaction("new",
 		strOpt("title", "quiet one"), strOpt("announce-for", "0")))
-	c, err := store.LiveContest(context.Background(), "g1")
+	c, err := store.LiveContest(context.Background(), "1000")
 	if err != nil {
 		t.Fatalf("no contest: %v", err)
 	}
@@ -411,24 +411,24 @@ func TestAWholeContestWithNoVotesCrownsNobody(t *testing.T) {
 		reviewPrefix+"approve:"+pending[0].ID)
 
 	for n, m := range testGroup[:3] {
-		ops.threads = append(ops.threads, post(ops, "t"+strconv.Itoa(200+n), m, m.name+"'s go"))
+		ops.threads = append(ops.threads, post(ops, strconv.Itoa(50000+200+n), m, m.name+"'s go"))
 	}
 	now = base.Add(time.Hour)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
 	// Straight through submit and vote with not one ballot cast.
 	now = base.Add(49 * time.Hour)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("open voting: %v", err)
 	}
 	now = base.Add(74 * time.Hour)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 
-	done, _ := store.LatestContest(context.Background(), "g1")
+	done, _ := store.LatestContest(context.Background(), "1000")
 	if done.Phase != PhaseResults {
 		t.Fatalf("phase = %s, want results", done.Phase)
 	}
