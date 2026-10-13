@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -95,6 +96,18 @@ func TestIxHandlerIsBehindAuthorize(t *testing.T) {
 	}
 	if !strings.Contains(wire.All(), "not allowed") || sessionWire.Answered() {
 		t.Fatalf("the refusal was not sent through the interaction: %s", wire.All())
+	}
+}
+
+// Interaction replies go through the client merlin instruments for /perf and
+// for cygnet, not through one of disgo's own.
+func TestNewRestUsesTheClientItIsGiven(t *testing.T) {
+	_, wire := paneltest.Rest()
+	r := core.NewRest("test", &http.Client{Transport: wire})
+	ix, _ := paneltest.IxCommand(t, "11", "x", nil)
+	ix.Rest = r
+	if err := ix.RespondText("hi"); err != nil || !wire.Answered() {
+		t.Fatalf("the reply did not go through the given client: %v", err)
 	}
 }
 

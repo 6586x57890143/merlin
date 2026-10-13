@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 
 	"github.com/disgoorg/disgo/discord"
@@ -78,9 +79,16 @@ func noPings() *discord.AllowedMentions {
 func NoPings() *discord.AllowedMentions { return noPings() }
 
 // NewRest is the REST client the router hands every Ix: the bot's token,
-// and mentions off unless a call says otherwise.
-func NewRest(token string) rest.Rest {
-	return rest.New(rest.NewClient(token), rest.WithDefaultAllowedMentions(*noPings()))
+// mentions off unless a call says otherwise, and client, which is the
+// session's own so every interaction reply is timed for /perf and reported
+// to cygnet when refused, as every other request is. A nil client is
+// disgo's default.
+func NewRest(token string, client *http.Client) rest.Rest {
+	var opts []rest.ClientConfigOpt
+	if client != nil {
+		opts = append(opts, rest.WithHTTPClient(client))
+	}
+	return rest.New(rest.NewClient(token, opts...), rest.WithDefaultAllowedMentions(*noPings()))
 }
 
 func (ix *Ix) respond(t discord.InteractionResponseType, data discord.InteractionResponseData) error {

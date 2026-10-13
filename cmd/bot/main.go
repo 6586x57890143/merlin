@@ -155,7 +155,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 
 	// Plugins moved to disgo answer through their own REST client (core.Ix);
 	// the rest still answer through the session.
-	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker).WithRest(core.NewRest(cfg.Discord.Token))
+	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker).WithRest(core.NewRest(cfg.Discord.Token, session.Client))
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	journal := discordguard.NewPostgresJournal(db.Pool)
 	auditWriter := audit.New(db.Pool, session, settingsStore)
