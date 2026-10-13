@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 	"github.com/6586x57890143/merlin/internal/fleet"
 	"github.com/6586x57890143/merlin/internal/obs"
 )
@@ -61,40 +63,40 @@ func (p *Plugin) Init(deps core.Deps) error {
 		// Hidden from members in the picker; the operator check is the gate.
 		DefaultMemberPermissions: &adminOnly,
 	})
-	p.commands.Handle("perf", "", spec, p.handlePerf)
-	p.commands.HandleComponent(p.Name(), refreshID, spec, p.handleRefresh)
+	p.commands.HandleIx("perf", "", spec, p.handlePerf)
+	p.commands.HandleComponentIx(p.Name(), refreshID, spec, p.handleRefresh)
 	return nil
 }
 
 func (p *Plugin) Start(context.Context) error    { return nil }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
-func (p *Plugin) operator(i *discordgo.InteractionCreate) bool {
-	return p.perms != nil && i.Member != nil && i.Member.User != nil && p.perms.IsBootstrapAdmin(i.Member.User.ID)
+func (p *Plugin) operator(ix *core.Ix) bool {
+	return p.perms != nil && ix.Member() != nil && p.perms.IsBootstrapAdmin(ix.UserID)
 }
 
-func (p *Plugin) handlePerf(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if !p.operator(i) {
-		core.RespondErr(s, i, "Operator only", fmt.Errorf("these numbers cover every server merlin is in, so only her operator can read them"))
+func (p *Plugin) handlePerf(ctx context.Context, ix *core.Ix) {
+	if !p.operator(ix) {
+		ix.RespondErr("Operator only", fmt.Errorf("these numbers cover every server merlin is in, so only her operator can read them"))
 		return
 	}
-	_ = core.RespondPanel(s, i, p.panel())
+	_ = ix.RespondPanel(p.panel())
 }
 
-func (p *Plugin) handleRefresh(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, _ string) {
-	if !p.operator(i) {
-		core.RespondErr(s, i, "Operator only", fmt.Errorf("these numbers cover every server merlin is in"))
+func (p *Plugin) handleRefresh(ctx context.Context, ix *core.Ix, _ string) {
+	if !p.operator(ix) {
+		ix.RespondErr("Operator only", fmt.Errorf("these numbers cover every server merlin is in"))
 		return
 	}
-	_ = core.UpdatePanel(s, i, p.panel())
+	_ = ix.UpdatePanel(p.panel())
 }
 
 func (p *Plugin) panel() core.Panel {
 	return core.Panel{
 		Color: core.ColorInfo, Title: "Perf", Plugin: p.Name(), Line: "since boot, every server",
-		Body: []discordgo.MessageComponent{
-			core.Text(p.readout()),
-			core.Row(core.Button("Refresh", refreshID, discordgo.SecondaryButton, false)),
+		Parts: []discord.ContainerSubComponent{
+			ui.Text(p.readout()),
+			ui.Row(ui.Button("Refresh", refreshID, discord.ButtonStyleSecondary, false)),
 		},
 		Footer: "in: gateway to dispatch · run: handler or job · http: round trip · wait: a 429's hold · build " + fleet.Build(),
 	}

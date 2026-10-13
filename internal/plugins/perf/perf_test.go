@@ -9,8 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/6586x57890143/merlin/internal/obs"
@@ -26,7 +24,7 @@ func (auth) PluginEnabled(string, string) bool             { return true }
 func setup(t *testing.T) *Plugin {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	perms := core.NewPermissions(nil, auth{}, "operator")
+	perms := core.NewPermissions(nil, auth{}, operator)
 	router := core.NewCommandRouter(perms, auth{}, log)
 	rec := obs.New()
 	rec.Add("rotation", obs.Run, 40*time.Millisecond)
@@ -58,32 +56,28 @@ func TestReadoutFitsItsGrid(t *testing.T) {
 	}
 }
 
+// operator and admin are the bootstrap identity and a guild admin.
+const operator, admin = "900", "901"
+
 func TestOnlyTheOperatorReadsIt(t *testing.T) {
 	p := setup(t)
-	cmd := func(user string) *discordgo.InteractionCreate {
-		return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-			ID: "i", Token: "t", GuildID: "g1", Type: discordgo.InteractionApplicationCommand,
-			Member: &discordgo.Member{User: &discordgo.User{ID: user}},
-			Data:   discordgo.ApplicationCommandInteractionData{Name: "perf"},
-		}}
-	}
-	s, wire := paneltest.Session()
-	p.handlePerf(context.Background(), s, cmd("an-admin"))
+	ix, wire := paneltest.IxCommand(t, admin, "perf", nil)
+	p.handlePerf(context.Background(), ix)
 	if strings.Contains(wire.All(), "go sched") || !strings.Contains(wire.All(), "Operator only") {
 		t.Error("a guild admin read process-wide numbers")
 	}
-	s, wire = paneltest.Session()
-	p.handlePerf(context.Background(), s, cmd("operator"))
-	if !strings.Contains(wire.All(), "go sched") {
-		t.Error("the operator was refused")
+	ix, wire = paneltest.IxCommand(t, operator, "perf", nil)
+	p.handlePerf(context.Background(), ix)
+	if !strings.Contains(wire.All(), "go sched") || !strings.Contains(wire.All(), `"flags":32832`) {
+		t.Errorf("the operator was refused, or the panel was not private and V2: %s", wire.All())
 	}
-	s, wire = paneltest.Session()
-	p.handleRefresh(context.Background(), s, paneltest.Click("operator", refreshID, nil), refreshID)
+	ix, wire = paneltest.IxClick(t, operator, refreshID, nil)
+	p.handleRefresh(context.Background(), ix, refreshID)
 	if !strings.Contains(wire.All(), `"type":7`) {
 		t.Error("refresh did not redraw in place")
 	}
-	s, wire = paneltest.Session()
-	p.handleRefresh(context.Background(), s, paneltest.Click("an-admin", refreshID, nil), refreshID)
+	ix, wire = paneltest.IxClick(t, admin, refreshID, nil)
+	p.handleRefresh(context.Background(), ix, refreshID)
 	if strings.Contains(wire.All(), "go sched") {
 		t.Error("a guild admin refreshed it")
 	}
