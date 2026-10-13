@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -26,23 +24,23 @@ func autoPlugin(ops *fakeOps, store *fakeStore, perms *fakePerms) (*Plugin, *fak
 // jail but tracked differently.
 func TestJailAutomaticIsAnOrdinaryJail(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
-	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "jail-role", Name: jailRoleName}}
+	ops.setMember("7000001", "7000102", []string{"7000302"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "7000301", Name: jailRoleName}}
 	store := newFakeStore()
 	p, ft, _ := autoPlugin(ops, store, newFakePerms())
 
-	if err := p.JailAutomatic(context.Background(), "g1", "u1", time.Hour, "spam", false); err != nil {
+	if err := p.JailAutomatic(context.Background(), "7000001", "7000102", time.Hour, "spam", false); err != nil {
 		t.Fatalf("JailAutomatic: %v", err)
 	}
-	rec, ok, _ := store.GetJail(context.Background(), "g1", "u1")
+	rec, ok, _ := store.GetJail(context.Background(), "7000001", "7000102")
 	if !ok || rec.JailedBy != core.ActorSystem || rec.Reason != "spam" {
 		t.Fatalf("expected a system-authored jail record, got %+v ok=%v", rec, ok)
 	}
 	if rec.ReleaseAt == nil || !rec.ReleaseAt.Equal(fixedNow.Add(time.Hour)) {
 		t.Fatalf("expected release an hour out, got %v", rec.ReleaseAt)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
-	if len(m.Roles) != 1 || m.Roles[0] != "jail-role" {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if len(m.Roles) != 1 || m.Roles[0] != "7000301" {
 		t.Fatalf("expected the member stripped to the marker, got %v", m.Roles)
 	}
 	if len(ft.armed) != 1 {
@@ -60,29 +58,29 @@ func TestJailAutomaticRefusals(t *testing.T) {
 		setup     func(ops *fakeOps, perms *fakePerms)
 	}{
 		{"non-positive duration", 0, false, func(*fakeOps, *fakePerms) {}},
-		{"bootstrap admin, even consenting", time.Hour, true, func(_ *fakeOps, perms *fakePerms) { perms.bootstrapID = "u1" }},
+		{"bootstrap admin, even consenting", time.Hour, true, func(_ *fakeOps, perms *fakePerms) { perms.bootstrapID = "7000102" }},
 		{"member cannot be fetched", time.Hour, false, func(ops *fakeOps, _ *fakePerms) { ops.memberFetchErr = transientErr() }},
-		{"admin-equivalent target", time.Hour, false, func(_ *fakeOps, perms *fakePerms) { perms.protected["u1"] = true }},
+		{"admin-equivalent target", time.Hour, false, func(_ *fakeOps, perms *fakePerms) { perms.protected["7000102"] = true }},
 		{"guild state unresolvable", time.Hour, false, func(_ *fakeOps, perms *fakePerms) { perms.moderateErr = errors.New("no guild state") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ops := newFakeOps()
-			ops.setMember("g1", "u1", []string{"role-a"})
+			ops.setMember("7000001", "7000102", []string{"7000302"})
 			perms := newFakePerms()
 			tc.setup(ops, perms)
 			store := newFakeStore()
 			p, ft, _ := autoPlugin(ops, store, perms)
 
-			if err := p.JailAutomatic(context.Background(), "g1", "u1", tc.duration, "", tc.consented); err == nil {
+			if err := p.JailAutomatic(context.Background(), "7000001", "7000102", tc.duration, "", tc.consented); err == nil {
 				t.Fatal("expected a refusal")
 			}
-			if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok {
+			if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok {
 				t.Fatal("a refusal must record nothing")
 			}
-			if len(ops.memberEditCalls["u1"]) != 0 || len(ft.armed) != 0 {
+			if len(ops.memberEditCalls["7000102"]) != 0 || len(ft.armed) != 0 {
 				t.Fatal("a refusal must strip nobody and arm nothing")
 			}
-			if len(ops.roles["g1"]) != 0 {
+			if len(ops.roles["7000001"]) != 0 {
 				t.Fatal("a refusal must not create the jail role")
 			}
 		})
@@ -95,16 +93,16 @@ func TestJailAutomaticRefusals(t *testing.T) {
 // pins from the other side.
 func TestJailAutomaticConsentWaivesOnlyTheRankCheck(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
+	ops.setMember("7000001", "7000102", []string{"7000302"})
 	perms := newFakePerms()
-	perms.protected["u1"] = true
+	perms.protected["7000102"] = true
 	store := newFakeStore()
 	p, _, _ := autoPlugin(ops, store, perms)
 
-	if err := p.JailAutomatic(context.Background(), "g1", "u1", time.Hour, "", true); err != nil {
+	if err := p.JailAutomatic(context.Background(), "7000001", "7000102", time.Hour, "", true); err != nil {
 		t.Fatalf("a consenting admin should be jailable: %v", err)
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("expected the jail recorded")
 	}
 }
@@ -115,19 +113,19 @@ func TestJailAutomaticConsentWaivesOnlyTheRankCheck(t *testing.T) {
 // snapshot stays the pre-jail one.
 func TestJailAutomaticExtendsOnlyLater(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	store := newFakeStore()
 	end := fixedNow.Add(2 * time.Hour)
 	_ = store.InsertJail(context.Background(), JailRecord{
-		GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end,
+		GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", SnapshotRoleIDs: []string{"7000302"}, ReleaseAt: &end,
 	})
 	p, ft, _ := autoPlugin(ops, store, newFakePerms())
 
 	// Shorter than what is left: untouched.
-	if err := p.JailAutomatic(context.Background(), "g1", "u1", time.Hour, "", false); err != nil {
+	if err := p.JailAutomatic(context.Background(), "7000001", "7000102", time.Hour, "", false); err != nil {
 		t.Fatalf("JailAutomatic: %v", err)
 	}
-	rec, _, _ := store.GetJail(context.Background(), "g1", "u1")
+	rec, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
 	if !rec.ReleaseAt.Equal(end) {
 		t.Fatalf("a shorter sentence must not shorten the jail, got %v", rec.ReleaseAt)
 	}
@@ -136,20 +134,20 @@ func TestJailAutomaticExtendsOnlyLater(t *testing.T) {
 	}
 
 	// Longer: extended and re-armed, snapshot intact.
-	if err := p.JailAutomatic(context.Background(), "g1", "u1", 3*time.Hour, "", false); err != nil {
+	if err := p.JailAutomatic(context.Background(), "7000001", "7000102", 3*time.Hour, "", false); err != nil {
 		t.Fatalf("JailAutomatic: %v", err)
 	}
-	rec, _, _ = store.GetJail(context.Background(), "g1", "u1")
+	rec, _, _ = store.GetJail(context.Background(), "7000001", "7000102")
 	if !rec.ReleaseAt.Equal(fixedNow.Add(3 * time.Hour)) {
 		t.Fatalf("expected the jail extended to 3h, got %v", rec.ReleaseAt)
 	}
-	if len(rec.SnapshotRoleIDs) != 1 || rec.SnapshotRoleIDs[0] != "role-a" {
+	if len(rec.SnapshotRoleIDs) != 1 || rec.SnapshotRoleIDs[0] != "7000302" {
 		t.Fatalf("extension must not touch the snapshot, got %v", rec.SnapshotRoleIDs)
 	}
 	if len(ft.armed) != 1 || ft.armed[0].delay != 3*time.Hour {
 		t.Fatalf("expected a timer re-armed 3h out, got %+v", ft.armed)
 	}
-	if len(ops.memberEditCalls["u1"]) != 0 {
+	if len(ops.memberEditCalls["7000102"]) != 0 {
 		t.Fatal("an extension re-strips nobody")
 	}
 }
@@ -158,15 +156,15 @@ func TestJailAutomaticExtendsOnlyLater(t *testing.T) {
 // automatic escalation can add to a sentence with no end.
 func TestJailAutomaticLeavesAnIndefiniteJailAlone(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	store := newFakeStore()
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role"})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301"})
 	p, ft, _ := autoPlugin(ops, store, newFakePerms())
 
-	if err := p.JailAutomatic(context.Background(), "g1", "u1", time.Hour, "", false); err != nil {
+	if err := p.JailAutomatic(context.Background(), "7000001", "7000102", time.Hour, "", false); err != nil {
 		t.Fatalf("JailAutomatic: %v", err)
 	}
-	rec, _, _ := store.GetJail(context.Background(), "g1", "u1")
+	rec, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
 	if rec.ReleaseAt != nil || len(ft.armed) != 0 {
 		t.Fatalf("an indefinite jail must stay indefinite and unarmed, got %v / %d timers", rec.ReleaseAt, len(ft.armed))
 	}
@@ -177,14 +175,14 @@ func TestJailAutomaticLeavesAnIndefiniteJailAlone(t *testing.T) {
 // landed.
 func TestJailAutomaticReportsAFailedExtension(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	store := newFakeStore()
 	end := fixedNow.Add(time.Minute)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", ReleaseAt: &end})
 	store.setJailReleaseErr = errors.New("db down")
 	p, ft, _ := autoPlugin(ops, store, newFakePerms())
 
-	if err := p.JailAutomatic(context.Background(), "g1", "u1", time.Hour, "", false); err == nil {
+	if err := p.JailAutomatic(context.Background(), "7000001", "7000102", time.Hour, "", false); err == nil {
 		t.Fatal("expected the failed extension reported")
 	}
 	if len(ft.armed) != 0 {

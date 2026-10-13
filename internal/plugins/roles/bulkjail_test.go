@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/disgoorg/disgo/discord"
 )
 
@@ -21,13 +22,13 @@ func bulkPlugin(ops *fakeOps, store *fakeStore, perms *fakePerms) *Plugin {
 
 func TestCollectJailUserIDsReadsEveryFilledSlotInOrder(t *testing.T) {
 	opts := map[string]discord.SlashCommandOption{
-		"user":     jsonOpt("user", "u1"),
-		"user3":    jsonOpt("user3", "u3"),
-		"user5":    jsonOpt("user5", "u5"),
+		"user":     jsonOpt("user", "7000102"),
+		"user3":    jsonOpt("user3", "7000104"),
+		"user5":    jsonOpt("user5", "7000106"),
 		"duration": jsonOpt("duration", "1h"),
 	}
 	got := collectJailUserIDs(opts)
-	if !slices.Equal(got, []string{"u1", "u3", "u5"}) {
+	if !slices.Equal(got, []string{"7000102", "7000104", "7000106"}) {
 		t.Errorf("collectJailUserIDs = %v, want [u1 u3 u5]", got)
 	}
 }
@@ -37,22 +38,22 @@ func TestCollectJailUserIDsReadsEveryFilledSlotInOrder(t *testing.T) {
 // their own command, which reads as a failure.
 func TestCollectJailUserIDsDropsDuplicates(t *testing.T) {
 	opts := map[string]discord.SlashCommandOption{
-		"user":  jsonOpt("user", "u1"),
-		"user2": jsonOpt("user2", "u1"),
-		"user3": jsonOpt("user3", "u2"),
+		"user":  jsonOpt("user", "7000102"),
+		"user2": jsonOpt("user2", "7000102"),
+		"user3": jsonOpt("user3", "7000103"),
 	}
 	got := collectJailUserIDs(opts)
-	if !slices.Equal(got, []string{"u1", "u2"}) {
+	if !slices.Equal(got, []string{"7000102", "7000103"}) {
 		t.Errorf("collectJailUserIDs = %v, want [u1 u2]; the duplicate should collapse", got)
 	}
 }
 
 func TestCollectJailUserIDsIgnoresUnfilledSlots(t *testing.T) {
 	opts := map[string]discord.SlashCommandOption{
-		"user":  jsonOpt("user", "u1"),
+		"user":  jsonOpt("user", "7000102"),
 		"user2": jsonOpt("user2", ""),
 	}
-	if got := collectJailUserIDs(opts); !slices.Equal(got, []string{"u1"}) {
+	if got := collectJailUserIDs(opts); !slices.Equal(got, []string{"7000102"}) {
 		t.Errorf("collectJailUserIDs = %v, want [u1]", got)
 	}
 }
@@ -62,29 +63,29 @@ func TestCollectJailUserIDsIgnoresUnfilledSlots(t *testing.T) {
 func TestJailManyJailsEveryTargetAndTracksThemAll(t *testing.T) {
 	ops := newFakeOps()
 	targets := make([]jailTarget, 0, 3)
-	for _, id := range []string{"u1", "u2", "u3"} {
-		ops.setMember("g1", id, []string{"role-a"})
-		targets = append(targets, jailTarget{userID: id, roles: []string{"role-a"}})
+	for _, id := range []string{"7000102", "7000103", "7000104"} {
+		ops.setMember("7000001", id, []string{"7000302"})
+		targets = append(targets, jailTarget{userID: id, roles: []string{"7000302"}})
 	}
 	store := newFakeStore()
 	p := bulkPlugin(ops, store, newFakePerms())
 
-	res := p.jailMany(context.Background(), "g1", "jail-role", targets, time.Hour, "mod1", "raid")
+	res := p.jailMany(context.Background(), "7000001", "7000301", targets, time.Hour, "7000112", "raid")
 
 	if len(res.jailed) != 3 {
 		t.Fatalf("jailed %v, want all three", res.jailed)
 	}
-	for _, id := range []string{"u1", "u2", "u3"} {
-		rec, ok, _ := store.GetJail(context.Background(), "g1", id)
+	for _, id := range []string{"7000102", "7000103", "7000104"} {
+		rec, ok, _ := store.GetJail(context.Background(), "7000001", id)
 		if !ok {
 			t.Errorf("%s was jailed with no record tracking them; nothing would ever release them", id)
 			continue
 		}
-		if !slices.Equal(rec.SnapshotRoleIDs, []string{"role-a"}) {
+		if !slices.Equal(rec.SnapshotRoleIDs, []string{"7000302"}) {
 			t.Errorf("%s snapshot = %v, want [role-a]", id, rec.SnapshotRoleIDs)
 		}
-		member, _ := ops.GuildMember("g1", id)
-		if !slices.Contains(member.Roles, "jail-role") {
+		member, _ := ops.GuildMember("7000001", id)
+		if !slices.Contains(member.Roles, "7000301") {
 			t.Errorf("%s did not end up holding the jail marker: %v", id, member.Roles)
 		}
 	}
@@ -95,31 +96,31 @@ func TestJailManyJailsEveryTargetAndTracksThemAll(t *testing.T) {
 // who reads "jailed 3, 1 failed".
 func TestJailManyReportsPerTargetOutcomesAndKeepsGoing(t *testing.T) {
 	ops := newFakeOps()
-	for _, id := range []string{"u1", "u2", "u3"} {
-		ops.setMember("g1", id, nil)
+	for _, id := range []string{"7000102", "7000103", "7000104"} {
+		ops.setMember("7000001", id, nil)
 	}
 	store := newFakeStore()
 
 	// u2 is already jailed by an earlier action.
 	existing := JailRecord{
-		GuildID: "g1", UserID: "u2", SnapshotRoleIDs: []string{"real-role"},
-		JailRoleID: "jail-role", JailedAt: fixedNow.Add(-time.Hour),
+		GuildID: "7000001", UserID: "7000103", SnapshotRoleIDs: []string{"7000332"},
+		JailRoleID: "7000301", JailedAt: fixedNow.Add(-time.Hour),
 	}
 	if err := store.InsertJail(context.Background(), existing); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := bulkPlugin(ops, store, newFakePerms())
-	targets := []jailTarget{{userID: "u1"}, {userID: "u2"}, {userID: "u3"}}
-	res := p.jailMany(context.Background(), "g1", "jail-role", targets, time.Hour, "mod1", "")
+	targets := []jailTarget{{userID: "7000102"}, {userID: "7000103"}, {userID: "7000104"}}
+	res := p.jailMany(context.Background(), "7000001", "7000301", targets, time.Hour, "7000112", "")
 
-	if !slices.Equal(res.jailed, []string{"u1", "u3"}) {
+	if !slices.Equal(res.jailed, []string{"7000102", "7000104"}) {
 		t.Errorf("jailed = %v, want [u1 u3]", res.jailed)
 	}
-	if !slices.Equal(res.redated, []string{"u2"}) {
+	if !slices.Equal(res.redated, []string{"7000103"}) {
 		t.Errorf("redated = %v, want [u2]", res.redated)
 	}
-	rec, _, _ := store.GetJail(context.Background(), "g1", "u2")
+	rec, _, _ := store.GetJail(context.Background(), "7000001", "7000103")
 	// The sentence moves to the one just given...
 	if rec.ReleaseAt == nil || !rec.ReleaseAt.Equal(fixedNow.Add(time.Hour)) {
 		t.Errorf("re-jailing did not move the release to the new sentence: %v", rec.ReleaseAt)
@@ -127,7 +128,7 @@ func TestJailManyReportsPerTargetOutcomesAndKeepsGoing(t *testing.T) {
 	// ...and nothing else does. The snapshot is the only copy of what u2 held
 	// before being stripped; re-recording it now would capture the marker
 	// alone, and release would restore nothing.
-	if !slices.Equal(rec.SnapshotRoleIDs, []string{"real-role"}) {
+	if !slices.Equal(rec.SnapshotRoleIDs, []string{"7000332"}) {
 		t.Errorf("an already-jailed member's snapshot was overwritten: %v", rec.SnapshotRoleIDs)
 	}
 	if !rec.JailedAt.Equal(fixedNow.Add(-time.Hour)) {
@@ -139,20 +140,20 @@ func TestJailManyReportsPerTargetOutcomesAndKeepsGoing(t *testing.T) {
 
 func TestPartitionByRankSkipsProtectedTargetsAndKeepsTheRest(t *testing.T) {
 	perms := newFakePerms()
-	perms.protected["admin-user"] = true
+	perms.protected["7000111"] = true
 	p := bulkPlugin(newFakeOps(), newFakeStore(), perms)
 
-	targets := []jailTarget{{userID: "u1"}, {userID: "admin-user"}, {userID: "u2"}}
-	allowed, res := p.partitionByRank("g1", actorMember("mod1"), targets)
+	targets := []jailTarget{{userID: "7000102"}, {userID: "7000111"}, {userID: "7000103"}}
+	allowed, res := p.partitionByRank("7000001", actorMember("7000112"), targets)
 
 	got := make([]string, len(allowed))
 	for i, a := range allowed {
 		got[i] = a.userID
 	}
-	if !slices.Equal(got, []string{"u1", "u2"}) {
+	if !slices.Equal(got, []string{"7000102", "7000103"}) {
 		t.Errorf("allowed = %v, want [u1 u2]", got)
 	}
-	if !slices.Equal(res.protected, []string{"admin-user"}) {
+	if !slices.Equal(res.protected, []string{"7000111"}) {
 		t.Errorf("protected = %v, want [admin-user]", res.protected)
 	}
 }
@@ -164,7 +165,7 @@ func TestPartitionByRankFailsClosedWhenTheCheckCannotBeMade(t *testing.T) {
 	perms.moderateErr = fmt.Errorf("no session state available")
 	p := bulkPlugin(newFakeOps(), newFakeStore(), perms)
 
-	allowed, res := p.partitionByRank("g1", actorMember("mod1"), []jailTarget{{userID: "u1"}})
+	allowed, res := p.partitionByRank("7000001", actorMember("7000112"), []jailTarget{{userID: "7000102"}})
 	if len(allowed) != 0 {
 		t.Errorf("allowed %v despite an unresolvable rank check", allowed)
 	}
@@ -178,20 +179,20 @@ func TestPartitionByRankFailsClosedWhenTheCheckCannotBeMade(t *testing.T) {
 // the actor may not touch at all must leave nothing behind.
 func TestFullyRefusedBatchCreatesNoJailRole(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "admin-user", []string{"admin-role"})
+	ops.setMember("7000001", "7000111", []string{"7000336"})
 	perms := newFakePerms()
-	perms.protected["admin-user"] = true
+	perms.protected["7000111"] = true
 	p := bulkPlugin(ops, newFakeStore(), perms)
 
-	targets, _ := p.resolveTargets("g1", []string{"admin-user"})
-	allowed, res := p.partitionByRank("g1", actorMember("mod1"), targets)
+	targets, _ := p.resolveTargets("7000001", []string{"7000111"})
+	allowed, res := p.partitionByRank("7000001", actorMember("7000112"), targets)
 	if len(allowed) != 0 {
 		t.Fatal("the protected target was not filtered out")
 	}
 	if len(res.protected) != 1 {
 		t.Fatalf("protected = %v", res.protected)
 	}
-	if roles := ops.roles["g1"]; len(roles) != 0 {
+	if roles := ops.roles["7000001"]; len(roles) != 0 {
 		t.Errorf("a fully-refused batch created guild roles: %v", roles)
 	}
 }
@@ -200,17 +201,17 @@ func TestFullyRefusedBatchCreatesNoJailRole(t *testing.T) {
 
 func seedMembers(ops *fakeOps, guildID, roleID string, n int, from int) {
 	for i := range n {
-		ops.setMember(guildID, fmt.Sprintf("u%04d", from+i), []string{roleID})
+		ops.setMember(guildID, strconv.Itoa(7100000+from+i), []string{roleID})
 	}
 }
 
 func TestMembersWithRoleFindsOnlyHolders(t *testing.T) {
 	ops := newFakeOps()
-	seedMembers(ops, "g1", "raider", 3, 1)
-	ops.setMember("g1", "u9999", []string{"regular"})
+	seedMembers(ops, "7000001", "7000315", 3, 1)
+	ops.setMember("7000001", "7000107", []string{"7000341"})
 
 	p := bulkPlugin(ops, newFakeStore(), newFakePerms())
-	matches, complete, err := p.membersWithRole("g1", "raider")
+	matches, complete, err := p.membersWithRole("7000001", "7000315")
 	if err != nil {
 		t.Fatalf("membersWithRole: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestMembersWithRoleFindsOnlyHolders(t *testing.T) {
 		t.Fatalf("matched %d members, want 3: %+v", len(matches), matches)
 	}
 	for _, m := range matches {
-		if m.userID == "u9999" {
+		if m.userID == "7000107" {
 			t.Error("matched a member who does not hold the role")
 		}
 	}
@@ -233,11 +234,11 @@ func TestMembersWithRolePagesBeyondOnePage(t *testing.T) {
 	ops := newFakeOps()
 	// memberPageSize is 1000; seed enough to force a second page while
 	// staying under the match cap by giving most of them a different role.
-	seedMembers(ops, "g1", "other", memberPageSize, 1)
-	seedMembers(ops, "g1", "raider", 5, 5000)
+	seedMembers(ops, "7000001", "7000340", memberPageSize, 1)
+	seedMembers(ops, "7000001", "7000315", 5, 5000)
 
 	p := bulkPlugin(ops, newFakeStore(), newFakePerms())
-	matches, complete, err := p.membersWithRole("g1", "raider")
+	matches, complete, err := p.membersWithRole("7000001", "7000315")
 	if err != nil {
 		t.Fatalf("membersWithRole: %v", err)
 	}
@@ -254,10 +255,10 @@ func TestMembersWithRolePagesBeyondOnePage(t *testing.T) {
 
 func TestMembersWithRoleStopsOncePastTheCap(t *testing.T) {
 	ops := newFakeOps()
-	seedMembers(ops, "g1", "raider", maxBulkJailTargets+20, 1)
+	seedMembers(ops, "7000001", "7000315", maxBulkJailTargets+20, 1)
 
 	p := bulkPlugin(ops, newFakeStore(), newFakePerms())
-	matches, _, err := p.membersWithRole("g1", "raider")
+	matches, _, err := p.membersWithRole("7000001", "7000315")
 	if err != nil {
 		t.Fatalf("membersWithRole: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestMembersWithRoleReportsListingFailure(t *testing.T) {
 	ops.memberListErr = transientErr()
 	p := bulkPlugin(ops, newFakeStore(), newFakePerms())
 
-	if _, _, err := p.membersWithRole("g1", "raider"); err == nil {
+	if _, _, err := p.membersWithRole("7000001", "7000315"); err == nil {
 		t.Fatal("a failed member listing must not look like an empty role")
 	}
 }
@@ -283,7 +284,7 @@ func TestMembersWithRoleReportsListingFailure(t *testing.T) {
 func TestJailRoleRefusesEveryone(t *testing.T) {
 	p := bulkPlugin(newFakeOps(), newFakeStore(), newFakePerms())
 	// @everyone's role ID is the guild's own ID.
-	err := p.validateJailRoleTarget("g1", "g1")
+	err := p.validateJailRoleTarget("7000001", "7000001")
 	if err == nil {
 		t.Fatal("jailing @everyone was allowed; that jails the whole server including whoever could undo it")
 	}
@@ -294,17 +295,17 @@ func TestJailRoleRefusesEveryone(t *testing.T) {
 
 func TestJailRoleRefusesRoleTheBotCannotManage(t *testing.T) {
 	perms := newFakePerms()
-	perms.unmanageable["staff"] = true
+	perms.unmanageable["7000330"] = true
 	p := bulkPlugin(newFakeOps(), newFakeStore(), perms)
 
-	if err := p.validateJailRoleTarget("g1", "staff"); err == nil {
+	if err := p.validateJailRoleTarget("7000001", "7000330"); err == nil {
 		t.Fatal("allowed jailing a role the bot can't strip; members would keep it and the jail would not do its job")
 	}
 }
 
 func TestJailRoleAllowsAnOrdinaryRole(t *testing.T) {
 	p := bulkPlugin(newFakeOps(), newFakeStore(), newFakePerms())
-	if err := p.validateJailRoleTarget("g1", "raider"); err != nil {
+	if err := p.validateJailRoleTarget("7000001", "7000315"); err != nil {
 		t.Fatalf("an ordinary manageable role was refused: %v", err)
 	}
 }
@@ -313,13 +314,12 @@ func TestJailRoleAllowsAnOrdinaryRole(t *testing.T) {
 
 func TestExcludeSelfAndBotDropsBothAndKeepsOthers(t *testing.T) {
 	p := bulkPlugin(newFakeOps(), newFakeStore(), newFakePerms())
-	session := &discordgo.Session{State: discordgo.NewState()}
-	session.State.User = &discordgo.User{ID: "bot-id"}
+	p.botID = core.ID("7000130")
 
-	targets := []jailTarget{{userID: "mod1"}, {userID: "bot-id"}, {userID: "u1"}}
-	got := p.excludeSelfAndBot(targets, "mod1", session)
+	targets := []jailTarget{{userID: "7000112"}, {userID: "7000130"}, {userID: "7000102"}}
+	got := p.excludeSelfAndBot(targets, "7000112")
 
-	if len(got) != 1 || got[0].userID != "u1" {
+	if len(got) != 1 || got[0].userID != "7000102" {
 		t.Errorf("excludeSelfAndBot = %+v, want just u1; jailing the actor or the bot is an accident, not an intent", got)
 	}
 }
@@ -330,14 +330,14 @@ func TestExcludeSelfAndBotDropsBothAndKeepsOthers(t *testing.T) {
 // summary that lists only successes lets a mod believe a raid was contained.
 func TestSummaryAccountsForEveryNonJailedMember(t *testing.T) {
 	res := bulkJailResult{
-		jailed:       []string{"u1"},
-		redated:      []string{"u2"},
-		protected:    []string{"u3"},
-		failed:       []string{"u4: boom"},
+		jailed:       []string{"7000102"},
+		redated:      []string{"7000103"},
+		protected:    []string{"7000104"},
+		failed:       []string{"7000105: boom"},
 		unmanageable: 1,
 	}
 	out := summarizeBulkJail(res, time.Hour, jailSentence)
-	for _, want := range []string{"u1", "u2", "u3", "u4", "kept at least one role"} {
+	for _, want := range []string{"7000102", "7000103", "7000104", "7000105", "kept at least one role"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary omits %q, so its absence would go unnoticed:\n%s", want, out)
 		}
@@ -370,11 +370,11 @@ func TestDescribeCountDistinguishesAFloorFromATotal(t *testing.T) {
 }
 
 func TestMergeCombinesEveryCategory(t *testing.T) {
-	a := bulkJailResult{jailed: []string{"u1"}, protected: []string{"p1"}, unmanageable: 1}
-	b := bulkJailResult{jailed: []string{"u2"}, redated: []string{"a1"}, failed: []string{"f1"}, unmanageable: 2}
+	a := bulkJailResult{jailed: []string{"7000102"}, protected: []string{"p1"}, unmanageable: 1}
+	b := bulkJailResult{jailed: []string{"7000103"}, redated: []string{"a1"}, failed: []string{"f1"}, unmanageable: 2}
 	got := a.merge(b)
 
-	if !slices.Equal(got.jailed, []string{"u1", "u2"}) {
+	if !slices.Equal(got.jailed, []string{"7000102", "7000103"}) {
 		t.Errorf("jailed = %v", got.jailed)
 	}
 	if !slices.Equal(got.protected, []string{"p1"}) || !slices.Equal(got.redated, []string{"a1"}) || !slices.Equal(got.failed, []string{"f1"}) {

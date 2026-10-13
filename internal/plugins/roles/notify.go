@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -32,9 +32,9 @@ func (p *Plugin) notifyJailed(ctx context.Context, guildID, userID string, relea
 	if releaseAt != nil {
 		vars["until"] = relativeTimestamp(*releaseAt)
 	}
-	var fields []*discordgo.MessageEmbedField
+	var fields []discord.EmbedField
 	if reason != "" {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "Reason given",
 			Value: core.TruncateEmbedField(reason),
 		})
@@ -59,9 +59,9 @@ func (p *Plugin) notifyMoved(ctx context.Context, guildID, userID string, releas
 	if releaseAt != nil {
 		vars["until"] = relativeTimestamp(*releaseAt)
 	}
-	var fields []*discordgo.MessageEmbedField
+	var fields []discord.EmbedField
 	if reason != "" {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Reason given", Value: core.TruncateEmbedField(reason)})
+		fields = append(fields, discord.EmbedField{Name: "Reason given", Value: core.TruncateEmbedField(reason)})
 	}
 	p.dm(ctx, guildID, userID, timedKey(to.intoKey, releaseAt), "Moved to "+to.name, core.ColorWarning, vars, fields...)
 }
@@ -98,7 +98,7 @@ func untilText(t *time.Time) string {
 	return relativeTimestamp(*t)
 }
 
-func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, title string, color int, vars map[string]string, fields ...*discordgo.MessageEmbedField) {
+func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, title string, color int, vars map[string]string, fields ...discord.EmbedField) {
 	body := p.voice.Line(ctx, guildID, key, vars)
 	if body == "" {
 		// Nothing renderable to say. Saying nothing is strictly better than
@@ -107,7 +107,7 @@ func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, 
 		return
 	}
 
-	ch, err := p.ops(guildID).UserChannelCreate(userID)
+	ch, err := p.ops(guildID).CreateDMChannel(core.ID(userID))
 	if err != nil {
 		// Closed DMs are the ordinary case here, not an incident, so this
 		// is Info rather than Error. It is still worth a line: "they were
@@ -115,10 +115,10 @@ func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, 
 		p.log.Info("roles: could not open a DM to notify member", "guild", guildID, "user", userID, "err", err)
 		return
 	}
-	embed := core.NewEmbed(color, title, body, fields...)
-	if _, err := p.ops(guildID).ChannelMessageSendComplex(ch.ID, &discordgo.MessageSend{
-		Embed: embed,
-		Files: core.EmbedFiles(embed),
+	embed := core.Embed(color, title, body, fields...)
+	if _, err := p.ops(guildID).CreateMessage(ch.ID(), discord.MessageCreate{
+		Embeds: []discord.Embed{embed},
+		Files:  core.EmbedUploads(embed),
 	}); err != nil {
 		p.log.Info("roles: could not deliver member notice", "guild", guildID, "user", userID, "err", err)
 	}
@@ -129,7 +129,7 @@ func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, 
 // server it is about (most members are in many), but not knowing the name
 // is a reason to be vague, not a reason to stay silent.
 func (p *Plugin) guildName(guildID string) string {
-	g, err := p.ops(guildID).Guild(guildID)
+	g, err := p.ops(guildID).GetGuild(core.ID(guildID))
 	if err != nil || g == nil || g.Name == "" {
 		return "this server"
 	}

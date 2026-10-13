@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -253,7 +252,7 @@ func (p *Plugin) setMarkerRole(ctx context.Context, ix *core.Ix, roleID string) 
 // syncJailOne applies the allowlist to one channel's overwrite for the jail
 // role, if the guild has one yet. Without one nothing is synced: the list is
 // saved and applies when the role is first resolved and does its full sync.
-func (p *Plugin) syncJailOne(guildID, channelID string) (int64, error) {
+func (p *Plugin) syncJailOne(guildID, channelID string) (discord.Permissions, error) {
 	p.jailRoleMu.Lock()
 	jailRoleID, known := p.jailRoleID[guildID]
 	p.jailRoleMu.Unlock()
@@ -271,7 +270,7 @@ func (p *Plugin) syncJailOne(guildID, channelID string) (int64, error) {
 // or removed is saved, synced and audited, as the allow and disallow
 // subcommands did one at a time.
 func (p *Plugin) setAllowlist(ctx context.Context, ix *core.Ix, customID, who string,
-	add, remove func(ctx context.Context, guildID, channelID string) error, auditKey string, sync func(guildID, channelID string) (int64, error)) string {
+	add, remove func(ctx context.Context, guildID, channelID string) error, auditKey string, sync func(guildID, channelID string) (discord.Permissions, error)) string {
 	added, removed := ix.SelectDiff(customID)
 	var notes []string
 	for _, ch := range added {
@@ -303,7 +302,7 @@ func (p *Plugin) setAllowlist(ctx context.Context, ix *core.Ix, customID, who st
 // (memberBaseline). An admin who allowlists an announcements room for jailed
 // members is told they can read it and not post in it, rather than finding
 // out from the post.
-func (p *Plugin) allowedNote(guildID, who, channelID string, withheld int64) string {
+func (p *Plugin) allowedNote(guildID, who, channelID string, withheld discord.Permissions) string {
 	if withheld == 0 {
 		return fmt.Sprintf("✓ Channel allowed: <#%s> stays visible to %s.", channelID, who)
 	}
@@ -311,14 +310,14 @@ func (p *Plugin) allowedNote(guildID, who, channelID string, withheld int64) str
 	if id := p.jailChannelConfig.MemberRoleID(guildID); id != "" {
 		baseline = core.MentionRole(id)
 	}
-	if withheld&discordgo.PermissionViewChannel != 0 {
+	if withheld&discord.PermissionViewChannel != 0 {
 		return fmt.Sprintf("! Channel allowed, but hidden anyway: ordinary members (%s) cannot see <#%s>, so %s cannot either.", baseline, channelID, who)
 	}
 	return fmt.Sprintf("! Channel allowed, with limits: <#%s> stays visible to %s, but they get no %s there: ordinary members (%s) don't have it in that channel either.",
 		channelID, who, namePermissions(withheld), baseline)
 }
 
-func withheldDetail(withheld int64) string {
+func withheldDetail(withheld discord.Permissions) string {
 	if withheld == 0 {
 		return ""
 	}

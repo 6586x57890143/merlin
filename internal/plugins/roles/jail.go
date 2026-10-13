@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -100,7 +100,7 @@ func (p *Plugin) handleJail(ctx context.Context, ix *core.Ix) {
 	// Rank check before anything is created or written: jail is TierMod but
 	// strips roles, so without this a mod could use it to strip an admin's
 	// Administrator bit and with it their TierAdmin access to this bot.
-	allowed, res := p.partitionByRank(ix.GuildID, ix.MemberGo(), targets)
+	allowed, res := p.partitionByRank(ix.GuildID, ix.Actor(), targets)
 	res.failed = append(res.failed, fetchFailed...)
 
 	if len(allowed) > 0 {
@@ -405,10 +405,11 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, jailRoleID string, t ja
 // regranted role from beating the Jailed role's own channel-level deny (see
 // its doc comment), and paying that cost is worth it exactly there, not on
 // the common case of a jail nobody is fighting.
-func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*discordgo.Member, error) {
-	m, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &newRoles})
+func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*discord.Member, error) {
+	roles := core.IDs(newRoles)
+	m, err := p.ops(guildID).UpdateMember(core.ID(guildID), core.ID(userID), discord.MemberUpdate{Roles: &roles})
 	if err != nil {
-		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownRole) {
+		if core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownRole)) {
 			// The cached Jailed role was deleted in Discord. Forget it so the
 			// next attempt resolves or recreates one instead of retrying
 			// against a dead ID until the process restarts. Deliberately not
@@ -433,7 +434,7 @@ func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*d
 // stays connected, audible, and (if streaming) visible until they leave on
 // their own unless explicitly disconnected here.
 //
-// A separate GuildMemberEdit call, deliberately not merged into the role
+// A separate member edit, deliberately not merged into the role
 // edit above: Discord's Modify Guild Member endpoint permission-checks the
 // whole request per field it touches, and channel_id needs Move Members
 // where roles only needs Manage Roles. Combining them would mean a guild
@@ -447,8 +448,7 @@ func (p *Plugin) disconnectFromVoice(guildID, userID string) {
 	if channelID, ok := p.voiceChannelOf(guildID, userID); ok {
 		p.log.Info("roles: disconnecting jailed member from voice", "guild", guildID, "user", userID, "channel", channelID)
 	}
-	empty := ""
-	if _, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{ChannelID: &empty}); err != nil {
+	if err := p.ops(guildID).DisconnectMember(core.ID(guildID), core.ID(userID)); err != nil {
 		p.log.Warn("roles: failed to disconnect jailed member from voice", "guild", guildID, "user", userID, "err", err)
 	}
 }
@@ -515,8 +515,8 @@ const rejoinGrace = 30 * time.Second
 // distinction is exactly what separates an evasion from the case the
 // confused-deputy rule protects (a mod deliberately stripping the marker to
 // let someone out early), so honoring one doesn't cost the other.
-func rejoinedSinceJail(member *discordgo.Member, rec JailRecord) bool {
-	if member.JoinedAt.IsZero() {
+func rejoinedSinceJail(member *discord.Member, rec JailRecord) bool {
+	if member.JoinedAt == nil || member.JoinedAt.IsZero() {
 		// No timestamp to reason from. Fail toward the existing behavior
 		// (treat a missing marker as a manual release) rather than re-jailing
 		// someone on a guess.
@@ -571,7 +571,7 @@ func (p *Plugin) reapplyEvadedJails(ctx context.Context, guildID string) error {
 // is a moderator's decision, and leaving the server neither serves the
 // sentence nor extends it.
 func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRecord) error {
-	member, err := p.ops(guildID).GuildMember(guildID, rec.UserID)
+	member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(rec.UserID))
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			// Still gone. Their jail record stays: if they come back before
@@ -581,16 +581,16 @@ func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRe
 		return fmt.Errorf("roles: fetch member %s for evasion check: %w", rec.UserID, err)
 	}
 
-	expected, unmanageable := jailRoles(p.perms, guildID, rec.JailRoleID, member.Roles)
+	expected, unmanageable := jailRoles(p.perms, guildID, rec.JailRoleID, core.IDStrings(member.RoleIDs))
 	rejoined := false
-	if slices.Contains(member.Roles, rec.JailRoleID) {
-		if sameRoleSet(expected, member.Roles) {
+	if slices.Contains(core.IDStrings(member.RoleIDs), rec.JailRoleID) {
+		if sameRoleSet(expected, core.IDStrings(member.RoleIDs)) {
 			return nil // Still exactly as jailed as they should be.
 		}
 		// Marker present but roles drifted beyond it: something (typically
 		// onboarding/screening) regranted roles after the strip. Falls
 		// through to the same reassertion below as the rejoin case.
-	} else if p.detectManualTransfer(ctx, guildID, rec, member.Roles) {
+	} else if p.detectManualTransfer(ctx, guildID, rec, core.IDStrings(member.RoleIDs)) {
 		// A mod moved them between the nest and the island by hand. The row
 		// followed the marker (script_vacation.go); nothing to re-apply.
 		return nil
@@ -795,13 +795,13 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 	}
 	defer p.unclaim(key)
 
-	member, err := p.ops(guildID).GuildMember(guildID, userID)
+	member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(userID))
 	if err != nil {
 		// Unknown Member specifically, not any unknown resource: the same
 		// call answers Unknown Guild once the bot has been removed, and
 		// reading that as "the member left" would drop the row ForgetGuild
 		// keeps for a re-invite.
-		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
+		if core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownMember)) {
 			// Member left the guild, nothing left to restore.
 			return p.store.DeleteJail(ctx, guildID, userID)
 		}
@@ -812,21 +812,21 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 		return fmt.Errorf("roles: fetch member %s for release: %w", userID, err)
 	}
 
-	if !slices.Contains(member.Roles, rec.JailRoleID) {
+	if !slices.Contains(core.IDStrings(member.RoleIDs), rec.JailRoleID) {
 		p.log.Info("roles: jail marker already gone, treating as already released", "guild", guildID, "user", userID)
 		return p.store.DeleteJail(ctx, guildID, userID)
 	}
 
-	guildRoles, err := p.ops(guildID).GuildRoles(guildID)
+	guildRoles, err := p.ops(guildID).GetRoles(core.ID(guildID))
 	if err != nil {
 		return fmt.Errorf("roles: list guild roles for release: %w", err)
 	}
 	valid := make(map[string]bool, len(guildRoles))
 	for _, r := range guildRoles {
-		valid[r.ID] = true
+		valid[r.ID.String()] = true
 	}
 	// Release removes the marker and puts the snapshot back; it never
-	// removes anything else. GuildMemberEdit replaces the whole role set,
+	// removes anything else. A member edit replaces the whole role set,
 	// and Discord refuses the edit if any role in the diff is one the bot
 	// can't manage. Writing the snapshot alone would strip whatever the
 	// member gained while jailed, and a booster role or a role above the
@@ -834,8 +834,8 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 	// jail past their release. Same guard on the roles being put back:
 	// one moved above the bot since jailing is skipped and logged rather
 	// than failing the release forever.
-	restore := make([]string, 0, len(member.Roles)+len(rec.SnapshotRoleIDs))
-	for _, id := range member.Roles {
+	restore := make([]string, 0, len(core.IDStrings(member.RoleIDs))+len(rec.SnapshotRoleIDs))
+	for _, id := range core.IDStrings(member.RoleIDs) {
 		if id != rec.JailRoleID {
 			restore = append(restore, id)
 		}
@@ -851,7 +851,8 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 		restore = append(restore, id)
 	}
 
-	if _, err := p.ops(guildID).GuildMemberEdit(guildID, userID, &discordgo.GuildMemberParams{Roles: &restore}); err != nil {
+	restoreIDs := core.IDs(restore)
+	if _, err := p.ops(guildID).UpdateMember(core.ID(guildID), core.ID(userID), discord.MemberUpdate{Roles: &restoreIDs}); err != nil {
 		return fmt.Errorf("roles: restore roles for %s: %w", userID, err)
 	}
 	if err := p.clearMemberJailOverwrites(guildID, userID); err != nil {

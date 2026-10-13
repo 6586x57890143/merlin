@@ -3,10 +3,10 @@ package roles
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -76,8 +76,8 @@ func handlerSession(t *testing.T) *recordingTransport {
 // decodeIx is Discord's JSON for an interaction of typ decoded by
 // core.NewIx, answered through current.
 //
-// The fixtures predate disgo: the store and fakes key on "g1", "chan" and
-// "actor", none of them snowflakes. Ix.GuildID, UserID and ChannelID are
+// The fixtures predate disgo: the store and fakes key on "7000001", "7000601" and
+// "7000101", none of them snowflakes. Ix.GuildID, UserID and ChannelID are
 // merlin's own string keys and every handler reads those, so after decoding
 // a real interaction they are pointed at the fixtures.
 func decodeIx(typ int, guild, actor string, data map[string]any, message map[string]any) *core.Ix {
@@ -86,7 +86,7 @@ func decodeIx(typ int, guild, actor string, data map[string]any, message map[str
 		"guild_id": paneltest.IxGuild,
 		"channel":  map[string]any{"id": "101", "type": 0},
 		"member": map[string]any{
-			"user":        map[string]any{"id": "11", "username": "actor"},
+			"user":        map[string]any{"id": "11", "username": "7000101"},
 			"permissions": "0", "roles": []any{}, "joined_at": "2026-01-01T00:00:00Z",
 		},
 		"data": data,
@@ -106,7 +106,7 @@ func decodeIx(typ int, guild, actor string, data map[string]any, message map[str
 	if err != nil {
 		panic(err)
 	}
-	ix.GuildID, ix.UserID, ix.ChannelID = guild, actor, "chan"
+	ix.GuildID, ix.UserID, ix.ChannelID = guild, actor, "7000601"
 	return ix
 }
 
@@ -121,7 +121,7 @@ func rolesInteraction(group, sub string, args ...map[string]any) *core.Ix {
 	if group != "" {
 		top = []any{map[string]any{"name": group, "type": 2, "options": top}}
 	}
-	return decodeIx(2, "g1", "actor", map[string]any{"id": "6", "name": "roles", "type": 1, "options": top}, nil)
+	return decodeIx(2, "7000001", "7000101", map[string]any{"id": "6", "name": "roles", "type": 1, "options": top}, nil)
 }
 
 func optOf(name string, typ discordgo.ApplicationCommandOptionType, value string) map[string]any {
@@ -159,14 +159,14 @@ func setOn(p *Plugin, guild, actor, customID string, drawn []string, picked ...s
 }
 
 func set(p *Plugin, customID string, drawn []string, picked ...string) {
-	setOn(p, "g1", "actor", customID, drawn, picked...)
+	setOn(p, "7000001", "7000101", customID, drawn, picked...)
 }
 
 // showPage draws one page of /roles settings in g1.
-func showPage(p *Plugin, page string) { showPageIn(p, "g1", page) }
+func showPage(p *Plugin, page string) { showPageIn(p, "7000001", page) }
 
 func showPageIn(p *Plugin, guild, page string) {
-	i := decodeIx(3, guild, "actor", map[string]any{"custom_id": panelView + "page", "component_type": 3, "values": []any{page}}, nil)
+	i := decodeIx(3, guild, "7000101", map[string]any{"custom_id": panelView + "page", "component_type": 3, "values": []any{page}}, nil)
 	p.handlePanelView(context.Background(), i, panelView+"page")
 }
 
@@ -175,8 +175,8 @@ func showPageIn(p *Plugin, guild, page string) {
 // creation unless a test wants otherwise.
 func handlerFixture() (*Plugin, *fakeOps, *fakeStore, *fakeAudit, *fakePerms, *fakeSettings) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
-	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a", Name: "a"}, {ID: "role-b", Name: "b"}, {ID: "jail-role", Name: jailRoleName}}
+	ops.setMember("7000001", "7000102", []string{"7000302"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302", Name: "a"}, {ID: "7000303", Name: "b"}, {ID: "7000301", Name: jailRoleName}}
 	store, audit, perms, settings := newFakeStore(), newFakeAudit(), newFakePerms(), newFakeSettings()
 	p := newTestPlugin(ops, store, settings, audit, perms, newFakeScheduler())
 	return p, ops, store, audit, perms, settings
@@ -219,10 +219,10 @@ func TestHandleJailSingleMember(t *testing.T) {
 	p, ops, store, audit, _, _ := handlerFixture()
 	rt := handlerSession(t)
 
-	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "2h"), strArg("reason", "spam")))
+	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "7000102"), strArg("duration", "2h"), strArg("reason", "spam")))
 
-	rec, ok, _ := store.GetJail(context.Background(), "g1", "u1")
-	if !ok || rec.JailedBy != "actor" || rec.Reason != "spam" {
+	rec, ok, _ := store.GetJail(context.Background(), "7000001", "7000102")
+	if !ok || rec.JailedBy != "7000101" || rec.Reason != "spam" {
 		t.Fatalf("expected a jail by the actor, got %+v ok=%v", rec, ok)
 	}
 	if got := auditActions(audit); len(got) != 1 || got[0] != "roles.jail" {
@@ -230,8 +230,8 @@ func TestHandleJailSingleMember(t *testing.T) {
 	}
 	var dm, announced bool
 	for _, m := range ops.dmSends {
-		dm = dm || m.channelID == "dm:u1"
-		announced = announced || m.channelID == "chan"
+		dm = dm || m.channelID == "97000102"
+		announced = announced || m.channelID == "7000601"
 	}
 	if !dm || !announced {
 		t.Fatalf("expected a DM and a channel announcement, dm=%v announced=%v", dm, announced)
@@ -251,16 +251,16 @@ func TestHandleJailRefusesBeforeWriting(t *testing.T) {
 		setup func(p *Plugin, perms *fakePerms, settings *fakeSettings)
 		reply string
 	}{
-		{"invalid duration", []map[string]any{userArg("user", "u1"), strArg("duration", "soon")}, nil, "Invalid duration"},
+		{"invalid duration", []map[string]any{userArg("user", "7000102"), strArg("duration", "soon")}, nil, "Invalid duration"},
 		{"no members", []map[string]any{userArg("user", ""), strArg("duration", "1h")}, nil, "No members given"},
-		{"dry-run", []map[string]any{userArg("user", "u1"), strArg("duration", "1h")},
+		{"dry-run", []map[string]any{userArg("user", "7000102"), strArg("duration", "1h")},
 			func(p *Plugin, _ *fakePerms, _ *fakeSettings) { p.dryRun = func(string) bool { return true } }, "Dry-run"},
-		{"target outranks actor", []map[string]any{userArg("user", "u1"), strArg("duration", "1h")},
-			func(_ *Plugin, perms *fakePerms, _ *fakeSettings) { perms.protected["u1"] = true }, "outranks you"},
-		{"unmanageable marker role", []map[string]any{userArg("user", "u1"), strArg("duration", "1h")},
+		{"target outranks actor", []map[string]any{userArg("user", "7000102"), strArg("duration", "1h")},
+			func(_ *Plugin, perms *fakePerms, _ *fakeSettings) { perms.protected["7000102"] = true }, "outranks you"},
+		{"unmanageable marker role", []map[string]any{userArg("user", "7000102"), strArg("duration", "1h")},
 			func(_ *Plugin, perms *fakePerms, settings *fakeSettings) {
-				settings.markerRole["g1"] = "role-b"
-				perms.unmanageable["role-b"] = true
+				settings.markerRole["7000001"] = "7000303"
+				perms.unmanageable["7000303"] = true
 			}, "Cannot use configured jail role"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -272,10 +272,10 @@ func TestHandleJailRefusesBeforeWriting(t *testing.T) {
 
 			p.handleJail(context.Background(), rolesInteraction("", "jail", tc.args...))
 
-			if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok {
+			if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok {
 				t.Fatal("a refusal must record nothing")
 			}
-			if len(ops.memberEditCalls["u1"]) != 0 {
+			if len(ops.memberEditCalls["7000102"]) != 0 {
 				t.Fatal("a refusal must edit nobody")
 			}
 			if !rt.said(tc.reply) {
@@ -290,14 +290,14 @@ func TestHandleJailRefusesBeforeWriting(t *testing.T) {
 // roles.jail, and DMs the new end.
 func TestHandleJailResentencesAnAlreadyJailedMember(t *testing.T) {
 	p, ops, store, audit, _, _ := handlerFixture()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	end := fixedNow.Add(time.Minute)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", SnapshotRoleIDs: []string{"7000302"}, ReleaseAt: &end})
 	rt := handlerSession(t)
 
-	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "3h")))
+	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "7000102"), strArg("duration", "3h")))
 
-	rec, _, _ := store.GetJail(context.Background(), "g1", "u1")
+	rec, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
 	if !rec.ReleaseAt.Equal(fixedNow.Add(3 * time.Hour)) {
 		t.Fatalf("expected the sentence moved to 3h, got %v", rec.ReleaseAt)
 	}
@@ -314,13 +314,13 @@ func TestHandleJailResentencesAnAlreadyJailedMember(t *testing.T) {
 // the message budget the releases would need.
 func TestHandleJailSeveralMembersAuditsOnceAndDMsNobody(t *testing.T) {
 	p, ops, store, audit, _, _ := handlerFixture()
-	ops.setMember("g1", "u2", []string{"role-b"})
+	ops.setMember("7000001", "7000103", []string{"7000303"})
 	rt := handlerSession(t)
 
-	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "1h"), userArg("user2", "u2")))
+	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "7000102"), strArg("duration", "1h"), userArg("user2", "7000103")))
 
-	for _, u := range []string{"u1", "u2"} {
-		if _, ok, _ := store.GetJail(context.Background(), "g1", u); !ok {
+	for _, u := range []string{"7000102", "7000103"} {
+		if _, ok, _ := store.GetJail(context.Background(), "7000001", u); !ok {
 			t.Fatalf("expected %s jailed", u)
 		}
 	}
@@ -341,20 +341,20 @@ func TestHandleJailSeveralMembersAuditsOnceAndDMsNobody(t *testing.T) {
 // holders, drops the actor, jails the rest and audits once.
 func TestHandleJailRoleJailsEveryHolderButTheActor(t *testing.T) {
 	p, ops, store, audit, _, _ := handlerFixture()
-	ops.setMember("g1", "actor", []string{"raider"})
-	ops.setMember("g1", "u2", []string{"raider"})
-	ops.setMember("g1", "u3", []string{"raider", "role-a"})
+	ops.setMember("7000001", "7000101", []string{"7000315"})
+	ops.setMember("7000001", "7000103", []string{"7000315"})
+	ops.setMember("7000001", "7000104", []string{"7000315", "7000302"})
 	rt := handlerSession(t)
 
-	p.handleJailRole(context.Background(), rolesInteraction("", "jail-role", roleArg("role", "raider"), strArg("duration", "1d"), strArg("reason", "raid")))
+	p.handleJailRole(context.Background(), rolesInteraction("", "jail-role", roleArg("role", "7000315"), strArg("duration", "1d"), strArg("reason", "raid")))
 
-	for _, u := range []string{"u2", "u3"} {
-		if _, ok, _ := store.GetJail(context.Background(), "g1", u); !ok {
+	for _, u := range []string{"7000103", "7000104"} {
+		if _, ok, _ := store.GetJail(context.Background(), "7000001", u); !ok {
 			t.Fatalf("expected %s jailed", u)
 		}
 	}
-	for _, u := range []string{"actor", "u1"} {
-		if _, ok, _ := store.GetJail(context.Background(), "g1", u); ok {
+	for _, u := range []string{"7000101", "7000102"} {
+		if _, ok, _ := store.GetJail(context.Background(), "7000001", u); ok {
 			t.Fatalf("%s must not be jailed", u)
 		}
 	}
@@ -376,26 +376,26 @@ func TestHandleJailRoleRefusals(t *testing.T) {
 		setup func(p *Plugin, ops *fakeOps, perms *fakePerms)
 		reply string
 	}{
-		{"everyone", "g1", nil, "Cannot jail that role"},
-		{"invalid duration", "raider", nil, "Invalid duration"},
-		{"only the actor holds it", "raider", func(_ *Plugin, ops *fakeOps, _ *fakePerms) {
-			ops.setMember("g1", "actor", []string{"raider"})
+		{"everyone", "7000001", nil, "Cannot jail that role"},
+		{"invalid duration", "7000315", nil, "Invalid duration"},
+		{"only the actor holds it", "7000315", func(_ *Plugin, ops *fakeOps, _ *fakePerms) {
+			ops.setMember("7000001", "7000101", []string{"7000315"})
 		}, "Nobody to jail"},
-		{"member list unavailable", "raider", func(_ *Plugin, ops *fakeOps, _ *fakePerms) {
+		{"member list unavailable", "7000315", func(_ *Plugin, ops *fakeOps, _ *fakePerms) {
 			ops.memberListErr = transientErr()
 		}, "Failed to list members"},
-		{"over the cap", "raider", func(_ *Plugin, ops *fakeOps, _ *fakePerms) {
+		{"over the cap", "7000315", func(_ *Plugin, ops *fakeOps, _ *fakePerms) {
 			for i := 0; i <= maxBulkJailTargets; i++ {
-				ops.setMember("g1", fmt.Sprintf("r%03d", i), []string{"raider"})
+				ops.setMember("7000001", strconv.Itoa(7200000+i), []string{"7000315"})
 			}
 		}, "Too many members"},
-		{"dry-run", "raider", func(p *Plugin, ops *fakeOps, _ *fakePerms) {
-			ops.setMember("g1", "u2", []string{"raider"})
+		{"dry-run", "7000315", func(p *Plugin, ops *fakeOps, _ *fakePerms) {
+			ops.setMember("7000001", "7000103", []string{"7000315"})
 			p.dryRun = func(string) bool { return true }
 		}, "Dry-run"},
-		{"everyone outranks the actor", "raider", func(_ *Plugin, ops *fakeOps, perms *fakePerms) {
-			ops.setMember("g1", "u2", []string{"raider"})
-			perms.protected["u2"] = true
+		{"everyone outranks the actor", "7000315", func(_ *Plugin, ops *fakeOps, perms *fakePerms) {
+			ops.setMember("7000001", "7000103", []string{"7000315"})
+			perms.protected["7000103"] = true
 		}, "Nobody was jailed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -430,25 +430,25 @@ func TestHandleRelease(t *testing.T) {
 	p, ops, store, _, _, _ := handlerFixture()
 	rt := handlerSession(t)
 
-	p.handleRelease(context.Background(), rolesInteraction("", "release", userArg("user", "u1")))
-	if len(ops.memberEditCalls["u1"]) != 0 || !rt.said("Not jailed") {
+	p.handleRelease(context.Background(), rolesInteraction("", "release", userArg("user", "7000102")))
+	if len(ops.memberEditCalls["7000102"]) != 0 || !rt.said("Not jailed") {
 		t.Fatal("releasing an untracked member must refuse and edit nobody")
 	}
 
-	ops.setMember("g1", "u1", []string{"jail-role"})
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", SnapshotRoleIDs: []string{"role-a"}})
-	p.handleRelease(context.Background(), rolesInteraction("", "release", userArg("user", "u1")))
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", SnapshotRoleIDs: []string{"7000302"}})
+	p.handleRelease(context.Background(), rolesInteraction("", "release", userArg("user", "7000102")))
 
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected the jail untracked")
 	}
-	m, _ := ops.GuildMember("g1", "u1")
-	if len(m.Roles) != 1 || m.Roles[0] != "role-a" {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if len(m.Roles) != 1 || m.Roles[0] != "7000302" {
 		t.Fatalf("expected roles restored, got %v", m.Roles)
 	}
 	var announced bool
 	for _, msg := range ops.dmSends {
-		announced = announced || msg.channelID == "chan"
+		announced = announced || msg.channelID == "7000601"
 	}
 	if !announced || !rt.said("Member released") {
 		t.Fatal("expected the release announced and confirmed")
@@ -464,31 +464,31 @@ func TestHandleGrant(t *testing.T) {
 	p.afterFunc = ft.afterFunc
 	rt := handlerSession(t)
 
-	perms.unmanageable["role-b"] = true
-	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "u1"), roleArg("role", "role-b")))
-	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "u1"), roleArg("role", "role-c"), strArg("duration", "soon")))
+	perms.unmanageable["7000303"] = true
+	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "7000102"), roleArg("role", "7000303")))
+	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "7000102"), roleArg("role", "7000304"), strArg("duration", "soon")))
 	if len(ops.roleAddCalls) != 0 || !rt.said("Cannot manage that role") || !rt.said("Invalid duration") {
 		t.Fatal("a refused grant must add nothing")
 	}
 
-	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "u1"), roleArg("role", "role-c")))
-	rec, ok, _ := store.GetGrant(context.Background(), "g1", "u1", "role-c")
-	if !ok || rec.ExpiresAt != nil || rec.GrantedBy != "actor" {
+	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "7000102"), roleArg("role", "7000304")))
+	rec, ok, _ := store.GetGrant(context.Background(), "7000001", "7000102", "7000304")
+	if !ok || rec.ExpiresAt != nil || rec.GrantedBy != "7000101" {
 		t.Fatalf("expected a permanent grant by the actor, got %+v ok=%v", rec, ok)
 	}
 	if len(ft.armed) != 0 {
 		t.Fatal("a permanent grant arms no timer")
 	}
 
-	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "u1"), roleArg("role", "role-d"), strArg("duration", "90m"), strArg("reason", "helper")))
-	rec, ok, _ = store.GetGrant(context.Background(), "g1", "u1", "role-d")
+	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "7000102"), roleArg("role", "7000305"), strArg("duration", "90m"), strArg("reason", "helper")))
+	rec, ok, _ = store.GetGrant(context.Background(), "7000001", "7000102", "7000305")
 	if !ok || rec.ExpiresAt == nil || !rec.ExpiresAt.Equal(fixedNow.Add(90*time.Minute)) || rec.Reason != "helper" {
 		t.Fatalf("expected a timed grant 90m out, got %+v ok=%v", rec, ok)
 	}
 	if len(ft.armed) != 1 || ft.armed[0].delay != 90*time.Minute {
 		t.Fatalf("expected one timer 90m out, got %+v", ft.armed)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
+	m, _ := ops.GuildMember("7000001", "7000102")
 	if len(m.Roles) != 3 {
 		t.Fatalf("expected both roles added, got %v", m.Roles)
 	}
@@ -508,17 +508,17 @@ func TestHandleRevoke(t *testing.T) {
 	p, ops, store, _, _, _ := handlerFixture()
 	rt := handlerSession(t)
 
-	p.handleRevoke(context.Background(), rolesInteraction("", "revoke", userArg("user", "u1"), roleArg("role", "role-a")))
+	p.handleRevoke(context.Background(), rolesInteraction("", "revoke", userArg("user", "7000102"), roleArg("role", "7000302")))
 	if len(ops.roleRemoveCalls) != 0 || !rt.said("Not a tracked grant") {
 		t.Fatal("an untracked grant must be refused without touching the member")
 	}
 
-	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "u1", RoleID: "role-a"})
-	p.handleRevoke(context.Background(), rolesInteraction("", "revoke", userArg("user", "u1"), roleArg("role", "role-a")))
-	if _, ok, _ := store.GetGrant(context.Background(), "g1", "u1", "role-a"); ok {
+	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000302"})
+	p.handleRevoke(context.Background(), rolesInteraction("", "revoke", userArg("user", "7000102"), roleArg("role", "7000302")))
+	if _, ok, _ := store.GetGrant(context.Background(), "7000001", "7000102", "7000302"); ok {
 		t.Fatal("expected the grant untracked")
 	}
-	m, _ := ops.GuildMember("g1", "u1")
+	m, _ := ops.GuildMember("7000001", "7000102")
 	if len(m.Roles) != 0 || !rt.said("Role revoked") {
 		t.Fatalf("expected the role removed and confirmed, got %v", m.Roles)
 	}
@@ -530,17 +530,17 @@ func TestHandleList(t *testing.T) {
 	p, _, store, _, _, _ := handlerFixture()
 	rt := handlerSession(t)
 
-	p.handleList(context.Background(), rolesInteraction("", "list", userArg("user", "u1")))
+	p.handleList(context.Background(), rolesInteraction("", "list", userArg("user", "7000102")))
 	if !rt.said("No active jail or grants") {
 		t.Fatal("expected the empty reply")
 	}
 
 	end := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", ReleaseAt: &end})
-	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "u1", RoleID: "role-a"})
-	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "u1", RoleID: "role-b", ExpiresAt: &end})
-	p.handleList(context.Background(), rolesInteraction("", "list", userArg("user", "u1")))
-	for _, want := range []string{"Jailed", "role-a", "permanent", "role-b", "expires"} {
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", ReleaseAt: &end})
+	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000302"})
+	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000303", ExpiresAt: &end})
+	p.handleList(context.Background(), rolesInteraction("", "list", userArg("user", "7000102")))
+	for _, want := range []string{"Jailed", "7000302", "permanent", "7000303", "expires"} {
 		if !rt.said(want) {
 			t.Fatalf("expected the status to mention %q", want)
 		}
@@ -552,23 +552,23 @@ func TestHandleList(t *testing.T) {
 // once the jail role is known.
 func TestConfigureAllowAndDisallowChannel(t *testing.T) {
 	p, ops, _, audit, _, settings := handlerFixture()
-	ops.channel["c1"] = &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
-	p.jailRoleID["g1"] = "jail-role"
+	ops.channel["7000603"] = &fch{ID: "7000603", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
+	p.jailRoleID["7000001"] = "7000301"
 	rt := handlerSession(t)
 
-	set(p, panelJail+"allow", nil, "c1")
-	if got := settings.JailAllowedChannelIDs("g1"); len(got) != 1 || got[0] != "c1" {
+	set(p, panelJail+"allow", nil, "7000603")
+	if got := settings.JailAllowedChannelIDs("7000001"); len(got) != 1 || got[0] != "7000603" {
 		t.Fatalf("expected c1 allowed, got %v", got)
 	}
-	if ow := ops.overwrites[overwriteKey{"c1", "jail-role"}]; ow.allow&int64(discordgo.PermissionViewChannel) == 0 {
+	if ow := ops.overwrites[overwriteKey{"7000603", "7000301"}]; ow.allow&discord.PermissionViewChannel == 0 {
 		t.Fatalf("expected c1 made visible to the jail role, got %+v", ow)
 	}
 
-	set(p, panelJail+"allow", []string{"c1"})
-	if got := settings.JailAllowedChannelIDs("g1"); len(got) != 0 {
+	set(p, panelJail+"allow", []string{"7000603"})
+	if got := settings.JailAllowedChannelIDs("7000001"); len(got) != 0 {
 		t.Fatalf("expected c1 removed, got %v", got)
 	}
-	if ow := ops.overwrites[overwriteKey{"c1", "jail-role"}]; ow.deny&int64(discordgo.PermissionViewChannel) == 0 {
+	if ow := ops.overwrites[overwriteKey{"7000603", "7000301"}]; ow.deny&discord.PermissionViewChannel == 0 {
 		t.Fatalf("expected c1 hidden from the jail role again, got %+v", ow)
 	}
 	if got := auditActions(audit); len(got) != 2 {
@@ -585,24 +585,24 @@ func TestConfigureAllowAndDisallowChannel(t *testing.T) {
 // just cleared.
 func TestConfigureAllowChannelWithMarkerRoleSyncsEverything(t *testing.T) {
 	p, ops, _, _, _, settings := handlerFixture()
-	ops.channel["c1"] = &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
-	ops.channel["c2"] = &discordgo.Channel{ID: "c2", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
-	p.jailRoleID["g1"] = "jail-role"
+	ops.channel["7000603"] = &fch{ID: "7000603", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
+	ops.channel["7000604"] = &fch{ID: "7000604", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
+	p.jailRoleID["7000001"] = "7000301"
 	handlerSession(t)
 
-	set(p, panelJail+"marker", nil, "role-b")
-	set(p, panelJail+"allow", nil, "c1")
+	set(p, panelJail+"marker", nil, "7000303")
+	set(p, panelJail+"allow", nil, "7000603")
 
-	if settings.JailMarkerRoleID("g1") != "role-b" {
+	if settings.JailMarkerRoleID("7000001") != "7000303" {
 		t.Fatal("expected the marker role saved")
 	}
-	if _, cached := p.jailRoleID["g1"]; cached {
+	if _, cached := p.jailRoleID["7000001"]; cached {
 		t.Fatal("expected the old cached jail role forgotten")
 	}
-	if ow := ops.overwrites[overwriteKey{"c1", "role-b"}]; ow.allow&int64(discordgo.PermissionViewChannel) == 0 {
+	if ow := ops.overwrites[overwriteKey{"7000603", "7000303"}]; ow.allow&discord.PermissionViewChannel == 0 {
 		t.Fatalf("expected c1 allowed for the new role, got %+v", ow)
 	}
-	if ow := ops.overwrites[overwriteKey{"c2", "role-b"}]; ow.deny&int64(discordgo.PermissionViewChannel) == 0 {
+	if ow := ops.overwrites[overwriteKey{"7000604", "7000303"}]; ow.deny&discord.PermissionViewChannel == 0 {
 		t.Fatalf("expected c2 denied for the new role, got %+v", ow)
 	}
 }
@@ -612,23 +612,23 @@ func TestConfigureAllowChannelWithMarkerRoleSyncsEverything(t *testing.T) {
 // cache so the fallback role is resolved next time.
 func TestConfigureMarkerRoleSetAndClear(t *testing.T) {
 	p, ops, _, audit, _, settings := handlerFixture()
-	ops.channel["c1"] = &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	ops.channel["7000603"] = &fch{ID: "7000603", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
 	rt := handlerSession(t)
 
-	set(p, panelJail+"marker", nil, "role-b")
-	if settings.JailMarkerRoleID("g1") != "role-b" || !rt.said("Configured jail role") {
+	set(p, panelJail+"marker", nil, "7000303")
+	if settings.JailMarkerRoleID("7000001") != "7000303" || !rt.said("Configured jail role") {
 		t.Fatal("expected the marker role saved and confirmed")
 	}
-	if _, ok := ops.overwrites[overwriteKey{"c1", "role-b"}]; !ok {
+	if _, ok := ops.overwrites[overwriteKey{"7000603", "7000303"}]; !ok {
 		t.Fatal("expected every channel synced against the new role")
 	}
 
-	p.jailRoleID["g1"] = "role-b"
+	p.jailRoleID["7000001"] = "7000303"
 	set(p, panelJail+"marker", nil)
-	if settings.JailMarkerRoleID("g1") != "" || !rt.said("Cleared jail role") {
+	if settings.JailMarkerRoleID("7000001") != "" || !rt.said("Cleared jail role") {
 		t.Fatal("expected the marker role cleared and confirmed")
 	}
-	if _, cached := p.jailRoleID["g1"]; cached {
+	if _, cached := p.jailRoleID["7000001"]; cached {
 		t.Fatal("clearing must drop the cached role")
 	}
 	if got := auditActions(audit); len(got) != 2 {
@@ -642,12 +642,12 @@ func TestConfigureAnnounceChannelSetAndClear(t *testing.T) {
 	p, _, _, audit, _, settings := handlerFixture()
 	rt := handlerSession(t)
 
-	set(p, panelJail+"announce", nil, "mod-log")
-	if settings.JailAnnounceChannelID("g1") != "mod-log" || !rt.said("Announcement channel set") {
+	set(p, panelJail+"announce", nil, "7000627")
+	if settings.JailAnnounceChannelID("7000001") != "7000627" || !rt.said("Announcement channel set") {
 		t.Fatal("expected the announce channel saved and confirmed")
 	}
 	set(p, panelJail+"announce", nil)
-	if settings.JailAnnounceChannelID("g1") != "" || !rt.said("Announcement channel cleared") {
+	if settings.JailAnnounceChannelID("7000001") != "" || !rt.said("Announcement channel cleared") {
 		t.Fatal("expected the announce channel cleared and confirmed")
 	}
 	if got := auditActions(audit); len(got) != 2 {
@@ -666,10 +666,10 @@ func TestConfigureListChannels(t *testing.T) {
 		t.Fatal("expected the empty reply")
 	}
 
-	settings.allowed["g1"] = []string{"c1", "c2"}
-	settings.announce["g1"] = "mod-log"
+	settings.allowed["7000001"] = []string{"7000603", "7000604"}
+	settings.announce["7000001"] = "7000627"
 	showPage(p, "jail")
-	for _, want := range []string{"Visible while jailed", "<#c1> <#c2>", "also <#mod-log>"} {
+	for _, want := range []string{"Visible while jailed", "<#7000603> <#7000604>", "also <#7000627>"} {
 		if !rt.said(want) {
 			t.Fatalf("expected the list to mention %q in %q", want, rt.bodies)
 		}
@@ -681,15 +681,15 @@ func TestConfigureListChannels(t *testing.T) {
 // fan-out failure as such rather than as success.
 func TestConfigureSyncChannels(t *testing.T) {
 	p, ops, _, _, _, _ := handlerFixture()
-	ops.roles["g1"] = nil // no jail role yet: sync must create it
-	ops.channel["c1"] = &discordgo.Channel{ID: "c1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	ops.roles["7000001"] = nil // no jail role yet: sync must create it
+	ops.channel["7000603"] = &fch{ID: "7000603", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
 	rt := handlerSession(t)
 
 	set(p, panelJail+"sync:", nil)
 	if !rt.said("Channels synced") {
 		t.Fatal("expected the success reply")
 	}
-	if _, ok := ops.overwrites[overwriteKey{"c1", "role-created-1"}]; !ok {
+	if _, ok := ops.overwrites[overwriteKey{"7000603", "7900001"}]; !ok {
 		t.Fatalf("expected c1 synced against the created jail role, got %v", ops.overwrites)
 	}
 

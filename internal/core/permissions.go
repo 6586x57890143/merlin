@@ -302,7 +302,7 @@ func (p *Permissions) authorize(guildID string, member *invoker, spec PermSpec) 
 //
 // Fails closed: if the guild's state can't be resolved (so we can't tell
 // whether the target is an admin), the action is refused rather than allowed.
-func (p *Permissions) CanModerate(guildID string, actor *discordgo.Member, targetUserID string, targetRoleIDs []string) error {
+func (p *Permissions) CanModerate(guildID string, actor *Actor, targetUserID string, targetRoleIDs []string) error {
 	if targetUserID == p.bootstrapID {
 		return ErrForbidden{Reason: "the bootstrap admin can't be targeted"}
 	}
@@ -315,10 +315,10 @@ func (p *Permissions) CanModerate(guildID string, actor *discordgo.Member, targe
 		return nil
 	}
 
-	if actor == nil || actor.User == nil {
+	if actor == nil {
 		return ErrForbidden{Reason: "target is an admin"}
 	}
-	actorIsAdmin, err := p.isAdminMember(guildID, actor.User.ID, actor.Roles)
+	actorIsAdmin, err := p.isAdminMember(guildID, actor.ID, actor.RoleIDs)
 	if err != nil {
 		return fmt.Errorf("core: resolve actor's privilege in guild %s: %w", guildID, err)
 	}

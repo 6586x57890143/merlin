@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -39,7 +39,7 @@ func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
 		durationLabel = "for " + core.FormatDuration(duration)
 	}
 
-	if err := p.ops(ix.GuildID).GuildMemberRoleAdd(ix.GuildID, userID, roleID); err != nil {
+	if err := p.ops(ix.GuildID).AddMemberRole(core.ID(ix.GuildID), core.ID(userID), core.ID(roleID)); err != nil {
 		ix.RespondErr("Failed to grant role", err)
 		return
 	}
@@ -104,10 +104,10 @@ func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor
 	}
 	defer p.unclaim(key)
 
-	member, err := p.ops(guildID).GuildMember(guildID, userID)
+	member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(userID))
 	if err != nil {
 		// Unknown Member only; see releaseJail.
-		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
+		if core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownMember)) {
 			// Member left the guild, so the grant left with them.
 			return p.store.DeleteGrant(ctx, guildID, userID, roleID)
 		}
@@ -116,8 +116,8 @@ func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor
 		return fmt.Errorf("roles: fetch member %s for revoke: %w", userID, err)
 	}
 
-	if slices.Contains(member.Roles, roleID) {
-		if err := p.ops(guildID).GuildMemberRoleRemove(guildID, userID, roleID); err != nil {
+	if slices.Contains(core.IDStrings(member.RoleIDs), roleID) {
+		if err := p.ops(guildID).RemoveMemberRole(core.ID(guildID), core.ID(userID), core.ID(roleID)); err != nil {
 			return fmt.Errorf("roles: remove granted role %s from %s: %w", roleID, userID, err)
 		}
 	}

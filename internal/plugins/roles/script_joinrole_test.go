@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 const (
-	jrGuild = "g-joinrole"
-	jrUser  = "u-joinrole"
-	jrRole  = "r-joinrole"
+	jrGuild = "7000005"
+	jrUser  = "7000127"
+	jrRole  = "7000339"
 )
 
 func newJoinRoleFixture(t *testing.T) (*Plugin, *fakeOps, *fakeStore, *fakeScripts) {
@@ -71,9 +71,9 @@ func TestJoinRoleSkips(t *testing.T) {
 
 func TestJoinRoleDoesNothingWithoutAMemberRole(t *testing.T) {
 	p, ops, _, sc := newJoinRoleFixture(t)
-	sc.on["elsewhere:"+scriptJoinRole] = true
-	ops.setMember("elsewhere", jrUser, nil)
-	p.giveJoinRole(context.Background(), "elsewhere", jrUser)
+	sc.on["7000117:"+scriptJoinRole] = true
+	ops.setMember("7000117", jrUser, nil)
+	p.giveJoinRole(context.Background(), "7000117", jrUser)
 	if len(ops.roleAddCalls) != 0 {
 		t.Fatalf("role added with no member role configured: %v", ops.roleAddCalls)
 	}
@@ -81,13 +81,13 @@ func TestJoinRoleDoesNothingWithoutAMemberRole(t *testing.T) {
 
 func TestJoinRoleGivesEveryJoinRoleTheMemberLacks(t *testing.T) {
 	p, ops, _, _ := newJoinRoleFixture(t)
-	_ = p.jailChannelConfig.AddJoinRole(context.Background(), jrGuild, "r-media")
-	_ = p.jailChannelConfig.AddJoinRole(context.Background(), jrGuild, "r-held")
+	_ = p.jailChannelConfig.AddJoinRole(context.Background(), jrGuild, "7000311")
+	_ = p.jailChannelConfig.AddJoinRole(context.Background(), jrGuild, "7000314")
 	_ = p.jailChannelConfig.AddJoinRole(context.Background(), jrGuild, jrRole) // already the member role
-	ops.setMember(jrGuild, jrUser, []string{"r-held"})
+	ops.setMember(jrGuild, jrUser, []string{"7000314"})
 
 	p.giveJoinRole(context.Background(), jrGuild, jrUser)
-	want := []string{jrGuild + ":" + jrUser + ":" + jrRole, jrGuild + ":" + jrUser + ":r-media"}
+	want := []string{jrGuild + ":" + jrUser + ":" + jrRole, jrGuild + ":" + jrUser + ":7000311"}
 	if !slices.Equal(ops.roleAddCalls, want) {
 		t.Fatalf("roles added = %v, want %v", ops.roleAddCalls, want)
 	}
@@ -98,11 +98,11 @@ func TestJoinRoleGivesEveryJoinRoleTheMemberLacks(t *testing.T) {
 func TestJoinRoleEditsAndDeletionsAreReported(t *testing.T) {
 	ops, store, cfg, audit, perms := newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms()
 	_ = cfg.SetMemberRole(context.Background(), jrGuild, jrRole)
-	_ = cfg.AddJoinRole(context.Background(), jrGuild, "r-media")
+	_ = cfg.AddJoinRole(context.Background(), jrGuild, "7000311")
 	p := newTestPlugin(ops, store, cfg, audit, perms, newFakeScheduler())
-	media := &discordgo.Role{ID: "r-media", Name: "media", Position: 3,
-		Permissions: discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks}
-	ops.roles[jrGuild] = []*discordgo.Role{{ID: jrRole, Name: "melted"}, media, {ID: "r-other", Name: "other"}}
+	media := &frole{ID: "7000311", Name: "media", Position: 3,
+		Permissions: discord.PermissionAttachFiles | discord.PermissionEmbedLinks}
+	ops.roles[jrGuild] = []*frole{{ID: jrRole, Name: "7000321"}, media, {ID: "7000312", Name: "7000340"}}
 	p.watchJoinRoles(jrGuild)
 
 	actions := func() []string {
@@ -116,15 +116,15 @@ func TestJoinRoleEditsAndDeletionsAreReported(t *testing.T) {
 
 	moved := *media
 	moved.Position = 9
-	p.HandleRoleUpdated(ctx, jrGuild, &moved)
-	p.HandleRoleUpdated(ctx, jrGuild, &discordgo.Role{ID: "r-other", Name: "renamed"})
+	p.HandleRoleUpdated(ctx, jrGuild, moved.disgo())
+	p.HandleRoleUpdated(ctx, jrGuild, discord.Role{ID: 7000312, Name: "renamed"})
 	if got := actions(); len(got) != 0 {
 		t.Fatalf("a reorder or an unwatched role was reported: %v", got)
 	}
 
 	stripped := moved
-	stripped.Permissions = discordgo.PermissionEmbedLinks
-	p.HandleRoleUpdated(ctx, jrGuild, &stripped)
+	stripped.Permissions = discord.PermissionEmbedLinks
+	p.HandleRoleUpdated(ctx, jrGuild, stripped.disgo())
 	if got := actions(); !slices.Equal(got, []string{"roles.join_role_changed"}) {
 		t.Fatalf("actions after a permission edit = %v", got)
 	}
@@ -132,20 +132,20 @@ func TestJoinRoleEditsAndDeletionsAreReported(t *testing.T) {
 		t.Fatalf("edit notice does not name the lost permission: %q", d)
 	}
 
-	perms.unmanageable["r-media"] = true
-	p.HandleRoleUpdated(ctx, jrGuild, &stripped)
+	perms.unmanageable["7000311"] = true
+	p.HandleRoleUpdated(ctx, jrGuild, stripped.disgo())
 	if d := audit.records[1].newValue; !strings.Contains(d, "no longer give it out") {
 		t.Fatalf("moving the role out of reach was not reported: %q", d)
 	}
 
-	p.HandleRoleDeleted(ctx, jrGuild, "r-media")
+	p.HandleRoleDeleted(ctx, jrGuild, "7000311")
 	if got := actions(); got[len(got)-1] != "roles.join_role_deleted" || !strings.Contains(audit.records[len(got)-1].newValue, "**media**") {
 		t.Fatalf("deletion not reported by name: %v / %q", got, audit.records[len(got)-1].newValue)
 	}
 }
 
 func TestPermNamesCountsWhatItCannotName(t *testing.T) {
-	got := permNames(discordgo.PermissionAttachFiles | discordgo.PermissionBanMembers | discordgo.PermissionKickMembers)
+	got := permNames(discord.PermissionAttachFiles | discord.PermissionBanMembers | discord.PermissionKickMembers)
 	if got != "Attach Files, 2 other permissions" {
 		t.Fatalf("permNames = %q", got)
 	}
@@ -154,30 +154,30 @@ func TestPermNamesCountsWhatItCannotName(t *testing.T) {
 func TestJoinRoleConfigureAddAndRemove(t *testing.T) {
 	ops, cfg, audit, perms := newFakeOps(), newFakeSettings(), newFakeAudit(), newFakePerms()
 	p := newTestPlugin(ops, newFakeStore(), cfg, audit, perms, newFakeScheduler())
-	ops.roles["g1"] = []*discordgo.Role{{ID: "r-media", Name: "media"}}
-	perms.unmanageable["r-high"] = true
+	ops.roles["7000001"] = []*frole{{ID: "7000311", Name: "media"}}
+	perms.unmanageable["7000313"] = true
 	rt := handlerSession(t)
 
-	set(p, panelJail+"join", nil, "r-high")
-	if len(cfg.JoinRoleIDs("g1")) != 0 || !rt.said("merlin cannot give") {
-		t.Fatalf("a role out of reach was added: %v / %v", cfg.JoinRoleIDs("g1"), rt.bodies)
+	set(p, panelJail+"join", nil, "7000313")
+	if len(cfg.JoinRoleIDs("7000001")) != 0 || !rt.said("merlin cannot give") {
+		t.Fatalf("a role out of reach was added: %v / %v", cfg.JoinRoleIDs("7000001"), rt.bodies)
 	}
-	set(p, panelJail+"join", nil, "g1")
-	if len(cfg.JoinRoleIDs("g1")) != 0 {
-		t.Fatalf("@everyone was added: %v", cfg.JoinRoleIDs("g1"))
+	set(p, panelJail+"join", nil, "7000001")
+	if len(cfg.JoinRoleIDs("7000001")) != 0 {
+		t.Fatalf("@everyone was added: %v", cfg.JoinRoleIDs("7000001"))
 	}
 
-	set(p, panelJail+"join", nil, "r-media")
-	if !slices.Equal(cfg.JoinRoleIDs("g1"), []string{"r-media"}) || !rt.said("new members get <@&r-media>") {
-		t.Fatalf("add: %v / %v", cfg.JoinRoleIDs("g1"), rt.bodies)
+	set(p, panelJail+"join", nil, "7000311")
+	if !slices.Equal(cfg.JoinRoleIDs("7000001"), []string{"7000311"}) || !rt.said("new members get <@&7000311>") {
+		t.Fatalf("add: %v / %v", cfg.JoinRoleIDs("7000001"), rt.bodies)
 	}
-	if _, watched := p.joinRoleSeen["g1:r-media"]; !watched {
+	if _, watched := p.joinRoleSeen["7000001:7000311"]; !watched {
 		t.Fatal("an added join role must be watched from then on")
 	}
 
-	set(p, panelJail+"join", []string{"r-media"})
-	if len(cfg.JoinRoleIDs("g1")) != 0 || !rt.said("no join roles configured") {
-		t.Fatalf("remove: %v / %v", cfg.JoinRoleIDs("g1"), rt.bodies)
+	set(p, panelJail+"join", []string{"7000311"})
+	if len(cfg.JoinRoleIDs("7000001")) != 0 || !rt.said("no join roles configured") {
+		t.Fatalf("remove: %v / %v", cfg.JoinRoleIDs("7000001"), rt.bodies)
 	}
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.configure_jail_channels", "roles.configure_jail_channels"}) {
 		t.Fatalf("audit: %v", got)

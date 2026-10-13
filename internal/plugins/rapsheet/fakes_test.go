@@ -756,7 +756,7 @@ type fakeRanker struct {
 
 func newFakeRanker() *fakeRanker { return &fakeRanker{admins: map[string]bool{}} }
 
-func (f *fakeRanker) CanModerate(_ string, actor *discordgo.Member, targetUserID string, _ []string) error {
+func (f *fakeRanker) CanModerate(_ string, actor *core.Actor, targetUserID string, _ []string) error {
 	if f.moderr != nil {
 		return f.moderr
 	}
@@ -766,7 +766,7 @@ func (f *fakeRanker) CanModerate(_ string, actor *discordgo.Member, targetUserID
 	if !f.admins[targetUserID] {
 		return nil
 	}
-	if actor == nil || actor.User == nil || !f.admins[actor.User.ID] {
+	if actor == nil || !f.admins[actor.ID] {
 		return core.ErrForbidden{Reason: "target is an admin"}
 	}
 	return nil

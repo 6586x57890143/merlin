@@ -14,6 +14,24 @@ func ID(s string) snowflake.ID {
 	return id
 }
 
+// IDs is ss as snowflakes, in a new slice.
+func IDs(ss []string) []snowflake.ID {
+	out := make([]snowflake.ID, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, ID(s))
+	}
+	return out
+}
+
+// IDStrings is ids as merlin stores them.
+func IDStrings(ids []snowflake.ID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.String()
+	}
+	return out
+}
+
 // DenyEveryone is DenyEveryoneExceptBot on disgo's types: @everyone denied
 // View Channel and the bot granted botAllow, merged into src's own
 // overwrites for either rather than added beside them.

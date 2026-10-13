@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -179,7 +180,7 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 // may not touch, instead of failing the whole batch, stops a role that happens
 // to contain one admin from being a way to find that out, and keeps the
 // legitimate part of the action working.
-func (p *Plugin) partitionByRank(guildID string, actor *discordgo.Member, targets []jailTarget) (allowed []jailTarget, res bulkJailResult) {
+func (p *Plugin) partitionByRank(guildID string, actor *core.Actor, targets []jailTarget) (allowed []jailTarget, res bulkJailResult) {
 	for _, t := range targets {
 		err := p.perms.CanModerate(guildID, actor, t.userID, t.roles)
 		var forbidden core.ErrForbidden
@@ -216,12 +217,12 @@ func (p *Plugin) partitionByRank(guildID string, actor *discordgo.Member, target
 // against somebody standing in the room.
 func (p *Plugin) resolveTargets(guildID string, userIDs []string) (targets []jailTarget, failed []string) {
 	for _, id := range userIDs {
-		member, err := p.ops(guildID).GuildMember(guildID, id)
+		member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(id))
 		switch {
 		case err == nil:
-			targets = append(targets, jailTarget{userID: id, roles: member.Roles})
-		case core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember):
-			if _, uerr := p.ops(guildID).User(id); uerr != nil {
+			targets = append(targets, jailTarget{userID: id, roles: core.IDStrings(member.RoleIDs)})
+		case core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownMember)):
+			if _, uerr := p.ops(guildID).GetUser(core.ID(id)); uerr != nil {
 				failed = append(failed, fmt.Sprintf("%s: not in this server, and no Discord account with that ID: %v", id, uerr))
 				continue
 			}
@@ -245,17 +246,17 @@ func (p *Plugin) resolveTargets(guildID string, userIDs []string) (targets []jai
 // an incomplete scan as "this is everyone", because acting on a partial answer
 // jails some of a role's members and silently leaves the rest.
 func (p *Plugin) membersWithRole(guildID, roleID string) (matches []jailTarget, complete bool, err error) {
-	after := ""
+	var after snowflake.ID
 	for range maxMemberScanPages {
-		page, err := p.ops(guildID).GuildMembers(guildID, after, memberPageSize)
+		page, err := p.ops(guildID).GetMembers(core.ID(guildID), memberPageSize, after)
 		if err != nil {
 			return nil, false, fmt.Errorf("roles: list guild members: %w", err)
 		}
 		for _, m := range page {
-			if m.User == nil || !slices.Contains(m.Roles, roleID) {
+			if m.User.ID == 0 || !slices.Contains(m.RoleIDs, core.ID(roleID)) {
 				continue
 			}
-			matches = append(matches, jailTarget{userID: m.User.ID, roles: m.Roles})
+			matches = append(matches, jailTarget{userID: m.User.ID.String(), roles: core.IDStrings(m.RoleIDs)})
 			if len(matches) > maxBulkJailTargets {
 				// Already more than we would act on. The exact total doesn't
 				// change the answer, and scanning on would only cost calls.
@@ -266,7 +267,7 @@ func (p *Plugin) membersWithRole(guildID, roleID string) (matches []jailTarget, 
 			return matches, true, nil // Last page.
 		}
 		last := page[len(page)-1].User
-		if last == nil {
+		if last.ID == 0 {
 			// No cursor to page from. Report incomplete rather than
 			// re-requesting the same page or claiming this is everyone.
 			return matches, false, nil
@@ -379,7 +380,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, ix *core.Ix) {
 		return
 	}
 
-	targets = p.excludeSelfAndBot(targets, actorID(ix), p.session)
+	targets = p.excludeSelfAndBot(targets, actorID(ix))
 	if len(targets) == 0 {
 		if ferr := ix.FollowUpOK("Nobody to jail", fmt.Sprintf("No other members hold <@&%s>.", roleID)); ferr != nil {
 			p.log.Error("roles: jail-role follow-up failed", "guild", ix.GuildID, "err", ferr)
@@ -390,7 +391,7 @@ func (p *Plugin) handleJailRole(ctx context.Context, ix *core.Ix) {
 	// Rank-check before resolving the jail role, so a batch the actor may not
 	// touch at all doesn't create the role and rewrite every channel's
 	// overwrites on its way to refusing.
-	allowed, res := p.partitionByRank(ix.GuildID, ix.MemberGo(), targets)
+	allowed, res := p.partitionByRank(ix.GuildID, ix.Actor(), targets)
 	if len(allowed) == 0 {
 		if ferr := ix.FollowUpOK("Nobody was jailed", summarizeBulkJail(res, duration, jailSentence)); ferr != nil {
 			p.log.Error("roles: jail-role follow-up failed", "guild", ix.GuildID, "err", ferr)
@@ -422,10 +423,10 @@ func (p *Plugin) handleJailRole(ctx context.Context, ix *core.Ix) {
 // and jailing the bot would strip the very permissions it needs to undo any of
 // this. Jailing yourself deliberately is still possible one target at a time
 // via /roles jail.
-func (p *Plugin) excludeSelfAndBot(targets []jailTarget, actorID string, s *discordgo.Session) []jailTarget {
+func (p *Plugin) excludeSelfAndBot(targets []jailTarget, actorID string) []jailTarget {
 	botID := ""
-	if s != nil && s.State != nil && s.State.User != nil {
-		botID = s.State.User.ID
+	if p.botID != 0 {
+		botID = p.botID.String()
 	}
 	return slices.DeleteFunc(targets, func(t jailTarget) bool {
 		return t.userID == actorID || (botID != "" && t.userID == botID)

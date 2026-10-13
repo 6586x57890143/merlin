@@ -300,8 +300,8 @@ func moderationState() cache.Caches {
 	})
 }
 
-func actorMember(userID string, roles []string) *discordgo.Member {
-	return &discordgo.Member{User: &discordgo.User{ID: userID}, Roles: roles}
+func actorMember(userID string, roles []string) *Actor {
+	return &Actor{ID: userID, RoleIDs: roles}
 }
 
 // TestCanModerateProtectsAdminsFromMods pins down the privilege inversion the

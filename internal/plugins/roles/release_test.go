@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -44,11 +42,11 @@ func newTimedPlugin(ops *fakeOps, store *fakeStore) (*Plugin, *fakeTimers, *time
 // fires when the sentence ends, not when a sweep next happens to look.
 func TestJailArmsReleaseAtDueInstant(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
-	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "jail-role"}}
+	ops.setMember("7000001", "7000102", []string{"7000302"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "7000301"}}
 	p, ft, now := newTimedPlugin(ops, newFakeStore())
 
-	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, 5*time.Minute, "mod", ""); err != nil {
+	if _, err := p.applyJail(context.Background(), "7000001", "7000301", jailTarget{userID: "7000102", roles: []string{"7000302"}}, 5*time.Minute, "7000319", ""); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
 	if len(ft.armed) != 1 || ft.armed[0].delay != 5*time.Minute {
@@ -58,11 +56,11 @@ func TestJailArmsReleaseAtDueInstant(t *testing.T) {
 	*now = fixedNow.Add(5 * time.Minute)
 	ft.armed[0].fire()
 
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected jail released by its timer")
 	}
-	m, _ := ops.GuildMember("g1", "u1")
-	if len(m.Roles) != 1 || m.Roles[0] != "role-a" {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if len(m.Roles) != 1 || m.Roles[0] != "7000302" {
 		t.Fatalf("expected roles restored by the timer, got %v", m.Roles)
 	}
 }
@@ -73,14 +71,14 @@ func TestJailArmsReleaseAtDueInstant(t *testing.T) {
 // re-reads the row and finds the new date still ahead.
 func TestRedateOutrunsOldTimer(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
+	ops.setMember("7000001", "7000102", []string{"7000302"})
 	p, ft, now := newTimedPlugin(ops, newFakeStore())
 
-	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, 5*time.Minute, "mod", ""); err != nil {
+	if _, err := p.applyJail(context.Background(), "7000001", "7000301", jailTarget{userID: "7000102", roles: []string{"7000302"}}, 5*time.Minute, "7000319", ""); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
 	// Re-jailed for an hour: the single-member path goes through jailMany.
-	res := p.jailMany(context.Background(), "g1", "jail-role", []jailTarget{{userID: "u1", roles: []string{"jail-role"}}}, time.Hour, "mod", "")
+	res := p.jailMany(context.Background(), "7000001", "7000301", []jailTarget{{userID: "7000102", roles: []string{"7000301"}}}, time.Hour, "7000319", "")
 	if len(res.redated) != 1 {
 		t.Fatalf("expected a re-date, got %+v", res)
 	}
@@ -90,13 +88,13 @@ func TestRedateOutrunsOldTimer(t *testing.T) {
 
 	*now = fixedNow.Add(5 * time.Minute)
 	ft.armed[0].fire() // the old one
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("old timer released a re-dated jail early")
 	}
 
 	*now = fixedNow.Add(time.Hour)
 	ft.armed[1].fire()
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected the re-dated timer to release")
 	}
 }
@@ -106,32 +104,32 @@ func TestRedateOutrunsOldTimer(t *testing.T) {
 // and anything already overdue is released right there.
 func TestSweepArmsUpcomingAndReleasesOverdue(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "overdue", []string{"jail-role"})
-	ops.setMember("g1", "soon", []string{"jail-role"})
-	ops.setMember("g1", "later", []string{"jail-role"})
-	ops.setMember("g1", "grantee", []string{"role-x"})
+	ops.setMember("7000001", "overdue", []string{"7000301"})
+	ops.setMember("7000001", "soon", []string{"7000301"})
+	ops.setMember("7000001", "later", []string{"7000301"})
+	ops.setMember("7000001", "7000122", []string{"7000306"})
 	store := newFakeStore()
 	overdue := fixedNow.Add(-time.Minute)
 	soon := fixedNow.Add(armLookahead / 2)
 	later := fixedNow.Add(armLookahead * 2)
 	for user, at := range map[string]time.Time{"overdue": overdue, "soon": soon, "later": later} {
 		at := at
-		_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: user, JailRoleID: "jail-role", ReleaseAt: &at})
+		_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: user, JailRoleID: "7000301", ReleaseAt: &at})
 	}
-	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "grantee", RoleID: "role-x", ExpiresAt: &soon})
+	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000122", RoleID: "7000306", ExpiresAt: &soon})
 
 	p, ft, now := newTimedPlugin(ops, store)
-	if err := p.sweep(context.Background(), "g1"); err != nil {
+	if err := p.sweep(context.Background(), "7000001"); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "overdue"); ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "overdue"); ok {
 		t.Fatal("expected the overdue jail released by the sweep itself")
 	}
 	if len(ft.armed) != 2 {
 		t.Fatalf("expected timers for exactly the soon jail and the soon grant, got %d", len(ft.armed))
 	}
-	if _, ok := p.timers[jailKey("g1", "later")]; ok {
+	if _, ok := p.timers[jailKey("7000001", "later")]; ok {
 		t.Fatal("a jail beyond the lookahead should not be armed yet")
 	}
 
@@ -139,13 +137,13 @@ func TestSweepArmsUpcomingAndReleasesOverdue(t *testing.T) {
 	for _, ft := range ft.armed {
 		ft.fire()
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "soon"); ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "soon"); ok {
 		t.Fatal("expected the soon jail released by its timer")
 	}
-	if _, ok, _ := store.GetGrant(context.Background(), "g1", "grantee", "role-x"); ok {
+	if _, ok, _ := store.GetGrant(context.Background(), "7000001", "7000122", "7000306"); ok {
 		t.Fatal("expected the soon grant revoked by its timer")
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "later"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "later"); !ok {
 		t.Fatal("the later jail must still be tracked")
 	}
 }
@@ -153,18 +151,18 @@ func TestSweepArmsUpcomingAndReleasesOverdue(t *testing.T) {
 // TestGrantArmsExpiry mirrors the jail case for timed grants.
 func TestGrantArmsExpiry(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
+	ops.setMember("7000001", "7000102", []string{"7000302"})
 	p, ft, now := newTimedPlugin(ops, newFakeStore())
 	at := fixedNow.Add(time.Hour)
-	_ = p.store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "u1", RoleID: "role-a", ExpiresAt: &at})
-	p.armGrantRevoke("g1", "u1", "role-a", at)
+	_ = p.store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000302", ExpiresAt: &at})
+	p.armGrantRevoke("7000001", "7000102", "7000302", at)
 
 	*now = at
 	ft.armed[0].fire()
-	if _, ok, _ := p.store.GetGrant(context.Background(), "g1", "u1", "role-a"); ok {
+	if _, ok, _ := p.store.GetGrant(context.Background(), "7000001", "7000102", "7000302"); ok {
 		t.Fatal("expected grant revoked by its timer")
 	}
-	m, _ := ops.GuildMember("g1", "u1")
+	m, _ := ops.GuildMember("7000001", "7000102")
 	if len(m.Roles) != 0 {
 		t.Fatalf("expected the granted role removed, got %v", m.Roles)
 	}
@@ -174,18 +172,18 @@ func TestGrantArmsExpiry(t *testing.T) {
 // sweep does, and leaves the row for the sweep afterwards.
 func TestTimerHonoursDryRun(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	p, _, now := newTimedPlugin(ops, newFakeStore())
 	p.dryRun = func(string) bool { return true }
 	at := fixedNow.Add(time.Minute)
-	_ = p.store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", ReleaseAt: &at})
+	_ = p.store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", ReleaseAt: &at})
 
 	*now = at
-	p.fireJailRelease("g1", "u1")
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); !ok {
+	p.fireJailRelease("7000001", "7000102")
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("dry-run timer must leave the jail tracked")
 	}
-	if len(ops.memberEditCalls["u1"]) != 0 {
+	if len(ops.memberEditCalls["7000102"]) != 0 {
 		t.Fatal("dry-run timer must not touch the member")
 	}
 }
@@ -194,28 +192,28 @@ func TestTimerHonoursDryRun(t *testing.T) {
 // same row at once must not both restore, audit and DM.
 func TestClaimedRowIsLeftToTheFirstCaller(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	p, _, _ := newTimedPlugin(ops, newFakeStore())
-	rec := JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", SnapshotRoleIDs: []string{"role-a"}}
+	rec := JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", SnapshotRoleIDs: []string{"7000302"}}
 	_ = p.store.InsertJail(context.Background(), rec)
 
-	if !p.claim(jailKey("g1", "u1")) {
+	if !p.claim(jailKey("7000001", "7000102")) {
 		t.Fatal("first claim should succeed")
 	}
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); !errors.Is(err, errReleaseInProgress) {
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); !errors.Is(err, errReleaseInProgress) {
 		t.Fatalf("second caller should report the row as in progress, got %v", err)
 	}
-	if len(ops.memberEditCalls["u1"]) != 0 {
+	if len(ops.memberEditCalls["7000102"]) != 0 {
 		t.Fatal("second caller must not restore roles")
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("second caller must not untrack the row the first is working on")
 	}
-	p.unclaim(jailKey("g1", "u1"))
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
+	p.unclaim(jailKey("7000001", "7000102"))
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail after unclaim: %v", err)
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected release once the claim is gone")
 	}
 }
@@ -226,15 +224,15 @@ func TestClaimedRowIsLeftToTheFirstCaller(t *testing.T) {
 func TestForgetGuildDisarmsOnlyThatGuild(t *testing.T) {
 	p, _, _ := newTimedPlugin(newFakeOps(), newFakeStore())
 	at := fixedNow.Add(time.Hour)
-	p.armJailRelease("g1", "u1", at)
-	p.armGrantRevoke("g1", "u1", "r", at)
-	p.armJailRelease("g2", "u1", at)
+	p.armJailRelease("7000001", "7000102", at)
+	p.armGrantRevoke("7000001", "7000102", "r", at)
+	p.armJailRelease("7000002", "7000102", at)
 
-	p.ForgetGuild("g1")
+	p.ForgetGuild("7000001")
 	if len(p.timers) != 1 {
 		t.Fatalf("expected only g2's timer to survive, got %v", p.timers)
 	}
-	if _, ok := p.timers[jailKey("g2", "u1")]; !ok {
+	if _, ok := p.timers[jailKey("7000002", "7000102")]; !ok {
 		t.Fatal("g2's timer should be untouched")
 	}
 	if err := p.Shutdown(context.Background()); err != nil {

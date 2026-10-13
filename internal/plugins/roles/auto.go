@@ -69,7 +69,7 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 		return errors.New("roles: the bootstrap admin cannot be jailed automatically")
 	}
 
-	member, err := p.ops(guildID).GuildMember(guildID, userID)
+	member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(userID))
 	if err != nil {
 		return fmt.Errorf("roles: fetch member for automatic jail: %w", err)
 	}
@@ -79,7 +79,7 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 	// be moderated, not an authorization bypass: nothing but the target's own
 	// prior choice can set it.
 	if !targetConsented {
-		if err := p.perms.CanModerate(guildID, nil, userID, member.Roles); err != nil {
+		if err := p.perms.CanModerate(guildID, nil, userID, core.IDStrings(member.RoleIDs)); err != nil {
 			return fmt.Errorf("roles: automatic jail refused: %w", err)
 		}
 	}
@@ -89,7 +89,7 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 		return err
 	}
 
-	_, err = p.applyJail(ctx, guildID, jailRoleID, jailTarget{userID: userID, roles: member.Roles}, duration, core.ActorSystem, reason)
+	_, err = p.applyJail(ctx, guildID, jailRoleID, jailTarget{userID: userID, roles: core.IDStrings(member.RoleIDs)}, duration, core.ActorSystem, reason)
 	if !errors.Is(err, ErrAlreadyJailed) {
 		return err
 	}
@@ -121,7 +121,7 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 		// stricter sentence, so the trip ends and the nest takes over, for
 		// the later of the two ends. Compared by sentence, not marker ID: a
 		// jail marker the guild has since reconfigured is still a jail.
-		if err := p.transferJail(ctx, guildID, jailTarget{userID: userID, roles: member.Roles}, rec, jailRoleID, &releaseAt); err != nil {
+		if err := p.transferJail(ctx, guildID, jailTarget{userID: userID, roles: core.IDStrings(member.RoleIDs)}, rec, jailRoleID, &releaseAt); err != nil {
 			return err
 		}
 		to := p.sentenceFor(guildID, jailRoleID)

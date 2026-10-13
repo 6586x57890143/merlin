@@ -5,8 +5,6 @@ import (
 	"slices"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // Sentencing an account that is not in the guild.
@@ -24,18 +22,18 @@ import (
 // same answer a mistyped snowflake gets.
 func TestResolveTargetsAcceptsAbsentAccountAfterCheckingItExists(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "here", []string{"role-a"})
-	ops.setUser("elsewhere") // A real account, not in this guild.
-	// "typo" is registered nowhere: no member, no user.
+	ops.setMember("7000001", "7000119", []string{"7000302"})
+	ops.setUser("7000117") // A real account, not in this guild.
+	// "7000118" is registered nowhere: no member, no user.
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	targets, failed := p.resolveTargets("g1", []string{"here", "elsewhere", "typo"})
+	targets, failed := p.resolveTargets("7000001", []string{"7000119", "7000117", "7000118"})
 
 	if len(targets) != 2 {
 		t.Fatalf("expected the member and the absent account as targets, got %+v", targets)
 	}
-	if targets[0].absent || !slices.Equal(targets[0].roles, []string{"role-a"}) {
+	if targets[0].absent || !slices.Equal(targets[0].roles, []string{"7000302"}) {
 		t.Fatalf("present member resolved wrong: %+v", targets[0])
 	}
 	if !targets[1].absent || len(targets[1].roles) != 0 {
@@ -46,7 +44,7 @@ func TestResolveTargetsAcceptsAbsentAccountAfterCheckingItExists(t *testing.T) {
 	}
 	// The member who is here must not cost a user lookup: the guild fetch
 	// already answered.
-	if !slices.Equal(ops.userCalls, []string{"elsewhere", "typo"}) {
+	if !slices.Equal(ops.userCalls, []string{"7000117", "7000118"}) {
 		t.Fatalf("user lookups ran on the wrong IDs: %v", ops.userCalls)
 	}
 }
@@ -57,12 +55,12 @@ func TestResolveTargetsAcceptsAbsentAccountAfterCheckingItExists(t *testing.T) {
 // member who is standing right there is the fail-open version of this.
 func TestResolveTargetsDoesNotTreatATransientFailureAsAbsence(t *testing.T) {
 	ops := newFakeOps()
-	ops.memberFetchErrFor = map[string]error{"u1": transientErr()}
-	ops.setUser("u1")
+	ops.memberFetchErrFor = map[string]error{"7000102": transientErr()}
+	ops.setUser("7000102")
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	targets, failed := p.resolveTargets("g1", []string{"u1"})
+	targets, failed := p.resolveTargets("7000001", []string{"7000102"})
 	if len(targets) != 0 || len(failed) != 1 {
 		t.Fatalf("a 500 must fail, not resolve as absent: targets=%+v failed=%v", targets, failed)
 	}
@@ -76,14 +74,14 @@ func TestResolveTargetsDoesNotTreatATransientFailureAsAbsence(t *testing.T) {
 // than as a jail that happened.
 func TestJailManyRecordsAnAbsentAccountWithoutTouchingDiscord(t *testing.T) {
 	ops := newFakeOps()
-	ops.setUser("u1")
+	ops.setUser("7000102")
 	store := newFakeStore()
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	res := p.jailMany(context.Background(), "g1", "jail-role",
-		[]jailTarget{{userID: "u1", absent: true}}, time.Hour, "mod1", "raid warning")
+	res := p.jailMany(context.Background(), "7000001", "7000301",
+		[]jailTarget{{userID: "7000102", absent: true}}, time.Hour, "7000112", "raid warning")
 
-	if len(res.pending) != 1 || res.pending[0] != "u1" {
+	if len(res.pending) != 1 || res.pending[0] != "7000102" {
 		t.Fatalf("expected u1 reported as pending, got %+v", res)
 	}
 	if len(res.jailed) != 0 {
@@ -92,14 +90,14 @@ func TestJailManyRecordsAnAbsentAccountWithoutTouchingDiscord(t *testing.T) {
 	if len(ops.memberEditCalls) != 0 {
 		t.Fatalf("expected no member edit for somebody who is not here, got %v", ops.memberEditCalls)
 	}
-	rec, ok, err := store.GetJail(context.Background(), "g1", "u1")
+	rec, ok, err := store.GetJail(context.Background(), "7000001", "7000102")
 	if err != nil || !ok {
 		t.Fatalf("expected the sentence recorded: ok=%v err=%v", ok, err)
 	}
 	if len(rec.SnapshotRoleIDs) != 0 {
 		t.Fatalf("an absent account held nothing here; snapshot must be empty, got %v", rec.SnapshotRoleIDs)
 	}
-	if rec.JailRoleID != "jail-role" {
+	if rec.JailRoleID != "7000301" {
 		t.Fatalf("recorded against the wrong marker: %q", rec.JailRoleID)
 	}
 }
@@ -109,28 +107,28 @@ func TestJailManyRecordsAnAbsentAccountWithoutTouchingDiscord(t *testing.T) {
 // on somebody arriving for the first time.
 func TestPendingSentenceAppliesOnArrival(t *testing.T) {
 	ops := newFakeOps()
-	ops.setUser("u1")
+	ops.setUser("7000102")
 	store := newFakeStore()
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if res := p.jailMany(context.Background(), "g1", "jail-role",
-		[]jailTarget{{userID: "u1", absent: true}}, time.Hour, "mod1", ""); len(res.pending) != 1 {
+	if res := p.jailMany(context.Background(), "7000001", "7000301",
+		[]jailTarget{{userID: "7000102", absent: true}}, time.Hour, "7000112", ""); len(res.pending) != 1 {
 		t.Fatalf("setup: expected a pending sentence, got %+v", res)
 	}
 
 	// They join: a member now exists, with a JoinedAt after the sentence and
 	// the guild's own starter role, and no marker.
-	ops.setMemberJoined("g1", "u1", []string{"newbie"}, fixedNow.Add(time.Minute))
-	p.HandleMemberJoin(context.Background(), "g1", "u1")
+	ops.setMemberJoined("7000001", "7000102", []string{"7000123"}, fixedNow.Add(time.Minute))
+	p.HandleMemberJoin(context.Background(), "7000001", "7000102")
 
-	m, err := ops.GuildMember("g1", "u1")
+	m, err := ops.GuildMember("7000001", "7000102")
 	if err != nil {
 		t.Fatalf("fetch member: %v", err)
 	}
-	if !slices.Equal(m.Roles, []string{"jail-role"}) {
+	if !slices.Equal(m.Roles, []string{"7000301"}) {
 		t.Fatalf("expected the marker applied on arrival, got %v", m.Roles)
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("the sentence must still be tracked after it lands")
 	}
 }
@@ -139,17 +137,17 @@ func TestPendingSentenceAppliesOnArrival(t *testing.T) {
 // nothing to strip, and the row is still there for whenever they show up.
 func TestPendingSentenceSurvivesUntilItsEndIfNobodyArrives(t *testing.T) {
 	ops := newFakeOps()
-	ops.setUser("u1")
+	ops.setUser("7000102")
 	store := newFakeStore()
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.jailMany(context.Background(), "g1", "jail-role",
-		[]jailTarget{{userID: "u1", absent: true}}, time.Hour, "mod1", "")
+	p.jailMany(context.Background(), "7000001", "7000301",
+		[]jailTarget{{userID: "7000102", absent: true}}, time.Hour, "7000112", "")
 
-	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 		t.Fatalf("sweep over an absent member: %v", err)
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("the sweep must not drop a sentence just because nobody has arrived")
 	}
 	if len(ops.memberEditCalls) != 0 {
@@ -161,23 +159,23 @@ func TestPendingSentenceSurvivesUntilItsEndIfNobodyArrives(t *testing.T) {
 // here, then send them on vacation instead. Only the row moves.
 func TestTransferMovesAnAbsentSentenceWithoutAnEdit(t *testing.T) {
 	ops := newFakeOps()
-	ops.setUser("u1")
-	ops.roles["g1"] = []*discordgo.Role{{ID: "jail-role"}, {ID: "island"}}
+	ops.setUser("7000102")
+	ops.roles["7000001"] = []*frole{{ID: "7000301"}, {ID: "7000322"}}
 	settings := newFakeSettings()
-	settings.vacationRole["g1"] = "island"
+	settings.vacationRole["7000001"] = "7000322"
 	store := newFakeStore()
 	p := newTestPlugin(ops, store, settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.jailMany(context.Background(), "g1", "jail-role",
-		[]jailTarget{{userID: "u1", absent: true}}, time.Hour, "mod1", "")
-	res := p.jailMany(context.Background(), "g1", "island",
-		[]jailTarget{{userID: "u1", absent: true}}, 2*time.Hour, "mod1", "")
+	p.jailMany(context.Background(), "7000001", "7000301",
+		[]jailTarget{{userID: "7000102", absent: true}}, time.Hour, "7000112", "")
+	res := p.jailMany(context.Background(), "7000001", "7000322",
+		[]jailTarget{{userID: "7000102", absent: true}}, 2*time.Hour, "7000112", "")
 
 	if len(res.transferred) != 1 {
 		t.Fatalf("expected the pending sentence moved to the island, got %+v", res)
 	}
-	rec, ok, _ := store.GetJail(context.Background(), "g1", "u1")
-	if !ok || rec.JailRoleID != "island" {
+	rec, ok, _ := store.GetJail(context.Background(), "7000001", "7000102")
+	if !ok || rec.JailRoleID != "7000322" {
 		t.Fatalf("row did not follow the move: ok=%v rec=%+v", ok, rec)
 	}
 	if len(ops.memberEditCalls) != 0 {
