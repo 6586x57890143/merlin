@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/6586x57890143/merlin/internal/secret"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -585,12 +586,15 @@ type fakeOps struct {
 	mu sync.Mutex
 
 	deleted   []string // message IDs
-	posted    []*discordgo.WebhookParams
+	posted    []discord.WebhookMessageCreate
 	timeouts  map[string]time.Duration
-	dms       []*discordgo.MessageSend
+	dms       []discord.MessageCreate
 	webhooks  int
 	deleteErr error
 
+	// The fixtures are discordgo's, whose IDs ("u1", "owner") need not be
+	// snowflakes; each read hands back aimod's view of them, as GuardOps
+	// does of disgo's.
 	guild      *discordgo.Guild
 	guildErr   error
 	members    map[string]*discordgo.Member
@@ -606,7 +610,7 @@ func newFakeOps() *fakeOps {
 	}
 }
 
-func (f *fakeOps) ChannelMessageDelete(_, messageID string, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) DeleteMessage(_, messageID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.deleteErr != nil {
@@ -616,47 +620,60 @@ func (f *fakeOps) ChannelMessageDelete(_, messageID string, _ ...discordgo.Reque
 	return nil
 }
 
-func (f *fakeOps) ChannelMessages(string, int, string, string, string, ...discordgo.RequestOption) ([]*discordgo.Message, error) {
+func (f *fakeOps) History(string, string, int) ([]Line, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.history, f.historyErr
+	out := make([]Line, 0, len(f.history))
+	for _, m := range f.history {
+		if m == nil {
+			continue
+		}
+		l := Line{Content: m.Content}
+		if m.Author != nil {
+			l.AuthorID = m.Author.ID
+		}
+		out = append(out, l)
+	}
+	return out, f.historyErr
 }
 
-func (f *fakeOps) ChannelWebhooks(string, ...discordgo.RequestOption) ([]*discordgo.Webhook, error) {
-	return nil, nil
-}
+func (f *fakeOps) Webhooks(string) ([]Hook, error) { return nil, nil }
 
-func (f *fakeOps) WebhookCreate(string, string, string, ...discordgo.RequestOption) (*discordgo.Webhook, error) {
+func (f *fakeOps) CreateWebhook(string, string) (Hook, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.webhooks++
-	return &discordgo.Webhook{ID: "w1", Token: "t1"}, nil
+	return Hook{ID: "w1", Name: webhookName, Token: "t1"}, nil
 }
 
-func (f *fakeOps) WebhookExecute(_, _ string, data *discordgo.WebhookParams, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) PostAs(_ Hook, m discord.WebhookMessageCreate, wait bool) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.posted = append(f.posted, data)
-	return nil
-}
-
-func (f *fakeOps) WebhookExecuteWait(id, token string, data *discordgo.WebhookParams, opts ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := f.WebhookExecute(id, token, data, opts...); err != nil {
-		return nil, err
+	f.posted = append(f.posted, m)
+	if wait {
+		return "repost1", nil
 	}
-	return &discordgo.Message{ID: "repost1"}, nil
+	return "", nil
 }
 
-func (f *fakeOps) GuildMember(_, userID string, _ ...discordgo.RequestOption) (*discordgo.Member, error) {
+func (f *fakeOps) Member(_, userID string) (Member, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if m, ok := f.members[userID]; ok {
-		return m, nil
+	m, ok := f.members[userID]
+	if !ok {
+		return Member{Name: "member" + userID}, nil
 	}
-	return &discordgo.Member{User: &discordgo.User{ID: userID, Username: "member" + userID}}, nil
+	out := Member{RoleIDs: m.Roles, Name: m.Nick}
+	if out.Name == "" && m.User != nil {
+		out.Name = m.User.GlobalName
+		if out.Name == "" {
+			out.Name = m.User.Username
+		}
+	}
+	return out, nil
 }
 
-func (f *fakeOps) GuildMemberTimeout(_, userID string, until *time.Time, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) TimeoutMember(_, userID string, until *time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if until == nil {
@@ -667,30 +684,30 @@ func (f *fakeOps) GuildMemberTimeout(_, userID string, until *time.Time, _ ...di
 	return nil
 }
 
-func (f *fakeOps) Guild(string, ...discordgo.RequestOption) (*discordgo.Guild, error) {
+func (f *fakeOps) Guild(string) (Guild, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.guildErr != nil {
-		return nil, f.guildErr
+		return Guild{}, f.guildErr
 	}
-	return f.guild, nil
+	g := Guild{Name: f.guild.Name, OwnerID: f.guild.OwnerID, RolePerms: map[string]discord.Permissions{}}
+	for _, r := range f.guild.Roles {
+		g.RolePerms[r.ID] = discord.Permissions(r.Permissions)
+	}
+	return g, nil
 }
 
-func (f *fakeOps) UserChannelCreate(recipientID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	return &discordgo.Channel{ID: "dm-" + recipientID}, nil
-}
-
-func (f *fakeOps) ChannelMessageSendComplex(_ string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+func (f *fakeOps) DM(_ string, m discord.MessageCreate) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.dms = append(f.dms, data)
-	return &discordgo.Message{}, nil
+	f.dms = append(f.dms, m)
+	return nil
 }
 
-func (f *fakeOps) snapshot() (deleted []string, posted []*discordgo.WebhookParams) {
+func (f *fakeOps) snapshot() (deleted []string, posted []discord.WebhookMessageCreate) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.deleted...), append([]*discordgo.WebhookParams(nil), f.posted...)
+	return append([]string(nil), f.deleted...), append([]discord.WebhookMessageCreate(nil), f.posted...)
 }
 
 // --- fakeAudit ---
@@ -815,7 +832,7 @@ func testPlugin(t testingT, store *fakeStore, client classifier, ops *fakeOps, a
 		dedupe:        newDedupeCache(),
 		meter:         newUserMeter(),
 		models:        newModelCache(),
-		webhooks:      make(map[string]*discordgo.Webhook),
+		webhooks:      make(map[string]Hook),
 		batches:       make(map[string]*batch),
 		inFlight:      make(map[string]chan struct{}),
 		budgetNoticed: make(map[string]time.Time),

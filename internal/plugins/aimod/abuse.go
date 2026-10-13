@@ -10,10 +10,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // Defence against the obvious attack on a feature that spends money per
@@ -333,27 +332,23 @@ func (p *Plugin) timeoutMember(ctx context.Context, guildID, userID string, dura
 		// absolute carve-outs above still stand.
 		return p.applyTimeout(ctx, guildID, userID, duration)
 	}
-	member, err := p.ops(guildID).GuildMember(guildID, userID)
+	member, err := p.ops(guildID).Member(guildID, userID)
 	if err != nil {
 		return fmt.Errorf("aimod: read member for rank check: %w", err)
 	}
 
-	const staffBits = discordgo.PermissionAdministrator |
-		discordgo.PermissionModerateMembers |
-		discordgo.PermissionManageMessages
-	byID := make(map[string]*discordgo.Role, len(guild.Roles))
-	for _, r := range guild.Roles {
-		byID[r.ID] = r
-	}
-	for _, roleID := range member.Roles {
-		r, ok := byID[roleID]
+	const staffBits = discord.PermissionAdministrator |
+		discord.PermissionModerateMembers |
+		discord.PermissionManageMessages
+	for _, roleID := range member.RoleIDs {
+		perms, ok := guild.RolePerms[roleID]
 		if !ok {
 			// A role the guild read did not include is a role this check
 			// cannot clear, and clearing it by default is how a carve-out
 			// gets bypassed. Refuse.
 			return fmt.Errorf("aimod: refusing to time out %s, their roles could not be fully resolved", userID)
 		}
-		if r.Permissions&staffBits != 0 {
+		if perms&staffBits != 0 {
 			return fmt.Errorf("aimod: refusing to time out %s, they hold a moderator-level role", userID)
 		}
 	}
@@ -363,7 +358,7 @@ func (p *Plugin) timeoutMember(ctx context.Context, guildID, userID string, dura
 
 func (p *Plugin) applyTimeout(_ context.Context, guildID, userID string, duration time.Duration) error {
 	until := p.now().Add(duration)
-	err := p.ops(guildID).GuildMemberTimeout(guildID, userID, &until)
+	err := p.ops(guildID).TimeoutMember(guildID, userID, &until)
 	if discordguard.Skipped(err) {
 		// Paused or dry-run: the guild deliberately stopped the bot acting.
 		return nil

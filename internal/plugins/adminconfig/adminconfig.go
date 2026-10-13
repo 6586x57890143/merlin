@@ -331,7 +331,7 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 		Embeds: []discord.Embed{embed},
 		Files:  core.EmbedUploads(embed),
 		// Outside the guard, so stated here as everywhere else.
-		AllowedMentions: &discord.AllowedMentions{},
+		AllowedMentions: core.NoPings(),
 	})
 	if err != nil {
 		p.log.Warn("adminconfig: onboarding DM failed, owner may have DMs closed",

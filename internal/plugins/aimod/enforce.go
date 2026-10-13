@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/voice"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // webhookName is the webhook this plugin creates per channel to repost a
@@ -196,7 +195,7 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 }
 
 func (p *Plugin) removeMessage(ctx context.Context, guildID string, c candidate) error {
-	return p.ops(guildID).ChannelMessageDelete(c.ChannelID, c.MessageID)
+	return p.ops(guildID).DeleteMessage(c.ChannelID, c.MessageID)
 }
 
 // rewriteMessage deletes the original and reposts the cleaned text through a
@@ -228,7 +227,7 @@ func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate
 		return "", fmt.Errorf("aimod: resolve webhook: %w", err)
 	}
 
-	author, err := p.ops(guildID).GuildMember(guildID, c.AuthorID)
+	author, err := p.ops(guildID).Member(guildID, c.AuthorID)
 	if err != nil {
 		return "", fmt.Errorf("aimod: fetch author: %w", err)
 	}
@@ -236,46 +235,33 @@ func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate
 	if err := p.removeMessage(ctx, guildID, c); err != nil {
 		return "", err
 	}
-	msg, err := p.ops(guildID).WebhookExecuteWait(hook.ID, hook.Token, &discordgo.WebhookParams{
+	return p.ops(guildID).PostAs(hook, discord.WebhookMessageCreate{
 		Content:   replacement + rewriteMarker(code),
 		Username:  displayName(author),
-		AvatarURL: author.AvatarURL(""),
-	})
-	if err != nil || msg == nil {
-		return "", err
-	}
-	return msg.ID, nil
+		AvatarURL: author.AvatarURL,
+	}, true)
 }
 
-func displayName(m *discordgo.Member) string {
-	if m == nil {
+func displayName(m Member) string {
+	if m.Name == "" {
 		return "member"
 	}
-	if m.Nick != "" {
-		return m.Nick
-	}
-	if m.User != nil {
-		if m.User.GlobalName != "" {
-			return m.User.GlobalName
-		}
-		return m.User.Username
-	}
-	return "member"
+	return m.Name
 }
 
 // resolveWebhook finds or creates this plugin's webhook for a channel,
 // caching it per process. Same find-by-name-or-create shape as
 // roles.resolveJailRole and rotation.resolveArchiveCategory.
-func (p *Plugin) resolveWebhook(ctx context.Context, guildID, channelID string) (*discordgo.Webhook, error) {
+func (p *Plugin) resolveWebhook(ctx context.Context, guildID, channelID string) (Hook, error) {
 	p.webhookMu.Lock()
 	defer p.webhookMu.Unlock()
 	if hook, ok := p.webhooks[channelID]; ok {
 		return hook, nil
 	}
 
-	existing, err := p.ops(guildID).ChannelWebhooks(channelID)
+	existing, err := p.ops(guildID).Webhooks(channelID)
 	if err != nil {
-		return nil, err
+		return Hook{}, err
 	}
 	for _, hook := range existing {
 		// Token, not just name: Discord omits the token from webhooks this
@@ -287,9 +273,9 @@ func (p *Plugin) resolveWebhook(ctx context.Context, guildID, channelID string) 
 		}
 	}
 
-	created, err := p.ops(guildID).WebhookCreate(channelID, webhookName, "")
+	created, err := p.ops(guildID).CreateWebhook(channelID, webhookName)
 	if err != nil {
-		return nil, err
+		return Hook{}, err
 	}
 	p.webhooks[channelID] = created
 	return created, nil
@@ -333,7 +319,7 @@ func (p *Plugin) notifyAuthor(ctx context.Context, cfg Config, c candidate, acti
 		return
 	}
 
-	fields := []*discordgo.MessageEmbedField{
+	fields := []discord.EmbedField{
 		{Name: "Why", Value: core.TruncateEmbedField(reasonOrPolicy(v))},
 	}
 	// The member's own words back to them, so a false positive costs them
@@ -351,7 +337,7 @@ func (p *Plugin) notifyAuthor(ctx context.Context, cfg Config, c candidate, acti
 	// guild that wants the member to keep their words leaves the window at
 	// its default and they do.
 	if cfg.EvidenceHours > 0 && c.Content != "" {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "What you posted",
 			Value: core.TruncateEmbedField(c.Content),
 		})
@@ -364,22 +350,17 @@ func (p *Plugin) notifyAuthor(ctx context.Context, cfg Config, c candidate, acti
 	// actually offering it, so a server that does not stays silent rather
 	// than advertising a command that would refuse.
 	if cfg.MemberOptOut {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "Don't want to be moderated by me?",
 			Value: "This server lets you opt out: `/aimod opt-out enabled:true` and I stop moderating your messages. " +
 				"Slurs and anything reading as child safety still apply to everyone.",
 		})
 	}
 
-	embed := core.NewEmbed(core.ColorWarning, "A message of yours was moderated", line, fields...)
-	dm, err := p.ops(guildID).UserChannelCreate(c.AuthorID)
-	if err != nil {
-		p.log.Info("aimod: could not open DM with author", "guild", guildID, "user", c.AuthorID)
-		return
-	}
-	if _, err := p.ops(guildID).ChannelMessageSendComplex(dm.ID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed},
-		Files:  core.EmbedFiles(embed),
+	embed := core.Embed(core.ColorWarning, "A message of yours was moderated", line, fields...)
+	if err := p.ops(guildID).DM(c.AuthorID, discord.MessageCreate{
+		Embeds: []discord.Embed{embed},
+		Files:  core.EmbedUploads(embed),
 	}); err != nil && !discordguard.Skipped(err) {
 		p.log.Info("aimod: could not DM author", "guild", guildID, "user", c.AuthorID)
 	}
@@ -484,15 +465,15 @@ func (p *Plugin) undo(ctx context.Context, guildID string, inc Incident) error {
 	if err != nil {
 		return fmt.Errorf("aimod: resolve webhook: %w", err)
 	}
-	author, err := p.ops(guildID).GuildMember(guildID, inc.AuthorID)
+	author, err := p.ops(guildID).Member(guildID, inc.AuthorID)
 	if err != nil {
 		return fmt.Errorf("aimod: fetch author: %w", err)
 	}
-	if err := p.ops(guildID).WebhookExecute(hook.ID, hook.Token, &discordgo.WebhookParams{
+	if _, err := p.ops(guildID).PostAs(hook, discord.WebhookMessageCreate{
 		Content:   inc.Content,
 		Username:  displayName(author),
-		AvatarURL: author.AvatarURL(""),
-	}); err != nil {
+		AvatarURL: author.AvatarURL,
+	}, false); err != nil {
 		return err
 	}
 	return p.store.MarkUndone(ctx, inc.ID)
