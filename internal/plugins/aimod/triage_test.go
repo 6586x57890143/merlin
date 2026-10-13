@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // Sentences that stand in for a server's ordinary traffic and for the small
@@ -210,10 +208,10 @@ func TestTriageOnSkipsTheModelCall(t *testing.T) {
 
 	trainTriage(p.triageFor(context.Background(), "g1"), 80)
 
-	p.handleGo(&discordgo.Message{
+	p.handle(message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
-		Content: triageClean[0],
-		Author:  &discordgo.User{ID: "u1", Username: "someguy"},
+		Content:  triageClean[0],
+		AuthorID: "u1",
 	})
 	p.flush("c1")
 	p.wg.Wait()
@@ -237,10 +235,10 @@ func TestTriagePassesThroughWhatItIsUnsureOf(t *testing.T) {
 
 	trainTriage(p.triageFor(context.Background(), "g1"), 80)
 
-	p.handleGo(&discordgo.Message{
+	p.handle(message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
-		Content: triageFlagged[0],
-		Author:  &discordgo.User{ID: "u1", Username: "someguy"},
+		Content:  triageFlagged[0],
+		AuthorID: "u1",
 	})
 	p.flush("c1")
 	p.wg.Wait()
