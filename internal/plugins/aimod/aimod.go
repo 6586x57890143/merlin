@@ -8,7 +8,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -75,24 +74,6 @@ const maxInFlight = 4
 // hits ran out of its own spawn context and lost the tail, and four at a time
 // puts twenty hits comfortably inside it.
 const maxConcurrentEscalations = 4
-
-// DiscordOps is this plugin's narrow view of Discord, satisfied structurally
-// by *discordguard.GuildOps, so every mutating call is gated by pause,
-// dry-run, the per-guild rate cap and the action journal without this
-// package knowing any of that exists.
-type DiscordOps interface {
-	ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error
-	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
-	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
-	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
-	WebhookExecute(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error
-	WebhookExecuteWait(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)
-	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
-	Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error)
-	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
-}
 
 // OpsProvider yields the Discord view for one guild, bound explicitly for
 // the same reason rotation.OpsProvider is.
@@ -178,7 +159,7 @@ type Plugin struct {
 	// one person can consume. See abuse.go.
 	meter     *userMeter
 	webhookMu sync.Mutex
-	webhooks  map[string]*discordgo.Webhook
+	webhooks  map[string]Hook
 
 	batchMu sync.Mutex
 	batches map[string]*batch // channel ID -> pending batch
@@ -282,7 +263,7 @@ func New(store Store, client *Client, ops OpsProvider, secretKey string, speaker
 		dedupe:              newDedupeCache(),
 		meter:               newUserMeter(),
 		models:              newModelCache(),
-		webhooks:            make(map[string]*discordgo.Webhook),
+		webhooks:            make(map[string]Hook),
 		batches:             make(map[string]*batch),
 		inFlight:            make(map[string]chan struct{}),
 		budgetNoticed:       make(map[string]time.Time),
@@ -1084,7 +1065,7 @@ func (p *Plugin) recentContext(guildID string, c candidate) (lines []string, sel
 	// or not they also wrote any of the preceding lines.
 	self = labels.of(c.AuthorID)
 
-	msgs, err := p.ops(guildID).ChannelMessages(c.ChannelID, contextLines, c.MessageID, "", "")
+	msgs, err := p.ops(guildID).History(c.ChannelID, c.MessageID, contextLines)
 	if err != nil {
 		return nil, self
 	}
@@ -1092,10 +1073,10 @@ func (p *Plugin) recentContext(guildID string, c candidate) (lines []string, sel
 	// Discord returns newest-first; reverse so the model reads them in the
 	// order they were said.
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i] == nil || msgs[i].Content == "" || msgs[i].Author == nil {
+		if msgs[i].Content == "" || msgs[i].AuthorID == "" {
 			continue
 		}
-		lines = append(lines, labels.of(msgs[i].Author.ID)+": "+msgs[i].Content)
+		lines = append(lines, labels.of(msgs[i].AuthorID)+": "+msgs[i].Content)
 	}
 	return lines, self
 }

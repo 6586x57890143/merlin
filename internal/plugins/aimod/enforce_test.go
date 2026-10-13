@@ -2,6 +2,7 @@ package aimod
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/discordguard"
 )
@@ -373,22 +375,25 @@ func TestWebhookIsCreatedOncePerChannel(t *testing.T) {
 	}
 }
 
+// A rewrite is reposted under the name the member shows: their nickname,
+// then their display name, then their username. GuardOps reads it from
+// disgo's EffectiveName, so this holds disgo to that order.
 func TestDisplayNamePrefersNickThenGlobalName(t *testing.T) {
-	tests := []struct {
-		name   string
-		member *discordgo.Member
-		want   string
-	}{
-		{"nick wins", &discordgo.Member{Nick: "Nick", User: &discordgo.User{GlobalName: "Global", Username: "user"}}, "Nick"},
-		{"then global name", &discordgo.Member{User: &discordgo.User{GlobalName: "Global", Username: "user"}}, "Global"},
-		{"then username", &discordgo.Member{User: &discordgo.User{Username: "user"}}, "user"},
-		{"nil member", nil, "member"},
-		{"no user", &discordgo.Member{}, "member"},
-	}
-	for _, tc := range tests {
-		if got := displayName(tc.member); got != tc.want {
+	for _, tc := range []struct{ name, member, want string }{
+		{"nick wins", `{"nick":"Nick","user":{"id":"1","username":"user","global_name":"Global"}}`, "Nick"},
+		{"then global name", `{"user":{"id":"1","username":"user","global_name":"Global"}}`, "Global"},
+		{"then username", `{"user":{"id":"1","username":"user"}}`, "user"},
+	} {
+		var m discord.Member
+		if err := json.Unmarshal([]byte(tc.member), &m); err != nil {
+			t.Fatal(err)
+		}
+		if got := displayName(Member{Name: m.EffectiveName()}); got != tc.want {
 			t.Errorf("%s: displayName = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+	if displayName(Member{}) != "member" {
+		t.Error("a member with no name is not called member")
 	}
 }
 

@@ -512,10 +512,9 @@ func (p *Plugin) ownerOrOperator(guildID, userID string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("could not read this server to check who owns it: %w", err)
 	}
-	// A nil guild with no error should not happen, and if it ever does the
-	// answer is no. Dereferencing it would panic into the router's recover(),
-	// which reads to the actor as a transient glitch worth retrying.
-	if guild == nil {
+	// A guild read with no owner should not happen, and if it ever does the
+	// answer is no.
+	if guild.OwnerID == "" {
 		return false, fmt.Errorf("this server could not be read, so ownership cannot be confirmed")
 	}
 	return guild.OwnerID == userID, nil

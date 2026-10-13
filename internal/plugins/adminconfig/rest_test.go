@@ -118,7 +118,7 @@ func TestSetupCreatesAPrivateChannelAndTheModRole(t *testing.T) {
 func TestTheNudgeIsADMThatPingsNobody(t *testing.T) {
 	p, f := restPlugin(t, fakeSettingsAdmin{})
 	p.NudgeIfUnconfigured(context.Background(), &discordgo.GuildCreate{Guild: &discordgo.Guild{ID: "100", OwnerID: "5", Name: "n"}})
-	if f.dmTo != 5 || f.sent == nil || f.sent.AllowedMentions == nil || len(f.sent.AllowedMentions.Parse) != 0 || len(f.sent.Embeds) != 1 {
+	if f.dmTo != 5 || f.sent == nil || f.sent.AllowedMentions == nil || f.sent.AllowedMentions.Parse == nil || len(f.sent.AllowedMentions.Parse) != 0 || len(f.sent.Embeds) != 1 {
 		t.Fatalf("dm to %d: %+v", f.dmTo, f.sent)
 	}
 }

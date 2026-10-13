@@ -288,7 +288,7 @@ func (p *Plugin) reviewInput(cfg Config, incidents []Incident) string {
 	b.WriteString("\nRecent conversation in the channels where it has been most active:\n")
 	budget := maxReviewChars
 	for _, channelID := range busiestChannels(incidents, maxReviewChannels) {
-		msgs, err := p.ops(cfg.GuildID).ChannelMessages(channelID, reviewMessagesPerChannel, "", "", "")
+		msgs, err := p.ops(cfg.GuildID).History(channelID, "", reviewMessagesPerChannel)
 		if err != nil {
 			// The same policy as recentContext: an unreadable channel makes
 			// the review weaker, never fatal.
@@ -299,10 +299,10 @@ func (p *Plugin) reviewInput(cfg Config, incidents []Incident) string {
 		// Discord returns newest-first; reverse so the reviewer reads the
 		// conversation in the order it happened.
 		for i := len(msgs) - 1; i >= 0 && budget > 0; i-- {
-			if msgs[i] == nil || msgs[i].Content == "" || msgs[i].Author == nil {
+			if msgs[i].Content == "" || msgs[i].AuthorID == "" {
 				continue
 			}
-			line := labels.of(msgs[i].Author.ID) + ": " + sanitizeForPrompt(msgs[i].Content) + "\n"
+			line := labels.of(msgs[i].AuthorID) + ": " + sanitizeForPrompt(msgs[i].Content) + "\n"
 			if len(line) > budget {
 				break
 			}

@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 )
 
 // ErrPaused and ErrDryRun report that a mutating call was deliberately not
@@ -107,6 +108,7 @@ type Session interface {
 // constructed in cmd/bot/main.go and shared by every plugin.
 type Guard struct {
 	session Session
+	rest    rest.Rest // disgo, for the methods in rest.go
 	gate    GuildGate
 	log     *slog.Logger
 	global  atomic.Bool
