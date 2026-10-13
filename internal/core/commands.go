@@ -486,7 +486,7 @@ func (r *CommandRouter) dispatchComponent(ix *Ix, customID string) {
 		ix.Tell(r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
 		return
 	}
-	if err := r.perms.AuthorizeIx(ix, matched.spec); err != nil {
+	if err := r.perms.Authorize(ix, matched.spec); err != nil {
 		ix.Tell(r.say(voice.KeyDenied, "You are not allowed to do that."))
 		return
 	}
@@ -541,7 +541,7 @@ func (r *CommandRouter) dispatchModal(ix *Ix, customID string) {
 		ix.Tell(r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
 		return
 	}
-	if err := r.perms.AuthorizeIx(ix, matched.spec); err != nil {
+	if err := r.perms.Authorize(ix, matched.spec); err != nil {
 		ix.Tell(r.say(voice.KeyDenied, "You are not allowed to do that."))
 		return
 	}
@@ -593,7 +593,7 @@ func (r *CommandRouter) dispatchCommand(ix *Ix, i discord.ApplicationCommandInte
 		return
 	}
 
-	if err := r.perms.AuthorizeIx(ix, leaf.spec); err != nil {
+	if err := r.perms.Authorize(ix, leaf.spec); err != nil {
 		ix.Tell(r.say(voice.KeyDenied, "You are not allowed to run this command."))
 		return
 	}
@@ -631,7 +631,7 @@ func (r *CommandRouter) dispatchAutocomplete(ix *Ix, i discord.AutocompleteInter
 	if !r.gate.PluginEnabled(ix.GuildID, r.topLevelPlugin[i.Data.CommandName]) {
 		return
 	}
-	if err := r.perms.AuthorizeIx(ix, leaf.spec); err != nil {
+	if err := r.perms.Authorize(ix, leaf.spec); err != nil {
 		return
 	}
 

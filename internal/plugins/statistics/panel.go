@@ -69,7 +69,7 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 	pn.Parts = []discord.ContainerSubComponent{
 		ui.Text(core.Readout(rows)),
 		ui.Switch(fmt.Sprintf("hourly counts are kept for **%d** days, then pruned within the hour.", cfg.RetentionDays),
-			ui.Button("Change", panelSet+"retention", discord.ButtonStyleSecondary, !p.commands.Perms().AllowsIx(ix, configureSpec))),
+			ui.Button("Change", panelSet+"retention", discord.ButtonStyleSecondary, !p.commands.Perms().Allows(ix, configureSpec))),
 	}
 	return pn
 }

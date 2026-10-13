@@ -72,7 +72,7 @@ func (p *Plugin) redraw(ctx context.Context, ix *core.Ix, channelID, note string
 // channel's settings.
 func (p *Plugin) panel(ctx context.Context, ix *core.Ix, channelID, note string) core.Panel {
 	perms := p.commands.Perms()
-	canStruct, canAdjust := perms.AllowsIx(ix, structSpec), perms.AllowsIx(ix, adjustSpec)
+	canStruct, canAdjust := perms.Allows(ix, structSpec), perms.Allows(ix, adjustSpec)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Rotation", Plugin: p.Name(), Note: note,
 		Line:   "Channels that are replaced on a schedule, their old copy archived",
 		Footer: "Every change is written to the audit log. Deleting an archive has no undo."}

@@ -53,7 +53,7 @@ func (p *Plugin) redraw(ctx context.Context, ix *core.Ix, category, note string)
 }
 
 func (p *Plugin) panel(ctx context.Context, ix *core.Ix, category Category, note string) core.Panel {
-	can := p.commands.Perms().AllowsIx(ix, configureSpec)
+	can := p.commands.Perms().Allows(ix, configureSpec)
 	cfg := p.config(ctx, ix.GuildID)
 	tuned := "none"
 	if len(cfg.CategoryPoints) > 0 {
