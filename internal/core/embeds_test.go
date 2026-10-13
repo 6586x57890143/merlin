@@ -1,7 +1,6 @@
 package core
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -26,56 +25,6 @@ func (c *captureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Request:    r,
 	}, nil
-}
-
-// Discord fixes ephemerality when an interaction is acknowledged, so the
-// difference between these two helpers is decided at defer time and cannot be
-// corrected by the follow-up that lands afterwards. A tip jar deferred
-// privately stays private no matter what is edited into it, which is why the
-// public variant exists as a separate call rather than a flag further down.
-func TestDeferResponsePublicIsNotEphemeral(t *testing.T) {
-	const ephemeralFlag = 64 // 1 << 6, Discord's MessageFlagsEphemeral
-
-	for _, tc := range []struct {
-		name         string
-		defer_       func(*discordgo.Session, *discordgo.InteractionCreate) error
-		wantFlagSeen bool
-	}{
-		{"private", DeferResponse, true},
-		{"public", DeferResponsePublic, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cap := &captureTransport{}
-			s, err := discordgo.New("Bot test-token")
-			if err != nil {
-				t.Fatalf("discordgo.New: %v", err)
-			}
-			s.Client = &http.Client{Transport: cap}
-
-			i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-				ID: "i1", Token: "tok", Type: discordgo.InteractionApplicationCommand,
-			}}
-			if err := tc.defer_(s, i); err != nil {
-				t.Fatalf("defer: %v", err)
-			}
-			if len(cap.bodies) != 1 {
-				t.Fatalf("sent %d requests, want 1", len(cap.bodies))
-			}
-
-			var sent struct {
-				Data *struct {
-					Flags int `json:"flags"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal([]byte(cap.bodies[0]), &sent); err != nil {
-				t.Fatalf("body was not JSON: %v (%s)", err, cap.bodies[0])
-			}
-			gotFlag := sent.Data != nil && sent.Data.Flags&ephemeralFlag != 0
-			if gotFlag != tc.wantFlagSeen {
-				t.Fatalf("ephemeral flag set = %v, want %v (body %s)", gotFlag, tc.wantFlagSeen, cap.bodies[0])
-			}
-		})
-	}
 }
 
 func TestNewEmbedSetsFields(t *testing.T) {
@@ -271,37 +220,6 @@ func referencedAttachments(e *discordgo.MessageEmbed) []string {
 		add(e.Image.URL)
 	}
 	return out
-}
-
-// TestFollowUpReplacesAttachmentsOnEveryEdit: an omitted attachments field
-// keeps what is already on the message and appends the new upload, and a
-// placeholder edited every twenty seconds hit Discord's cap of ten on the
-// eleventh edit, three minutes in, after which every edit was refused. The
-// wire body must say "attachments: []" so each edit replaces the last.
-func TestFollowUpReplacesAttachmentsOnEveryEdit(t *testing.T) {
-	cap := &captureTransport{}
-	s, err := discordgo.New("Bot test-token")
-	if err != nil {
-		t.Fatalf("discordgo.New: %v", err)
-	}
-	s.Client = &http.Client{Transport: cap}
-	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID: "i1", Token: "tok", Type: discordgo.InteractionApplicationCommand,
-	}}
-
-	if err := FollowUpEmbed(s, i, NewEmbed(ColorInfo, "Still counting", "9369 messages so far")); err != nil {
-		t.Fatalf("FollowUpEmbed: %v", err)
-	}
-	if len(cap.bodies) != 1 {
-		t.Fatalf("expected one request, got %d", len(cap.bodies))
-	}
-	body := cap.bodies[0]
-	if !strings.Contains(body, `"attachments":[]`) {
-		t.Fatalf("edit must clear the previous upload; body was:\n%s", body)
-	}
-	if !strings.Contains(body, `filename="merlin_info.png"`) {
-		t.Fatalf("edit must still carry this response's own thumbnail; body was:\n%s", body)
-	}
 }
 
 // The separator is what pins every embed to one width, and an image URL with

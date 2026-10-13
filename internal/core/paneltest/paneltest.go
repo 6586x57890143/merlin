@@ -5,15 +5,12 @@
 package paneltest
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/bwmarrin/discordgo"
-
-	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // Wire records every request a session makes.
@@ -62,81 +59,4 @@ func Session() (*discordgo.Session, *Wire) {
 	s.Client = &http.Client{Transport: w}
 	s.State.User = &discordgo.User{ID: "bot"}
 	return s, w
-}
-
-// Received is pn as Discord hands it back on a click: through JSON, so
-// select defaults come back in the types discordgo really decodes.
-func Received(pn core.Panel) *discordgo.Message {
-	raw, err := json.Marshal(pn.Components())
-	if err != nil {
-		panic(err)
-	}
-	var m discordgo.Message
-	if err := json.Unmarshal([]byte(`{"components":`+string(raw)+`}`), &m); err != nil {
-		panic(err)
-	}
-	return &m
-}
-
-// Click is a member's click on customID in guild g, picking values, on the
-// panel msg (nil for a slash command).
-func Click(user, customID string, msg *discordgo.Message, values ...string) *discordgo.InteractionCreate {
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID: "i", Token: "t", Type: discordgo.InteractionMessageComponent, GuildID: "g1",
-		Member:  &discordgo.Member{User: &discordgo.User{ID: user}},
-		Message: msg,
-		Data:    discordgo.MessageComponentInteractionData{CustomID: customID, Values: values},
-	}}
-}
-
-// Submit is a member's submission of the form customID with fields.
-func Submit(user, customID string, fields map[string]string) *discordgo.InteractionCreate {
-	var rows []discordgo.MessageComponent
-	for k, v := range fields {
-		rows = append(rows, &discordgo.ActionsRow{Components: []discordgo.MessageComponent{&discordgo.TextInput{CustomID: k, Value: v}}})
-	}
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID: "i", Token: "t", Type: discordgo.InteractionModalSubmit, GuildID: "g1",
-		Member: &discordgo.Member{User: &discordgo.User{ID: user}},
-		Data:   discordgo.ModalSubmitInteractionData{CustomID: customID, Components: rows},
-	}}
-}
-
-// Selects is every select on a panel, by CustomID.
-func Selects(pn core.Panel) map[string]discordgo.SelectMenu {
-	out := map[string]discordgo.SelectMenu{}
-	walk(pn.Components(), func(c discordgo.MessageComponent) {
-		if m, ok := c.(discordgo.SelectMenu); ok {
-			out[m.CustomID] = m
-		}
-	})
-	return out
-}
-
-// Buttons is every button on a panel, by CustomID.
-func Buttons(pn core.Panel) map[string]discordgo.Button {
-	out := map[string]discordgo.Button{}
-	walk(pn.Components(), func(c discordgo.MessageComponent) {
-		if b, ok := c.(discordgo.Button); ok {
-			out[b.CustomID] = b
-		}
-	})
-	return out
-}
-
-func walk(cs []discordgo.MessageComponent, fn func(discordgo.MessageComponent)) {
-	for _, c := range cs {
-		fn(c)
-		switch v := c.(type) {
-		case discordgo.Container:
-			walk(v.Components, fn)
-		case discordgo.ActionsRow:
-			walk(v.Components, fn)
-		case discordgo.Section:
-			walk(v.Components, fn)
-			if v.Accessory != nil {
-				fn(v.Accessory)
-			}
-		}
-	}
 }

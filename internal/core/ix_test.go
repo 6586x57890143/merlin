@@ -90,22 +90,35 @@ func TestIxHandlerIsBehindAuthorize(t *testing.T) {
 	rt.HandleIx("ban", "", core.PermSpec{Tier: core.TierAdmin, Action: "x.ban"}, func(context.Context, *core.Ix) { ran = true })
 	s, sessionWire := paneltest.Session()
 	rt.HandleEvent(s, event(t, command("ban")))
-	if ran || wire.Answered() {
+	if ran {
 		t.Fatal("an admin handler ran for a member with no permissions")
 	}
-	if !sessionWire.Answered() {
-		t.Fatal("the refusal was not sent")
+	if !strings.Contains(wire.All(), "not allowed") || sessionWire.Answered() {
+		t.Fatalf("the refusal was not sent through the interaction: %s", wire.All())
 	}
 }
 
-func TestIxHandlerNeedsItsPayload(t *testing.T) {
-	rt, _ := router()
+// A payload without a channel decodes rather than panicking: decoding runs
+// before any handler's recover.
+func TestAnInteractionWithoutAChannelDecodes(t *testing.T) {
+	r, _ := paneltest.Rest()
+	ix, err := core.NewIx([]byte(`{"id":"1000","application_id":"2","type":2,"token":"t","version":1,"guild_id":"100",
+		"member":{"user":{"id":"11","username":"m"},"permissions":"0","roles":[],"joined_at":"2026-01-01T00:00:00Z"},
+		"data":{"id":"6","name":"x","type":1}}`), r)
+	if err != nil || ix.ChannelID != "" || ix.GuildID != "100" {
+		t.Fatalf("ix %+v, err %v", ix, err)
+	}
+}
+
+// What cannot be decoded cannot be answered either, its token being inside
+// it, and must not reach a handler.
+func TestUndecodableInteractionsAreDropped(t *testing.T) {
+	rt, wire := router()
 	ran := false
 	rt.HandleIx("hi", "", core.PermSpec{Tier: core.TierPublic}, func(context.Context, *core.Ix) { ran = true })
-	s, sessionWire := paneltest.Session()
-	rt.HandleInteraction(s, event(t, command("hi")).Struct.(*discordgo.InteractionCreate))
-	if ran || !sessionWire.Answered() {
-		t.Fatal("a disgo handler ran without its payload, or nobody was told")
+	rt.HandleRaw([]byte(`{"type":2,"data":"not an object"}`))
+	if ran || wire.Answered() {
+		t.Fatal("an undecodable interaction reached a handler or was answered")
 	}
 }
 

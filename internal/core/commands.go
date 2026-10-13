@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -15,37 +16,20 @@ import (
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
-// CommandHandler handles one fully-resolved command/subcommand invocation.
-// Handlers are responsible for calling s.InteractionRespond themselves (the
-// response shape (deferred, ephemeral, modal, etc.) varies too much to
-// usefully wrap).
-type CommandHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate)
-
-// AutocompleteHandler returns suggestions for the currently-focused option
-// of a leaf. focusedValue is the partial text the invoking user has typed so
-// far. Discord caps the response at 25 choices; CommandRouter truncates for
-// you if more are returned.
-type AutocompleteHandler func(ctx context.Context, i *discordgo.InteractionCreate, focusedOption, focusedValue string) []*discordgo.ApplicationCommandOptionChoice
-
-// ComponentHandler handles a message-component interaction (a button click or
-// select-menu choice) whose CustomID matched a registered prefix. customID is
-// the component's full CustomID, so a handler can decode whatever state it
-// encoded into it (e.g. a page number, or which record a select menu row
-// refers to). Components carry no other server-side session of their own.
-type ComponentHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string)
-
-// ModalHandler handles a submitted modal whose CustomID matched a registered
-// prefix. customID is the modal's full CustomID, so a handler can decode
-// whatever state it encoded into it (which record the modal was opened for,
-// say). Modals exist here for one reason: they are the only Discord surface
-// that takes free text from a member without that text ever appearing in a
-// channel or in their command history, which is what a prize code needs.
-type ModalHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string)
-
-// IxCommandHandler, IxAutocompleteHandler, IxComponentHandler and
-// IxModalHandler are the handler kinds above for a plugin on disgo: one Ix
-// in place of the session and the InteractionCreate. The router checks
-// them exactly as it checks the others; see Ix.
+// IxCommandHandler handles one fully-resolved command/subcommand invocation.
+// Handlers answer through the Ix themselves: the response shape (deferred,
+// ephemeral, modal, ...) varies too much to usefully wrap.
+//
+// IxAutocompleteHandler returns suggestions for the currently-focused option
+// of a leaf; focusedValue is what the invoking user has typed so far. Discord
+// caps the response at 25 choices; the router truncates for you.
+//
+// IxComponentHandler handles a message-component interaction (a button click
+// or select-menu choice) whose CustomID matched a registered prefix, and
+// IxModalHandler a submitted modal. customID is the full CustomID, so a
+// handler can decode whatever state it encoded into it. Modals exist here
+// because they are the only Discord surface that takes free text from a
+// member without it appearing in a channel or their command history.
 type (
 	IxCommandHandler      func(ctx context.Context, ix *Ix)
 	IxAutocompleteHandler func(ctx context.Context, ix *Ix, focusedOption, focusedValue string) []discord.AutocompleteChoice
@@ -53,27 +37,22 @@ type (
 	IxModalHandler        func(ctx context.Context, ix *Ix, customID string)
 )
 
-// Each registration holds one handler of either kind.
 type registeredLeaf struct {
-	spec           PermSpec
-	handler        CommandHandler
-	ix             IxCommandHandler
-	autocomplete   AutocompleteHandler
-	ixAutocomplete IxAutocompleteHandler
+	spec         PermSpec
+	handler      IxCommandHandler
+	autocomplete IxAutocompleteHandler
 }
 
 type registeredComponent struct {
 	pluginName string
 	spec       PermSpec
-	handler    ComponentHandler
-	ix         IxComponentHandler
+	handler    IxComponentHandler
 }
 
 type registeredModal struct {
 	pluginName string
 	spec       PermSpec
-	handler    ModalHandler
-	ix         IxModalHandler
+	handler    IxModalHandler
 }
 
 // CommandRouter is the single owner of slash-command registration and
@@ -196,7 +175,7 @@ func (r *CommandRouter) Tiers() map[string]PermTier {
 	return out
 }
 
-// Handle registers the handler and required PermSpec for one leaf path.
+// HandleIx registers the handler and required PermSpec for one leaf path.
 // path is empty for a bare top-level command (e.g. "ping"), a single
 // segment for a direct subcommand ("run-now"), or "group/subcommand" for a
 // subcommand nested in a group ("configure/set-interval"), mirroring
@@ -204,48 +183,22 @@ func (r *CommandRouter) Tiers() map[string]PermTier {
 // top-level command). spec.Tier must not be the zero value, and Action must
 // be set for anything above TierPublic. Both are validated at Finalize, not
 // here, so registration order doesn't matter.
-func (r *CommandRouter) Handle(topLevelName, path string, spec PermSpec, handler CommandHandler) {
+func (r *CommandRouter) HandleIx(topLevelName, path string, spec PermSpec, handler IxCommandHandler) {
 	r.leaves[leafKey(topLevelName, path)] = &registeredLeaf{spec: spec, handler: handler}
 }
 
-// HandleIx is Handle for a leaf whose handler takes an Ix.
-func (r *CommandRouter) HandleIx(topLevelName, path string, spec PermSpec, handler IxCommandHandler) {
-	r.leaves[leafKey(topLevelName, path)] = &registeredLeaf{spec: spec, ix: handler}
-}
-
-// AutocompleteIx is Autocomplete for a handler that takes an Ix. Panics if
-// the leaf does not exist yet, as Autocomplete does.
+// AutocompleteIx attaches fn to an already-registered leaf. Panics if the
+// leaf doesn't exist yet: call HandleIx for the same path first.
 func (r *CommandRouter) AutocompleteIx(topLevelName, path string, fn IxAutocompleteHandler) {
 	key := leafKey(topLevelName, path)
 	leaf, ok := r.leaves[key]
 	if !ok {
 		panic(fmt.Sprintf("core: AutocompleteIx registered before Handle for %q", key))
 	}
-	leaf.ixAutocomplete = fn
-}
-
-// HandleComponentIx is HandleComponent for a handler that takes an Ix.
-func (r *CommandRouter) HandleComponentIx(pluginName, prefix string, spec PermSpec, fn IxComponentHandler) {
-	r.components[prefix] = &registeredComponent{pluginName: pluginName, spec: spec, ix: fn}
-}
-
-// HandleModalIx is HandleModal for a handler that takes an Ix.
-func (r *CommandRouter) HandleModalIx(pluginName, prefix string, spec PermSpec, fn IxModalHandler) {
-	r.modals[prefix] = &registeredModal{pluginName: pluginName, spec: spec, ix: fn}
-}
-
-// Autocomplete attaches fn to an already-Handle'd leaf. Panics if the leaf
-// doesn't exist yet: call Handle for the same path first.
-func (r *CommandRouter) Autocomplete(topLevelName, path string, fn AutocompleteHandler) {
-	key := leafKey(topLevelName, path)
-	leaf, ok := r.leaves[key]
-	if !ok {
-		panic(fmt.Sprintf("core: Autocomplete registered before Handle for %q", key))
-	}
 	leaf.autocomplete = fn
 }
 
-// HandleComponent registers fn for every message-component interaction
+// HandleComponentIx registers fn for every message-component interaction
 // (button click, select-menu choice) whose CustomID starts with prefix.
 // Callers namespace their own prefixes (e.g. "rotation:list:") to avoid
 // collisions; the longest matching prefix wins if more than one matches.
@@ -253,17 +206,17 @@ func (r *CommandRouter) Autocomplete(topLevelName, path string, fn AutocompleteH
 // enabled, then Authorize) before fn runs: a component interaction is its
 // own fresh interaction, not an extension of whatever originally rendered
 // it, so it gets no exemption from either check.
-func (r *CommandRouter) HandleComponent(pluginName, prefix string, spec PermSpec, fn ComponentHandler) {
+func (r *CommandRouter) HandleComponentIx(pluginName, prefix string, spec PermSpec, fn IxComponentHandler) {
 	r.components[prefix] = &registeredComponent{pluginName: pluginName, spec: spec, handler: fn}
 }
 
-// HandleModal registers fn for every modal submission whose CustomID starts
-// with prefix. Same rules as HandleComponent: callers namespace their own
-// prefixes, the longest match wins, and pluginName and spec are re-checked
-// before fn runs. A modal is opened from an earlier interaction that was
-// already authorized, but the submission arrives as its own interaction
-// minutes later and gets no exemption for that.
-func (r *CommandRouter) HandleModal(pluginName, prefix string, spec PermSpec, fn ModalHandler) {
+// HandleModalIx registers fn for every modal submission whose CustomID
+// starts with prefix. Same rules as HandleComponentIx: callers namespace
+// their own prefixes, the longest match wins, and pluginName and spec are
+// re-checked before fn runs. A modal is opened from an earlier interaction
+// that was already authorized, but the submission arrives as its own
+// interaction minutes later and gets no exemption for that.
+func (r *CommandRouter) HandleModalIx(pluginName, prefix string, spec PermSpec, fn IxModalHandler) {
 	r.modals[prefix] = &registeredModal{pluginName: pluginName, spec: spec, handler: fn}
 }
 
@@ -493,46 +446,33 @@ func walkOption(opt *discordgo.ApplicationCommandOption, prefix []string, out *[
 
 // HandleEvent is the single session.AddHandler callback for the whole bot;
 // construct it once (core.NewCommandRouter) and register it once. It takes
-// discordgo's raw event rather than its InteractionCreate because a plugin
-// on disgo decodes the same interaction from Discord's own JSON, and the
-// raw event is the only place discordgo keeps it. Every other event is
-// ignored.
-func (r *CommandRouter) HandleEvent(s *discordgo.Session, e *discordgo.Event) {
-	if i, ok := e.Struct.(*discordgo.InteractionCreate); ok {
-		r.handle(s, i, e.RawData)
+// discordgo's raw event because what is routed is Discord's own JSON,
+// decoded by disgo (HandleRaw); every other event is ignored.
+func (r *CommandRouter) HandleEvent(_ *discordgo.Session, e *discordgo.Event) {
+	if e.Type == "INTERACTION_CREATE" {
+		r.HandleRaw(e.RawData)
 	}
 }
 
-// HandleInteraction routes one interaction with no raw payload, which a
-// handler on an Ix cannot be reached by: only tests call it.
-func (r *CommandRouter) HandleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	r.handle(s, i, nil)
-}
-
-func (r *CommandRouter) handle(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
-	switch i.Type {
-	case discordgo.InteractionApplicationCommand:
-		r.dispatchCommand(s, i, raw)
-	case discordgo.InteractionApplicationCommandAutocomplete:
-		r.dispatchAutocomplete(s, i, raw)
-	case discordgo.InteractionMessageComponent:
-		r.dispatchComponent(s, i, raw)
-	case discordgo.InteractionModalSubmit:
-		r.dispatchModal(s, i, raw)
-	}
-}
-
-// ix decodes raw for a handler on disgo, answering the member and logging
-// if it cannot. It runs after the gate and Authorize, so a refused member
-// costs no decode.
-func (r *CommandRouter) ix(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) (*Ix, bool) {
+// HandleRaw routes one interaction from Discord's JSON. One that does not
+// decode cannot be answered, since its token is in what failed to decode,
+// so it is logged and dropped.
+func (r *CommandRouter) HandleRaw(raw []byte) {
 	ix, err := NewIx(raw, r.rest)
 	if err != nil {
-		r.log.Error("interaction for a disgo handler not decoded", "err", err)
-		r.respondEphemeral(s, i, r.say(voice.KeyBroken, "Something went wrong handling that."))
-		return nil, false
+		r.log.Error("interaction not decoded", "err", err)
+		return
 	}
-	return ix, true
+	switch i := ix.I.(type) {
+	case discord.ApplicationCommandInteraction:
+		r.dispatchCommand(ix, i)
+	case discord.AutocompleteInteraction:
+		r.dispatchAutocomplete(ix, i)
+	case discord.ComponentInteraction:
+		r.dispatchComponent(ix, i.Data.CustomID())
+	case discord.ModalSubmitInteraction:
+		r.dispatchModal(ix, i.Data.CustomID)
+	}
 }
 
 // matchComponent finds the registered component whose prefix is the
@@ -556,47 +496,40 @@ func (r *CommandRouter) matchComponent(customID string) *registeredComponent {
 // plugin-enabled + Authorize checks dispatchCommand does: a component
 // interaction is its own fresh interaction, never exempt from either check
 // just because it followed a successful command.
-func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
+func (r *CommandRouter) dispatchComponent(ix *Ix, customID string) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("component handler panicked", "panic", rec)
-			r.respondEphemeral(s, i, r.say(voice.KeyBroken, "Something went wrong handling that."))
+			ix.Tell(r.say(voice.KeyBroken, "Something went wrong handling that."))
 		}
 	}()
 
 	// Same fail-closed guard as dispatchCommand: GuildID is the settings
 	// cache key both checks below depend on.
-	if i.GuildID == "" {
-		r.respondEphemeral(s, i, r.say(voice.KeyGuildOnly, "This only works inside a server."))
+	if ix.GuildID == "" {
+		ix.Tell(r.say(voice.KeyGuildOnly, "This only works inside a server."))
 		return
 	}
 
-	customID := i.MessageComponentData().CustomID
 	matched := r.matchComponent(customID)
 	if matched == nil {
 		r.log.Error("component dispatch: no handler registered", "custom_id", customID)
-		r.respondEphemeral(s, i, r.say(voice.KeyStaleComponent, "This button or menu isn't wired up yet."))
+		ix.Tell(r.say(voice.KeyStaleComponent, "This button or menu isn't wired up yet."))
 		return
 	}
 
-	if !r.gate.PluginEnabled(i.GuildID, matched.pluginName) {
-		r.respondEphemeral(s, i, r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
+	if !r.gate.PluginEnabled(ix.GuildID, matched.pluginName) {
+		ix.Tell(r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
 		return
 	}
-	if err := r.perms.Authorize(i, matched.spec); err != nil {
-		r.respondEphemeral(s, i, r.say(voice.KeyDenied, "You are not allowed to do that."))
+	if err := r.perms.AuthorizeIx(ix, matched.spec); err != nil {
+		ix.Tell(r.say(voice.KeyDenied, "You are not allowed to do that."))
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if matched.ix != nil {
-		if ix, ok := r.ix(s, i, raw); ok {
-			timed(matched.pluginName, i, func() { matched.ix(ctx, ix, customID) })
-		}
-		return
-	}
-	timed(matched.pluginName, i, func() { matched.handler(ctx, s, i, customID) })
+	timed(matched.pluginName, ix, func() { matched.handler(ctx, ix, customID) })
 }
 
 // matchModal is matchComponent for modal submissions. Split out for the same
@@ -620,102 +553,97 @@ func (r *CommandRouter) matchModal(customID string) *registeredModal {
 // generic: the two differ only in which map they read, and the checks are the
 // part that must not drift, so having them written out where a reviewer can
 // see them is worth twenty duplicated lines.
-func (r *CommandRouter) dispatchModal(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
+func (r *CommandRouter) dispatchModal(ix *Ix, customID string) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("modal handler panicked", "panic", rec)
-			r.respondEphemeral(s, i, r.say(voice.KeyBroken, "Something went wrong handling that."))
+			ix.Tell(r.say(voice.KeyBroken, "Something went wrong handling that."))
 		}
 	}()
 
-	if i.GuildID == "" {
-		r.respondEphemeral(s, i, r.say(voice.KeyGuildOnly, "This only works inside a server."))
+	if ix.GuildID == "" {
+		ix.Tell(r.say(voice.KeyGuildOnly, "This only works inside a server."))
 		return
 	}
 
-	customID := i.ModalSubmitData().CustomID
 	matched := r.matchModal(customID)
 	if matched == nil {
 		r.log.Error("modal dispatch: no handler registered", "custom_id", customID)
-		r.respondEphemeral(s, i, r.say(voice.KeyStaleComponent, "This form isn't wired up yet."))
+		ix.Tell(r.say(voice.KeyStaleComponent, "This form isn't wired up yet."))
 		return
 	}
 
-	if !r.gate.PluginEnabled(i.GuildID, matched.pluginName) {
-		r.respondEphemeral(s, i, r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
+	if !r.gate.PluginEnabled(ix.GuildID, matched.pluginName) {
+		ix.Tell(r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
 		return
 	}
-	if err := r.perms.Authorize(i, matched.spec); err != nil {
-		r.respondEphemeral(s, i, r.say(voice.KeyDenied, "You are not allowed to do that."))
+	if err := r.perms.AuthorizeIx(ix, matched.spec); err != nil {
+		ix.Tell(r.say(voice.KeyDenied, "You are not allowed to do that."))
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if matched.ix != nil {
-		if ix, ok := r.ix(s, i, raw); ok {
-			timed(matched.pluginName, i, func() { matched.ix(ctx, ix, customID) })
-		}
-		return
-	}
-	timed(matched.pluginName, i, func() { matched.handler(ctx, s, i, customID) })
+	timed(matched.pluginName, ix, func() { matched.handler(ctx, ix, customID) })
 }
 
-func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
+// leafOf is the registered leaf key a command path names: CommandPath is
+// "/name/group/sub", the key "name/group/sub".
+func leafOf(commandPath string) string { return strings.TrimPrefix(commandPath, "/") }
+
+func (r *CommandRouter) dispatchCommand(ix *Ix, i discord.ApplicationCommandInteraction) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("command handler panicked", "panic", rec)
-			r.respondEphemeral(s, i, r.say(voice.KeyBroken, "Something went wrong running that command."))
+			ix.Tell(r.say(voice.KeyBroken, "Something went wrong running that command."))
 		}
 	}()
 
 	// Every command is registered per guild, so a DM interaction shouldn't be
-	// reachable, but i.GuildID feeds straight into the settings cache key
-	// for both the plugin gate and Authorize, and an empty key there resolves
-	// to a guild with no mod roles and no admins. Refusing outright is a
-	// cheap guard on the one path that must never fail open, and it costs
-	// nothing on the path that actually happens.
-	if i.GuildID == "" {
-		r.respondEphemeral(s, i, r.say(voice.KeyGuildOnly, "This command only works inside a server."))
+	// reachable, but GuildID feeds straight into the settings cache key for
+	// both the plugin gate and Authorize, and an empty key there resolves to
+	// a guild with no mod roles and no admins. Refusing outright is a cheap
+	// guard on the one path that must never fail open, and it costs nothing
+	// on the path that actually happens.
+	if ix.GuildID == "" {
+		ix.Tell(r.say(voice.KeyGuildOnly, "This command only works inside a server."))
 		return
 	}
 
-	data := i.ApplicationCommandData()
-	path, _ := resolveLeaf(data)
-	key := leafKey(data.Name, path)
+	data, ok := i.Data.(discord.SlashCommandInteractionData)
+	if !ok {
+		ix.Tell(r.say(voice.KeyStaleComponent, "This command isn't wired up yet."))
+		return
+	}
+	key := leafOf(data.CommandPath())
 	leaf, ok := r.leaves[key]
 	if !ok {
 		r.log.Error("command dispatch: no handler registered", "key", key)
-		r.respondEphemeral(s, i, r.say(voice.KeyStaleComponent, "This command isn't wired up yet."))
+		ix.Tell(r.say(voice.KeyStaleComponent, "This command isn't wired up yet."))
+		return
+	}
+	plugin := r.topLevelPlugin[data.CommandName()]
+
+	if !r.gate.PluginEnabled(ix.GuildID, plugin) {
+		ix.Tell(r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
 		return
 	}
 
-	if !r.gate.PluginEnabled(i.GuildID, r.topLevelPlugin[data.Name]) {
-		r.respondEphemeral(s, i, r.say(voice.KeyPluginDisabled, "This feature is disabled in this server."))
-		return
-	}
-
-	if err := r.perms.Authorize(i, leaf.spec); err != nil {
-		r.respondEphemeral(s, i, r.say(voice.KeyDenied, "You are not allowed to run this command."))
+	if err := r.perms.AuthorizeIx(ix, leaf.spec); err != nil {
+		ix.Tell(r.say(voice.KeyDenied, "You are not allowed to run this command."))
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if leaf.ix != nil {
-		if ix, ok := r.ix(s, i, raw); ok {
-			timed(r.topLevelPlugin[data.Name], i, func() { leaf.ix(ctx, ix) })
-		}
-		return
-	}
-	timed(r.topLevelPlugin[data.Name], i, func() { leaf.handler(ctx, s, i) })
+	timed(plugin, ix, func() { leaf.handler(ctx, ix) })
 }
 
 // timed records an interaction's two legs against plugin: in, from Discord
 // creating it to merlin dispatching it (the gateway, decoding, scheduling),
 // and run, the handler itself, in a trace region named for the plugin.
-func timed(plugin string, i *discordgo.InteractionCreate, fn func()) {
-	if d, ok := obs.Since(i.ID); ok {
+func timed(plugin string, ix *Ix, fn func()) {
+	if d, ok := obs.Since(ix.I.ID().String()); ok {
 		obs.Default.Add(plugin, obs.In, d)
 	}
 	start := time.Now()
@@ -723,156 +651,35 @@ func timed(plugin string, i *discordgo.InteractionCreate, fn func()) {
 	obs.Default.Add(plugin, obs.Run, time.Since(start))
 }
 
-func (r *CommandRouter) dispatchAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
+func (r *CommandRouter) dispatchAutocomplete(ix *Ix, i discord.AutocompleteInteraction) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("autocomplete handler panicked", "panic", rec)
 		}
 	}()
 
-	data := i.ApplicationCommandData()
-	path, args := resolveLeaf(data)
-	key := leafKey(data.Name, path)
+	key := leafOf(i.Data.CommandPath())
 	leaf, ok := r.leaves[key]
-	if !ok || (leaf.autocomplete == nil && leaf.ixAutocomplete == nil) {
+	if !ok || leaf.autocomplete == nil {
 		return
 	}
 
-	if !r.gate.PluginEnabled(i.GuildID, r.topLevelPlugin[data.Name]) {
+	if !r.gate.PluginEnabled(ix.GuildID, r.topLevelPlugin[i.Data.CommandName]) {
 		return
 	}
-	if err := r.perms.Authorize(i, leaf.spec); err != nil {
+	if err := r.perms.AuthorizeIx(ix, leaf.spec); err != nil {
 		return
 	}
 
-	var focusedName, focusedValue string
-	for _, a := range args {
-		if a.Focused {
-			focusedName = a.Name
-			if sv, ok := a.Value.(string); ok {
-				focusedValue = sv
-			}
-			break
-		}
-	}
+	focused := i.Data.Focused()
+	var focusedValue string
+	_ = json.Unmarshal(focused.Value, &focusedValue)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if leaf.ixAutocomplete != nil {
-		// Autocomplete has no way to show a member an error, so a decode
-		// failure is only logged.
-		ix, err := NewIx(raw, r.rest)
-		if err != nil {
-			r.log.Error("autocomplete for a disgo handler not decoded", "err", err)
-			return
-		}
-		choices := leaf.ixAutocomplete(ctx, ix, focusedName, focusedValue)
-		if len(choices) > 25 {
-			choices = choices[:25]
-		}
-		_ = ix.respond(discord.InteractionResponseTypeAutocompleteResult, discord.AutocompleteResult{Choices: choices})
-		return
-	}
-	choices := leaf.autocomplete(ctx, i, focusedName, focusedValue)
+	choices := leaf.autocomplete(ctx, ix, focused.Name, focusedValue)
 	if len(choices) > 25 {
 		choices = choices[:25]
 	}
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
-		Data: &discordgo.InteractionResponseData{Choices: choices},
-	})
-}
-
-// resolveLeaf walks data's Options while they're SubCommand/SubCommandGroup
-// nodes, returning the joined path of subcommand names and the final
-// argument list (either the leaf subcommand's own options, or, for a
-// flat/no-subcommand top-level command, data.Options itself).
-func resolveLeaf(data discordgo.ApplicationCommandInteractionData) (path string, args []*discordgo.ApplicationCommandInteractionDataOption) {
-	var segs []string
-	opts := data.Options
-	for len(opts) > 0 && (opts[0].Type == discordgo.ApplicationCommandOptionSubCommand || opts[0].Type == discordgo.ApplicationCommandOptionSubCommandGroup) {
-		segs = append(segs, opts[0].Name)
-		isLeaf := opts[0].Type == discordgo.ApplicationCommandOptionSubCommand
-		opts = opts[0].Options
-		if isLeaf {
-			break
-		}
-	}
-	return strings.Join(segs, "/"), opts
-}
-
-// LeafArgs resolves i's invoked subcommand/subcommand-group path (the exact
-// walk dispatchCommand itself performs) and returns its arguments keyed by
-// name, so handlers that want direct-by-name access don't need to re-walk
-// the Options tree themselves. Every plugin handler should use this instead
-// of hand-rolling the same walk, so there's exactly one implementation to
-// keep in sync with Discord's nesting rules.
-func LeafArgs(i *discordgo.InteractionCreate) map[string]*discordgo.ApplicationCommandInteractionDataOption {
-	_, args := resolveLeaf(i.ApplicationCommandData())
-	m := make(map[string]*discordgo.ApplicationCommandInteractionDataOption, len(args))
-	for _, a := range args {
-		m[a.Name] = a
-	}
-	return m
-}
-
-// errCodeInteractionAlreadyAcknowledged is Discord's 40060, returned when an
-// interaction has already been responded to or deferred. discordgo doesn't
-// export a constant for it.
-const errCodeInteractionAlreadyAcknowledged = 40060
-
-// respondEphemeral answers an interaction privately, falling back to a
-// follow-up if it has already been acknowledged.
-//
-// The fallback matters most on the path that needs it least often: the panic
-// recovery in dispatchCommand runs whether or not the handler had already
-// responded before panicking. A handler that deferred, did some work, and
-// then panicked would have this reply rejected with 40060, and the error
-// was previously discarded, so the user saw nothing at all and the logs said
-// nothing either. A panic mid-command is exactly when someone needs to be
-// told something went wrong.
-func (r *CommandRouter) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: msg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	})
-	if err == nil {
-		return
-	}
-	if HasDiscordErrorCode(err, errCodeInteractionAlreadyAcknowledged) {
-		if _, ferr := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: msg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		}); ferr != nil {
-			r.log.Error("interaction follow-up failed after already-acknowledged", "err", ferr)
-		}
-		return
-	}
-	r.log.Error("interaction response failed", "err", err)
-}
-
-// ModalValues returns a submitted modal's text inputs keyed by their
-// CustomID. Discord nests every input inside its own ActionsRow, so reading
-// one field means two levels of type assertion; this exists so that walk has
-// exactly one implementation, for the same reason LeafArgs does.
-//
-// A missing key reads as the empty string, which is what an optional field
-// means anyway, so callers check for content rather than for presence.
-func ModalValues(i *discordgo.InteractionCreate) map[string]string {
-	out := make(map[string]string)
-	for _, row := range i.ModalSubmitData().Components {
-		ar, ok := row.(*discordgo.ActionsRow)
-		if !ok {
-			continue
-		}
-		for _, c := range ar.Components {
-			if in, ok := c.(*discordgo.TextInput); ok {
-				out[in.CustomID] = in.Value
-			}
-		}
-	}
-	return out
+	_ = ix.respond(discord.InteractionResponseTypeAutocompleteResult, discord.AutocompleteResult{Choices: choices})
 }

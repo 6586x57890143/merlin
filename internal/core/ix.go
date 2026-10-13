@@ -50,7 +50,13 @@ func NewIx(raw []byte, r rest.Rest) (*Ix, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core: decoding the interaction: %w", err)
 	}
-	ix := &Ix{I: i, Rest: r, UserID: i.User().ID.String(), ChannelID: i.Channel().ID().String()}
+	ix := &Ix{I: i, Rest: r, UserID: i.User().ID.String()}
+	// The channel is optional in the payload, and disgo's wraps an interface
+	// that is nil without it: read it only when it is there, since a panic
+	// here is outside every handler's recover.
+	if c := i.Channel(); c.MessageChannel != nil {
+		ix.ChannelID = c.ID().String()
+	}
 	if g := i.GuildID(); g != nil {
 		ix.GuildID = g.String()
 	}
@@ -106,6 +112,27 @@ func (ix *Ix) RespondPublic(embed discord.Embed, components []discord.LayoutComp
 	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
 		Embeds: []discord.Embed{embed}, Components: components, Files: EmbedUploads(embed), AllowedMentions: noPings(),
 	})
+}
+
+// errAlreadyAcknowledged is Discord's 40060: the interaction was already
+// responded to or deferred.
+const errAlreadyAcknowledged = 40060
+
+// Tell answers privately with msg, falling back to a follow-up when the
+// interaction was already acknowledged. The router's refusals and its panic
+// recovery use it; the fallback matters most there, since a handler that
+// deferred and then panicked would otherwise leave the member with nothing
+// and the log with nothing either.
+func (ix *Ix) Tell(msg string) {
+	err := ix.RespondText(msg)
+	if err == nil {
+		return
+	}
+	if re, ok := errors.AsType[*rest.Error](err); ok && re.Code == errAlreadyAcknowledged {
+		_, _ = ix.Rest.CreateFollowupMessage(ix.I.ApplicationID(), ix.I.Token(), discord.MessageCreate{
+			Content: msg, Flags: discord.MessageFlagEphemeral, AllowedMentions: noPings(),
+		})
+	}
 }
 
 // RespondText answers with plain text, privately.

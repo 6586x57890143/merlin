@@ -72,12 +72,12 @@ Concrete stores (`internal/settings.Store`, `internal/config.Loader`) are never 
 
 ### Moving to disgo (`internal/core/ix.go`)
 
-merlin is moving from discordgo to disgo one plugin at a time. While both are in the tree:
+merlin is moving from discordgo to disgo in stages. Where it stands:
 
-- The router takes discordgo's raw event (`HandleEvent`). A handler registered with `HandleIx`/`AutocompleteIx`/`HandleComponentIx`/`HandleModalIx` gets a `*core.Ix`: disgo's decoding of the same interaction, `GuildID`/`UserID` as merlin's string IDs, and the disgo REST client its answer goes through (`core.NewRest`, mentions off by default). The plugin gate and `Authorize` still read discordgo's copy, so neither security check moves until the last step.
-- `Ix`'s methods are the core helpers of the same names (`RespondOK`, `Defer`, `FollowUpEmbed`, `RespondPanel`, `SelectDiff`, `ModalValues`, ...). Embeds come from `core.Embed`/`core.LandmarkEmbed`; a panel sets `Parts` (disgo components) instead of `Body`. `ix_test.go` holds the disgo builders to the same Discord JSON and uploads as the discordgo ones, so a ported plugin looks exactly as it did.
-- A ported plugin's tests use `paneltest.IxCommand`/`IxClick`/`IxPick`/`IxSubmit`, which decode Discord's JSON through `core.NewIx`. disgo IDs are snowflakes, so those fixtures use numeric IDs (`paneltest.IxGuild`).
-- When the last plugin has moved, the gateway goes to disgo and the discordgo halves (and the `Ix` names' duplicates) are deleted.
+- **Interactions are disgo end to end.** The router decodes each interaction from Discord's JSON (`HandleRaw`, fed by discordgo's raw event until the gateway moves) into a `*core.Ix`: disgo's interaction, `GuildID`/`UserID`/`ChannelID` as merlin's string IDs, and the disgo REST client it answers through (`core.NewRest`, mentions off by default). The plugin gate and `AuthorizeIx` run on it, refusals go out through it (`Ix.Tell`), and handlers register with `HandleIx`/`AutocompleteIx`/`HandleComponentIx`/`HandleModalIx`. `Ix`'s methods are the response helpers; embeds come from `core.Embed`, panels draw from `Parts` with `core/ui`.
+- **`Authorize` and `AuthorizeIx` are one decision** (`authorize` over an invoker); `authorize_ix_test.go` holds them equal.
+- **Still discordgo:** the gateway and its cache (`session.State`), REST the bot does as itself (through `discordguard`), and command registration. A message posted that way and redrawn on a click is built on discordgo's types and carried over at the reply by `core.EmbedOf`/`LayoutOf`; `Ix.MemberGo`/`ResolvedUserGo` hand checks that still take discordgo types the same member over JSON. These bridges go when REST moves.
+- Tests decode real interactions (`paneltest.IxCommand`/`IxClick`/`IxPick`/`IxSubmit`, or a plugin's own JSON builder); disgo IDs are snowflakes, so a test whose fixtures predate that points the Ix's string keys at them after decoding.
 
 ### Settings panels (`internal/core/panel.go`)
 
