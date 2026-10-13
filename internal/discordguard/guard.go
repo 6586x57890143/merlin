@@ -16,11 +16,11 @@
 //
 // It hooks in where the plugins already had a seam. Each mutating plugin
 // defines a narrow ops interface (rotation.DiscordChannelOps,
-// roles.DiscordMemberOps) that *discordgo.Session satisfies structurally,
-// and assigns it once during Init. GuildOps implements the union of those
-// interfaces, so substituting it at that one assignment guards every call
-// site at once, and a future plugin that follows the same convention is
-// covered without having to remember a flag check.
+// roles.DiscordMemberOps) shaped as disgo's REST client has the calls, and
+// is handed a GuildOps for it. GuildOps implements the union of those
+// interfaces, so every call site is guarded at that one assignment, and a
+// future plugin that follows the same convention is covered without having
+// to remember a flag check.
 package discordguard
 
 import (
@@ -31,7 +31,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/rest"
 )
 
@@ -61,54 +60,10 @@ type GuildGate interface {
 	WritesDryRun(guildID string) bool
 }
 
-// Session is the union of the REST methods the mutating plugins use.
-// *discordgo.Session satisfies it structurally, exactly as it satisfies the
-// per-plugin interfaces this one is assembled from.
-type Session interface {
-	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
-	GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
-	ThreadsArchived(channelID string, before *time.Time, limit int, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
-	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
-	ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
-	ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error
-	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
-	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
-	WebhookExecute(webhookID, token string, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	WebhookMessageDelete(webhookID, token, messageID string, options ...discordgo.RequestOption) error
-	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
-	GuildBanCreateWithReason(guildID, userID, reason string, days int, options ...discordgo.RequestOption) error
-	GuildBanDelete(guildID, userID string, options ...discordgo.RequestOption) error
-	GuildMemberDeleteWithReason(guildID, userID, reason string, options ...discordgo.RequestOption) error
-	ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error
-	ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error
-	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
-	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)
-	GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error)
-	GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error)
-	GuildMemberRoleAdd(guildID, userID, roleID string, options ...discordgo.RequestOption) error
-	GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error
-	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
-	GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
-	GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error)
-	GuildRoleReorder(guildID string, roles []*discordgo.Role, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
-	Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error)
-	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-}
-
 // Guard holds the process-wide stop and the per-guild gate. One is
 // constructed in cmd/bot/main.go and shared by every plugin.
 type Guard struct {
-	session Session
-	rest    rest.Rest // disgo, for the methods in rest.go
+	rest    rest.Rest
 	gate    GuildGate
 	log     *slog.Logger
 	global  atomic.Bool
@@ -121,12 +76,13 @@ type Guard struct {
 	breakers sync.Map // guildID -> *breaker
 }
 
-func New(session Session, gate GuildGate, log *slog.Logger, pauseAllWrites bool) *Guard {
+// New guards the calls merlin makes through r.
+func New(r rest.Rest, gate GuildGate, log *slog.Logger, pauseAllWrites bool) *Guard {
 	g := &Guard{
-		session: session,
-		gate:    gate,
-		log:     log,
-		now:     func() time.Time { return time.Now().UTC() },
+		rest: r,
+		gate: gate,
+		log:  log,
+		now:  func() time.Time { return time.Now().UTC() },
 	}
 	g.global.Store(pauseAllWrites)
 	return g
@@ -158,8 +114,8 @@ func (g *Guard) DryRun(guildID string) bool {
 
 // For returns an ops view bound to guildID. The binding is explicit rather
 // than resolved from a channel ID at call time: most destructive calls are
-// channel-scoped and carry no guild, and inferring one from discordgo's
-// gateway cache would make the emergency stop depend on that cache being
+// channel-scoped and carry no guild, and inferring one from the gateway
+// cache would make the emergency stop depend on that cache being
 // populated, including for a channel the bot created moments earlier, whose
 // ChannelCreate event may not have arrived yet.
 func (g *Guard) For(guildID string) *GuildOps {
@@ -197,393 +153,4 @@ func (o *GuildOps) record(journalID int64, err error) error {
 	o.guard.recordResult(o.guildID, o.guard.now(), err)
 	o.finishJournal(journalID, err)
 	return err
-}
-
-// --- reads: never gated ---
-
-func (o *GuildOps) Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	return o.guard.session.Channel(channelID, options...)
-}
-
-func (o *GuildOps) GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
-	return o.guard.session.GuildChannels(guildID, options...)
-}
-
-// GuildThreadsActive, not the channel-scoped ThreadsActive it replaced.
-// Discord deprecated GET /channels/{id}/threads/active and removed it in API
-// v10, and it answers 404 well before a client gets there; the guild endpoint
-// is the documented replacement. It returns every active thread in the guild,
-// so both callers filter the result by ParentID themselves.
-func (o *GuildOps) GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
-	return o.guard.session.GuildThreadsActive(guildID, options...)
-}
-
-// ThreadsArchived is the other half of "every thread under this channel".
-// GuildThreadsActive deliberately omits archived threads, and a forum post
-// archives itself after its parent's inactivity window, so a caller that
-// treats the active list as the whole list will read a quiet post as a
-// deleted one. Channel-scoped, unlike its active counterpart, because
-// Discord kept this endpoint on the channel.
-func (o *GuildOps) ThreadsArchived(channelID string, before *time.Time, limit int, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
-	return o.guard.session.ThreadsArchived(channelID, before, limit, options...)
-}
-
-func (o *GuildOps) ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error) {
-	return o.guard.session.ChannelMessages(channelID, limit, beforeID, afterID, aroundID, options...)
-}
-
-func (o *GuildOps) User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error) {
-	return o.guard.session.User(userID, options...)
-}
-
-func (o *GuildOps) GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error) {
-	return o.guard.session.GuildMember(guildID, userID, options...)
-}
-
-// GuildMembers pages the guild's member list. A read, so ungated like the
-// rest, but note it is the one read here whose cost scales with guild size,
-// and it requires the privileged GUILD_MEMBERS intent to return anything.
-func (o *GuildOps) GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error) {
-	return o.guard.session.GuildMembers(guildID, after, limit, options...)
-}
-
-func (o *GuildOps) GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {
-	return o.guard.session.GuildRoles(guildID, options...)
-}
-
-// --- writes: gated ---
-
-func (o *GuildOps) GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := o.allow(opChannelCreate); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opChannelCreate, data.Name)
-	v, err := o.guard.session.GuildChannelCreateComplex(guildID, data, options...)
-	return v, o.record(jid, err)
-}
-
-func (o *GuildOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := o.allow(opChannelEdit); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opChannelEdit, channelID)
-	v, err := o.guard.session.ChannelEditComplex(channelID, data, options...)
-	return v, o.record(jid, err)
-}
-
-func (o *GuildOps) ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := o.allow(opChannelDelete); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opChannelDelete, channelID)
-	v, err := o.guard.session.ChannelDelete(channelID, options...)
-	return v, o.record(jid, err)
-}
-
-// ChannelMessageSend posts content with every mention suppressed.
-//
-// This is deliberately not what plain discordgo does. ChannelMessageSend
-// there builds a MessageSend with a nil AllowedMentions, and the field is
-// tagged omitempty, so it is dropped from the request entirely, which
-// Discord reads as "parse every mention in the content". The zero-value
-// MessageAllowedMentions used here marshals as {"parse":[]} instead
-// (discordgo deliberately leaves Parse without omitempty for exactly this),
-// which is Discord's "allow nothing" form.
-//
-// It matters because the text reaching this method is not always ours.
-// Rotation reposts operator-supplied sticky messages into a fresh channel
-// on every cycle, so a user mention in one pings that person on a schedule
-// forever, and a mentionable role pings its entire membership the same way.
-// @everyone and @here need Mention Everyone, which the documented invite
-// link does not request, but any admin can grant merlin's role that bit at
-// any time and would silently arm every sticky already configured.
-//
-// Suppressing at the guard rather than at each call site is the same
-// reasoning as core.DenyEveryoneExceptBot: a future plugin that sends a
-// message gets this without having to know it exists. A caller that
-// genuinely needs to ping should add an explicit method that takes an
-// allowlist, rather than reaching past the guard to the raw session.
-func (o *GuildOps) ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := o.allow(opMessageSend); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opMessageSend, channelID)
-	v, err := o.guard.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Content:         content,
-		AllowedMentions: &discordgo.MessageAllowedMentions{},
-	}, options...)
-	return v, o.record(jid, err)
-}
-
-// ChannelMessageSendComplex posts a full MessageSend, for the cases a plain
-// content string cannot express: an embed that carries merlin's brand
-// footer, which references an attachment:// URL and therefore has to be
-// sent alongside the file itself.
-//
-// AllowedMentions is overwritten, not defaulted. A caller cannot opt back
-// into pinging by setting it, because the reason it is suppressed (see
-// ChannelMessageSend) has nothing to do with what any individual call site
-// knows, and a per-call override is exactly the kind of thing that gets
-// copied into a later call site that should not have had it. If a genuine
-// need to ping ever turns up, it belongs in its own named method with an
-// explicit allowlist argument.
-// Guild reads the guild itself. Ungated: a read, and the only caller wants
-// its name so a DM can say which server it is about.
-func (o *GuildOps) Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error) {
-	return o.guard.session.Guild(guildID, options...)
-}
-
-// UserChannelCreate opens (or returns the existing) DM channel with a user.
-//
-// Ungated despite the name: it creates nothing in the guild, changes
-// nothing anybody can see, and is idempotent, so counting it against a
-// guild's write budget would spend the budget on the wrong thing. The
-// message that follows it goes through ChannelMessageSendComplex and is
-// gated there, which is where the cost actually is.
-func (o *GuildOps) UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	return o.guard.session.UserChannelCreate(recipientID, options...)
-}
-
-func (o *GuildOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := o.allow(opMessageSend); err != nil {
-		return nil, err
-	}
-	if data == nil {
-		data = &discordgo.MessageSend{}
-	}
-	data.AllowedMentions = &discordgo.MessageAllowedMentions{}
-	jid := o.beginJournal(opMessageSend, channelID)
-	v, err := o.guard.session.ChannelMessageSendComplex(channelID, data, options...)
-	return v, o.record(jid, err)
-}
-
-func (o *GuildOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := o.allow(opMessageSend); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opMessageSend, channelID)
-	v, err := o.guard.session.ChannelMessageSendEmbed(channelID, embed, options...)
-	return v, o.record(jid, err)
-}
-
-// GuildBanCreateWithReason bans a member. The reason lands in Discord's own
-// audit log next to merlin's name, which is how a moderator reading that
-// log rather than /rapsheet still learns why. days is how many days of the
-// member's messages Discord deletes with the ban.
-func (o *GuildOps) GuildBanCreateWithReason(guildID, userID, reason string, days int, options ...discordgo.RequestOption) error {
-	if err := o.allow(opMemberBan); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opMemberBan, userID)
-	return o.record(jid, o.guard.session.GuildBanCreateWithReason(guildID, userID, reason, days, options...))
-}
-
-// GuildBanDelete lifts a ban.
-func (o *GuildOps) GuildBanDelete(guildID, userID string, options ...discordgo.RequestOption) error {
-	if err := o.allow(opMemberUnban); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opMemberUnban, userID)
-	return o.record(jid, o.guard.session.GuildBanDelete(guildID, userID, options...))
-}
-
-// GuildMemberDeleteWithReason kicks a member.
-func (o *GuildOps) GuildMemberDeleteWithReason(guildID, userID, reason string, options ...discordgo.RequestOption) error {
-	if err := o.allow(opMemberKick); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opMemberKick, userID)
-	return o.record(jid, o.guard.session.GuildMemberDeleteWithReason(guildID, userID, reason, options...))
-}
-
-// ChannelMessageEditComplex edits one of merlin's own messages in place.
-// Rapsheet's case-file mirror uses it to strike a voided entry through
-// rather than posting a second message. AllowedMentions is zeroed for the
-// same reason it is on every send: an edit can introduce a mention as
-// easily as a send can.
-func (o *GuildOps) ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := o.allow(opMessageEdit); err != nil {
-		return nil, err
-	}
-	if m == nil {
-		m = &discordgo.MessageEdit{}
-	}
-	m.AllowedMentions = &discordgo.MessageAllowedMentions{}
-	jid := o.beginJournal(opMessageEdit, m.Channel)
-	v, err := o.guard.session.ChannelMessageEditComplex(m, options...)
-	return v, o.record(jid, err)
-}
-
-// ForumThreadStartComplex opens a forum post with its starter message.
-// Two writes in one call as far as Discord is concerned (a thread and a
-// message), gated once as a thread creation, since that is the scarce
-// half: a forum holds a bounded number of active threads and each one
-// stays for its archive window.
-func (o *GuildOps) ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := o.allow(opThreadCreate); err != nil {
-		return nil, err
-	}
-	if messageData == nil {
-		messageData = &discordgo.MessageSend{}
-	}
-	messageData.AllowedMentions = &discordgo.MessageAllowedMentions{}
-	jid := o.beginJournal(opThreadCreate, channelID)
-	v, err := o.guard.session.ForumThreadStartComplex(channelID, threadData, messageData, options...)
-	return v, o.record(jid, err)
-}
-
-func (o *GuildOps) ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error {
-	if err := o.allow(opMessagePin); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opMessagePin, channelID)
-	return o.record(jid, o.guard.session.ChannelMessagePin(channelID, messageID, options...))
-}
-
-func (o *GuildOps) ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error {
-	if err := o.allow(opChannelPermissions); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opChannelPermissions, channelID)
-	return o.record(jid, o.guard.session.ChannelPermissionSet(channelID, targetID, targetType, allow, deny, options...))
-}
-
-func (o *GuildOps) ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error {
-	if err := o.allow(opChannelPermissions); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opChannelPermissions, channelID)
-	return o.record(jid, o.guard.session.ChannelPermissionDelete(channelID, targetID, options...))
-}
-
-func (o *GuildOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error) {
-	if err := o.allow(opMemberEdit); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opMemberEdit, userID)
-	v, err := o.guard.session.GuildMemberEdit(guildID, userID, data, options...)
-	return v, o.record(jid, err)
-}
-
-func (o *GuildOps) GuildMemberRoleAdd(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
-	if err := o.allow(opMemberRoleAdd); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opMemberRoleAdd, userID)
-	return o.record(jid, o.guard.session.GuildMemberRoleAdd(guildID, userID, roleID, options...))
-}
-
-func (o *GuildOps) GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
-	if err := o.allow(opMemberRoleRemove); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opMemberRoleRemove, userID)
-	return o.record(jid, o.guard.session.GuildMemberRoleRemove(guildID, userID, roleID, options...))
-}
-
-func (o *GuildOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
-	if err := o.allow(opRoleCreate); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opRoleCreate, data.Name)
-	v, err := o.guard.session.GuildRoleCreate(guildID, data, options...)
-	return v, o.record(jid, err)
-}
-
-func (o *GuildOps) GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
-	if err := o.allow(opRoleEdit); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opRoleEdit, roleID)
-	v, err := o.guard.session.GuildRoleEdit(guildID, roleID, data, options...)
-	return v, o.record(jid, err)
-}
-
-// GuildRoleReorder moves roles in the hierarchy. Same budget as an edit,
-// since to Discord it is one: a PATCH on the roles collection.
-func (o *GuildOps) GuildRoleReorder(guildID string, roles []*discordgo.Role, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {
-	if err := o.allow(opRoleEdit); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opRoleEdit, guildID)
-	v, err := o.guard.session.GuildRoleReorder(guildID, roles, options...)
-	return v, o.record(jid, err)
-}
-
-// ChannelMessageDelete removes somebody else's message.
-//
-// Gated like every other destructive call, and worth saying why explicitly:
-// this is the only operation in this bot that destroys something a member
-// wrote, and unlike a rotated channel there is no archive behind it. Discord
-// offers no undelete. aimod keeps its own copy for the guild's evidence
-// window precisely because this call is final.
-func (o *GuildOps) ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error {
-	if err := o.allow(opMessageDelete); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opMessageDelete, messageID)
-	return o.record(jid, o.guard.session.ChannelMessageDelete(channelID, messageID, options...))
-}
-
-// ChannelWebhooks lists a channel's webhooks. A read, so ungated.
-func (o *GuildOps) ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error) {
-	return o.guard.session.ChannelWebhooks(channelID, options...)
-}
-
-func (o *GuildOps) WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error) {
-	if err := o.allow(opWebhookCreate); err != nil {
-		return nil, err
-	}
-	jid := o.beginJournal(opWebhookCreate, channelID)
-	v, err := o.guard.session.WebhookCreate(channelID, name, avatar, options...)
-	return v, o.record(jid, err)
-}
-
-// WebhookExecute posts through a webhook with every mention suppressed.
-//
-// The AllowedMentions override matters more here than anywhere else in this
-// file. The other senders carry text this bot wrote or an operator
-// configured; this one carries text a *member* wrote, moments ago, reposted
-// under that member's own name and avatar. Without the zero-value
-// MessageAllowedMentions (which marshals as {"parse":[]}, see
-// ChannelMessageSend for why the field cannot simply be left nil), a
-// rewritten message would ping everyone it originally pinged a second time,
-// and a member who worked that out would have found a way to make merlin
-// mass-ping on their behalf.
-//
-// The signature drops discordgo's wait parameter and the returned message,
-// since false is the cheaper call; WebhookExecuteWait is for the caller that
-// needs to know where the post landed.
-func (o *GuildOps) WebhookExecute(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) error {
-	_, err := o.webhookExecute(opWebhookExecute, false, webhookID, token, data, options...)
-	return err
-}
-
-// WebhookExecuteWait is WebhookExecute, returning the message it posted.
-// aimod's rewrite needs the repost's ID so the audit entry can link to it.
-func (o *GuildOps) WebhookExecuteWait(webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
-	return o.webhookExecute(opWebhookExecute, true, webhookID, token, data, options...)
-}
-
-func (o *GuildOps) webhookExecute(op string, wait bool, webhookID, token string, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := o.allow(op); err != nil {
-		return nil, err
-	}
-	if data == nil {
-		data = &discordgo.WebhookParams{}
-	}
-	data.AllowedMentions = &discordgo.MessageAllowedMentions{}
-	jid := o.beginJournal(op, webhookID)
-	msg, err := o.guard.session.WebhookExecute(webhookID, token, wait, data, options...)
-	return msg, o.record(jid, err)
-}
-
-// GuildMemberTimeout applies or clears Discord's own communication timeout.
-// A nil until clears it.
-func (o *GuildOps) GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error {
-	if err := o.allow(opMemberTimeout); err != nil {
-		return err
-	}
-	jid := o.beginJournal(opMemberTimeout, userID)
-	return o.record(jid, o.guard.session.GuildMemberTimeout(guildID, userID, until, options...))
 }

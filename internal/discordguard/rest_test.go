@@ -12,11 +12,13 @@ import (
 	"github.com/disgoorg/disgo/rest"
 )
 
-// wire records what reaches Discord and answers every request with body.
+// wire records what reaches Discord and answers every request with body,
+// under status if one is set.
 type wire struct {
 	mu       sync.Mutex
 	requests []string
 	body     string
+	status   int
 }
 
 func (w *wire) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -26,14 +28,18 @@ func (w *wire) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	w.mu.Lock()
 	w.requests = append(w.requests, r.Method+" "+r.URL.String()+" "+string(b))
+	status := w.status
 	w.mu.Unlock()
-	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(w.body)),
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(w.body)),
 		Header: http.Header{"Content-Type": []string{"application/json"}}, Request: r}, nil
 }
 
 func restGuard(gate GuildGate, body string) (*Guard, *wire) {
 	w := &wire{body: body}
-	g := New(nil, gate, testLogger(), false).WithRest(rest.New(rest.NewClient("t", rest.WithHTTPClient(&http.Client{Transport: w}))))
+	g := New(rest.New(rest.NewClient("t", rest.WithHTTPClient(&http.Client{Transport: w}))), gate, testLogger(), false)
 	return g, w
 }
 

@@ -1,216 +1,20 @@
 package discordguard
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-// fakeSession counts every call that reaches Discord. The whole point of the
-// guard is that this counter stays at zero while paused or rehearsing, so
-// the tests below assert on it rather than on the returned errors alone.
-type fakeSession struct {
-	lastWebhook *discordgo.WebhookParams
-	writes      int
-	reads       int
-	// sends records the full payload of every message send, so a test can
-	// assert on what was actually put on the wire (mention suppression)
-	// rather than only that a send happened.
-	sends []*discordgo.MessageSend
-}
-
-func (f *fakeSession) Channel(string, ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	f.reads++
-	return &discordgo.Channel{}, nil
-}
-
-func (f *fakeSession) GuildChannels(string, ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
-	f.reads++
-	return nil, nil
-}
-
-func (f *fakeSession) GuildThreadsActive(string, ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
-	f.reads++
-	return &discordgo.ThreadsList{}, nil
-}
-
-func (f *fakeSession) ThreadsArchived(string, *time.Time, int, ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
-	f.reads++
-	return &discordgo.ThreadsList{}, nil
-}
-
-func (f *fakeSession) ChannelMessages(string, int, string, string, string, ...discordgo.RequestOption) ([]*discordgo.Message, error) {
-	f.reads++
-	return nil, nil
-}
-
-func (f *fakeSession) User(string, ...discordgo.RequestOption) (*discordgo.User, error) {
-	f.reads++
-	return &discordgo.User{}, nil
-}
-
-func (f *fakeSession) GuildMember(string, string, ...discordgo.RequestOption) (*discordgo.Member, error) {
-	f.reads++
-	return &discordgo.Member{}, nil
-}
-
-func (f *fakeSession) GuildMembers(string, string, int, ...discordgo.RequestOption) ([]*discordgo.Member, error) {
-	f.reads++
-	return nil, nil
-}
-
-func (f *fakeSession) GuildRoles(string, ...discordgo.RequestOption) ([]*discordgo.Role, error) {
-	f.reads++
-	return nil, nil
-}
-
-func (f *fakeSession) GuildChannelCreateComplex(string, discordgo.GuildChannelCreateData, ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	f.writes++
-	return &discordgo.Channel{}, nil
-}
-
-func (f *fakeSession) ChannelEditComplex(string, *discordgo.ChannelEdit, ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	f.writes++
-	return &discordgo.Channel{}, nil
-}
-
-func (f *fakeSession) ChannelDelete(string, ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	f.writes++
-	return &discordgo.Channel{}, nil
-}
-
-func (f *fakeSession) ChannelMessageSend(string, string, ...discordgo.RequestOption) (*discordgo.Message, error) {
-	f.writes++
-	return &discordgo.Message{}, nil
-}
-
-func (f *fakeSession) Guild(string, ...discordgo.RequestOption) (*discordgo.Guild, error) {
-	f.reads++
-	return &discordgo.Guild{Name: "Test Guild"}, nil
-}
-
-func (f *fakeSession) UserChannelCreate(string, ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	f.reads++
-	return &discordgo.Channel{ID: "dm"}, nil
-}
-
-func (f *fakeSession) ChannelMessageSendComplex(_ string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
-	f.writes++
-	f.sends = append(f.sends, data)
-	return &discordgo.Message{}, nil
-}
-
-func (f *fakeSession) ChannelMessageSendEmbed(string, *discordgo.MessageEmbed, ...discordgo.RequestOption) (*discordgo.Message, error) {
-	f.writes++
-	return &discordgo.Message{}, nil
-}
-
-func (f *fakeSession) ChannelMessagePin(string, string, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) ChannelPermissionSet(string, string, discordgo.PermissionOverwriteType, int64, int64, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) ChannelPermissionDelete(string, string, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) GuildMemberEdit(string, string, *discordgo.GuildMemberParams, ...discordgo.RequestOption) (*discordgo.Member, error) {
-	f.writes++
-	return &discordgo.Member{}, nil
-}
-
-func (f *fakeSession) GuildMemberRoleAdd(string, string, string, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) GuildMemberRoleRemove(string, string, string, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) GuildRoleCreate(string, *discordgo.RoleParams, ...discordgo.RequestOption) (*discordgo.Role, error) {
-	f.writes++
-	return &discordgo.Role{}, nil
-}
-
-func (f *fakeSession) GuildRoleEdit(string, string, *discordgo.RoleParams, ...discordgo.RequestOption) (*discordgo.Role, error) {
-	f.writes++
-	return &discordgo.Role{}, nil
-}
-
-func (f *fakeSession) GuildRoleReorder(string, []*discordgo.Role, ...discordgo.RequestOption) ([]*discordgo.Role, error) {
-	f.writes++
-	return nil, nil
-}
-
-func (f *fakeSession) ChannelMessageDelete(string, string, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) ChannelWebhooks(string, ...discordgo.RequestOption) ([]*discordgo.Webhook, error) {
-	return nil, nil
-}
-
-func (f *fakeSession) WebhookCreate(string, string, string, ...discordgo.RequestOption) (*discordgo.Webhook, error) {
-	f.writes++
-	return &discordgo.Webhook{ID: "w", Token: "t"}, nil
-}
-
-func (f *fakeSession) WebhookExecute(_, _ string, _ bool, data *discordgo.WebhookParams, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
-	f.writes++
-	f.lastWebhook = data
-	return &discordgo.Message{}, nil
-}
-
-func (f *fakeSession) WebhookMessageDelete(string, string, string, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) GuildMemberTimeout(string, string, *time.Time, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) GuildBanCreateWithReason(string, string, string, int, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) GuildBanDelete(string, string, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) GuildMemberDeleteWithReason(string, string, string, ...discordgo.RequestOption) error {
-	f.writes++
-	return nil
-}
-
-func (f *fakeSession) ChannelMessageEditComplex(*discordgo.MessageEdit, ...discordgo.RequestOption) (*discordgo.Message, error) {
-	f.writes++
-	return &discordgo.Message{}, nil
-}
-
-func (f *fakeSession) ForumThreadStartComplex(string, *discordgo.ThreadStart, *discordgo.MessageSend, ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	f.writes++
-	return &discordgo.Channel{}, nil
 }
 
 type fakeGate struct {
@@ -222,235 +26,210 @@ func (f fakeGate) WritesPaused(guildID string) bool { return f.paused[guildID] }
 func (f fakeGate) WritesDryRun(guildID string) bool { return f.dryRun[guildID] }
 
 // callEveryWrite exercises every gated method so a newly added one can't
-// quietly skip the check: if someone adds a write that forgets allow(), the
-// write counter here goes up while the test expects zero.
+// quietly skip the check: a write that forgets allow() reaches the wire
+// while the test expects nothing there.
 func callEveryWrite(o *GuildOps) []error {
-	var errs []error
-	_, err := o.GuildChannelCreateComplex("g", discordgo.GuildChannelCreateData{})
-	errs = append(errs, err)
-	_, err = o.ChannelEditComplex("c", &discordgo.ChannelEdit{})
-	errs = append(errs, err)
-	_, err = o.ChannelDelete("c")
-	errs = append(errs, err)
-	_, err = o.ChannelMessageSend("c", "hi")
-	errs = append(errs, err)
-	_, err = o.ChannelMessageSendEmbed("c", &discordgo.MessageEmbed{})
-	errs = append(errs, err)
-	errs = append(errs, o.ChannelMessagePin("c", "m"))
-	errs = append(errs, o.ChannelPermissionSet("c", "r", discordgo.PermissionOverwriteTypeRole, 0, 0))
-	errs = append(errs, o.ChannelPermissionDelete("c", "r"))
-	_, err = o.GuildMemberEdit("g", "u", &discordgo.GuildMemberParams{})
-	errs = append(errs, err)
-	errs = append(errs, o.GuildMemberRoleAdd("g", "u", "r"))
-	errs = append(errs, o.GuildMemberRoleRemove("g", "u", "r"))
-	_, err = o.GuildRoleCreate("g", &discordgo.RoleParams{})
-	errs = append(errs, err)
-	errs = append(errs, o.ChannelMessageDelete("c", "m"))
-	_, err = o.WebhookCreate("c", "n", "")
-	errs = append(errs, err)
-	errs = append(errs, o.WebhookExecute("w", "t", &discordgo.WebhookParams{}))
-	errs = append(errs, o.GuildMemberTimeout("g", "u", nil))
-	_, err = o.ChannelMessageEditComplex(&discordgo.MessageEdit{Channel: "c", ID: "m"})
-	errs = append(errs, err)
-	_, err = o.ForumThreadStartComplex("c", &discordgo.ThreadStart{}, &discordgo.MessageSend{})
-	errs = append(errs, err)
-	errs = append(errs, o.GuildBanCreateWithReason("g", "u", "r", 0))
-	errs = append(errs, o.GuildBanDelete("g", "u"))
-	errs = append(errs, o.GuildMemberDeleteWithReason("g", "u", "r"))
+	errs := []error{
+		o.UpdatePermissionOverwrite(2, 3, discord.RolePermissionOverwriteUpdate{}),
+		o.DeleteChannel(2),
+		o.PinMessage(2, 4),
+		o.DeleteMessage(2, 4),
+		o.DisconnectMember(100, 3),
+		o.AddMemberRole(100, 3, 6),
+		o.RemoveMemberRole(100, 3, 6),
+		o.DeletePermissionOverwrite(2, 3),
+		o.AddBan(100, 3, 0, "r"),
+		o.DeleteBan(100, 3),
+		o.RemoveMember(100, 3, "r"),
+		o.TimeoutMember(100, 3, nil),
+	}
+	add := func(_ any, err error) { errs = append(errs, err) }
+	add(o.CreateGuildChannel(100, discord.GuildTextChannelCreate{Name: "n"}))
+	add(o.UpdateChannel(2, discord.GuildTextChannelUpdate{}))
+	add(o.CreateMessage(2, discord.MessageCreate{}))
+	add(o.CreateWebhook(2, "n"))
+	add(o.CreateWebhookMessage(5, "t", discord.WebhookMessageCreate{}, false))
+	add(o.UpdateMember(100, 3, discord.MemberUpdate{}))
+	add(o.CreateRole(100, discord.RoleCreate{}))
+	add(o.UpdateRolePositions(100, nil))
+	add(o.CreatePostInThreadChannel(2, discord.ThreadChannelPostCreate{}))
+	add(o.UpdateMessage(2, 4, discord.MessageUpdate{}))
 	return errs
 }
 
-// The webhook sender carries text a *member* wrote, reposted under that
-// member's own name, which makes it the one place where a missing mention
-// suppression would let somebody make merlin ping on their behalf. Asserted
-// rather than assumed for that reason.
-func TestWebhookExecuteSuppressesMentions(t *testing.T) {
-	sess := &fakeSession{}
-	g := New(sess, fakeGate{}, testLogger(), false)
-
-	if err := g.For("g1").WebhookExecute("w", "t", &discordgo.WebhookParams{Content: "hi @everyone"}); err != nil {
-		t.Fatalf("WebhookExecute: %v", err)
-	}
-	if sess.lastWebhook == nil || sess.lastWebhook.AllowedMentions == nil {
-		t.Fatal("AllowedMentions was left nil, so Discord will parse every mention in the content")
-	}
-	if len(sess.lastWebhook.AllowedMentions.Parse) != 0 {
-		t.Errorf("AllowedMentions.Parse = %v, want empty", sess.lastWebhook.AllowedMentions.Parse)
-	}
-}
-
-// A caller must not be able to opt back into pinging by supplying its own
-// AllowedMentions, for the same reason ChannelMessageSendComplex overwrites
-// rather than defaults it.
-func TestWebhookExecuteOverridesCallerMentions(t *testing.T) {
-	sess := &fakeSession{}
-	g := New(sess, fakeGate{}, testLogger(), false)
-
-	err := g.For("g1").WebhookExecute("w", "t", &discordgo.WebhookParams{
-		Content:         "hi",
-		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeEveryone}},
-	})
-	if err != nil {
-		t.Fatalf("WebhookExecute: %v", err)
-	}
-	if len(sess.lastWebhook.AllowedMentions.Parse) != 0 {
-		t.Errorf("caller's AllowedMentions survived: %v", sess.lastWebhook.AllowedMentions.Parse)
-	}
-}
-
 func TestPausedRefusesEveryWrite(t *testing.T) {
-	sess := &fakeSession{}
-	gate := fakeGate{paused: map[string]bool{"g1": true}}
-	g := New(sess, gate, testLogger(), false)
-
-	for _, err := range callEveryWrite(g.For("g1")) {
+	g, w := restGuard(fakeGate{paused: map[string]bool{"100": true}}, `{}`)
+	for _, err := range callEveryWrite(g.For("100")) {
 		if !errors.Is(err, ErrPaused) {
 			t.Errorf("got %v, want ErrPaused", err)
 		}
 	}
-	if sess.writes != 0 {
-		t.Errorf("paused guard let %d write(s) through to Discord, want 0", sess.writes)
+	if len(w.requests) != 0 {
+		t.Errorf("paused guard let writes through to Discord: %v", w.requests)
 	}
 }
 
 func TestGlobalPauseOverridesGuildSettings(t *testing.T) {
-	sess := &fakeSession{}
-	// Guild has nothing paused; only the host-level stop is engaged.
-	g := New(sess, fakeGate{}, testLogger(), true)
-
-	for _, err := range callEveryWrite(g.For("g1")) {
+	g, w := restGuard(fakeGate{}, `{}`)
+	g.PauseAll(true)
+	for _, err := range callEveryWrite(g.For("100")) {
 		if !errors.Is(err, ErrPaused) {
 			t.Errorf("got %v, want ErrPaused", err)
 		}
 	}
-	if sess.writes != 0 {
-		t.Errorf("global pause let %d write(s) through, want 0", sess.writes)
+	if len(w.requests) != 0 {
+		t.Errorf("global pause let writes through: %v", w.requests)
 	}
 
 	// And it can be released without a restart.
 	g.PauseAll(false)
-	if _, err := g.For("g1").ChannelDelete("c"); err != nil {
+	if err := g.For("100").DeleteChannel(2); err != nil {
 		t.Fatalf("after PauseAll(false): %v", err)
 	}
-	if sess.writes != 1 {
-		t.Errorf("writes = %d after releasing pause, want 1", sess.writes)
+	if len(w.requests) != 1 {
+		t.Errorf("%d requests after releasing pause, want 1", len(w.requests))
 	}
 }
 
 func TestDryRunRefusesEveryWrite(t *testing.T) {
-	sess := &fakeSession{}
-	gate := fakeGate{dryRun: map[string]bool{"g1": true}}
-	g := New(sess, gate, testLogger(), false)
-
-	for _, err := range callEveryWrite(g.For("g1")) {
+	g, w := restGuard(fakeGate{dryRun: map[string]bool{"100": true}}, `{}`)
+	for _, err := range callEveryWrite(g.For("100")) {
 		if !errors.Is(err, ErrDryRun) {
 			t.Errorf("got %v, want ErrDryRun", err)
 		}
 	}
-	if sess.writes != 0 {
-		t.Errorf("dry-run guard let %d write(s) through to Discord, want 0", sess.writes)
+	if len(w.requests) != 0 {
+		t.Errorf("dry-run guard let writes through to Discord: %v", w.requests)
 	}
 }
 
 // Pausing must not blind an admin: every inspect path still has to work, or
 // whoever hit the emergency stop can't see what the bot thinks is going on.
 func TestReadsAreNeverGated(t *testing.T) {
-	sess := &fakeSession{}
-	gate := fakeGate{paused: map[string]bool{"g1": true}, dryRun: map[string]bool{"g1": true}}
-	o := New(sess, gate, testLogger(), true).For("g1")
-
-	if _, err := o.Channel("c"); err != nil {
-		t.Errorf("Channel: %v", err)
+	g, w := restGuard(fakeGate{paused: map[string]bool{"100": true}, dryRun: map[string]bool{"100": true}}, `[]`)
+	g.PauseAll(true)
+	o := g.For("100")
+	_, e1 := o.GetGuildChannels(100)
+	_, e2 := o.GetRoles(100)
+	_, e3 := o.GetMessages(2, 0, 1)
+	_, e4 := o.GetWebhooks(2)
+	_, e5 := o.GetMembers(100, 1, 0)
+	for _, err := range []error{e1, e2, e3, e4, e5} {
+		if err != nil {
+			t.Errorf("a read failed: %v", err)
+		}
 	}
-	if _, err := o.GuildChannels("g1"); err != nil {
-		t.Errorf("GuildChannels: %v", err)
-	}
-	if _, err := o.GuildMember("g1", "u"); err != nil {
-		t.Errorf("GuildMember: %v", err)
-	}
-	if _, err := o.GuildRoles("g1"); err != nil {
-		t.Errorf("GuildRoles: %v", err)
-	}
-	if _, err := o.GuildThreadsActive("g"); err != nil {
-		t.Errorf("GuildThreadsActive: %v", err)
-	}
-	if _, err := o.ChannelMessages("c", 1, "", "", ""); err != nil {
-		t.Errorf("ChannelMessages: %v", err)
-	}
-	if _, err := o.User("@me"); err != nil {
-		t.Errorf("User: %v", err)
-	}
-	if sess.reads != 7 {
-		t.Errorf("reads = %d, want 7; a read was gated", sess.reads)
+	// Reads whose answer is one object; only that they were sent matters.
+	_, _ = o.GetChannel(2)
+	_, _ = o.GetActiveGuildThreads(100)
+	_, _ = o.GetPublicArchivedThreads(2, time.Time{}, 1)
+	_, _ = o.GetMessage(2, 4)
+	_, _ = o.GetMember(100, 3)
+	_, _ = o.GetGuild(100)
+	_, _ = o.GetUser(3)
+	_, _ = o.CreateDMChannel(3)
+	if len(w.requests) != 13 {
+		t.Errorf("%d reads reached Discord, want 13", len(w.requests))
 	}
 }
 
-// Every message this bot sends must go out with mentions suppressed.
-//
-// Rotation reposts operator-supplied sticky text into the fresh channel on
-// every single cycle, so an unfiltered send turns one configured mention
-// into a recurring ping: a named user gets pinged forever on a schedule, a
-// mentionable role pings its whole membership. Plain discordgo omits
-// allowed_mentions entirely, which Discord reads as "parse everything", so
-// the safe behaviour is the one that has to be written down, not the
-// default. Asserting on the payload rather than the call count because the
-// call count is identical either way.
+// Every message this bot sends goes out with mentions suppressed, even one
+// whose caller asked otherwise, and suppression must not alter the text.
 func TestMessageSendsSuppressMentions(t *testing.T) {
-	sess := &fakeSession{}
-	g := New(sess, fakeGate{}, testLogger(), false)
-
-	if _, err := g.For("g1").ChannelMessageSend("c", "hey @everyone <@123> <@&456>"); err != nil {
-		t.Fatalf("ChannelMessageSend: %v", err)
+	g, w := restGuard(fakeGate{}, `{"id":"9","channel_id":"2"}`)
+	_, err := g.For("100").CreateMessage(2, discord.MessageCreate{
+		Content:         "hey @everyone <@123> <@&456>",
+		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{discord.AllowedMentionTypeEveryone}, Users: []snowflake.ID{123}},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(sess.sends) != 1 {
-		t.Fatalf("sends = %d, want 1; the send did not go through ChannelMessageSendComplex", len(sess.sends))
+	if len(w.requests) != 1 {
+		t.Fatalf("sent %v", w.requests)
 	}
-
-	sent := sess.sends[0]
+	var sent struct {
+		Content         string `json:"content"`
+		AllowedMentions struct {
+			Parse []string `json:"parse"`
+			Users []string `json:"users"`
+		} `json:"allowed_mentions"`
+	}
+	body := w.requests[0][strings.IndexByte(w.requests[0], '{'):]
+	if err := json.Unmarshal([]byte(body), &sent); err != nil {
+		t.Fatal(err)
+	}
 	if sent.Content != "hey @everyone <@123> <@&456>" {
-		t.Errorf("content was rewritten to %q; suppression must not alter the text, only whether it pings", sent.Content)
+		t.Errorf("content was rewritten: %q", sent.Content)
 	}
-	if sent.AllowedMentions == nil {
-		t.Fatal("AllowedMentions is nil, so it is dropped by omitempty and Discord parses every mention in the content")
-	}
-	if len(sent.AllowedMentions.Parse) != 0 {
-		t.Errorf("AllowedMentions.Parse = %v, want empty; a non-empty Parse whitelists that whole mention class", sent.AllowedMentions.Parse)
-	}
-	if len(sent.AllowedMentions.Roles) != 0 || len(sent.AllowedMentions.Users) != 0 {
-		t.Errorf("AllowedMentions allows specific roles/users (%v/%v), want neither",
-			sent.AllowedMentions.Roles, sent.AllowedMentions.Users)
+	if sent.AllowedMentions.Parse == nil || len(sent.AllowedMentions.Parse) != 0 || len(sent.AllowedMentions.Users) != 0 {
+		t.Errorf("mentions not suppressed: %s", body)
 	}
 }
 
-// Suppression must not become a way around the pause or the rate cap: it is
-// a property of how a send is formed, not a different path to Discord.
-func TestSuppressedSendIsStillGated(t *testing.T) {
-	sess := &fakeSession{}
-	gate := fakeGate{paused: map[string]bool{"g1": true}}
-	g := New(sess, gate, testLogger(), false)
-
-	if _, err := g.For("g1").ChannelMessageSend("c", "hello"); !errors.Is(err, ErrPaused) {
-		t.Errorf("got %v, want ErrPaused", err)
+// A call naming ID 0, what core.ID makes of a stored ID that is not a
+// snowflake, is refused before anything is sent, read or write.
+func TestEveryCallRefusesIDZero(t *testing.T) {
+	g, w := restGuard(fakeGate{}, `{}`)
+	o := g.For("100")
+	errs := []error{
+		o.UpdatePermissionOverwrite(0, 3, discord.RolePermissionOverwriteUpdate{}),
+		o.DeleteChannel(0),
+		o.PinMessage(2, 0),
+		o.DeleteMessage(0, 4),
+		o.DisconnectMember(100, 0),
+		o.AddMemberRole(100, 3, 0),
+		o.RemoveMemberRole(0, 3, 6),
+		o.DeletePermissionOverwrite(2, 0),
+		o.AddBan(100, 0, 0, "r"),
+		o.DeleteBan(0, 3),
+		o.RemoveMember(100, 0, "r"),
+		o.TimeoutMember(0, 3, nil),
 	}
-	if len(sess.sends) != 0 || sess.writes != 0 {
-		t.Errorf("a paused guild still reached Discord: %d sends, %d writes", len(sess.sends), sess.writes)
+	add := func(_ any, err error) { errs = append(errs, err) }
+	add(o.GetChannel(0))
+	add(o.GetGuildChannels(0))
+	add(o.GetActiveGuildThreads(0))
+	add(o.GetRoles(0))
+	add(o.GetPublicArchivedThreads(0, time.Time{}, 1))
+	add(o.GetMessage(2, 0))
+	add(o.GetMessages(0, 0, 1))
+	add(o.GetWebhooks(0))
+	add(o.GetMember(100, 0))
+	add(o.GetGuild(0))
+	add(o.GetMembers(0, 1, 0))
+	add(o.GetUser(0))
+	add(o.CreateDMChannel(0))
+	add(o.CreateGuildChannel(0, discord.GuildTextChannelCreate{}))
+	add(o.UpdateChannel(0, discord.GuildTextChannelUpdate{}))
+	add(o.CreateMessage(0, discord.MessageCreate{}))
+	add(o.CreateWebhook(0, "n"))
+	add(o.CreateWebhookMessage(0, "t", discord.WebhookMessageCreate{}, false))
+	add(o.UpdateMember(0, 3, discord.MemberUpdate{}))
+	add(o.CreateRole(0, discord.RoleCreate{}))
+	add(o.UpdateRolePositions(0, nil))
+	add(o.CreatePostInThreadChannel(0, discord.ThreadChannelPostCreate{}))
+	add(o.UpdateMessage(2, 0, discord.MessageUpdate{}))
+	for i, err := range errs {
+		if !errors.Is(err, errNoID) {
+			t.Errorf("call %d: got %v, want errNoID", i, err)
+		}
+	}
+	if len(w.requests) != 0 {
+		t.Errorf("ID 0 reached Discord: %v", w.requests)
 	}
 }
 
 // The guard is per guild: pausing one server must not stop another.
 func TestPauseIsScopedToItsGuild(t *testing.T) {
-	sess := &fakeSession{}
-	gate := fakeGate{paused: map[string]bool{"paused-guild": true}}
-	g := New(sess, gate, testLogger(), false)
-
-	if _, err := g.For("paused-guild").ChannelDelete("c"); !errors.Is(err, ErrPaused) {
+	g, w := restGuard(fakeGate{paused: map[string]bool{"100": true}}, `{}`)
+	if err := g.For("100").DeleteChannel(2); !errors.Is(err, ErrPaused) {
 		t.Errorf("paused guild: got %v, want ErrPaused", err)
 	}
-	if _, err := g.For("other-guild").ChannelDelete("c"); err != nil {
+	if err := g.For("200").DeleteChannel(2); err != nil {
 		t.Errorf("unpaused guild: %v", err)
 	}
-	if sess.writes != 1 {
-		t.Errorf("writes = %d, want 1 (only the unpaused guild)", sess.writes)
+	if len(w.requests) != 1 {
+		t.Errorf("%d requests, want 1 (only the unpaused guild)", len(w.requests))
 	}
 }
 

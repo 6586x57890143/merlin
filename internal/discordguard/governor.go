@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/rest"
 )
 
@@ -212,30 +211,17 @@ func isTransient(err error) bool {
 	if err == nil {
 		return false
 	}
-	var rl *discordgo.RateLimitError
-	if errors.As(err, &rl) {
-		return true
-	}
-	// disgo's: a response, with the status Discord gave.
-	if re, ok := errors.AsType[*rest.Error](err); ok {
-		if re.Response == nil {
-			return false
-		}
-		code := re.Response.StatusCode
-		return code >= http.StatusInternalServerError || code == http.StatusTooManyRequests
-	}
-	var restErr *discordgo.RESTError
-	if !errors.As(err, &restErr) {
+	re, ok := errors.AsType[*rest.Error](err)
+	if !ok {
 		// Not an HTTP response at all: connection refused, timeout, DNS.
 		// The most transient thing there is.
 		return true
 	}
-	if restErr.Response == nil {
-		// A REST error we can't classify. Counting it toward opening the
-		// breaker would let an unrecognized error shape stop every write in
-		// the guild, so it doesn't count either way.
+	if re.Response == nil {
+		// Unclassifiable. Counting it would let an unknown error shape stop
+		// every write in the guild, so it doesn't count either way.
 		return false
 	}
-	code := restErr.Response.StatusCode
+	code := re.Response.StatusCode
 	return code >= http.StatusInternalServerError || code == http.StatusTooManyRequests
 }

@@ -214,7 +214,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// /config pause (or MERLIN_PAUSE_ALL_WRITES) can stop the bot mutating
 	// anything without a redeploy. Bound per guild at each call site because
 	// most of those calls are channel-scoped and carry no guild themselves.
-	guard := discordguard.New(session, settingsStore, log, cfg.PauseAllWrites).WithJournal(journal).WithRest(ixRest)
+	guard := discordguard.New(ixRest, settingsStore, log, cfg.PauseAllWrites).WithJournal(journal)
 	if cfg.PauseAllWrites {
 		log.Warn("MERLIN_PAUSE_ALL_WRITES is set: every destructive Discord action is refused process-wide")
 	}
