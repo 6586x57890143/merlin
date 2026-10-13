@@ -1,34 +1,47 @@
 package rotation
 
-import "github.com/bwmarrin/discordgo"
+import (
+	"fmt"
 
-// DiscordChannelOps is the narrow slice of *discordgo.Session's REST methods
-// the rotation state machine and sweep job need. Method signatures match
-// discordgo's exactly (including the variadic RequestOption parameter), so
-// *discordgo.Session satisfies this interface with no wrapper needed. Only
-// tests provide a different (fake) implementation, mirroring the
-// JobStateStore seam in internal/scheduler.
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
+)
+
+// DiscordChannelOps is what rotation does in Discord, on disgo's types.
+// discordguard.GuildOps satisfies it, so every write is gated; tests use a
+// fake.
 type DiscordChannelOps interface {
-	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
-	GuildThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
-	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelDelete(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
-	ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	// ChannelMessageSendComplex carries the retention notice, which is an
-	// embed plus the brand-icon file its footer references. SendEmbed can't
-	// express that pairing, and the icon renders broken without it.
-	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	ChannelMessagePin(channelID, messageID string, options ...discordgo.RequestOption) error
-	// User, called with "@me", resolves the bot's own user ID, needed so
-	// newly-created channels that deny @everyone VIEW_CHANNEL (the hidden
-	// staging channel, the archived channel) can also explicitly grant the
-	// bot itself access; without it the bot would lock itself out of a
-	// channel it just created, since its own role deliberately carries no
-	// guild-wide Administrator bit to bypass a channel-level deny (least
-	// privilege, spec.MD §4).
-	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
+	GetChannel(channelID snowflake.ID) (discord.Channel, error)
+	GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel, error)
+	GetActiveGuildThreads(guildID snowflake.ID) (*discord.GuildActiveThreads, error)
+	CreateGuildChannel(guildID snowflake.ID, c discord.GuildChannelCreate) (discord.GuildChannel, error)
+	// UpdateChannel is always sent a GuildTextChannelUpdate. Name, position,
+	// parent and overwrites mean the same on every channel type, so one
+	// payload serves the category and its channels alike.
+	UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate) (discord.Channel, error)
+	DeleteChannel(channelID snowflake.ID) error
+	GetMessages(channelID, before snowflake.ID, limit int) ([]discord.Message, error)
+	CreateMessage(channelID snowflake.ID, m discord.MessageCreate) (*discord.Message, error)
+	PinMessage(channelID, messageID snowflake.ID) error
+}
+
+// guildChannel is channelID read as a guild channel.
+func guildChannel(ops DiscordChannelOps, channelID snowflake.ID) (discord.GuildChannel, error) {
+	c, err := ops.GetChannel(channelID)
+	if err != nil {
+		return nil, err
+	}
+	gc, ok := c.(discord.GuildChannel)
+	if !ok {
+		return nil, fmt.Errorf("channel %s is not in a server", channelID)
+	}
+	return gc, nil
+}
+
+// parent is ch's category, 0 for none.
+func parent(ch discord.GuildChannel) snowflake.ID {
+	if p := ch.ParentID(); p != nil {
+		return *p
+	}
+	return 0
 }

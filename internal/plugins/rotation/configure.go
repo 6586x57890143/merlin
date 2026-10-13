@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
@@ -81,24 +81,23 @@ func (p *Plugin) resolveArchiveCategory(guildID, categoryID string) (string, err
 		p.hideArchiveCategory(guildID, categoryID)
 		return categoryID, nil
 	}
-	channels, err := p.ops(guildID).GuildChannels(guildID)
+	channels, err := p.ops(guildID).GetGuildChannels(core.ID(guildID))
 	if err != nil {
 		return "", fmt.Errorf("list channels: %w", err)
 	}
 	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildCategory && ch.Name == defaultArchiveCategoryName {
-			return ch.ID, nil
+		if ch.Type() == discord.ChannelTypeGuildCategory && ch.Name() == defaultArchiveCategoryName {
+			return ch.ID().String(), nil
 		}
 	}
-	created, err := p.ops(guildID).GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+	created, err := p.ops(guildID).CreateGuildChannel(core.ID(guildID), discord.GuildCategoryChannelCreate{
 		Name: defaultArchiveCategoryName,
-		Type: discordgo.ChannelTypeGuildCategory,
 	})
 	if err != nil {
 		return "", fmt.Errorf("create %q category: %w", defaultArchiveCategoryName, err)
 	}
-	p.hideArchiveCategory(guildID, created.ID)
-	return created.ID, nil
+	p.hideArchiveCategory(guildID, created.ID().String())
+	return created.ID().String(), nil
 }
 
 // hideArchiveCategory applies the archive permission policy to categoryID at
@@ -113,7 +112,7 @@ func (p *Plugin) resolveArchiveCategory(guildID, categoryID string) (string, err
 // under the category aren't resynced from here; the caller responds inside
 // Discord's 3-second window, and the hourly sweep covers them.
 func (p *Plugin) hideArchiveCategory(guildID, categoryID string) {
-	if _, _, err := p.reconcileArchiveCategory(guildID, categoryID); err != nil {
+	if _, _, err := p.reconcileArchiveCategory(guildID, core.ID(categoryID)); err != nil {
 		p.log.Error("rotation: could not apply archive permissions to category", "guild", guildID, "category", categoryID, "err", err)
 	}
 }

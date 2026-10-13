@@ -17,7 +17,6 @@ package rotation
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -29,6 +28,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/settings"
 	"github.com/6586x57890143/merlin/internal/voice"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 // sweepInterval is how often each guild's archive-deletion sweep runs.
@@ -83,8 +83,11 @@ type Plugin struct {
 	noticeRegistered map[string]bool          // guild ID -> pre-rotation notice job registered
 	registeredJobs   map[string]time.Duration // rotation job key -> interval it was registered with
 
-	botUserIDMu sync.Mutex
-	botUserID   string // cached result of getBotUserID, fetched at most once
+	// botID is the bird's own user, granted view on the channels she hides
+	// from @everyone, so she does not lock herself out of a channel she just
+	// made: her role deliberately carries no Administrator to bypass a
+	// channel-level deny (least privilege, spec.MD §4).
+	botID snowflake.ID
 }
 
 // New constructs Plugin. settingsStore is passed directly rather than
@@ -127,6 +130,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.audit = deps.Audit
 	p.bus = deps.Bus
 	p.log = deps.Logger
+	p.botID = deps.BotID
 	p.sched = deps.Scheduler
 	p.commands = deps.Commands
 	p.archives = NewPostgresArchiveStore(deps.DB.Pool)
@@ -144,25 +148,13 @@ func (p *Plugin) Start(ctx context.Context) error { return nil }
 
 func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 
-// getBotUserID resolves the bot's own user ID, fetched once via the REST
-// "@me" endpoint and cached for the process lifetime (it can't change while
-// running). Not resolved at Init time, since the session isn't open yet then
-// (spec.MD's Plugin lifecycle: no gateway/REST calls in Init). Deferred
-// until the first rotation actually needs it, well after Open() succeeds.
-// A failed attempt is retried on the next call rather than cached, in case
-// of a transient API error.
-func (p *Plugin) getBotUserID(guildID string) (string, error) {
-	p.botUserIDMu.Lock()
-	defer p.botUserIDMu.Unlock()
-	if p.botUserID != "" {
-		return p.botUserID, nil
+// ids is ss as snowflakes, in a new slice.
+func ids(ss []string) []snowflake.ID {
+	out := make([]snowflake.ID, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, core.ID(s))
 	}
-	me, err := p.ops(guildID).User("@me")
-	if err != nil {
-		return "", fmt.Errorf("rotation: resolve bird user ID: %w", err)
-	}
-	p.botUserID = me.ID
-	return p.botUserID, nil
+	return out
 }
 
 // SyncGuild reconciles guildID's Scheduler jobs against its current

@@ -44,7 +44,7 @@ const maxCatalogLines = 24
 // only in production, on whichever rotation happened to draw it.
 func TestRetentionNoticeDescribesRetentionNotInterval(t *testing.T) {
 	hours := 3
-	rc := settings.RotationChannel{GuildID: "g1", IntervalMinutes: 24 * 60, RetentionHours: &hours}
+	rc := settings.RotationChannel{GuildID: "100", IntervalMinutes: 24 * 60, RetentionHours: &hours}
 
 	for i := range maxCatalogLines {
 		p := noticePluginPickingLine(t, i)
@@ -67,7 +67,7 @@ func TestRetentionNoticeDescribesRetentionNotInterval(t *testing.T) {
 // eventually" are separate sets of lines and the risk is somebody writing a
 // nicely-worded deletion promise into the wrong one.
 func TestRetentionNoticeOnKeepForeverPromisesNoDeletion(t *testing.T) {
-	rc := settings.RotationChannel{GuildID: "g1", IntervalMinutes: 24 * 60, RetentionHours: nil}
+	rc := settings.RotationChannel{GuildID: "100", IntervalMinutes: 24 * 60, RetentionHours: nil}
 
 	for i := range maxCatalogLines {
 		p := noticePluginPickingLine(t, i)
@@ -87,7 +87,7 @@ func TestRetentionNoticeOnKeepForeverPromisesNoDeletion(t *testing.T) {
 // window, so "1 day" and "3 hours" are two distinct strings a notice either
 // does or does not contain.
 func disclosureRC(d settings.Disclosure, forever bool) settings.RotationChannel {
-	rc := settings.RotationChannel{GuildID: "g1", IntervalMinutes: 24 * 60, Disclosure: d}
+	rc := settings.RotationChannel{GuildID: "100", IntervalMinutes: 24 * 60, Disclosure: d}
 	if !forever {
 		hours := 3
 		rc.RetentionHours = &hours
@@ -272,7 +272,7 @@ func TestFormatRetentionDistinguishesForever(t *testing.T) {
 func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
 	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
 
-	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+	if err := p.rotate(context.Background(), "100", rc); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 
@@ -289,8 +289,8 @@ func TestRetentionNoticeIsBrandedAndCarriesItsIcon(t *testing.T) {
 	if sent.Embed.Footer != nil {
 		t.Errorf("the notice grew a footer back: %+v", sent.Embed.Footer)
 	}
-	if sent.Embed.Timestamp != "" {
-		t.Errorf("the notice grew a timestamp back: %q", sent.Embed.Timestamp)
+	if sent.Embed.Timestamp != nil {
+		t.Errorf("the notice grew a timestamp back: %v", sent.Embed.Timestamp)
 	}
 	if sent.Embed.Color == 0 {
 		t.Error("the notice has no colour, the one visual cue that ties it to the rest of the bot")
