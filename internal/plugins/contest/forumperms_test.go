@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -229,9 +228,9 @@ func TestNewRefusesUntilSomebodySaysWhoContestsAreFor(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	ops.roles = guildRoles("g1", "melted")
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleNew(context.Background(), s, interaction("new", strOpt("title", "neon cats")))
+	p.handleNew(context.Background(), interaction("new", strOpt("title", "neon cats")))
 
 	if _, err := store.LiveContest(context.Background(), "g1"); !errors.Is(err, ErrNoLiveContest) {
 		t.Error("an ungated guild started a contest anyway")
@@ -255,9 +254,9 @@ func TestAnUnreadableGateChannelStopsTheContest(t *testing.T) {
 	store.cfg["g1"] = Config{GuildID: "g1", DefaultMaxVotes: 2, GateChannelID: "deleted-1"}
 	ops.channelErr = errors.New("404 unknown channel")
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
-	p.handleNew(context.Background(), s, interaction("new", strOpt("title", "neon cats")))
+	p.handleNew(context.Background(), interaction("new", strOpt("title", "neon cats")))
 
 	if len(ops.created) != 0 {
 		t.Error("a forum was created without knowing who it is for")
@@ -283,11 +282,10 @@ func TestSyncForumAppliesTheGateToARunningContest(t *testing.T) {
 		ID: c.ForumChannelID, GuildID: "g1", Type: discordgo.ChannelTypeGuildForum,
 	})
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
-	i := paneltest.Click("u1", panelSet+"sync", nil)
-	i.GuildID = "g1"
-	p.handlePanelSet(context.Background(), s, i, panelSet+"sync")
+	i := decodeIx(3, "u1", "u1", map[string]any{"custom_id": panelSet + "sync", "component_type": 2})
+	p.handlePanelSet(context.Background(), i, panelSet+"sync")
 
 	ch, _ := ops.Channel(c.ForumChannelID)
 	if denyOn(ch.PermissionOverwrites, "g1", discordgo.PermissionOverwriteTypeRole)&discordgo.PermissionViewChannel == 0 {

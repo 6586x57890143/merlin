@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
@@ -76,79 +78,83 @@ func (rt *recordingTransport) said() string {
 	return b.String()
 }
 
-func stubSession() (*discordgo.Session, *recordingTransport) {
-	rt := &recordingTransport{}
-	return &discordgo.Session{
-		Client:      &http.Client{Transport: rt},
-		Ratelimiter: discordgo.NewRatelimiter(),
-		Token:       "Bot test",
-	}, rt
+// current is the recorder the next interaction answers through. stubSession
+// makes a fresh one per case, as it used to make a fresh session.
+var current *recordingTransport
+
+func stubSession() *recordingTransport {
+	current = &recordingTransport{}
+	return current
 }
 
-// interaction builds a command invocation for one leaf of /contest.
-func interaction(leaf string, opts ...*discordgo.ApplicationCommandInteractionDataOption) *discordgo.InteractionCreate {
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID:        "i1",
-		Token:     "tok",
-		GuildID:   "g1",
-		ChannelID: "chan-1",
-		Type:      discordgo.InteractionApplicationCommand,
-		Member: &discordgo.Member{
-			Nick: "mod",
-			User: &discordgo.User{ID: "mod-1", Username: "mod", GlobalName: "mod"},
+// decodeIx is Discord's JSON for an interaction of typ from a member shown
+// as nick, decoded by core.NewIx and answered through current.
+//
+// The fixtures predate disgo: the store and fakes key on "g1", "chan-1" and
+// members like "mod-1", none of them snowflakes. Ix.GuildID, UserID and
+// ChannelID are merlin's own string keys and every handler reads those, so
+// after decoding a real interaction they are pointed at the fixtures.
+func decodeIx(typ int, user, nick string, data map[string]any) *core.Ix {
+	p := map[string]any{
+		"id": "1000", "application_id": "2", "type": typ, "token": "tok", "version": 1,
+		"guild_id": paneltest.IxGuild,
+		"channel":  map[string]any{"id": "101", "type": 0},
+		"member": map[string]any{
+			"nick":        nick,
+			"user":        map[string]any{"id": "11", "username": nick, "global_name": nick},
+			"permissions": "0", "roles": []any{}, "joined_at": "2026-01-01T00:00:00Z",
 		},
-		Data: discordgo.ApplicationCommandInteractionData{
-			Name: "contest",
-			Options: []*discordgo.ApplicationCommandInteractionDataOption{{
-				Name: leaf, Type: discordgo.ApplicationCommandOptionSubCommand, Options: opts,
-			}},
-		},
-	}}
-}
-
-func strOpt(name, v string) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{
-		Name: name, Type: discordgo.ApplicationCommandOptionString, Value: v,
+		"data": data,
 	}
-}
-
-func intOpt(name string, v int) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{
-		// Discord sends numbers as float64 over JSON, and IntValue asserts
-		// exactly that, so a test passing an int here would panic in a way
-		// production never does.
-		Name: name, Type: discordgo.ApplicationCommandOptionInteger, Value: float64(v),
+	raw, err := json.Marshal(p)
+	if err != nil {
+		panic(err)
 	}
+	rt := current
+	if rt == nil {
+		rt = &recordingTransport{}
+	}
+	ix, err := core.NewIx(raw, rest.New(rest.NewClient("test", rest.WithHTTPClient(&http.Client{Transport: rt}))))
+	if err != nil {
+		panic(err)
+	}
+	ix.GuildID, ix.UserID, ix.ChannelID = "g1", user, "chan-1"
+	return ix
 }
 
-func modalSubmit(customID string, fields map[string]string) *discordgo.InteractionCreate {
-	var rows []discordgo.MessageComponent
+// interaction builds a command invocation for one leaf of /contest, by a mod.
+func interaction(leaf string, opts ...map[string]any) *core.Ix {
+	args := []any{}
+	for _, o := range opts {
+		args = append(args, o)
+	}
+	return decodeIx(2, "mod-1", "mod", map[string]any{"id": "6", "name": "contest", "type": 1,
+		"options": []any{map[string]any{"name": leaf, "type": 1, "options": args}}})
+}
+
+func strOpt(name, v string) map[string]any {
+	return map[string]any{"name": name, "type": 3, "value": v}
+}
+
+func intOpt(name string, v int) map[string]any {
+	return map[string]any{"name": name, "type": 4, "value": v}
+}
+
+// modalSubmit is dana submitting the form customID with fields.
+func modalSubmit(customID string, fields map[string]string) *core.Ix {
+	rows := []any{}
 	for id, v := range fields {
-		rows = append(rows, &discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-			&discordgo.TextInput{CustomID: id, Value: v},
+		rows = append(rows, map[string]any{"type": 1, "components": []any{
+			map[string]any{"type": 4, "custom_id": id, "value": v},
 		}})
 	}
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID: "i2", Token: "tok", GuildID: "g1", ChannelID: "chan-1",
-		Type: discordgo.InteractionModalSubmit,
-		Member: &discordgo.Member{
-			Nick: "dana", User: &discordgo.User{ID: "u9", Username: "dana"},
-		},
-		Data: discordgo.ModalSubmitInteractionData{CustomID: customID, Components: rows},
-	}}
+	return decodeIx(5, "u9", "dana", map[string]any{"custom_id": customID, "components": rows})
 }
 
 // componentClick builds a button press by a mod, which is how the prize
 // review queue is driven.
-func componentClick(customID string) *discordgo.InteractionCreate {
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID: "i3", Token: "tok", GuildID: "g1", ChannelID: "chan-1",
-		Type: discordgo.InteractionMessageComponent,
-		Member: &discordgo.Member{
-			Nick: "mod", User: &discordgo.User{ID: "mod-1", Username: "mod"},
-		},
-		Data: discordgo.MessageComponentInteractionData{CustomID: customID},
-	}}
+func componentClick(customID string) *core.Ix {
+	return decodeIx(3, "mod-1", "mod", map[string]any{"custom_id": customID, "component_type": 2})
 }
 
 // --- /contest new ---------------------------------------------------------
@@ -159,9 +165,9 @@ func TestNewCreatesAForumAndAnnouncesIt(t *testing.T) {
 	seedGate(store, ops)
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
-	s, _ := stubSession()
+	stubSession()
 
-	p.handleNew(context.Background(), s, interaction("new",
+	p.handleNew(context.Background(), interaction("new",
 		strOpt("title", "Neon Cats"), strOpt("theme", "cats, but neon"),
 		strOpt("announce-for", "1h"), strOpt("submit-for", "48h"), strOpt("vote-for", "24h"),
 		intOpt("picks", 2)))
@@ -221,9 +227,9 @@ func TestNewWithNoAnnounceWindowOpensSubmissionsImmediately(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	seedGate(store, ops)
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
-	p.handleNew(context.Background(), s, interaction("new",
+	p.handleNew(context.Background(), interaction("new",
 		strOpt("title", "quickfire"), strOpt("announce-for", "0")))
 
 	c, err := store.LiveContest(context.Background(), "g1")
@@ -256,9 +262,9 @@ func TestOnlyOneContestRunsAtATime(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleNew(context.Background(), s, interaction("new", strOpt("title", "another one")))
+	p.handleNew(context.Background(), interaction("new", strOpt("title", "another one")))
 
 	if len(ops.created) != 0 {
 		t.Error("a second forum was created while a contest was already running")
@@ -271,9 +277,9 @@ func TestOnlyOneContestRunsAtATime(t *testing.T) {
 func TestNewRefusesAnUnparseableWindow(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
-	p.handleNew(context.Background(), s, interaction("new",
+	p.handleNew(context.Background(), interaction("new",
 		strOpt("title", "x"), strOpt("submit-for", "banana")))
 
 	if _, err := store.LiveContest(context.Background(), "g1"); err == nil {
@@ -295,9 +301,9 @@ func TestPledgingAPrizeSealsTheCodeAndNeverLogsIt(t *testing.T) {
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.sealer = sealer
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handlePrizeModal(context.Background(), s, modalSubmit(prizeModalPrefix+"c1", map[string]string{
+	p.handlePrizeModal(context.Background(), modalSubmit(prizeModalPrefix+"c1", map[string]string{
 		prizeFieldTitle:   "a steam key",
 		prizeFieldDetails: "for hollow knight",
 		prizeFieldCode:    "STEAM-KEY-1234",
@@ -345,9 +351,9 @@ func TestPledgingACodeWithNoSecretKeyIsRefused(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "") // sealer stays nil
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handlePrizeModal(context.Background(), s, modalSubmit(prizeModalPrefix+"c1", map[string]string{
+	p.handlePrizeModal(context.Background(), modalSubmit(prizeModalPrefix+"c1", map[string]string{
 		prizeFieldTitle: "a steam key",
 		prizeFieldCode:  "STEAM-KEY-1234",
 	}), prizeModalPrefix+"c1")
@@ -368,9 +374,9 @@ func TestAPledgeWithoutACodeIsFine(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
-	p.handlePrizeModal(context.Background(), s, modalSubmit(prizeModalPrefix+"c1", map[string]string{
+	p.handlePrizeModal(context.Background(), modalSubmit(prizeModalPrefix+"c1", map[string]string{
 		prizeFieldTitle: "50 usdc, i will send it myself",
 	}), prizeModalPrefix+"c1")
 
@@ -396,11 +402,11 @@ func TestAModalForAFinishedContestIsRefused(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
 	// A modal left open while a contest ended, submitted against a different
 	// contest id.
-	p.handlePrizeModal(context.Background(), s,
+	p.handlePrizeModal(context.Background(),
 		modalSubmit(prizeModalPrefix+"gone", map[string]string{prizeFieldTitle: "a key"}),
 		prizeModalPrefix+"gone")
 
@@ -416,9 +422,9 @@ func TestAnEmptyPrizeTitleIsRefused(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
-	p.handlePrizeModal(context.Background(), s,
+	p.handlePrizeModal(context.Background(),
 		modalSubmit(prizeModalPrefix+"c1", map[string]string{prizeFieldTitle: "   "}),
 		prizeModalPrefix+"c1")
 
@@ -441,9 +447,9 @@ func TestOnlyTheDonorCanUnpledge(t *testing.T) {
 		t.Fatalf("seed prize: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
-	p.handleUnpledge(context.Background(), s, interaction("unpledge"))
+	p.handleUnpledge(context.Background(), interaction("unpledge"))
 
 	if prizes, _ := store.Prizes(context.Background(), "c1"); len(prizes) != 1 {
 		t.Error("somebody pulled a pledge that was not theirs")
@@ -465,9 +471,9 @@ func TestUnpledgeTakesBackYourMostRecentByDefault(t *testing.T) {
 		}
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, _ := stubSession()
+	stubSession()
 
-	p.handleUnpledge(context.Background(), s, interaction("unpledge"))
+	p.handleUnpledge(context.Background(), interaction("unpledge"))
 
 	left, _ := store.Prizes(context.Background(), "c1")
 	if len(left) != 1 || left[0].ID != "p1" {
@@ -475,7 +481,7 @@ func TestUnpledgeTakesBackYourMostRecentByDefault(t *testing.T) {
 	}
 
 	// And by id when one is named.
-	p.handleUnpledge(context.Background(), s, interaction("unpledge", strOpt("which", "p1")))
+	p.handleUnpledge(context.Background(), interaction("unpledge", strOpt("which", "p1")))
 	if left, _ := store.Prizes(context.Background(), "c1"); len(left) != 0 {
 		t.Errorf("naming a pledge did not remove it: %+v", left)
 	}
@@ -498,7 +504,7 @@ func TestPledgeAutocompleteOffersOnlyYourOwn(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 
 	got := p.autocompletePledges(context.Background(), interaction("unpledge"), "which", "steam")
-	if len(got) != 1 || got[0].Value != "p1" {
+	if len(got) != 1 || got[0].(discord.AutocompleteChoiceString).Value != "p1" {
 		t.Errorf("autocomplete = %+v, want only the caller's own pledge", got)
 	}
 	if none := p.autocompletePledges(context.Background(), interaction("unpledge"), "which", "zzz"); len(none) != 0 {
@@ -535,9 +541,9 @@ func TestClaimHandsOverAPrizeAndWipesItAfter(t *testing.T) {
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.sealer = sealer
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleClaim(context.Background(), s, interaction("claim"))
+	p.handleClaim(context.Background(), interaction("claim"))
 
 	if !strings.Contains(rt.said(), "STEAM-KEY-9999") {
 		t.Errorf("the code was not handed over:\n%s", rt.said())
@@ -563,9 +569,9 @@ func TestClaimShowsNothingToSomebodyWhoWonNothing(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleClaim(context.Background(), s, interaction("claim"))
+	p.handleClaim(context.Background(), interaction("claim"))
 
 	if strings.Contains(rt.said(), "ciphertext") {
 		t.Error("somebody else's prize was shown")
@@ -596,9 +602,9 @@ func TestLinkAnswersThePhaseItIsIn(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 		p := newTestPlugin(t, store, ops, sched, audit, "https://w.test")
-		s, rt := stubSession()
+		rt := stubSession()
 
-		p.handleLink(context.Background(), s, interaction("link"))
+		p.handleLink(context.Background(), interaction("link"))
 
 		if !strings.Contains(rt.said(), tc.want) {
 			t.Errorf("%s: answer does not mention %q:\n%s", tc.phase, tc.want, rt.said())
@@ -615,9 +621,9 @@ func TestTheVoteButtonAnswersLikeTheCommand(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "https://w.test")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleLinkButton(context.Background(), s,
+	p.handleLinkButton(context.Background(),
 		interaction("link"), linkButtonPrefix+"abcdefghijklmnop")
 
 	if !strings.Contains(rt.said(), "https://w.test/c/abcdefghijklmnop") {
@@ -634,9 +640,9 @@ func TestLinkWithNoWorkerSaysSoRatherThanLinkingNowhere(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleLink(context.Background(), s, interaction("link"))
+	p.handleLink(context.Background(), interaction("link"))
 
 	said := rt.said()
 	if !strings.Contains(said, "no voting page") {
@@ -650,9 +656,9 @@ func TestLinkWithNoWorkerSaysSoRatherThanLinkingNowhere(t *testing.T) {
 func TestLinkWithNoContestSaysSo(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	p := newTestPlugin(t, store, ops, sched, audit, "https://w.test")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleLink(context.Background(), s, interaction("link"))
+	p.handleLink(context.Background(), interaction("link"))
 
 	if !strings.Contains(rt.said(), "No contest") {
 		t.Errorf("said something else:\n%s", rt.said())
@@ -673,9 +679,9 @@ func TestStatusReportsAnUnreachableWorkerAsAWarning(t *testing.T) {
 	}
 	// No server listening, so every Worker call fails.
 	p := newTestPlugin(t, store, ops, sched, audit, "http://127.0.0.1:1")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleStatus(context.Background(), s, interaction("status"))
+	p.handleStatus(context.Background(), interaction("status"))
 
 	said := rt.said()
 	for _, want := range []string{"unreachable", "d1 is having a moment", "keeps retrying"} {
@@ -692,9 +698,9 @@ func TestStatusWithNoWorkerNamesTheEnvVarToSet(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleStatus(context.Background(), s, interaction("status"))
+	p.handleStatus(context.Background(), interaction("status"))
 
 	said := rt.said()
 	if !strings.Contains(said, "MERLIN_CONTEST_WORKER_URL") {
@@ -709,9 +715,9 @@ func TestStatusWithNoWorkerNamesTheEnvVarToSet(t *testing.T) {
 func TestStatusWithNothingEverRunSaysSo(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleStatus(context.Background(), s, interaction("status"))
+	p.handleStatus(context.Background(), interaction("status"))
 
 	if !strings.Contains(rt.said(), "Nothing has been run") {
 		t.Errorf("said something else:\n%s", rt.said())
@@ -728,9 +734,9 @@ func TestAdvanceMovesThePhaseAndAuditsIt(t *testing.T) {
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
-	s, _ := stubSession()
+	stubSession()
 
-	p.handleAdvance(context.Background(), s, interaction("advance"))
+	p.handleAdvance(context.Background(), interaction("advance"))
 
 	got, _ := store.LiveContest(context.Background(), "g1")
 	if got.Phase != PhaseSubmit {
@@ -757,9 +763,9 @@ func TestCancelDeletesNothing(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
 	p.SyncGuild(context.Background(), "g1")
-	s, _ := stubSession()
+	stubSession()
 
-	p.handleCancel(context.Background(), s, interaction("cancel"))
+	p.handleCancel(context.Background(), interaction("cancel"))
 
 	got, err := store.LiveContest(context.Background(), "g1")
 	if err == nil {
@@ -782,9 +788,9 @@ func TestCancelDeletesNothing(t *testing.T) {
 func TestCancelWithNothingRunningSaysSo(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	p.handleCancel(context.Background(), s, interaction("cancel"))
+	p.handleCancel(context.Background(), interaction("cancel"))
 
 	if !strings.Contains(rt.said(), "No contest is running") {
 		t.Errorf("said something else:\n%s", rt.said())
@@ -796,11 +802,10 @@ func TestCancelWithNothingRunningSaysSo(t *testing.T) {
 func TestConfigureRoundTrips(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
-	s, rt := stubSession()
+	rt := stubSession()
 
-	i := paneltest.Click("u1", panelSet+"picks", nil, "5")
-	i.GuildID = "g1"
-	p.handlePanelSet(context.Background(), s, i, panelSet+"picks")
+	i := decodeIx(3, "u1", "u1", map[string]any{"custom_id": panelSet + "picks", "component_type": 3, "values": []any{"5"}})
+	p.handlePanelSet(context.Background(), i, panelSet+"picks")
 
 	cfg, err := store.GetConfig(context.Background(), "g1")
 	if err != nil || cfg.DefaultMaxVotes != 5 {
@@ -813,7 +818,7 @@ func TestConfigureRoundTrips(t *testing.T) {
 	rt.mu.Lock()
 	rt.calls = nil
 	rt.mu.Unlock()
-	p.handleSettings(context.Background(), s, interaction("settings"))
+	p.handleSettings(context.Background(), interaction("settings"))
 	if !strings.Contains(rt.said(), "5 pick(s) per member") {
 		t.Errorf("show did not report the new value:\n%s", rt.said())
 	}

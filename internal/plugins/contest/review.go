@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -46,24 +47,24 @@ func pendingPrizes(prizes []Prize) []Prize {
 	return out
 }
 
-func (p *Plugin) handleReview(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	c, err := p.store.LiveContest(ctx, i.GuildID)
+func (p *Plugin) handleReview(ctx context.Context, ix *core.Ix) {
+	c, err := p.store.LiveContest(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondWarn(s, i, "Nothing running", "There's no contest taking pledges right now.")
+		ix.RespondWarn("Nothing running", "There's no contest taking pledges right now.")
 		return
 	}
 	prizes, err := p.store.Prizes(ctx, c.ID)
 	if err != nil {
-		core.RespondErr(s, i, "Couldn't read the prize pool", err)
+		ix.RespondErr("Couldn't read the prize pool", err)
 		return
 	}
 	pending := pendingPrizes(prizes)
 	if len(pending) == 0 {
-		core.RespondOK(s, i, "Nothing waiting", "Every pledge on "+c.Title+" has been looked at.")
+		ix.RespondOK("Nothing waiting", "Every pledge on "+c.Title+" has been looked at.")
 		return
 	}
 	embed, components := reviewView(pending, 0)
-	if err := core.RespondEmbedWithComponents(s, i, embed, components); err != nil {
+	if err := ix.RespondEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("contest: respond review", "err", err)
 	}
 }
@@ -76,24 +77,24 @@ func (p *Plugin) handleReview(ctx context.Context, s *discordgo.Session, i *disc
 // prize id in the CustomID is checked against live rows rather than taken as
 // an instruction. A pledge somebody else already ruled on loses the claim in
 // the store, and the click just re-renders.
-func (p *Plugin) handleReviewButton(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleReviewButton(ctx context.Context, ix *core.Ix, customID string) {
 	action, prizeID, _ := strings.Cut(strings.TrimPrefix(customID, reviewPrefix), ":")
-	if err := core.DeferUpdate(s, i); err != nil {
+	if err := ix.DeferUpdate(); err != nil {
 		p.log.Error("contest: defer review click", "err", err)
 		return
 	}
 
-	c, err := p.store.LiveContest(ctx, i.GuildID)
+	c, err := p.store.LiveContest(ctx, ix.GuildID)
 	if err != nil {
-		p.reviewDone(s, i, "That contest has moved on", "It isn't taking pledges any more.")
+		p.reviewDone(ix, "That contest has moved on", "It isn't taking pledges any more.")
 		return
 	}
 
 	switch action {
 	case "approve":
-		p.approvePledge(ctx, i, c, prizeID)
+		p.approvePledge(ctx, ix, c, prizeID)
 	case "reject":
-		p.rejectPledge(ctx, i, c, prizeID)
+		p.rejectPledge(ctx, ix, c, prizeID)
 	}
 
 	prizes, err := p.store.Prizes(ctx, c.ID)
@@ -103,7 +104,7 @@ func (p *Plugin) handleReviewButton(ctx context.Context, s *discordgo.Session, i
 	}
 	pending := pendingPrizes(prizes)
 	if len(pending) == 0 {
-		p.reviewDone(s, i, "Nothing waiting", "Every pledge on "+c.Title+" has been looked at.")
+		p.reviewDone(ix, "Nothing waiting", "Every pledge on "+c.Title+" has been looked at.")
 		return
 	}
 
@@ -116,17 +117,17 @@ func (p *Plugin) handleReviewButton(ctx context.Context, s *discordgo.Session, i
 		at = indexOfPrize(pending, prizeID) + 1
 	}
 	embed, components := reviewView(pending, at)
-	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
+	if err := ix.UpdateEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("contest: update review", "err", err)
 	}
 }
 
-func (p *Plugin) approvePledge(ctx context.Context, i *discordgo.InteractionCreate, c Contest, prizeID string) {
+func (p *Plugin) approvePledge(ctx context.Context, ix *core.Ix, c Contest, prizeID string) {
 	pr, ok := p.pendingPrize(ctx, c, prizeID)
 	if !ok {
 		return
 	}
-	won, err := p.store.ApprovePrize(ctx, prizeID, actorID(i), p.now())
+	won, err := p.store.ApprovePrize(ctx, prizeID, actorID(ix), p.now())
 	if err != nil {
 		p.log.Error("contest: approve prize", "prize", prizeID, "err", err)
 		return
@@ -144,17 +145,17 @@ func (p *Plugin) approvePledge(ctx context.Context, i *discordgo.InteractionCrea
 	}, pr.DonorName+" put up "+pr.Title+".")
 	p.post(ctx, c, core.NewEmbed(core.ColorSuccess, "prize pledged", line), nil)
 
-	if err := p.audit.Record(ctx, c.GuildID, actorID(i), "contest.prize_approved", "", pr.Title); err != nil {
+	if err := p.audit.Record(ctx, c.GuildID, actorID(ix), "contest.prize_approved", "", pr.Title); err != nil {
 		p.log.Error("contest: audit prize approval", "prize", prizeID, "err", err)
 	}
 }
 
-func (p *Plugin) rejectPledge(ctx context.Context, i *discordgo.InteractionCreate, c Contest, prizeID string) {
+func (p *Plugin) rejectPledge(ctx context.Context, ix *core.Ix, c Contest, prizeID string) {
 	pr, ok := p.pendingPrize(ctx, c, prizeID)
 	if !ok {
 		return
 	}
-	won, err := p.store.RejectPrize(ctx, prizeID, actorID(i), p.now())
+	won, err := p.store.RejectPrize(ctx, prizeID, actorID(ix), p.now())
 	if err != nil {
 		p.log.Error("contest: reject prize", "prize", prizeID, "err", err)
 		return
@@ -171,7 +172,7 @@ func (p *Plugin) rejectPledge(ctx context.Context, i *discordgo.InteractionCreat
 	}
 	// The title, never the code, which by now does not exist anyway:
 	// RejectPrize wiped the ciphertext in the same statement.
-	if err := p.audit.Record(ctx, c.GuildID, actorID(i), "contest.prize_rejected", "", pr.Title); err != nil {
+	if err := p.audit.Record(ctx, c.GuildID, actorID(ix), "contest.prize_rejected", "", pr.Title); err != nil {
 		p.log.Error("contest: audit prize rejection", "prize", prizeID, "err", err)
 	}
 }
@@ -222,8 +223,8 @@ func (p *Plugin) tellDonorRejected(c Contest, pr Prize) error {
 
 // reviewDone replaces the queue with a closing note and takes the buttons
 // away, so a stale Approve cannot be clicked on an empty queue.
-func (p *Plugin) reviewDone(s *discordgo.Session, i *discordgo.InteractionCreate, title, body string) {
-	if err := core.UpdateEmbedWithComponents(s, i, core.NewEmbed(core.ColorSuccess, title, body), nil); err != nil {
+func (p *Plugin) reviewDone(ix *core.Ix, title, body string) {
+	if err := ix.UpdateEmbedWithComponents(core.Embed(core.ColorSuccess, title, body), nil); err != nil {
 		p.log.Error("contest: close review", "err", err)
 	}
 }
@@ -231,7 +232,7 @@ func (p *Plugin) reviewDone(s *discordgo.Session, i *discordgo.InteractionCreate
 // reviewView renders one pledge out of the queue. at is clamped rather than
 // rejected, because it comes off a button on a message that may be older than
 // the queue it is describing.
-func reviewView(pending []Prize, at int) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+func reviewView(pending []Prize, at int) (discord.Embed, []discord.LayoutComponent) {
 	if at < 0 || at >= len(pending) {
 		at = 0
 	}
@@ -248,35 +249,35 @@ func reviewView(pending []Prize, at int) (*discordgo.MessageEmbed, []discordgo.M
 		}
 	}
 
-	fields := []*discordgo.MessageEmbedField{
+	fields := []discord.EmbedField{
 		{Name: "from", Value: core.TruncateEmbedField(donorLine(pr))},
 		{Name: "what", Value: core.TruncateEmbedField(pr.Title)},
 	}
 	if pr.Details != "" {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "details", Value: core.TruncateEmbedField(pr.Details),
 		})
 	}
 	fields = append(fields,
-		&discordgo.MessageEmbedField{Name: "code", Value: code, Inline: true},
-		&discordgo.MessageEmbedField{Name: "pledged", Value: discordTS(pr.CreatedAt.Unix()), Inline: true},
+		discord.EmbedField{Name: "code", Value: code, Inline: core.Inline()},
+		discord.EmbedField{Name: "pledged", Value: discordTS(pr.CreatedAt.Unix()), Inline: core.Inline()},
 	)
 
-	embed := core.NewEmbed(core.ColorPrimary,
+	embed := core.Embed(core.ColorPrimary,
 		"pledge review "+strconv.Itoa(at+1)+" of "+strconv.Itoa(len(pending))+" waiting",
 		"merlin can't show you the code, and won't. judge the shape, the title and who sent it.",
 		fields...)
 
-	row := discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-		discordgo.Button{Label: "Approve", Style: discordgo.SuccessButton, CustomID: reviewPrefix + "approve:" + pr.ID},
-		discordgo.Button{Label: "Reject", Style: discordgo.DangerButton, CustomID: reviewPrefix + "reject:" + pr.ID},
+	row := discord.ActionRowComponent{Components: []discord.InteractiveComponent{
+		discord.ButtonComponent{Label: "Approve", Style: discord.ButtonStyleSuccess, CustomID: reviewPrefix + "approve:" + pr.ID},
+		discord.ButtonComponent{Label: "Reject", Style: discord.ButtonStyleDanger, CustomID: reviewPrefix + "reject:" + pr.ID},
 	}}
 	if len(pending) > 1 {
-		row.Components = append(row.Components, discordgo.Button{
-			Label: "Skip", Style: discordgo.SecondaryButton, CustomID: reviewPrefix + "skip:" + pr.ID,
+		row.Components = append(row.Components, discord.ButtonComponent{
+			Label: "Skip", Style: discord.ButtonStyleSecondary, CustomID: reviewPrefix + "skip:" + pr.ID,
 		})
 	}
-	return embed, []discordgo.MessageComponent{row}
+	return embed, []discord.LayoutComponent{row}
 }
 
 // donorLine is who pledged, plus how old their account is.

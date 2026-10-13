@@ -29,8 +29,9 @@ type Ix struct {
 	Rest rest.Rest
 	// GuildID is "" outside a server; the router refuses those first.
 	GuildID string
-	// UserID is whoever the interaction is from.
-	UserID string
+	// UserID is whoever the interaction is from, and ChannelID the channel
+	// it came from.
+	UserID, ChannelID string
 }
 
 // errNoPayload is an Ix handler reached without the raw interaction it is
@@ -49,7 +50,7 @@ func NewIx(raw []byte, r rest.Rest) (*Ix, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core: decoding the interaction: %w", err)
 	}
-	ix := &Ix{I: i, Rest: r, UserID: i.User().ID.String()}
+	ix := &Ix{I: i, Rest: r, UserID: i.User().ID.String(), ChannelID: i.Channel().ID().String()}
 	if g := i.GuildID(); g != nil {
 		ix.GuildID = g.String()
 	}
