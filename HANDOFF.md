@@ -49,13 +49,16 @@ settled) will be cut from.
    member why.
 4. **Install permissions from the plugins.** Each plugin declares the
    channel permissions it uses as itself (`Perms`, as skua's modules do), and
-   merlin writes the union into the app's install settings at boot
-   (`core.SyncInstall`), which is what cygnet reads; `fleet.Perms` and the
-   hand-kept invite links in `docs/install.md` go. **Decide first:** skua asks
-   for everything its modules need, while merlin's three links keep a
-   server that never turns on aimod or rapsheet bans from granting delete,
-   ban and timeout. Keeping that means the install asks for the base set
-   and each plugin's `/help` page offers the link for what it is missing.
+   the app's install settings ask for the union of what the plugins switched
+   on right now need (`core.SyncInstall`): written at boot, and again when a
+   plugin is switched on or off in any server. That is least privilege over
+   time rather than per link: nobody grants delete, ban or timeout until
+   aimod or rapsheet bans are in use somewhere, and the grant goes when they
+   stop. cygnet reads the same settings, so `fleet.Perms` and the three
+   hand-kept invite links in `docs/install.md` go. A server installed before
+   a plugin needed more keeps its old grant until re-invited, so that
+   plugin's `/help` page names what is missing and links the current
+   install.
 5. **discordguard on disgo REST, with skua's rate limiter.** The guard
    already decides in one compare-and-swap; the calls behind it move to
    disgo, wrapped in skua's `ratelimit.Precise` (a 429 waits the body's
