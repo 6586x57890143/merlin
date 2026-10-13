@@ -177,43 +177,43 @@ func (p *Plugin) registerCommands() {
 	}
 
 	p.commands.RegisterCommand(p.Name(), cmd)
-	p.commands.Handle("aimod", "settings", viewSpec, p.handleSettings)
+	p.commands.HandleIx("aimod", "settings", viewSpec, p.handleSettings)
 	p.registerPanel()
 
-	p.commands.Handle("aimod", "status", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatus)
+	p.commands.HandleIx("aimod", "status", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatus)
 	// Same spec as the command it pages: a component interaction is its own
 	// fresh interaction and gets no exemption from authorization just because
 	// the message carrying the button was rendered for somebody allowed to
 	// see it. Same rule adminconfig's wizard follows.
-	p.commands.HandleComponent(p.Name(), statusPagePrefix, core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatusPage)
+	p.commands.HandleComponentIx(p.Name(), statusPagePrefix, core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleStatusPage)
 	// TierPublic: the code is printed under the repost for everybody in the
 	// channel, so answering it is the point. What a member is shown is cut
 	// down inside the handler; the moderator's view still needs actionRead.
-	p.commands.Handle("aimod", "why", core.PermSpec{Tier: core.TierPublic, Action: actionWhy}, p.handleWhy)
-	p.commands.Handle("aimod", "undo", core.PermSpec{Tier: core.TierMod, Action: actionUndo}, p.handleUndo)
+	p.commands.HandleIx("aimod", "why", core.PermSpec{Tier: core.TierPublic, Action: actionWhy}, p.handleWhy)
+	p.commands.HandleIx("aimod", "undo", core.PermSpec{Tier: core.TierMod, Action: actionUndo}, p.handleUndo)
 
 	// TierPublic: consenting to be moderated is not a privilege, and gating
 	// it behind a tier would mean the members most likely to want it (staff,
 	// who are the only ones it changes anything for) are also the only ones
 	// who could reach it, which is backwards.
-	p.commands.Handle("aimod", "moderate-me", core.PermSpec{Tier: core.TierPublic}, p.handleModerateMe)
+	p.commands.HandleIx("aimod", "moderate-me", core.PermSpec{Tier: core.TierPublic}, p.handleModerateMe)
 	// TierMod is the coarse gate; the real one is the operator check inside
 	// the handler, because no tier expresses "one named identity".
-	p.commands.Handle("aimod", "moderate-user", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModerateUser)
+	p.commands.HandleIx("aimod", "moderate-user", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModerateUser)
 
 	// TierPublic for the same reason as moderate-me, and the mirror image of
 	// it: withholding consent is not a privilege either. The gate that
 	// matters is the guild's own switch, checked inside the handler, and the
 	// rule that a member sets only themselves. See optout.go.
-	p.commands.Handle("aimod", "opt-out", core.PermSpec{Tier: core.TierPublic}, p.handleOptOut)
+	p.commands.HandleIx("aimod", "opt-out", core.PermSpec{Tier: core.TierPublic}, p.handleOptOut)
 
-	p.commands.Handle("aimod", "models/show", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModelsShow)
-	p.commands.Handle("aimod", "models/compare", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModelsCompare)
+	p.commands.HandleIx("aimod", "models/show", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModelsShow)
+	p.commands.HandleIx("aimod", "models/compare", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModelsCompare)
 
 	// Autocomplete on every option whose values come from bot state, per
 	// spec.MD section 4a. models/show is the no-typing discovery path that
 	// the same rule requires alongside it.
-	p.commands.Autocomplete("aimod", "models/compare", p.autocompleteModel)
+	p.commands.AutocompleteIx("aimod", "models/compare", p.autocompleteModel)
 
 	// actionPolicy rather than actionConfigure, matching sanctions: this
 	// changes how much of the server actually gets looked at, which is a
@@ -232,19 +232,19 @@ func (p *Plugin) registerCommands() {
 	// message was or was not touched. Changing it is not, because it changes
 	// what the filter does, which is the same line actionPolicy already draws
 	// around /aimod policy set.
-	p.commands.Handle("aimod", "calibrate/show", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleCalibrateShow)
+	p.commands.HandleIx("aimod", "calibrate/show", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleCalibrateShow)
 
 	// TierPublic, like moderate-me and for a related reason: the members
 	// being asked to chip in have to be able to see the address and whether
 	// it is needed. It shows two balances and a runway, and nothing about
 	// what is being moderated or whom.
-	p.commands.Handle("aimod", "funding/show", core.PermSpec{Tier: core.TierPublic}, p.handleFundingShow)
+	p.commands.HandleIx("aimod", "funding/show", core.PermSpec{Tier: core.TierPublic}, p.handleFundingShow)
 	// TierAdmin is the coarse floor; the real gate is ownerOrOperator inside
 	// the handler, because no tier expresses "the guild owner". This is where
 	// donated money goes, and a guild with five admins would otherwise have
 	// five accounts that can silently repoint it.
-	p.commands.Handle("aimod", "funding/set-address", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleFundingSetAddress)
+	p.commands.HandleIx("aimod", "funding/set-address", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleFundingSetAddress)
 	// No owner check on clear, deliberately: it can only ever stop donations,
 	// never redirect them, so it is a kill switch that fails safe.
-	p.commands.Handle("aimod", "funding/clear", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleFundingClear)
+	p.commands.HandleIx("aimod", "funding/clear", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleFundingClear)
 }

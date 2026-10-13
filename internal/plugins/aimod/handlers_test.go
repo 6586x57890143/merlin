@@ -2,16 +2,16 @@ package aimod
 
 import (
 	"context"
-	"io"
+	"encoding/json"
 	"log/slog"
-	"net/http"
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 )
 
 // The slash-command handlers, driven directly.
@@ -23,80 +23,74 @@ import (
 // without a key, an opt-in list only the bootstrap operator may add somebody
 // else to, a proposal re-validated against live config before it applies).
 //
-// What makes them testable is a session whose HTTP transport answers every
-// Discord call with an empty success (see discordStub). The handler runs to
-// completion, its replies go nowhere, and the assertions are about what it
-// did rather than what it said. No network, no Discord, no fixture server.
+// What makes them testable is an interaction decoded from Discord's JSON whose
+// REST client answers every call with an empty success (paneltest.Rest). The
+// handler runs to completion, its replies go nowhere, and the assertions are
+// about what it did rather than what it said. No network, no Discord, no
+// fixture server.
 
-// discordStub answers every Discord REST call with an empty success, without
-// touching the network.
-//
-// Success rather than failure, and that is load bearing: a handler that does
-// real work starts with core.DeferResponse and returns early if it fails, so
-// a transport that errored would make every deferring handler (undo, models
-// show, calibrate run-now) bail on line one and test nothing at all.
-type discordStub struct{}
-
-func (discordStub) RoundTrip(r *http.Request) (*http.Response, error) {
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(`{}`)),
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Request:    r,
-	}, nil
-}
-
-func testSession(t *testing.T) *discordgo.Session {
-	t.Helper()
-	// discordgo.New rather than a zero Session: the REST path locks a rate
-	// limit bucket before it builds a request, and a nil Ratelimiter panics.
-	s, err := discordgo.New("Bot test-token")
-	if err != nil {
-		t.Fatalf("discordgo.New: %v", err)
-	}
-	s.Client = &http.Client{Transport: discordStub{}}
-	return s
-}
-
-// interaction builds a command interaction for one leaf of /aimod.
+// interaction builds a command interaction for one leaf of /aimod, from
+// "actor" in guildID.
 //
 // path is the subcommand group and subcommand ("calibrate", "mode"), matching
 // how CommandRouter.Handle names them, so a test reads the same way the
-// registration does.
-func interaction(guildID, group, sub string, args ...*discordgo.ApplicationCommandInteractionDataOption) *discordgo.InteractionCreate {
-	leaf := &discordgo.ApplicationCommandInteractionDataOption{
-		Name:    sub,
-		Type:    discordgo.ApplicationCommandOptionSubCommand,
-		Options: args,
-	}
-	opts := []*discordgo.ApplicationCommandInteractionDataOption{leaf}
-	if group != "" {
-		opts = []*discordgo.ApplicationCommandInteractionDataOption{{
-			Name:    group,
-			Type:    discordgo.ApplicationCommandOptionSubCommandGroup,
-			Options: []*discordgo.ApplicationCommandInteractionDataOption{leaf},
-		}}
-	}
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID:      "i1",
-		Token:   "tok",
-		GuildID: guildID,
-		Type:    discordgo.InteractionApplicationCommand,
-		Member: &discordgo.Member{
-			User:  &discordgo.User{ID: "actor"},
-			Roles: []string{},
-		},
-		Data: discordgo.ApplicationCommandInteractionData{
-			Name:    "aimod",
-			Options: opts,
-		},
-	}}
+// registration does. It is Discord's JSON decoded by core.NewIx, as the
+// router decodes a real one.
+func interaction(guildID, group, sub string, args ...map[string]any) *core.Ix {
+	ix, _ := interactionWire(guildID, group, sub, args...)
+	return ix
 }
 
-func strOpt(name, value string) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{
-		Name: name, Type: discordgo.ApplicationCommandOptionString, Value: value,
+// interactionWire is interaction and the wire its answer lands on.
+func interactionWire(guildID, group, sub string, args ...map[string]any) (*core.Ix, *paneltest.Wire) {
+	opts := []any{}
+	for _, a := range args {
+		opts = append(opts, a)
 	}
+	leaf := map[string]any{"name": sub, "type": 1, "options": opts}
+	top := []any{leaf}
+	if group != "" {
+		top = []any{map[string]any{"name": group, "type": 2, "options": []any{leaf}}}
+	}
+	return decodeIx(guildID, 2, map[string]any{"id": "6", "name": "aimod", "type": 1, "options": top}, nil)
+}
+
+// decodeIx is Discord's JSON for an interaction of typ decoded by core.NewIx,
+// answered through a REST client that records instead of sending.
+//
+// These tests' fixtures predate disgo: the store and fakes key on "g1" and
+// "actor", which are not snowflakes. Ix.GuildID and Ix.UserID are merlin's
+// own string keys and every handler reads those, so after decoding a real
+// interaction they are pointed at the fixtures.
+func decodeIx(guildID string, typ int, data, message map[string]any) (*core.Ix, *paneltest.Wire) {
+	p := map[string]any{
+		"id": "1000", "application_id": "2", "type": typ, "token": "t", "version": 1,
+		"guild_id": paneltest.IxGuild,
+		"channel":  map[string]any{"id": "101", "type": 0},
+		"member": map[string]any{
+			"user":        map[string]any{"id": "11", "username": "actor"},
+			"permissions": "0", "roles": []any{}, "joined_at": "2026-01-01T00:00:00Z",
+		},
+		"data": data,
+	}
+	if message != nil {
+		p["message"] = message
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		panic(err)
+	}
+	r, wire := paneltest.Rest()
+	ix, err := core.NewIx(raw, r)
+	if err != nil {
+		panic(err)
+	}
+	ix.GuildID, ix.UserID = guildID, "actor"
+	return ix, wire
+}
+
+func strOpt(name, value string) map[string]any {
+	return map[string]any{"name": name, "type": 3, "value": value}
 }
 
 // The whole command tree, registered through this plugin's own Init and then
@@ -320,7 +314,7 @@ func TestCalibrateShowRendersEmptyAndPopulated(t *testing.T) {
 			store := newFakeStore()
 			store.setConfig(tc.cfg(enforcingConfig()))
 			p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-			p.handleCalibrateShow(context.Background(), testSession(t), interaction("g1", "calibrate", "show"))
+			p.handleCalibrateShow(context.Background(), interaction("g1", "calibrate", "show"))
 		})
 	}
 }
@@ -366,20 +360,16 @@ func TestModerateMeAddsAndRemovesTheCaller(t *testing.T) {
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	on := interaction("g1", "", "moderate-me", &discordgo.ApplicationCommandInteractionDataOption{
-		Name: "enabled", Type: discordgo.ApplicationCommandOptionBoolean, Value: true,
-	})
-	p.handleModerateMe(context.Background(), testSession(t), on)
+	on := interaction("g1", "", "moderate-me", boolOpt("enabled", true))
+	p.handleModerateMe(context.Background(), on)
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if len(cfg.SanctionOptInUserIDs) != 1 || cfg.SanctionOptInUserIDs[0] != "actor" {
 		t.Errorf("opt-in list = %v, want the caller added", cfg.SanctionOptInUserIDs)
 	}
 
-	off := interaction("g1", "", "moderate-me", &discordgo.ApplicationCommandInteractionDataOption{
-		Name: "enabled", Type: discordgo.ApplicationCommandOptionBoolean, Value: false,
-	})
-	p.handleModerateMe(context.Background(), testSession(t), off)
+	off := interaction("g1", "", "moderate-me", boolOpt("enabled", false))
+	p.handleModerateMe(context.Background(), off)
 
 	cfg, _ = store.Config(context.Background(), "g1")
 	if len(cfg.SanctionOptInUserIDs) != 0 {
@@ -397,13 +387,9 @@ func TestModerateUserIsBootstrapOnly(t *testing.T) {
 	p.privilege = fakePrivilege{bootstrapID: "somebody-else"}
 
 	i := interaction("g1", "", "moderate-user",
-		&discordgo.ApplicationCommandInteractionDataOption{
-			Name: "user", Type: discordgo.ApplicationCommandOptionUser, Value: "victim",
-		},
-		&discordgo.ApplicationCommandInteractionDataOption{
-			Name: "enabled", Type: discordgo.ApplicationCommandOptionBoolean, Value: true,
-		})
-	p.handleModerateUser(context.Background(), testSession(t), i)
+		map[string]any{"name": "user", "type": 6, "value": "victim"},
+		boolOpt("enabled", true))
+	p.handleModerateUser(context.Background(), i)
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if len(cfg.SanctionOptInUserIDs) != 0 {
@@ -411,7 +397,7 @@ func TestModerateUserIsBootstrapOnly(t *testing.T) {
 	}
 
 	p.privilege = fakePrivilege{bootstrapID: "actor"}
-	p.handleModerateUser(context.Background(), testSession(t), i)
+	p.handleModerateUser(context.Background(), i)
 	cfg, _ = store.Config(context.Background(), "g1")
 	if len(cfg.SanctionOptInUserIDs) != 1 {
 		t.Errorf("the bootstrap operator could not opt somebody in: %v", cfg.SanctionOptInUserIDs)
@@ -425,19 +411,7 @@ func TestWhyOnAnUntouchedMessage(t *testing.T) {
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handleWhy(context.Background(), testSession(t), interaction("g1", "", "why", strOpt("id", "m-unknown")))
-}
-
-// recordingStub is discordStub that keeps every request body, for the few
-// tests where what the handler said is the thing under test.
-type recordingStub struct{ bodies *[]string }
-
-func (r recordingStub) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Body != nil {
-		b, _ := io.ReadAll(req.Body)
-		*r.bodies = append(*r.bodies, string(b))
-	}
-	return discordStub{}.RoundTrip(req)
+	p.handleWhy(context.Background(), interaction("g1", "", "why", strOpt("id", "m-unknown")))
 }
 
 // /aimod why is public because the code is printed under the repost. What a
@@ -459,13 +433,10 @@ func TestWhyShowsAMemberOnlyThePublicHalf(t *testing.T) {
 	}
 
 	ask := func(actor, ref string) string {
-		var bodies []string
-		s := testSession(t)
-		s.Client = &http.Client{Transport: recordingStub{&bodies}}
-		i := interaction("g1", "", "why", strOpt("id", ref))
-		i.Member.User.ID = actor
-		p.handleWhy(ctx, s, i)
-		return strings.Join(bodies, "\n")
+		i, wire := interactionWire("g1", "", "why", strOpt("id", ref))
+		i.UserID = actor
+		p.handleWhy(ctx, i)
+		return wire.All()
 	}
 
 	got := ask("member", "ABCD2345")
@@ -489,13 +460,11 @@ func TestWhyShowsAMemberOnlyThePublicHalf(t *testing.T) {
 // wrong, so it has to render on a guild where everything is unset.
 func TestStatusRendersOnAnUnconfiguredGuild(t *testing.T) {
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	p.handleStatus(context.Background(), testSession(t), interaction("g1", "", "status"))
+	p.handleStatus(context.Background(), interaction("g1", "", "status"))
 }
 
-func boolOpt(name string, v bool) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{
-		Name: name, Type: discordgo.ApplicationCommandOptionBoolean, Value: v,
-	}
+func boolOpt(name string, v bool) map[string]any {
+	return map[string]any{"name": name, "type": 5, "value": v}
 }
 
 // The daily cap is the only thing between a misconfigured guild and an
@@ -574,8 +543,8 @@ func TestExemptTogglesAreIdempotent(t *testing.T) {
 	store.setConfig(enforcingConfig())
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	// Two panels both drawn before c9 was exempt, both adding it.
-	add := exemptClick(panelCfg+"exch", nil, "c9")
+	// Two panels both drawn before channel 9 was exempt, both adding it.
+	add := exemptClick(panelCfg+"exch", nil, "9")
 	p.setExempt(context.Background(), add, true)
 	p.setExempt(context.Background(), add, true)
 
@@ -584,13 +553,13 @@ func TestExemptTogglesAreIdempotent(t *testing.T) {
 		t.Errorf("exempt channels = %v, want one entry after two identical adds", cfg.ExemptChannelIDs)
 	}
 
-	p.setExempt(context.Background(), exemptClick(panelCfg+"exch", []string{"c9"}), true)
+	p.setExempt(context.Background(), exemptClick(panelCfg+"exch", []string{"9"}), true)
 	cfg, _ = store.Config(context.Background(), "g1")
 	if len(cfg.ExemptChannelIDs) != 0 {
 		t.Errorf("exempt channels = %v, want the channel removed", cfg.ExemptChannelIDs)
 	}
 
-	roleAdd := exemptClick(panelCfg+"exrole", nil, "r9")
+	roleAdd := exemptClick(panelCfg+"exrole", nil, "19")
 	p.setExempt(context.Background(), roleAdd, false)
 	p.setExempt(context.Background(), roleAdd, false)
 	cfg, _ = store.Config(context.Background(), "g1")
@@ -623,14 +592,13 @@ func TestReadOnlySurfacesRender(t *testing.T) {
 			store := newFakeStore()
 			store.setConfig(tc.cfg())
 			p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-			s := testSession(t)
 
 			for _, pg := range aimodPages {
 				p.panel(context.Background(), interaction("g1", "", "settings"), pg.key, "", "")
 			}
 			p.panel(context.Background(), interaction("g1", "", "settings"), "policy", string(BucketHateSpeech), "")
-			p.handleStatus(context.Background(), s, interaction("g1", "", "status"))
-			p.handleCalibrateShow(context.Background(), s, interaction("g1", "calibrate", "show"))
+			p.handleStatus(context.Background(), interaction("g1", "", "status"))
+			p.handleCalibrateShow(context.Background(), interaction("g1", "calibrate", "show"))
 		})
 	}
 }
@@ -652,10 +620,9 @@ func TestUndoDistinguishesItsFailureModes(t *testing.T) {
 	store.setConfig(enforcingConfig())
 	ops := newFakeOps()
 	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
-	s := testSession(t)
 
 	// Nothing recorded for this message.
-	p.handleUndo(ctx, s, interaction("g1", "", "undo", strOpt("message_id", "m-unknown")))
+	p.handleUndo(ctx, interaction("g1", "", "undo", strOpt("message_id", "m-unknown")))
 
 	// Recorded, but with no stored text: the guild keeps no evidence.
 	if _, err := store.RecordIncident(ctx, Incident{
@@ -664,7 +631,7 @@ func TestUndoDistinguishesItsFailureModes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordIncident: %v", err)
 	}
-	p.handleUndo(ctx, s, interaction("g1", "", "undo", strOpt("message_id", "m-noevidence")))
+	p.handleUndo(ctx, interaction("g1", "", "undo", strOpt("message_id", "m-noevidence")))
 
 	inc, err := store.IncidentByMessage(ctx, "g1", "m-noevidence")
 	if err != nil {
@@ -682,7 +649,7 @@ func TestUndoDistinguishesItsFailureModes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordIncident: %v", err)
 	}
-	p.handleUndo(ctx, s, interaction("g1", "", "undo", strOpt("message_id", "m-real")))
+	p.handleUndo(ctx, interaction("g1", "", "undo", strOpt("message_id", "m-real")))
 
 	if inc, err = store.IncidentByMessage(ctx, "g1", "m-real"); err != nil {
 		t.Fatalf("IncidentByMessage: %v", err)
@@ -729,15 +696,20 @@ func TestCachingStoreInvalidatesOnTheCalibrationSetters(t *testing.T) {
 
 // exemptClick is an admin submitting one of the exemption pickers, drawn
 // with drawn preselected, now holding picked.
-func exemptClick(customID string, drawn []string, picked ...string) *discordgo.InteractionCreate {
-	msg := paneltest.Received(core.Panel{Body: []discordgo.MessageComponent{core.Row(core.EntitySelect(discordgo.ChannelSelectMenu, customID, "", drawn, core.MaxSelectValues, false))}})
-	i := paneltest.Click("actor", customID, msg, picked...)
-	i.GuildID = "g1"
-	return i
+func exemptClick(customID string, drawn []string, picked ...string) *core.Ix {
+	pn := core.Panel{Parts: []discord.ContainerSubComponent{ui.Row(ui.ChannelSelectMany(customID, "", drawn, ui.MaxSelectValues, false))}}
+	values := []any{}
+	for _, v := range picked {
+		values = append(values, v)
+	}
+	ix, _ := decodeIx("g1", 3, map[string]any{"custom_id": customID, "component_type": 8, "values": values},
+		map[string]any{"id": "102", "channel_id": "101", "content": "", "flags": 64,
+			"author": map[string]any{"id": "2", "username": "merlin"}, "components": pn.Layout()})
+	return ix
 }
 
 // enabled reads the old command's boolean off an interaction built for it,
 // so the opt-out switch tests can keep building their interactions as before.
-func enabled(i *discordgo.InteractionCreate) bool {
-	return core.LeafArgs(i)["enabled"].BoolValue()
+func enabled(ix *core.Ix) bool {
+	return ix.Args()["enabled"].Bool()
 }

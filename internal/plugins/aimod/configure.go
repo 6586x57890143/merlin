@@ -9,10 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/secret"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // Admin surfaces are deliberately not routed through internal/voice. They
@@ -35,7 +34,7 @@ const budgetCeiling = 100.0
 // rotation exists to provide.
 const evidenceCeiling = 24 * 14
 
-func (p *Plugin) setKey(ctx context.Context, i *discordgo.InteractionCreate, key, provider string) outcome {
+func (p *Plugin) setKey(ctx context.Context, ix *core.Ix, key, provider string) outcome {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return failed("No key given", errors.New("paste an OrcaRouter or OpenRouter API key"))
@@ -62,13 +61,13 @@ func (p *Plugin) setKey(ctx context.Context, i *discordgo.InteractionCreate, key
 		// tell their operator exactly what to set.
 		return failed("Cannot store the key", err)
 	}
-	if err := p.store.SetAPIKey(ctx, i.GuildID, spec.name, sealed); err != nil {
+	if err := p.store.SetAPIKey(ctx, ix.GuildID, spec.name, sealed); err != nil {
 		return failed("Failed to store the key", err)
 	}
 
 	// The key itself never reaches the audit row or the log. maskKey's tail
 	// is enough to tell two keys apart, which is all an audit trail needs.
-	p.auditConfig(ctx, i, "aimod.key_set", "", spec.label+" "+secret.Mask(key))
+	p.auditConfig(ctx, ix, "aimod.key_set", "", spec.label+" "+secret.Mask(key))
 	return outcome{core.ColorSuccess, spec.label + " key stored",
 		fmt.Sprintf("Stored encrypted as `%s`. It is never shown again, and never written to the logs.\n\n"+
 			"%s\n\nGive this key its own spend limit with the provider as well: this bot's daily budget is a "+
@@ -90,11 +89,11 @@ func routingNote(spec *providerSpec) string {
 		"what is sent."
 }
 
-func (p *Plugin) setMode(ctx context.Context, i *discordgo.InteractionCreate, mode Mode) outcome {
+func (p *Plugin) setMode(ctx context.Context, ix *core.Ix, mode Mode) outcome {
 	if !slices.Contains(Modes, mode) {
 		return failed("Unknown mode", fmt.Errorf("%q is not a mode", mode))
 	}
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
@@ -103,10 +102,10 @@ func (p *Plugin) setMode(ctx context.Context, i *discordgo.InteractionCreate, mo
 			"Set one with the key button first. Without it only the built-in pattern checks run, " +
 				"and those catch phishing and leaked credentials, nothing that needs reading a sentence."}
 	}
-	if err := p.store.SetMode(ctx, i.GuildID, mode); err != nil {
+	if err := p.store.SetMode(ctx, ix.GuildID, mode); err != nil {
 		return failed("Failed to set the mode", err)
 	}
-	p.auditConfig(ctx, i, "aimod.mode_set", string(cfg.Mode), string(mode))
+	p.auditConfig(ctx, ix, "aimod.mode_set", string(cfg.Mode), string(mode))
 
 	switch mode {
 	case ModeEnforce:
@@ -120,29 +119,29 @@ func (p *Plugin) setMode(ctx context.Context, i *discordgo.InteractionCreate, mo
 	}
 }
 
-func (p *Plugin) setBudget(ctx context.Context, i *discordgo.InteractionCreate, usd float64) outcome {
+func (p *Plugin) setBudget(ctx context.Context, ix *core.Ix, usd float64) outcome {
 	if usd < 0 || usd > budgetCeiling {
 		return failed("Budget out of range",
 			fmt.Errorf("give a figure between 0 and %s per day", formatUSD(budgetCeiling)))
 	}
-	if err := p.store.SetBudget(ctx, i.GuildID, usd); err != nil {
+	if err := p.store.SetBudget(ctx, ix.GuildID, usd); err != nil {
 		return failed("Failed to set the budget", err)
 	}
-	p.auditConfig(ctx, i, "aimod.budget_set", "", formatUSD(usd))
+	p.auditConfig(ctx, ix, "aimod.budget_set", "", formatUSD(usd))
 	return outcome{core.ColorSuccess, "Budget set",
 		fmt.Sprintf("Up to %s per UTC day. Past that, scanning falls back to the free pattern checks until midnight "+
 			"and one note is posted to the audit log.\n\n`/aimod models show` shows what that buys at this "+
 			"server's actual traffic.", formatUSD(usd))}
 }
 
-func (p *Plugin) setEvidence(ctx context.Context, i *discordgo.InteractionCreate, hours int) outcome {
+func (p *Plugin) setEvidence(ctx context.Context, ix *core.Ix, hours int) outcome {
 	if hours < 0 || hours > evidenceCeiling {
 		return failed("Out of range", fmt.Errorf("give a number of hours between 0 and %d", evidenceCeiling))
 	}
-	if err := p.store.SetEvidenceHours(ctx, i.GuildID, hours); err != nil {
+	if err := p.store.SetEvidenceHours(ctx, ix.GuildID, hours); err != nil {
 		return failed("Failed to set evidence retention", err)
 	}
-	p.auditConfig(ctx, i, "aimod.evidence_set", "", fmt.Sprintf("%d hours", hours))
+	p.auditConfig(ctx, ix, "aimod.evidence_set", "", fmt.Sprintf("%d hours", hours))
 
 	if hours == 0 {
 		return outcome{core.ColorWarning, "Keeping no evidence",
@@ -158,14 +157,14 @@ func (p *Plugin) setEvidence(ctx context.Context, i *discordgo.InteractionCreate
 			"This applies to everything already stored as well, not just to new incidents.", hours)}
 }
 
-func (p *Plugin) setSanction(ctx context.Context, i *discordgo.InteractionCreate, action SanctionAction) outcome {
+func (p *Plugin) setSanction(ctx context.Context, ix *core.Ix, action SanctionAction) outcome {
 	if !slices.Contains(SanctionActions, action) {
 		return failed("Unknown action", fmt.Errorf("%q is not a sanction action", action))
 	}
-	if err := p.store.SetSanctionAction(ctx, i.GuildID, action); err != nil {
+	if err := p.store.SetSanctionAction(ctx, ix.GuildID, action); err != nil {
 		return failed("Failed to set the sanction response", err)
 	}
-	p.auditConfig(ctx, i, "aimod.sanction_action_set", "", string(action))
+	p.auditConfig(ctx, ix, "aimod.sanction_action_set", "", string(action))
 
 	// The ceiling is described first and separately, because it applies
 	// whatever this is set to. An admin reading only the branch below could
@@ -191,14 +190,14 @@ func (p *Plugin) setSanction(ctx context.Context, i *discordgo.InteractionCreate
 }
 
 // handleSetTriage switches the local pre-filter between off, shadow and on.
-func (p *Plugin) setTriage(ctx context.Context, i *discordgo.InteractionCreate, mode TriageMode) outcome {
+func (p *Plugin) setTriage(ctx context.Context, ix *core.Ix, mode TriageMode) outcome {
 	if !mode.Valid() {
 		return failed("Unknown mode", fmt.Errorf("%q is not a triage mode", mode))
 	}
-	if err := p.store.SetTriageMode(ctx, i.GuildID, mode); err != nil {
+	if err := p.store.SetTriageMode(ctx, ix.GuildID, mode); err != nil {
 		return failed("Failed to set the local pre-filter", err)
 	}
-	p.auditConfig(ctx, i, "aimod.triage_mode_set", "", string(mode))
+	p.auditConfig(ctx, ix, "aimod.triage_mode_set", "", string(mode))
 
 	// What it can never do is stated first and in every branch, because it is
 	// the fact that makes the rest safe to skim. An admin reading only the
@@ -224,7 +223,7 @@ func (p *Plugin) setTriage(ctx context.Context, i *discordgo.InteractionCreate, 
 	return outcome{core.ColorSuccess, "Local pre-filter set", body}
 }
 
-func (p *Plugin) setPolicy(ctx context.Context, i *discordgo.InteractionCreate, bucket Bucket, action Action) outcome {
+func (p *Plugin) setPolicy(ctx context.Context, ix *core.Ix, bucket Bucket, action Action) outcome {
 	if !known(bucket) {
 		return failed("Unknown policy area", fmt.Errorf("%q is not a policy area", bucket))
 	}
@@ -240,15 +239,15 @@ func (p *Plugin) setPolicy(ctx context.Context, i *discordgo.InteractionCreate, 
 				"Discord, so there is no setting that turns it off. Everything else here is yours to decide."}
 	}
 
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
 	before := EffectiveAction(cfg.BucketActions, bucket)
-	if err := p.store.SetBucketAction(ctx, i.GuildID, bucket, action); err != nil {
+	if err := p.store.SetBucketAction(ctx, ix.GuildID, bucket, action); err != nil {
 		return failed("Failed to set the policy", err)
 	}
-	p.auditConfig(ctx, i, "aimod.policy_set", string(bucket)+" "+string(before), string(bucket)+" "+string(action))
+	p.auditConfig(ctx, ix, "aimod.policy_set", string(bucket)+" "+string(before), string(bucket)+" "+string(action))
 
 	body := fmt.Sprintf("`%s` is now `%s`.", bucket, action)
 	if action.acts() && cfg.Mode != ModeEnforce {
@@ -258,24 +257,24 @@ func (p *Plugin) setPolicy(ctx context.Context, i *discordgo.InteractionCreate, 
 	return outcome{core.ColorSuccess, "Policy updated", body}
 }
 
-func (p *Plugin) handleWhy(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	ref := strings.TrimSpace(core.LeafArgs(i)["id"].Value.(string))
+func (p *Plugin) handleWhy(ctx context.Context, ix *core.Ix) {
+	ref := strings.TrimSpace(ix.Args()["id"].String())
 	// A member gets the code lookup and nothing else. A message ID would let
 	// them paste any message and learn whether the filter had quietly
 	// flagged it, and the full view below carries the original text, which
 	// for a rewrite is the very words that were taken out of the channel.
-	mod := p.privilege != nil && p.privilege.Authorize(i, core.PermSpec{Tier: core.TierMod, Action: actionRead}) == nil
-	inc, err := p.store.IncidentByCode(ctx, i.GuildID, strings.ToLower(ref))
+	mod := p.privilege != nil && p.privilege.AuthorizeIx(ix, core.PermSpec{Tier: core.TierMod, Action: actionRead}) == nil
+	inc, err := p.store.IncidentByCode(ctx, ix.GuildID, strings.ToLower(ref))
 	if errors.Is(err, ErrNoIncident) && mod {
-		inc, err = p.store.IncidentByMessage(ctx, i.GuildID, ref)
+		inc, err = p.store.IncidentByMessage(ctx, ix.GuildID, ref)
 	}
 	if err != nil {
 		if errors.Is(err, ErrNoIncident) {
-			core.RespondInfo(s, i, "Nothing recorded",
+			ix.RespondInfo("Nothing recorded",
 				"This bot has no record under that. If a message disappeared, something else removed it.")
 			return
 		}
-		core.RespondErr(s, i, "Failed to look it up", err)
+		ix.RespondErr("Failed to look it up", err)
 		return
 	}
 
@@ -283,81 +282,81 @@ func (p *Plugin) handleWhy(ctx context.Context, s *discordgo.Session, i *discord
 		// The reason is model-written and may quote what it objected to, so
 		// it goes through the same redaction as the repost did.
 		reason, _ := redactSlurs(orNone([]string{inc.Reason}))
-		fields := []*discordgo.MessageEmbedField{
-			{Name: "Policy", Value: policyLabel(inc.Bucket), Inline: true},
-			{Name: "When", Value: fmt.Sprintf("<t:%d:R>", inc.CreatedAt.Unix()), Inline: true},
+		fields := []discord.EmbedField{
+			{Name: "Policy", Value: policyLabel(inc.Bucket), Inline: core.Inline()},
+			{Name: "When", Value: fmt.Sprintf("<t:%d:R>", inc.CreatedAt.Unix()), Inline: core.Inline()},
 			{Name: "Reason", Value: core.TruncateEmbedField(reason)},
 		}
 		if inc.Undone {
-			fields = append(fields, &discordgo.MessageEmbedField{Name: "Status", Value: "reversed by a moderator"})
+			fields = append(fields, discord.EmbedField{Name: "Status", Value: "reversed by a moderator"})
 		}
-		if err := core.RespondEmbed(s, i, core.NewEmbed(core.ColorInfo, "Why that message was rewritten", "", fields...)); err != nil {
-			p.log.Error("aimod: respond why", "guild", i.GuildID, "err", err)
+		if err := ix.RespondEmbed(core.Embed(core.ColorInfo, "Why that message was rewritten", "", fields...)); err != nil {
+			p.log.Error("aimod: respond why", "guild", ix.GuildID, "err", err)
 		}
 		return
 	}
 
-	fields := []*discordgo.MessageEmbedField{
+	fields := []discord.EmbedField{
 		{Name: "Message ID", Value: "`" + inc.MessageID + "` (for `/aimod undo`)"},
-		{Name: "Policy", Value: string(inc.Bucket), Inline: true},
-		{Name: "Action", Value: string(inc.Action), Inline: true},
-		{Name: "Confidence", Value: fmt.Sprintf("%.0f%%", inc.Confidence*100), Inline: true},
-		{Name: "Author", Value: core.MentionUser(inc.AuthorID), Inline: true},
-		{Name: "Channel", Value: core.MentionChannel(inc.ChannelID), Inline: true},
-		{Name: "When", Value: fmt.Sprintf("<t:%d:R>", inc.CreatedAt.Unix()), Inline: true},
+		{Name: "Policy", Value: string(inc.Bucket), Inline: core.Inline()},
+		{Name: "Action", Value: string(inc.Action), Inline: core.Inline()},
+		{Name: "Confidence", Value: fmt.Sprintf("%.0f%%", inc.Confidence*100), Inline: core.Inline()},
+		{Name: "Author", Value: core.MentionUser(inc.AuthorID), Inline: core.Inline()},
+		{Name: "Channel", Value: core.MentionChannel(inc.ChannelID), Inline: core.Inline()},
+		{Name: "When", Value: fmt.Sprintf("<t:%d:R>", inc.CreatedAt.Unix()), Inline: core.Inline()},
 		{Name: "Reason", Value: core.TruncateEmbedField(orNone([]string{inc.Reason}))},
 	}
 	if inc.Content != "" {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Original", Value: core.TruncateEmbedField(inc.Content)})
+		fields = append(fields, discord.EmbedField{Name: "Original", Value: core.TruncateEmbedField(inc.Content)})
 	} else {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "Original",
 			Value: "not stored, or the evidence window has passed. `/aimod undo` cannot restore it.",
 		})
 	}
 	if inc.Undone {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Status", Value: "already reversed with /aimod undo"})
+		fields = append(fields, discord.EmbedField{Name: "Status", Value: "already reversed with /aimod undo"})
 	}
 	// The member's standing, not just this message's. Sanctions are recorded
 	// under a synthetic message ID nobody would ever think to look up, so
 	// without this line the escalation ladder is invisible to the one person
 	// deciding whether it got the length right.
 	{
-		n := p.priors(ctx, i.GuildID, inc.AuthorID)
+		n := p.priors(ctx, ix.GuildID, inc.AuthorID)
 		prior := fmt.Sprintf("%d in the last 30 days", n)
 		if n > 1 {
 			prior += "\nTheir next one would be " + core.FormatDuration(sanctionFor(p.severityOf(inc.Bucket), n))
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "This member's record", Value: prior})
+		fields = append(fields, discord.EmbedField{Name: "This member's record", Value: prior})
 	}
 
-	if err := core.RespondEmbed(s, i, core.NewEmbed(core.ColorInfo, "Why that message was moderated", "", fields...)); err != nil {
-		p.log.Error("aimod: respond why", "guild", i.GuildID, "err", err)
+	if err := ix.RespondEmbed(core.Embed(core.ColorInfo, "Why that message was moderated", "", fields...)); err != nil {
+		p.log.Error("aimod: respond why", "guild", ix.GuildID, "err", err)
 	}
 }
 
-func (p *Plugin) handleUndo(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	messageID := strings.TrimSpace(core.LeafArgs(i)["message_id"].Value.(string))
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("aimod: defer undo", "guild", i.GuildID, "err", err)
+func (p *Plugin) handleUndo(ctx context.Context, ix *core.Ix) {
+	messageID := strings.TrimSpace(ix.Args()["message_id"].String())
+	if err := ix.Defer(); err != nil {
+		p.log.Error("aimod: defer undo", "guild", ix.GuildID, "err", err)
 		return
 	}
 
-	inc, err := p.store.IncidentByMessage(ctx, i.GuildID, messageID)
+	inc, err := p.store.IncidentByMessage(ctx, ix.GuildID, messageID)
 	if err != nil {
 		if errors.Is(err, ErrNoIncident) {
-			_ = core.FollowUpErr(s, i, "Nothing to undo", errors.New("this bot has not acted on that message"))
+			_ = ix.FollowUpErr("Nothing to undo", errors.New("this bot has not acted on that message"))
 			return
 		}
-		_ = core.FollowUpErr(s, i, "Failed to look it up", err)
+		_ = ix.FollowUpErr("Failed to look it up", err)
 		return
 	}
 	if inc.Undone {
-		_ = core.FollowUpErr(s, i, "Already undone", errors.New("that incident has already been reversed"))
+		_ = ix.FollowUpErr("Already undone", errors.New("that incident has already been reversed"))
 		return
 	}
-	if err := p.undo(ctx, i.GuildID, inc); err != nil {
-		_ = core.FollowUpErr(s, i, "Could not undo it", err)
+	if err := p.undo(ctx, ix.GuildID, inc); err != nil {
+		_ = ix.FollowUpErr("Could not undo it", err)
 		return
 	}
 	// The sanction that followed the removal is a separate row under
@@ -365,19 +364,19 @@ func (p *Plugin) handleUndo(ctx context.Context, s *discordgo.Session, i *discor
 	// message came back and the jail behind it went on counting as a prior
 	// against every future sentence. Reversing the offence reverses the
 	// record of its consequence too.
-	if sanc, err := p.store.IncidentByMessage(ctx, i.GuildID, messageID+":sanction"); err == nil && !sanc.Undone {
+	if sanc, err := p.store.IncidentByMessage(ctx, ix.GuildID, messageID+":sanction"); err == nil && !sanc.Undone {
 		if err := p.store.MarkUndone(ctx, sanc.ID); err != nil {
-			p.log.Error("aimod: mark sanction undone", "guild", i.GuildID, "incident", sanc.ID, "err", err)
+			p.log.Error("aimod: mark sanction undone", "guild", ix.GuildID, "incident", sanc.ID, "err", err)
 		}
 	} else if err != nil && !errors.Is(err, ErrNoIncident) {
-		p.log.Error("aimod: look up sanction for undo", "guild", i.GuildID, "message", messageID, "err", err)
+		p.log.Error("aimod: look up sanction for undo", "guild", ix.GuildID, "message", messageID, "err", err)
 	}
 	undoneBy := ""
-	if i.Member != nil && i.Member.User != nil {
-		undoneBy = i.Member.User.ID
+	if ix.Member() != nil {
+		undoneBy = ix.UserID
 	}
-	p.publishReversed(ctx, i.GuildID, inc.ID, undoneBy)
-	p.auditConfig(ctx, i, "aimod.undone", messageID, string(inc.Bucket)+" in "+core.MentionChannel(inc.ChannelID))
+	p.publishReversed(ctx, ix.GuildID, inc.ID, undoneBy)
+	p.auditConfig(ctx, ix, "aimod.undone", messageID, string(inc.Bucket)+" in "+core.MentionChannel(inc.ChannelID))
 
 	// The jail that followed the removal, if it was the only reason the
 	// member is jailed. A false positive that left somebody in jail until
@@ -386,11 +385,11 @@ func (p *Plugin) handleUndo(ctx context.Context, s *discordgo.Session, i *discor
 	// because a member with two removals this week was jailed for both.
 	released := ""
 	if p.jailer != nil {
-		if n, err := p.store.CountSanctions(ctx, i.GuildID, inc.AuthorID, p.now().Add(-repeatWindow)); err != nil {
-			p.log.Error("aimod: count sanctions after undo", "guild", i.GuildID, "err", err)
+		if n, err := p.store.CountSanctions(ctx, ix.GuildID, inc.AuthorID, p.now().Add(-repeatWindow)); err != nil {
+			p.log.Error("aimod: count sanctions after undo", "guild", ix.GuildID, "err", err)
 		} else if n == 0 {
-			if err := p.jailer.ReleaseAutomatic(ctx, i.GuildID, inc.AuthorID, "aimod undo: the message behind the jail was restored"); err != nil {
-				p.log.Warn("aimod: release jail after undo", "guild", i.GuildID, "user", inc.AuthorID, "err", err)
+			if err := p.jailer.ReleaseAutomatic(ctx, ix.GuildID, inc.AuthorID, "aimod undo: the message behind the jail was restored"); err != nil {
+				p.log.Warn("aimod: release jail after undo", "guild", ix.GuildID, "user", inc.AuthorID, "err", err)
 				released = "\n\nTheir jail could not be released automatically; `/roles release` will."
 			} else {
 				released = "\n\nIf they were jailed for this, that jail has been released."
@@ -400,23 +399,23 @@ func (p *Plugin) handleUndo(ctx context.Context, s *discordgo.Session, i *discor
 		}
 	}
 
-	if err := core.FollowUpOK(s, i, "Undone",
+	if err := ix.FollowUpOK("Undone",
 		fmt.Sprintf("Reposted %s's message in %s under their own name, and marked the incident reversed.\n\n"+
 			"Discord has no way to restore the original, so this is a repost rather than a true undelete."+released,
 			core.MentionUser(inc.AuthorID), core.MentionChannel(inc.ChannelID))); err != nil {
-		p.log.Error("aimod: respond undo", "guild", i.GuildID, "err", err)
+		p.log.Error("aimod: respond undo", "guild", ix.GuildID, "err", err)
 	}
 }
 
 // auditConfig records an admin-driven change, with the invoking member as
 // the actor. Distinct from Plugin.audit in enforce.go, which records
 // automated action against core.ActorSystem.
-func (p *Plugin) auditConfig(ctx context.Context, i *discordgo.InteractionCreate, action, oldValue, newValue string) {
+func (p *Plugin) auditConfig(ctx context.Context, ix *core.Ix, action, oldValue, newValue string) {
 	actorID := ""
-	if i.Member != nil && i.Member.User != nil {
-		actorID = i.Member.User.ID
+	if ix.Member() != nil {
+		actorID = ix.UserID
 	}
-	if err := p.auditWriter.Record(ctx, i.GuildID, actorID, action, oldValue, newValue); err != nil {
+	if err := p.auditWriter.Record(ctx, ix.GuildID, actorID, action, oldValue, newValue); err != nil {
 		p.log.Error("aimod: audit record failed", "action", action, "err", err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // Without a router to ask, nobody may change anything, so every control
@@ -16,12 +17,12 @@ func TestSettingsPanelDisablesWhatTheViewerCannotDo(t *testing.T) {
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 	for _, pg := range aimodPages {
 		pn := p.panel(context.Background(), interaction("g1", "", "settings"), pg.key, string(BucketHateSpeech), "")
-		for id, m := range paneltest.Selects(pn) {
-			if !strings.HasPrefix(id, panelView) && !m.Disabled {
+		for id, m := range paneltest.IxSelects(pn) {
+			if !strings.HasPrefix(id, panelView) && !disabled(m) {
 				t.Errorf("%s: %s is usable without permission", pg.key, id)
 			}
 		}
-		for id, b := range paneltest.Buttons(pn) {
+		for id, b := range paneltest.IxButtons(pn) {
 			if !strings.HasPrefix(id, panelView) && !b.Disabled {
 				t.Errorf("%s: %s is pressable without permission", pg.key, id)
 			}
@@ -41,8 +42,8 @@ func TestEverySettingsControlAnswers(t *testing.T) {
 		panelPol + "bucket:" + string(BucketHateSpeech) + ":" + string(ActionFlag), panelPol + "unword",
 		panelPol + "calmode", panelPol + "calapply", panelPol + "calclear", panelPol + "calnow", panelPol + "gone",
 	} {
-		s, wire := paneltest.Session()
-		p.handlePanelSet(context.Background(), s, paneltest.Click("actor", id, nil), id)
+		i, wire := decodeIx("g1", 3, map[string]any{"custom_id": id, "component_type": 2}, nil)
+		p.handlePanelSet(context.Background(), i, id)
 		if !wire.Answered() {
 			t.Errorf("%s left the interaction unanswered", id)
 		}
@@ -54,10 +55,12 @@ func TestEverySettingsControlAnswers(t *testing.T) {
 		formPol + "word":   {"word": "work", "replacement": "the mines", "noun": "yes"},
 		formPol + "huh":    {},
 	} {
-		s, wire := paneltest.Session()
-		i := paneltest.Submit("actor", id, fields)
-		i.GuildID = "g1"
-		p.handleForm(context.Background(), s, i, id)
+		rows := []any{}
+		for k, v := range fields {
+			rows = append(rows, map[string]any{"type": 1, "components": []any{map[string]any{"type": 4, "custom_id": k, "value": v}}})
+		}
+		i, wire := decodeIx("g1", 5, map[string]any{"custom_id": id, "components": rows}, nil)
+		p.handleForm(context.Background(), i, id)
 		if !wire.Answered() {
 			t.Errorf("%s left the interaction unanswered", id)
 		}
@@ -65,4 +68,18 @@ func TestEverySettingsControlAnswers(t *testing.T) {
 	if cfg, _ := store.Config(context.Background(), "g1"); cfg.DailyBudgetUSD != 5 || cfg.EvidenceHours != 48 {
 		t.Errorf("limits form saved budget %v evidence %v", cfg.DailyBudgetUSD, cfg.EvidenceHours)
 	}
+}
+
+func disabled(c discord.InteractiveComponent) bool {
+	switch m := c.(type) {
+	case discord.StringSelectMenuComponent:
+		return m.Disabled
+	case discord.UserSelectMenuComponent:
+		return m.Disabled
+	case discord.RoleSelectMenuComponent:
+		return m.Disabled
+	case discord.ChannelSelectMenuComponent:
+		return m.Disabled
+	}
+	return false
 }

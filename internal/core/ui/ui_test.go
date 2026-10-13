@@ -81,6 +81,7 @@ func TestEachBuilderMatchesItsDiscordgoTwin(t *testing.T) {
 		{"single string select", core.StringSelect("s", "pick", opts, false, true), StringSelect("s", "pick", newOpts, false, true)},
 		{"user select", core.EntitySelect(discordgo.UserSelectMenu, "u", "who", ids, 5, false), UserSelect("u", "who", ids, 5, false)},
 		{"role select", core.EntitySelect(discordgo.RoleSelectMenu, "r", "which", ids[:1], 1, false), RoleSelect("r", "which", ids[:1], 1, false)},
+		{"channel select, many", core.EntitySelect(discordgo.ChannelSelectMenu, "c", "which", ids, 25, true), ChannelSelectMany("c", "which", ids, 25, true)},
 		{"channel select", core.ChannelSelect("c", "where", "7", false, discordgo.ChannelTypeGuildText), ChannelSelect("c", "where", "7", false, discord.ChannelTypeGuildText)},
 		{"clearable", core.Clearable(core.ChannelSelect("c", "where", "", false)), Clearable(ChannelSelect("c", "where", "", false))},
 		{"pagination", core.PaginationRow("p:", 1, 3), PaginationRow("p:", 1, 3)},

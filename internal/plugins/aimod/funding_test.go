@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"math"
-	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -316,36 +312,6 @@ func TestReconcileFundingJobRegistersOnlyWhereThereIsAJar(t *testing.T) {
 	}
 }
 
-// capturingStub records every Discord request body, so a test can assert what
-// the handler actually put on the wire. The shared discordStub throws bodies
-// away, which is right for the handlers whose assertions are about stored
-// state rather than about what was said.
-type capturingStub struct{ bodies []string }
-
-func (c *capturingStub) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.Body != nil {
-		raw, _ := io.ReadAll(r.Body)
-		c.bodies = append(c.bodies, string(raw))
-	}
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader("{}")),
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Request:    r,
-	}, nil
-}
-
-func capturingSession(t *testing.T) (*discordgo.Session, *capturingStub) {
-	t.Helper()
-	s, err := discordgo.New("Bot test-token")
-	if err != nil {
-		t.Fatalf("discordgo.New: %v", err)
-	}
-	stub := &capturingStub{}
-	s.Client = &http.Client{Transport: stub}
-	return s, stub
-}
-
 // showTheJar renders /aimod funding against a fully populated jar and returns
 // everything that went to Discord.
 func showTheJar(t *testing.T) []string { return showTheJarAt(t, testWallet) }
@@ -374,12 +340,12 @@ func showTheJarWith(t *testing.T, address string, balances map[string]float64) [
 	})
 	p := fundedPlugin(t, store, 41.20)
 
-	s, stub := capturingSession(t)
-	p.handleFundingShow(context.Background(), s, interaction("g1", "funding", "show"))
-	if len(stub.bodies) == 0 {
+	i, wire := interactionWire("g1", "funding", "show")
+	p.handleFundingShow(context.Background(), i)
+	if len(wire.Bodies) == 0 {
 		t.Fatal("the handler sent nothing to Discord")
 	}
-	return stub.bodies
+	return wire.Bodies
 }
 
 // The tip jar is a fundraising surface, so it answers the channel rather than
@@ -448,8 +414,8 @@ func TestFundingSetAddressIsOwnerOrBootstrapOnly(t *testing.T) {
 		p.privilege = fakePrivilege{bootstrapID: "boss"}
 
 		i := interaction("g1", "funding", "set-address", strOpt("address", attackerWallet))
-		i.Member.User.ID = actorID
-		p.handleFundingSetAddress(context.Background(), testSession(t), i)
+		i.UserID = actorID
+		p.handleFundingSetAddress(context.Background(), i)
 
 		if got := getFunding(t, store, "g1").Address; got != testWallet {
 			t.Fatalf("%q repointed the tip jar to %s", actorID, got)
@@ -467,8 +433,8 @@ func TestFundingSetAddressIsOwnerOrBootstrapOnly(t *testing.T) {
 		p.privilege = fakePrivilege{bootstrapID: "boss"}
 
 		i := interaction("g1", "funding", "set-address", strOpt("address", attackerWallet))
-		i.Member.User.ID = actorID
-		p.handleFundingSetAddress(context.Background(), testSession(t), i)
+		i.UserID = actorID
+		p.handleFundingSetAddress(context.Background(), i)
 
 		f := getFunding(t, store, "g1")
 		if f.Address != attackerWallet {
@@ -495,8 +461,8 @@ func TestFundingSetAddressRefusesWhenOwnershipCannotBeConfirmed(t *testing.T) {
 	p.privilege = fakePrivilege{bootstrapID: "boss"}
 
 	i := interaction("g1", "funding", "set-address", strOpt("address", attackerWallet))
-	i.Member.User.ID = "owner"
-	p.handleFundingSetAddress(context.Background(), testSession(t), i)
+	i.UserID = "owner"
+	p.handleFundingSetAddress(context.Background(), i)
 
 	if got := getFunding(t, store, "g1").Address; got != testWallet {
 		t.Fatalf("address changed to %s while ownership was unconfirmable", got)
@@ -519,8 +485,8 @@ func TestFundingSetAddressLetsBootstrapThroughAnOutage(t *testing.T) {
 	p.privilege = fakePrivilege{bootstrapID: "boss"}
 
 	i := interaction("g1", "funding", "set-address", strOpt("address", attackerWallet))
-	i.Member.User.ID = "boss"
-	p.handleFundingSetAddress(context.Background(), testSession(t), i)
+	i.UserID = "boss"
+	p.handleFundingSetAddress(context.Background(), i)
 
 	if got := getFunding(t, store, "g1").Address; got != attackerWallet {
 		t.Fatalf("the bootstrap operator was blocked by an unrelated outage, address is %s", got)
@@ -537,8 +503,8 @@ func TestFundingSetAddressRejectsAMalformedAddressFromTheOwner(t *testing.T) {
 
 	for _, bad := range []string{"", "nonsense", testWallet + "ff", "0x" + strings.Repeat("g", 40)} {
 		i := interaction("g1", "funding", "set-address", strOpt("address", bad))
-		i.Member.User.ID = "owner"
-		p.handleFundingSetAddress(context.Background(), testSession(t), i)
+		i.UserID = "owner"
+		p.handleFundingSetAddress(context.Background(), i)
 
 		if got := getFunding(t, store, "g1").Address; got != testWallet {
 			t.Fatalf("a malformed address %q was stored as %s", bad, got)
@@ -558,8 +524,8 @@ func TestFundingClearIsOpenToAnyAdmin(t *testing.T) {
 	p.privilege = fakePrivilege{bootstrapID: "boss"}
 
 	i := interaction("g1", "funding", "clear")
-	i.Member.User.ID = "some-admin"
-	p.handleFundingClear(context.Background(), testSession(t), i)
+	i.UserID = "some-admin"
+	p.handleFundingClear(context.Background(), i)
 
 	if f := getFunding(t, store, "g1"); f.Configured() {
 		t.Fatalf("an admin could not clear the jar, it still points at %s", f.Address)

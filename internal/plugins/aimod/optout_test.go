@@ -199,7 +199,7 @@ func TestOptOutRefusedWhereTheGuildHasNotEnabledIt(t *testing.T) {
 	audit := &fakeAudit{}
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), audit)
 
-	p.handleOptOut(context.Background(), testSession(t), interaction("g1", "", "opt-out", boolOpt("enabled", true)))
+	p.handleOptOut(context.Background(), interaction("g1", "", "opt-out", boolOpt("enabled", true)))
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if len(cfg.OptOutUserIDs) != 0 {
@@ -218,7 +218,7 @@ func TestOptOutRemovalIsAllowedEvenWithTheSwitchOff(t *testing.T) {
 	store.setConfig(optOutConfig(false, "actor", "u2"))
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
-	p.handleOptOut(context.Background(), testSession(t), interaction("g1", "", "opt-out", boolOpt("enabled", false)))
+	p.handleOptOut(context.Background(), interaction("g1", "", "opt-out", boolOpt("enabled", false)))
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if got := strings.Join(cfg.OptOutUserIDs, ","); got != "u2" {
@@ -236,8 +236,8 @@ func TestOptOutSetsOnlyTheCaller(t *testing.T) {
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), audit)
 
 	i := interaction("g1", "", "opt-out", boolOpt("enabled", true))
-	i.Member.User.ID = "u9"
-	p.handleOptOut(context.Background(), testSession(t), i)
+	i.UserID = "u9"
+	p.handleOptOut(context.Background(), i)
 
 	cfg, _ := store.Config(context.Background(), "g1")
 	if got := strings.Join(cfg.OptOutUserIDs, ","); got != "u2,u9" {
@@ -263,7 +263,7 @@ func TestMemberOptOutSwitchIsOwnerOrBootstrapOnly(t *testing.T) {
 		p.privilege = fakePrivilege{bootstrapID: "boss"}
 
 		i := interaction("g1", "configure", "member-opt-out", boolOpt("enabled", true))
-		i.Member.User.ID = actorID
+		i.UserID = actorID
 		p.setMemberOptOut(context.Background(), i, enabled(i))
 
 		cfg, _ := store.Config(context.Background(), "g1")
@@ -280,7 +280,7 @@ func TestMemberOptOutSwitchIsOwnerOrBootstrapOnly(t *testing.T) {
 		p.privilege = fakePrivilege{bootstrapID: "boss"}
 
 		i := interaction("g1", "configure", "member-opt-out", boolOpt("enabled", true))
-		i.Member.User.ID = actorID
+		i.UserID = actorID
 		p.setMemberOptOut(context.Background(), i, enabled(i))
 
 		cfg, _ := store.Config(context.Background(), "g1")
@@ -300,7 +300,7 @@ func TestMemberOptOutSwitchFailsClosedOnAnUnreadableGuild(t *testing.T) {
 	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 
 	i := interaction("g1", "configure", "member-opt-out", boolOpt("enabled", true))
-	i.Member.User.ID = "owner"
+	i.UserID = "owner"
 	p.setMemberOptOut(context.Background(), i, enabled(i))
 
 	if cfg, _ := store.Config(context.Background(), "g1"); cfg.MemberOptOut {
@@ -316,7 +316,7 @@ func TestTurningTheSwitchOffKeepsTheList(t *testing.T) {
 	p := testPlugin(t, store, &fakeClassifier{}, newFakeOps(), &fakeAudit{})
 
 	i := interaction("g1", "configure", "member-opt-out", boolOpt("enabled", false))
-	i.Member.User.ID = "owner"
+	i.UserID = "owner"
 	p.setMemberOptOut(context.Background(), i, enabled(i))
 
 	cfg, _ := store.Config(context.Background(), "g1")

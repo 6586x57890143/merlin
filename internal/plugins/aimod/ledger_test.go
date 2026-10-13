@@ -100,7 +100,7 @@ func TestUndoReversesTheSanctionRowTooAndPublishes(t *testing.T) {
 		t.Fatalf("RecordIncident: %v", err)
 	}
 
-	p.handleUndo(ctx, testSession(t), interaction("g1", "", "undo", strOpt("message_id", "m1")))
+	p.handleUndo(ctx, interaction("g1", "", "undo", strOpt("message_id", "m1")))
 
 	sanc, err := store.IncidentByMessage(ctx, "g1", "m1:sanction")
 	if err != nil {
@@ -188,12 +188,11 @@ func TestUndoReleasesTheJailOnlyWhenNoOtherSanctionStands(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := testSession(t)
-	p.handleUndo(ctx, s, interaction("g1", "", "undo", strOpt("message_id", "m1")))
+	p.handleUndo(ctx, interaction("g1", "", "undo", strOpt("message_id", "m1")))
 	if len(jailer.released) != 0 {
 		t.Fatalf("released with another sanction standing: %v", jailer.released)
 	}
-	p.handleUndo(ctx, s, interaction("g1", "", "undo", strOpt("message_id", "m2")))
+	p.handleUndo(ctx, interaction("g1", "", "undo", strOpt("message_id", "m2")))
 	if len(jailer.released) != 1 || jailer.released[0] != "u1" {
 		t.Errorf("released = %v, want [u1] once the last sanction is undone", jailer.released)
 	}

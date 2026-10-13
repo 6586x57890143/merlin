@@ -88,6 +88,14 @@ func RoleSelect(customID, placeholder string, ids []string, max int, disabled bo
 		DefaultValues: defaults(discord.SelectMenuDefaultValueTypeRole, ids)}
 }
 
+// ChannelSelectMany is EntitySelect for channels: up to max of them, ids
+// preselected.
+func ChannelSelectMany(customID, placeholder string, ids []string, max int, disabled bool) discord.ChannelSelectMenuComponent {
+	lo, hi := picks(max)
+	return discord.ChannelSelectMenuComponent{CustomID: customID, Placeholder: placeholder, MinValues: lo, MaxValues: hi, Disabled: disabled,
+		DefaultValues: defaults(discord.SelectMenuDefaultValueTypeChannel, ids)}
+}
+
 // ChannelSelect is one channel of the given types, current preselected.
 func ChannelSelect(customID, placeholder, current string, disabled bool, types ...discord.ChannelType) discord.ChannelSelectMenuComponent {
 	lo, hi := picks(1)

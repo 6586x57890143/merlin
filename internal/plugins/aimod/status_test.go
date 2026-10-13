@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -168,7 +168,7 @@ func TestRenderStatusPageClampsOutOfRange(t *testing.T) {
 
 	for _, page := range []int{-5, -1, len(pages), 999} {
 		embed, _ := renderStatusPage(pages, color, page)
-		if embed == nil || embed.Title == "" {
+		if embed.Title == "" {
 			t.Fatalf("page %d rendered nothing", page)
 		}
 	}
@@ -199,37 +199,36 @@ func TestPaginationButtonsCoverEveryPage(t *testing.T) {
 	}
 }
 
-func buttonByLabel(t *testing.T, components []discordgo.MessageComponent, label string) discordgo.Button {
+func buttonByLabel(t *testing.T, components []discord.LayoutComponent, label string) discord.ButtonComponent {
 	t.Helper()
 	for _, row := range components {
-		ar, ok := row.(discordgo.ActionsRow)
+		ar, ok := row.(discord.ActionRowComponent)
 		if !ok {
 			continue
 		}
 		for _, c := range ar.Components {
-			if b, ok := c.(discordgo.Button); ok && b.Label == label {
+			if b, ok := c.(discord.ButtonComponent); ok && b.Label == label {
 				return b
 			}
 		}
 	}
 	t.Fatalf("no %q button in %#v", label, components)
-	return discordgo.Button{}
+	return discord.ButtonComponent{}
 }
 
 // The handler end to end, over the stub transport: it has to defer, build and
 // answer without panicking on a guild that has configured nothing at all.
 func TestStatusHandlerAnswersAnEmptyGuild(t *testing.T) {
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	p.handleStatus(context.Background(), testSession(t), interaction("g1", "", "status"))
+	p.handleStatus(context.Background(), interaction("g1", "", "status"))
 }
 
 // And the click path, including a CustomID that will not parse: page 0 rather
 // than an error, since the worst outcome is somebody seeing the overview.
 func TestStatusPageClickSurvivesAJunkCustomID(t *testing.T) {
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps(), &fakeAudit{})
-	i := interaction("g1", "", "status")
-	i.Type = discordgo.InteractionMessageComponent
+	i, _ := decodeIx("g1", 3, map[string]any{"custom_id": statusPagePrefix + "banana", "component_type": 2}, nil)
 
-	p.handleStatusPage(context.Background(), testSession(t), i, statusPagePrefix+"banana")
-	p.handleStatusPage(context.Background(), testSession(t), i, core.PaginationCustomID(statusPagePrefix, 2))
+	p.handleStatusPage(context.Background(), i, statusPagePrefix+"banana")
+	p.handleStatusPage(context.Background(), i, core.PaginationCustomID(statusPagePrefix, 2))
 }

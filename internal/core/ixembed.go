@@ -130,3 +130,9 @@ func PluginOptionEmoji(plugin string) *discord.ComponentEmoji {
 	}
 	return &discord.ComponentEmoji{ID: id, Name: r.name}
 }
+
+// Inline is an embed field's Inline, which disgo takes as a pointer.
+func Inline() *bool {
+	t := true
+	return &t
+}
