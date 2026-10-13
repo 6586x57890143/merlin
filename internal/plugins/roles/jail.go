@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -34,14 +35,14 @@ var jailUserOptionNames = []string{"user", "user2", "user3", "user4", "user5"}
 // collectJailUserIDs reads the filled-in member slots, in order, without
 // duplicates: picking the same person in two slots is a slip, and letting it
 // through would report them as "already jailed" by their own first slot.
-func collectJailUserIDs(opts map[string]*discordgo.ApplicationCommandInteractionDataOption) []string {
+func collectJailUserIDs(opts map[string]discord.SlashCommandOption) []string {
 	var ids []string
 	for _, name := range jailUserOptionNames {
 		opt, ok := opts[name]
 		if !ok {
 			continue
 		}
-		id, _ := opt.Value.(string)
+		id := opt.String()
 		if id == "" || slices.Contains(ids, id) {
 			continue
 		}
@@ -50,20 +51,20 @@ func collectJailUserIDs(opts map[string]*discordgo.ApplicationCommandInteraction
 	return ids
 }
 
-func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
+func (p *Plugin) handleJail(ctx context.Context, ix *core.Ix) {
+	opts := ix.Args()
 	userIDs := collectJailUserIDs(opts)
-	duration, err := parseSentence(opts["duration"].StringValue())
+	duration, err := parseSentence(opts["duration"].String())
 	if err != nil {
-		core.RespondErr(s, i, "Invalid duration", err)
+		ix.RespondErr("Invalid duration", err)
 		return
 	}
 	reason := ""
 	if v, ok := opts["reason"]; ok {
-		reason = v.StringValue()
+		reason = v.String()
 	}
 	if len(userIDs) == 0 {
-		core.RespondErr(s, i, "No members given", errors.New("pick at least one member to jail"))
+		ix.RespondErr("No members given", errors.New("pick at least one member to jail"))
 		return
 	}
 
@@ -72,13 +73,13 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 	// which in a large server runs well past Discord's 3-second response
 	// deadline. Several members only add to that. Every path below therefore
 	// answers with FollowUp*.
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("roles: defer jail response failed", "guild", i.GuildID, "err", err)
+	if err := ix.Defer(); err != nil {
+		p.log.Error("roles: defer jail response failed", "guild", ix.GuildID, "err", err)
 		return
 	}
 	fail := func(title string, err error) {
-		if ferr := core.FollowUpErr(s, i, title, err); ferr != nil {
-			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", ferr)
+		if ferr := ix.FollowUpErr(title, err); ferr != nil {
+			p.log.Error("roles: jail follow-up failed", "guild", ix.GuildID, "err", ferr)
 		}
 	}
 
@@ -86,24 +87,24 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 	// discordguard's per-call refusal: applyJail deliberately records the
 	// jail before stripping roles, so a refusal at the strip would leave a
 	// jail record for a member who was never actually jailed.
-	if p.dryRun(i.GuildID) {
-		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server: %s not jailed. Turn it off with `/config dryrun enabled:false`.",
+	if p.dryRun(ix.GuildID) {
+		if err := ix.FollowUpOK("Dry-run", fmt.Sprintf("Dry-run is enabled for this server: %s not jailed. Turn it off with `/config dryrun enabled:false`.",
 			mentionList(userIDs))); err != nil {
-			p.log.Error("roles: jail dry-run follow-up failed", "guild", i.GuildID, "err", err)
+			p.log.Error("roles: jail dry-run follow-up failed", "guild", ix.GuildID, "err", err)
 		}
 		return
 	}
 
-	targets, fetchFailed := p.resolveTargets(i.GuildID, userIDs)
+	targets, fetchFailed := p.resolveTargets(ix.GuildID, userIDs)
 
 	// Rank check before anything is created or written: jail is TierMod but
 	// strips roles, so without this a mod could use it to strip an admin's
 	// Administrator bit and with it their TierAdmin access to this bot.
-	allowed, res := p.partitionByRank(i.GuildID, i.Member, targets)
+	allowed, res := p.partitionByRank(ix.GuildID, ix.MemberGo(), targets)
 	res.failed = append(res.failed, fetchFailed...)
 
 	if len(allowed) > 0 {
-		jailRoleID, err := p.resolveJailRole(i.GuildID)
+		jailRoleID, err := p.resolveJailRole(ix.GuildID)
 		if err != nil {
 			fail("Failed to resolve jail role", err)
 			return
@@ -111,30 +112,30 @@ func (p *Plugin) handleJail(ctx context.Context, s *discordgo.Session, i *discor
 		// Ensure the bot can manage the configured marker role before attempting
 		// to jail otherwise the GuildMemberEdit will fail and leave the
 		// recorded snapshot inconsistent. Report as a failure to the actor.
-		if err := p.perms.CanManageRole(i.GuildID, jailRoleID); err != nil {
+		if err := p.perms.CanManageRole(ix.GuildID, jailRoleID); err != nil {
 			fail("Cannot use configured jail role", err)
 			return
 		}
-		res = res.merge(p.jailMany(ctx, i.GuildID, jailRoleID, allowed, duration, actorID(i), reason))
+		res = res.merge(p.jailMany(ctx, ix.GuildID, jailRoleID, allowed, duration, actorID(ix), reason))
 	}
 
-	p.reportSentence(ctx, s, i, jailSentence, userIDs, duration, reason, res)
+	p.reportSentence(ctx, ix, jailSentence, userIDs, duration, reason, res)
 }
 
 // reportSentence is everything after the mutation, shared by /roles jail
 // and /roles vacation so the two report identically: the public
 // announcement, the audit entry, the member's DM, and the ephemeral
 // follow-up to the actor. sn is which sentence was handed out.
-func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, sn sentence, userIDs []string, duration time.Duration, reason string, res bulkJailResult) {
+func (p *Plugin) reportSentence(ctx context.Context, ix *core.Ix, sn sentence, userIDs []string, duration time.Duration, reason string, res bulkJailResult) {
 	// Public spectacle, not the ephemeral command response: DeferResponse
 	// sets the ephemeral flag on the placeholder it replaces, so
 	// FollowUpOK/FollowUpErr below are only ever visible to the actor. This
 	// is the one place a jail is actually announced to the channel it was
 	// run in, covering both the single and bulk case the same way.
-	p.announceJail(ctx, i.GuildID, i.ChannelID, res.jailed, duration, reason, sn)
+	p.announceJail(ctx, ix.GuildID, ix.ChannelID, res.jailed, duration, reason, sn)
 	// A transfer is announced as one, whichever command did it: the people
 	// in the channel were told where this member went last time.
-	p.announceMoved(ctx, i.GuildID, i.ChannelID, res.transferred, p.releaseAtFor(duration), sn)
+	p.announceMoved(ctx, ix.GuildID, ix.ChannelID, res.transferred, p.releaseAtFor(duration), sn)
 
 	// One member keeps the precise, actionable wording it always had, and its
 	// original roles.jail audit action, so existing audit history stays one
@@ -144,9 +145,9 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 	// behaviour.
 	if len(userIDs) == 1 {
 		if len(res.jailed) == 1 {
-			if err := p.audit.Record(ctx, i.GuildID, actorID(i), sn.audit, "",
+			if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), sn.audit, "",
 				fmt.Sprintf("user=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), sentenceLength(duration), reason)); err != nil {
-				p.log.Error("roles: audit jail failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
+				p.log.Error("roles: audit jail failed", "guild", ix.GuildID, "user", userIDs[0], "err", err)
 			}
 			// Only the individually-targeted path notifies. A jail is
 			// otherwise experienced as access silently vanishing, which is
@@ -159,7 +160,7 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 			// the raid, at the exact moment the releases that undo a
 			// mistake need that budget more. Same reasoning as the cap on
 			// batch size: reversibility beats completeness.
-			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.releaseAtFor(duration), reason, sn)
+			p.notifyJailed(ctx, ix.GuildID, userIDs[0], p.releaseAtFor(duration), reason, sn)
 		}
 		// Sentenced in absentia: its own action, for the same reason a
 		// re-sentence is. Nobody was stripped of anything, and a reader
@@ -169,9 +170,9 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 		// announcing it would be telling the room about somebody who cannot
 		// read it and has not arrived.
 		if len(res.pending) == 1 {
-			if err := p.audit.Record(ctx, i.GuildID, actorID(i), sn.auditPending, "",
+			if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), sn.auditPending, "",
 				fmt.Sprintf("user=%s duration=%s reason=%q not in the server; applied on arrival", core.MentionUser(userIDs[0]), sentenceLength(duration), reason)); err != nil {
-				p.log.Error("roles: audit pending jail failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
+				p.log.Error("roles: audit pending jail failed", "guild", ix.GuildID, "user", userIDs[0], "err", err)
 			}
 		}
 		// A moved sentence is its own audit action rather than a second
@@ -180,30 +181,30 @@ func (p *Plugin) reportSentence(ctx context.Context, s *discordgo.Session, i *di
 		// one, because the thing it tells them (when they get out) is exactly
 		// what just changed.
 		if len(res.redated) == 1 {
-			if err := p.audit.Record(ctx, i.GuildID, actorID(i), sn.auditMoved, "",
+			if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), sn.auditMoved, "",
 				fmt.Sprintf("user=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), sentenceLength(duration), reason)); err != nil {
-				p.log.Error("roles: audit jail re-sentence failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
+				p.log.Error("roles: audit jail re-sentence failed", "guild", ix.GuildID, "user", userIDs[0], "err", err)
 			}
-			p.notifyJailed(ctx, i.GuildID, userIDs[0], p.releaseAtFor(duration), reason, sn)
+			p.notifyJailed(ctx, ix.GuildID, userIDs[0], p.releaseAtFor(duration), reason, sn)
 		}
 		// A transfer between the nest and the island is its own action too,
 		// and its own DM: the member is told where they are now, not merely
 		// when it ends.
 		if len(res.transferred) == 1 {
-			if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.transferred", "",
+			if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "roles.transferred", "",
 				fmt.Sprintf("user=%s to=%s duration=%s reason=%q", core.MentionUser(userIDs[0]), sn.name, sentenceLength(duration), reason)); err != nil {
-				p.log.Error("roles: audit transfer failed", "guild", i.GuildID, "user", userIDs[0], "err", err)
+				p.log.Error("roles: audit transfer failed", "guild", ix.GuildID, "user", userIDs[0], "err", err)
 			}
-			p.notifyMoved(ctx, i.GuildID, userIDs[0], p.releaseAtFor(duration), sn, reason)
+			p.notifyMoved(ctx, ix.GuildID, userIDs[0], p.releaseAtFor(duration), sn, reason)
 		}
-		p.respondSingleJail(s, i, userIDs[0], duration, res, sn)
+		p.respondSingleJail(ix, userIDs[0], duration, res, sn)
 		return
 	}
 
-	p.recordBulkAudit(ctx, i.GuildID, actorID(i), fmt.Sprintf("users=%d", len(userIDs)), duration, reason, res, sn)
+	p.recordBulkAudit(ctx, ix.GuildID, actorID(ix), fmt.Sprintf("users=%d", len(userIDs)), duration, reason, res, sn)
 	title := fmt.Sprintf("%s %d of %d member(s)", capitalize(sn.verb), len(res.jailed), len(userIDs))
-	if err := core.FollowUpOK(s, i, title, summarizeBulkJail(res, duration, sn)); err != nil {
-		p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+	if err := ix.FollowUpOK(title, summarizeBulkJail(res, duration, sn)); err != nil {
+		p.log.Error("roles: jail follow-up failed", "guild", ix.GuildID, "err", err)
 	}
 }
 
@@ -259,10 +260,10 @@ func capitalize(s string) string {
 
 // respondSingleJail renders a one-member outcome, preserving the wording (and
 // the audit action name) from before /roles jail could take several members.
-func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.InteractionCreate, userID string, duration time.Duration, res bulkJailResult, sn sentence) {
+func (p *Plugin) respondSingleJail(ix *core.Ix, userID string, duration time.Duration, res bulkJailResult, sn sentence) {
 	fail := func(title string, err error) {
-		if ferr := core.FollowUpErr(s, i, title, err); ferr != nil {
-			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", ferr)
+		if ferr := ix.FollowUpErr(title, err); ferr != nil {
+			p.log.Error("roles: jail follow-up failed", "guild", ix.GuildID, "err", ferr)
 		}
 	}
 
@@ -278,9 +279,9 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	// Moved between the nest and the island. The snapshot restored at
 	// release is still the original one; only the marker and the end moved.
 	if len(res.transferred) > 0 {
-		if err := core.FollowUpOK(s, i, "Member moved",
+		if err := ix.FollowUpOK("Member moved",
 			fmt.Sprintf("<@%s> has been moved to %s. Their sentence now ends %s.", userID, sn.name, untilText(p.releaseAtFor(duration)))); err != nil {
-			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+			p.log.Error("roles: jail follow-up failed", "guild", ix.GuildID, "err", err)
 		}
 		return
 	}
@@ -290,9 +291,9 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	// "Member jailed" wording below: the roles were stripped by the earlier
 	// jail, and the snapshot restored at release is still that one's.
 	if len(res.redated) > 0 {
-		if err := core.FollowUpOK(s, i, "Sentence updated",
+		if err := ix.FollowUpOK("Sentence updated",
 			fmt.Sprintf("<@%s> was already %s. Their sentence now ends %s.", userID, sn.verb, untilText(p.releaseAtFor(duration)))); err != nil {
-			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+			p.log.Error("roles: jail follow-up failed", "guild", ix.GuildID, "err", err)
 		}
 		return
 	}
@@ -301,10 +302,10 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	// two look identical from the command's side and only one of them has
 	// actually taken anybody's roles away.
 	if len(res.pending) > 0 {
-		if err := core.FollowUpOK(s, i, "Sentence recorded", fmt.Sprintf(
+		if err := ix.FollowUpOK("Sentence recorded", fmt.Sprintf(
 			"<@%s> isn't in this server. merlin has checked the account exists and recorded the sentence: they'll be %s %s the moment they join, and nothing happens if they never do.\n"+
 				"Cancel it with `/roles release`.", userID, sn.verb, forLength(duration))); err != nil {
-			p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+			p.log.Error("roles: jail follow-up failed", "guild", ix.GuildID, "err", err)
 		}
 		return
 	}
@@ -313,8 +314,8 @@ func (p *Plugin) respondSingleJail(s *discordgo.Session, i *discordgo.Interactio
 	if res.unmanageable > 0 {
 		msg += " Some role(s) could not be stripped (positioned at/above merlin's own top role, or managed by an integration)."
 	}
-	if err := core.FollowUpOK(s, i, sn.title, msg); err != nil {
-		p.log.Error("roles: jail follow-up failed", "guild", i.GuildID, "err", err)
+	if err := ix.FollowUpOK(sn.title, msg); err != nil {
+		p.log.Error("roles: jail follow-up failed", "guild", ix.GuildID, "err", err)
 	}
 }
 
@@ -742,33 +743,33 @@ func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string,
 	}
 }
 
-func (p *Plugin) handleRelease(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := core.LeafArgs(i)["user"].Value.(string)
+func (p *Plugin) handleRelease(ctx context.Context, ix *core.Ix) {
+	userID := ix.Args()["user"].String()
 
-	rec, ok, err := p.store.GetJail(ctx, i.GuildID, userID)
+	rec, ok, err := p.store.GetJail(ctx, ix.GuildID, userID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to look up jail", err)
+		ix.RespondErr("Failed to look up jail", err)
 		return
 	}
 	if !ok {
-		core.RespondErr(s, i, "Not jailed", fmt.Errorf("<@%s> isn't currently jailed or on vacation", userID))
+		ix.RespondErr("Not jailed", fmt.Errorf("<@%s> isn't currently jailed or on vacation", userID))
 		return
 	}
-	sn := p.sentenceFor(i.GuildID, rec.JailRoleID)
+	sn := p.sentenceFor(ix.GuildID, rec.JailRoleID)
 
-	if err := p.releaseJail(ctx, i.GuildID, userID, rec, actorID(i)); err != nil {
+	if err := p.releaseJail(ctx, ix.GuildID, userID, rec, actorID(ix)); err != nil {
 		if errors.Is(err, errReleaseInProgress) {
-			core.RespondErr(s, i, "Release in progress", fmt.Errorf("<@%s> is being released right now; check `/roles list` in a moment", userID))
+			ix.RespondErr("Release in progress", fmt.Errorf("<@%s> is being released right now; check `/roles list` in a moment", userID))
 			return
 		}
-		core.RespondErr(s, i, "Failed to release", err)
+		ix.RespondErr("Failed to release", err)
 		return
 	}
 	// Only the manual command path announces publicly: it has an invoking
 	// channel to post into. Automatic release from the sweep does not, and
 	// stays DM-only (notifyReleased, inside releaseJail).
-	p.announceRelease(ctx, i.GuildID, i.ChannelID, []string{userID}, sn)
-	core.RespondOK(s, i, "Member released", fmt.Sprintf("<@%s> has been released from %s and their prior roles restored.", userID, sn.name))
+	p.announceRelease(ctx, ix.GuildID, ix.ChannelID, []string{userID}, sn)
+	ix.RespondOK("Member released", fmt.Sprintf("<@%s> has been released from %s and their prior roles restored.", userID, sn.name))
 }
 
 // releaseJail restores rec's snapshotted roles to userID and stops tracking

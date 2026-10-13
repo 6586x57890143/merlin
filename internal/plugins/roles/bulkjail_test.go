@@ -2,6 +2,7 @@ package roles
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 func bulkPlugin(ops *fakeOps, store *fakeStore, perms *fakePerms) *Plugin {
@@ -18,11 +20,11 @@ func bulkPlugin(ops *fakeOps, store *fakeStore, perms *fakePerms) *Plugin {
 // --- option collection ---
 
 func TestCollectJailUserIDsReadsEveryFilledSlotInOrder(t *testing.T) {
-	opts := map[string]*discordgo.ApplicationCommandInteractionDataOption{
-		"user":     {Name: "user", Value: "u1"},
-		"user3":    {Name: "user3", Value: "u3"},
-		"user5":    {Name: "user5", Value: "u5"},
-		"duration": {Name: "duration", Value: "1h"},
+	opts := map[string]discord.SlashCommandOption{
+		"user":     jsonOpt("user", "u1"),
+		"user3":    jsonOpt("user3", "u3"),
+		"user5":    jsonOpt("user5", "u5"),
+		"duration": jsonOpt("duration", "1h"),
 	}
 	got := collectJailUserIDs(opts)
 	if !slices.Equal(got, []string{"u1", "u3", "u5"}) {
@@ -34,10 +36,10 @@ func TestCollectJailUserIDsReadsEveryFilledSlotInOrder(t *testing.T) {
 // jail them from the first slot and then report them "already jailed" by
 // their own command, which reads as a failure.
 func TestCollectJailUserIDsDropsDuplicates(t *testing.T) {
-	opts := map[string]*discordgo.ApplicationCommandInteractionDataOption{
-		"user":  {Name: "user", Value: "u1"},
-		"user2": {Name: "user2", Value: "u1"},
-		"user3": {Name: "user3", Value: "u2"},
+	opts := map[string]discord.SlashCommandOption{
+		"user":  jsonOpt("user", "u1"),
+		"user2": jsonOpt("user2", "u1"),
+		"user3": jsonOpt("user3", "u2"),
 	}
 	got := collectJailUserIDs(opts)
 	if !slices.Equal(got, []string{"u1", "u2"}) {
@@ -46,9 +48,9 @@ func TestCollectJailUserIDsDropsDuplicates(t *testing.T) {
 }
 
 func TestCollectJailUserIDsIgnoresUnfilledSlots(t *testing.T) {
-	opts := map[string]*discordgo.ApplicationCommandInteractionDataOption{
-		"user":  {Name: "user", Value: "u1"},
-		"user2": {Name: "user2", Value: ""},
+	opts := map[string]discord.SlashCommandOption{
+		"user":  jsonOpt("user", "u1"),
+		"user2": jsonOpt("user2", ""),
 	}
 	if got := collectJailUserIDs(opts); !slices.Equal(got, []string{"u1"}) {
 		t.Errorf("collectJailUserIDs = %v, want [u1]", got)
@@ -384,4 +386,10 @@ func TestMergeCombinesEveryCategory(t *testing.T) {
 	if got.attempted() != 5 {
 		t.Errorf("attempted = %d, want 5", got.attempted())
 	}
+}
+
+// jsonOpt is a string option as disgo decodes one from Discord's JSON.
+func jsonOpt(name, value string) discord.SlashCommandOption {
+	raw, _ := json.Marshal(value)
+	return discord.SlashCommandOption{Name: name, Type: discord.ApplicationCommandOptionTypeString, Value: raw}
 }

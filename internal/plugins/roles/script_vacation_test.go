@@ -32,7 +32,7 @@ func vacationFixture() (*Plugin, *fakeOps, *fakeStore, *fakeAudit, *fakePerms, *
 	return p, ops, store, audit, perms, settings
 }
 
-func vacationInteraction(args ...*discordgo.ApplicationCommandInteractionDataOption) *discordgo.InteractionCreate {
+func vacationInteraction(args ...map[string]any) *core.Ix {
 	return rolesInteraction("", "vacation", args...)
 }
 
@@ -57,9 +57,9 @@ func sentTo(ops *fakeOps, channelID string) []string {
 func TestVacationRefusesWhileScriptOff(t *testing.T) {
 	p, ops, store, _, _, _ := vacationFixture()
 	p.scripts = newFakeScripts()
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), s, vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
 
 	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok || len(ops.memberEditCalls["u1"]) != 0 {
 		t.Fatal("a refusal must record nothing and edit nobody")
@@ -72,9 +72,9 @@ func TestVacationRefusesWhileScriptOff(t *testing.T) {
 func TestVacationRefusesWithoutAnIslandRole(t *testing.T) {
 	p, ops, store, _, _, settings := vacationFixture()
 	settings.vacationRole = map[string]string{}
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), s, vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
 
 	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok || len(ops.memberEditCalls["u1"]) != 0 {
 		t.Fatal("a refusal must record nothing and edit nobody")
@@ -91,9 +91,9 @@ func TestVacationRefusesWithoutAnIslandRole(t *testing.T) {
 func TestVacationClearsADeletedConfiguredRole(t *testing.T) {
 	p, ops, _, _, _, settings := vacationFixture()
 	ops.deleteRole("g1", island)
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), s, vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
 
 	if settings.vacationRole["g1"] != "" || !rt.said("no longer exists") {
 		t.Fatalf("expected the dead role cleared and named, got %q / %v", settings.vacationRole["g1"], rt.bodies)
@@ -111,9 +111,9 @@ func TestVacationIsAJailOnTheIsland(t *testing.T) {
 	bus := core.NewEventBus(testLogger())
 	rec.record(bus)
 	p.bus = bus
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), s, vacationInteraction(userArg("user", "u1"), strArg("duration", "2h"), strArg("reason", "sun")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "2h"), strArg("reason", "sun")))
 
 	row, ok, _ := store.GetJail(context.Background(), "g1", "u1")
 	if !ok || row.JailRoleID != island || !slices.Equal(row.SnapshotRoleIDs, []string{"role-a"}) {
@@ -151,9 +151,9 @@ func TestJailOnAVacationerMovesThemToJail(t *testing.T) {
 	ops.setMember("g1", "u1", []string{island})
 	end := fixedNow.Add(24 * time.Hour)
 	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	p.handleJail(context.Background(), s, rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "3h"), strArg("reason", "sand everywhere")))
+	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "3h"), strArg("reason", "sand everywhere")))
 
 	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
 	if row.JailRoleID != "jail-role" || !row.ReleaseAt.Equal(fixedNow.Add(3*time.Hour)) || !slices.Equal(row.SnapshotRoleIDs, []string{"role-a"}) {
@@ -190,9 +190,9 @@ func TestCommandTransferIsAnnouncedOnce(t *testing.T) {
 	ops.onMemberEdit = func(guildID, userID string, roles []string) {
 		p.HandleMemberUpdate(context.Background(), guildID, userID, roles)
 	}
-	s, _ := handlerSession(t)
+	handlerSession(t)
 
-	p.handleJail(context.Background(), s, rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "3h")))
+	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "3h")))
 
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.transferred"}) {
 		t.Fatalf("one move, one audit entry, got %v", got)
@@ -224,9 +224,9 @@ func TestVacationOnAJailedMemberParolesThemAndClearsTheHardening(t *testing.T) {
 	}
 	end := fixedNow.Add(time.Hour)
 	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), s, vacationInteraction(userArg("user", "u1"), strArg("duration", "2d")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "2d")))
 
 	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
 	if row.JailRoleID != island || !row.ReleaseAt.Equal(fixedNow.Add(48*time.Hour)) || !slices.Equal(row.SnapshotRoleIDs, []string{"role-a"}) {
@@ -257,9 +257,9 @@ func TestSameSentenceStillRedates(t *testing.T) {
 	ops.setMember("g1", "u1", []string{island})
 	end := fixedNow.Add(time.Hour)
 	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), s, vacationInteraction(userArg("user", "u1"), strArg("duration", "5h")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "5h")))
 
 	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
 	if row.JailRoleID != island || !row.ReleaseAt.Equal(fixedNow.Add(5*time.Hour)) {
@@ -376,9 +376,9 @@ func TestReleaseFromVacationSaysSo(t *testing.T) {
 	ops.setMember("g1", "u1", []string{island})
 	end := fixedNow.Add(time.Hour)
 	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	p.handleRelease(context.Background(), s, rolesInteraction("", "release", userArg("user", "u1")))
+	p.handleRelease(context.Background(), rolesInteraction("", "release", userArg("user", "u1")))
 
 	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok {
 		t.Fatal("expected the row gone")
@@ -436,9 +436,9 @@ func TestVacationRoleConfigureSyncsDenyByDefault(t *testing.T) {
 	ops.channel["office"] = &discordgo.Channel{ID: "office", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
 		PermissionOverwrites: []*discordgo.PermissionOverwrite{{ID: "r-new", Type: discordgo.PermissionOverwriteTypeRole, Allow: send}}}
 	p.vacationRoleID["g1"] = island // a stale cache from before the change
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	set(p, s, panelJail+"vacrole", nil, "r-new")
+	set(p, panelJail+"vacrole", nil, "r-new")
 
 	if settings.vacationRole["g1"] != "r-new" {
 		t.Fatalf("expected the role saved, got %q", settings.vacationRole["g1"])
@@ -463,7 +463,7 @@ func TestVacationRoleConfigureSyncsDenyByDefault(t *testing.T) {
 		t.Fatalf("audit: %v", got)
 	}
 
-	set(p, s, panelJail+"vacrole", nil)
+	set(p, panelJail+"vacrole", nil)
 	if settings.vacationRole["g1"] != "" || !rt.said("Vacation role cleared") {
 		t.Fatalf("expected the role cleared, got %q / %v", settings.vacationRole["g1"], rt.bodies)
 	}
@@ -471,8 +471,8 @@ func TestVacationRoleConfigureSyncsDenyByDefault(t *testing.T) {
 
 func TestVacationRoleConfigureWithNoOverwritesSaysSo(t *testing.T) {
 	p, _, _, _, _, _ := vacationFixture()
-	s, rt := handlerSession(t)
-	set(p, s, panelJail+"vacrole", nil, "r-new")
+	rt := handlerSession(t)
+	set(p, panelJail+"vacrole", nil, "r-new")
 	if !rt.said("no channel overwrites of its own yet") {
 		t.Fatalf("got %v", rt.bodies)
 	}
@@ -500,12 +500,12 @@ func TestMeltingPotHasAnIslandByDefault(t *testing.T) {
 // in play, and enabling the script needs nothing enforced.
 func TestScriptsListAndEnableShowTheIsland(t *testing.T) {
 	p, _, _, audit, _, _ := vacationFixture()
-	s, rt := handlerSession(t)
-	showPage(p, s, "scripts")
+	rt := handlerSession(t)
+	showPage(p, "scripts")
 	if !rt.said("`vacation` is **on**") || !rt.said("island role <@&"+island+">") {
 		t.Fatalf("got %v", rt.bodies)
 	}
-	set(p, s, panelScripts+"on:"+scriptVacation, nil)
+	set(p, panelScripts+"on:"+scriptVacation, nil)
 	if !rt.said("Script on: vacation") || !rt.said("island's role as the marker") {
 		t.Fatalf("got %v", rt.bodies)
 	}
@@ -519,8 +519,8 @@ func TestListSaysOnVacation(t *testing.T) {
 	p, _, store, _, _, _ := vacationFixture()
 	end := fixedNow.Add(time.Hour)
 	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, ReleaseAt: &end})
-	s, rt := handlerSession(t)
-	p.handleList(context.Background(), s, rolesInteraction("", "list", userArg("user", "u1")))
+	rt := handlerSession(t)
+	p.handleList(context.Background(), rolesInteraction("", "list", userArg("user", "u1")))
 	if !rt.said("On vacation") {
 		t.Fatalf("got %v", rt.bodies)
 	}
@@ -551,9 +551,9 @@ func TestVacationAllowlistIsOneWriteAndAuditQuiet(t *testing.T) {
 	view, send := int64(discordgo.PermissionViewChannel), int64(discordgo.PermissionSendMessages)
 	ops.channel["beach"] = &discordgo.Channel{ID: "beach", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
 	ops.channel["office"] = &discordgo.Channel{ID: "office", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	set(p, s, panelJail+"vacallow", nil, "beach")
+	set(p, panelJail+"vacallow", nil, "beach")
 	if !slices.Equal(settings.vacationAllowed["g1"], []string{"beach"}) || !rt.said("Channel allowed") {
 		t.Fatalf("expected the channel listed, got %v / %v", settings.vacationAllowed["g1"], rt.bodies)
 	}
@@ -582,7 +582,7 @@ func TestVacationAllowlistIsOneWriteAndAuditQuiet(t *testing.T) {
 		t.Fatalf("a sync that changes nothing writes nothing, got %d writes", ops.permSetCalls)
 	}
 
-	set(p, s, panelJail+"vacallow", []string{"beach"})
+	set(p, panelJail+"vacallow", []string{"beach"})
 	if ow := ops.overwrites[overwriteKey{"beach", island}]; ow.allow != send || ow.deny&view == 0 || len(settings.vacationAllowed["g1"]) != 0 {
 		t.Fatalf("expected the beach hidden again with only View moved, got %+v / %v", ow, settings.vacationAllowed["g1"])
 	}
@@ -598,16 +598,16 @@ func TestVacationSyncNeedsARole(t *testing.T) {
 	p, ops, _, _, _, settings := vacationFixture()
 	settings.vacationRole = map[string]string{}
 	ops.channel["beach"] = &discordgo.Channel{ID: "beach", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	set(p, s, panelJail+"vacallow", nil, "beach")
+	set(p, panelJail+"vacallow", nil, "beach")
 	if ops.permSetCalls != 0 || !rt.said("Channel allowed") {
 		t.Fatalf("no role, nothing to write; got %d writes / %v", ops.permSetCalls, rt.bodies)
 	}
 
 	settings.vacationRole["g1"] = island
 	p.scripts = newFakeScripts()
-	set(p, s, panelScripts+"on:"+scriptVacation, nil)
+	set(p, panelScripts+"on:"+scriptVacation, nil)
 	if ow, ok := ops.overwrites[overwriteKey{"beach", island}]; !ok || ow.allow&int64(discordgo.PermissionViewChannel) == 0 {
 		t.Fatalf("enabling the script should sync the island, got %+v ok=%v", ow, ok)
 	}
@@ -634,8 +634,8 @@ func TestMeltingPotBeachIsTheDefaultAllowlist(t *testing.T) {
 func TestListChannelsShowsTheVacationAllowlist(t *testing.T) {
 	p, _, _, _, _, settings := vacationFixture()
 	settings.vacationAllowed["g1"] = []string{"beach"}
-	s, rt := handlerSession(t)
-	showPage(p, s, "vacation")
+	rt := handlerSession(t)
+	showPage(p, "vacation")
 	if !rt.said("Visible on vacation") || !rt.said("Now: <#beach>") {
 		t.Fatalf("got %v", rt.bodies)
 	}

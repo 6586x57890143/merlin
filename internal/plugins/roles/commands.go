@@ -161,30 +161,30 @@ func (p *Plugin) registerCommands() {
 	}
 
 	p.commands.RegisterCommand(p.Name(), cmd)
-	p.commands.Handle("roles", "jail", core.PermSpec{Tier: core.TierMod, Action: actionJail}, p.handleJail)
-	p.commands.Handle("roles", "vacation", core.PermSpec{Tier: core.TierMod, Action: actionVacation}, p.handleVacation)
-	p.commands.Handle("roles", "jail-role", core.PermSpec{Tier: core.TierAdmin, Action: actionJailRole}, p.handleJailRole)
-	p.commands.Handle("roles", "release", core.PermSpec{Tier: core.TierMod, Action: actionJail}, p.handleRelease)
-	p.commands.Handle("roles", "grant", core.PermSpec{Tier: core.TierAdmin, Action: actionGrant}, p.handleGrant)
-	p.commands.Handle("roles", "revoke", core.PermSpec{Tier: core.TierAdmin, Action: actionGrant}, p.handleRevoke)
-	p.commands.Handle("roles", "list", core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleList)
-	p.commands.Handle("roles", "settings", viewSpec, p.handleSettings)
+	p.commands.HandleIx("roles", "jail", core.PermSpec{Tier: core.TierMod, Action: actionJail}, p.handleJail)
+	p.commands.HandleIx("roles", "vacation", core.PermSpec{Tier: core.TierMod, Action: actionVacation}, p.handleVacation)
+	p.commands.HandleIx("roles", "jail-role", core.PermSpec{Tier: core.TierAdmin, Action: actionJailRole}, p.handleJailRole)
+	p.commands.HandleIx("roles", "release", core.PermSpec{Tier: core.TierMod, Action: actionJail}, p.handleRelease)
+	p.commands.HandleIx("roles", "grant", core.PermSpec{Tier: core.TierAdmin, Action: actionGrant}, p.handleGrant)
+	p.commands.HandleIx("roles", "revoke", core.PermSpec{Tier: core.TierAdmin, Action: actionGrant}, p.handleRevoke)
+	p.commands.HandleIx("roles", "list", core.PermSpec{Tier: core.TierMod, Action: actionList}, p.handleList)
+	p.commands.HandleIx("roles", "settings", viewSpec, p.handleSettings)
 	p.registerPanel()
 }
 
-func actorID(i *discordgo.InteractionCreate) string {
-	if i.Member != nil && i.Member.User != nil {
-		return i.Member.User.ID
+func actorID(ix *core.Ix) string {
+	if ix.Member() != nil {
+		return ix.UserID
 	}
 	return ""
 }
 
-func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := core.LeafArgs(i)["user"].Value.(string)
+func (p *Plugin) handleList(ctx context.Context, ix *core.Ix) {
+	userID := ix.Args()["user"].String()
 
 	var lines []string
-	if rec, ok, err := p.store.GetJail(ctx, i.GuildID, userID); err != nil {
-		core.RespondErr(s, i, "Failed to look up jail", err)
+	if rec, ok, err := p.store.GetJail(ctx, ix.GuildID, userID); err != nil {
+		ix.RespondErr("Failed to look up jail", err)
 		return
 	} else if ok {
 		release := "indefinite"
@@ -192,7 +192,7 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 			release = rec.ReleaseAt.Format(time.RFC3339)
 		}
 		state := "Jailed"
-		if p.sentenceFor(i.GuildID, rec.JailRoleID) == vacationSentence {
+		if p.sentenceFor(ix.GuildID, rec.JailRoleID) == vacationSentence {
 			state = "On vacation"
 		}
 		// Whether a sentence is in *effect* is a fact about Discord, not
@@ -202,15 +202,15 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 		// they join, and a column saying "pending" would still say it.
 		// Anything other than a clean Unknown Member is left alone: a rate
 		// limit is not evidence that somebody is absent.
-		if _, err := p.ops(i.GuildID).GuildMember(i.GuildID, userID); core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
+		if _, err := p.ops(ix.GuildID).GuildMember(ix.GuildID, userID); core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
 			state += " (not in the server; applies on arrival)"
 		}
 		lines = append(lines, fmt.Sprintf("**%s:** released at %s", state, release))
 	}
 
-	grants, err := p.store.ListGrants(ctx, i.GuildID, userID)
+	grants, err := p.store.ListGrants(ctx, ix.GuildID, userID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to list grants", err)
+		ix.RespondErr("Failed to list grants", err)
 		return
 	}
 	slices.SortFunc(grants, func(a, b GrantRecord) int { return cmp.Compare(a.ID, b.ID) })
@@ -223,8 +223,8 @@ func (p *Plugin) handleList(ctx context.Context, s *discordgo.Session, i *discor
 	}
 
 	if len(lines) == 0 {
-		core.RespondInfo(s, i, "No active jail or grants", fmt.Sprintf("<@%s> has no active jail and no tracked role grants.", userID))
+		ix.RespondInfo("No active jail or grants", fmt.Sprintf("<@%s> has no active jail and no tracked role grants.", userID))
 		return
 	}
-	core.RespondInfo(s, i, fmt.Sprintf("Status for <@%s>", userID), strings.Join(lines, "\n"))
+	ix.RespondInfo(fmt.Sprintf("Status for <@%s>", userID), strings.Join(lines, "\n"))
 }

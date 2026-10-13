@@ -156,18 +156,18 @@ func TestJoinRoleConfigureAddAndRemove(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), cfg, audit, perms, newFakeScheduler())
 	ops.roles["g1"] = []*discordgo.Role{{ID: "r-media", Name: "media"}}
 	perms.unmanageable["r-high"] = true
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	set(p, s, panelJail+"join", nil, "r-high")
+	set(p, panelJail+"join", nil, "r-high")
 	if len(cfg.JoinRoleIDs("g1")) != 0 || !rt.said("merlin cannot give") {
 		t.Fatalf("a role out of reach was added: %v / %v", cfg.JoinRoleIDs("g1"), rt.bodies)
 	}
-	set(p, s, panelJail+"join", nil, "g1")
+	set(p, panelJail+"join", nil, "g1")
 	if len(cfg.JoinRoleIDs("g1")) != 0 {
 		t.Fatalf("@everyone was added: %v", cfg.JoinRoleIDs("g1"))
 	}
 
-	set(p, s, panelJail+"join", nil, "r-media")
+	set(p, panelJail+"join", nil, "r-media")
 	if !slices.Equal(cfg.JoinRoleIDs("g1"), []string{"r-media"}) || !rt.said("new members get <@&r-media>") {
 		t.Fatalf("add: %v / %v", cfg.JoinRoleIDs("g1"), rt.bodies)
 	}
@@ -175,7 +175,7 @@ func TestJoinRoleConfigureAddAndRemove(t *testing.T) {
 		t.Fatal("an added join role must be watched from then on")
 	}
 
-	set(p, s, panelJail+"join", []string{"r-media"})
+	set(p, panelJail+"join", []string{"r-media"})
 	if len(cfg.JoinRoleIDs("g1")) != 0 || !rt.said("no join roles configured") {
 		t.Fatalf("remove: %v / %v", cfg.JoinRoleIDs("g1"), rt.bodies)
 	}

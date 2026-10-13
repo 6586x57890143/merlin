@@ -76,6 +76,9 @@ type Plugin struct {
 	// and *discordgo.Session has no method to satisfy structurally here
 	// (State is a field, not an embedded promoter of its methods).
 	voiceChannelOf func(guildID, userID string) (channelID string, ok bool)
+	// session is read for one thing: the bot's own user ID, from its gateway
+	// state, so a role-wide jail never includes the bot (excludeSelfAndBot).
+	session *discordgo.Session
 	// scripts is the on/off switch for this plugin's scripts
 	// (script_eternalrole.go); nil means no scripts ever run. fetch is the
 	// bounded HTTP GET the eternal-role script captures a role icon with,
@@ -146,6 +149,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.sched = deps.Scheduler
 	p.commands = deps.Commands
 	p.bus = deps.Bus
+	p.session = deps.Session
 
 	p.registerCommands()
 	return nil
