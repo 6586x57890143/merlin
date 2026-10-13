@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -211,4 +212,12 @@ func (p *Plugin) config(ctx context.Context, guildID string) Config {
 		return defaultConfig(guildID)
 	}
 	return cfg
+}
+
+// Perms is what the rapsheet does as merlin wherever it is on, since /ban,
+// /kick and /timeout are there: ban, kick and time out, and read the audit
+// log to hear about the bans moderators place by hand.
+func (p *Plugin) Perms(string) discord.Permissions {
+	return discord.PermissionBanMembers | discord.PermissionKickMembers | discord.PermissionModerateMembers |
+		discord.PermissionViewAuditLog
 }

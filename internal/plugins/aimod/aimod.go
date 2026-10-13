@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/secret"
@@ -1138,4 +1139,19 @@ func (p *Plugin) noticeBudget(ctx context.Context, guildID string, state budgetS
 		detail+". Pattern-based checks still run; nothing is being sent to a model until the budget resets at midnight UTC."); err != nil {
 		p.log.Error("aimod: audit budget notice", "guild", guildID, "err", err)
 	}
+}
+
+// Perms is what aimod does as merlin where its mode is on: read messages
+// and the lines before a flagged one, delete one, repost a rewrite under
+// its author's name through a webhook, and the timeout the sanction ladder
+// falls back to. Nothing where it is off, which is most servers.
+func (p *Plugin) Perms(guildID string) discord.Permissions {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cfg, err := p.store.Config(ctx, guildID)
+	if err != nil || cfg.Mode == ModeOff {
+		return 0
+	}
+	return discord.PermissionViewChannel | discord.PermissionReadMessageHistory | discord.PermissionManageMessages |
+		discord.PermissionManageWebhooks | discord.PermissionModerateMembers
 }

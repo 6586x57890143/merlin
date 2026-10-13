@@ -3,54 +3,29 @@
 Invite link (a server admin has to click it):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=285212688
+https://discord.com/oauth2/authorize?client_id=1533094679560847460
 ```
 
-That asks for `Manage Channels`, `Manage Roles` and `Move Members`, and nothing
-else. Never `Administrator`. If the permission bits ever change, re-clicking the
-same link updates the bot's existing role rather than adding a second one.
+That is Discord's own link, and it asks for what merlin's install settings
+say, which merlin writes herself: what the plugins in use need now, across
+every server she is in. Never `Administrator`. A plugin asks only where it is
+switched on, and aimod only where its mode is on, so nobody is asked to let
+merlin delete messages or time people out until something needs it, and the
+ask drops again when nothing does. The settings follow within a minute of a
+change.
 
-`Move Members` is only there so `/roles jail` can boot someone out of a voice
-call at jail time. Permission overwrites don't apply to a voice session that's
-already in progress, so without it a jailed member who was mid-call would stay
-in it.
+| Plugin | Asks for | Why |
+|---|---|---|
+| rotation, contest, `/config` setup | `Manage Channels`, `Manage Roles` | create, move and delete channels, set their overwrites |
+| roles | the same, and `Move Members` | jail and vacation; overwrites don't apply to a voice call already running, so a jailed member mid-call is moved out |
+| statistics | `View Channel`, `Read Message History` | the backfill reads channel history |
+| aimod, where its mode is on | `View Channel`, `Read Message History`, `Manage Messages`, `Manage Webhooks`, `Moderate Members` | read a message and the lines before it, delete one, repost a rewrite under its author's name, and the timeout the sanction ladder falls back to |
+| rapsheet | `Ban Members`, `Kick Members`, `Moderate Members`, `View Audit Log` | `/ban`, `/kick` and `/timeout`, and hearing about bans placed by hand: without the audit log Discord sends nothing, and `/rapsheet status` says so |
 
-## If you're running AI moderation
-
-`/aimod` needs more than the link above grants, so it has its own:
-
-```
-https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=1100333786128
-```
-
-That's the same three, plus `View Channel` and `Read Message History` (to see
-messages at all, and to read the few lines of context before a flagged one),
-`Manage Messages` (to delete one), `Manage Webhooks` (to repost a rewritten
-message under its author's name), and `Moderate Members` (the timeout that the
-sanction ladder falls back to when jail can't be applied).
-
-Two links rather than one on purpose. The plugin is off until an admin turns it
-on, and a deployment that never will shouldn't be handing the bot the ability to
-delete messages and time people out. Use the narrow link unless you need this.
-
-## If you're running rapsheets with bans
-
-`/rapsheet` keeps the ledger with the link above. To let it also ban, kick and
-time people out, and to see the bans your moderators place by hand, it needs
-one more:
-
-```
-https://discord.com/api/oauth2/authorize?client_id=1533094679560847460&scope=bot%20applications.commands&permissions=1100333786262
-```
-
-That's everything in the AI moderation link plus `Ban Members`, `Kick Members`
-and `View Audit Log`. The last one is what lets merlin hear about a ban done
-from a member's context menu rather than through her, so the sheet doesn't
-lie by omission; without it Discord sends nothing and says nothing, and
-`/rapsheet status` will tell you.
-
-Three links, same reasoning. Use the narrowest one that covers what you've
-turned on.
+A server keeps what it granted when it was invited. When a plugin needs more
+than that, clicking the link again updates merlin's existing role rather than
+adding a second one. A server that doesn't want merlin banning switches
+rapsheet off on `/config`.
 
 ## Intents
 

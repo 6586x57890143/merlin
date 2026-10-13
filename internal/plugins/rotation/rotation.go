@@ -28,6 +28,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/settings"
 	"github.com/6586x57890143/merlin/internal/voice"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // sweepInterval is how often each guild's archive-deletion sweep runs.
@@ -358,4 +359,10 @@ func (p *Plugin) reconcile(ctx context.Context, guildID string) {
 			delete(p.registeredJobs, jobKey)
 		}
 	}
+}
+
+// Perms is what rotation does as merlin: create, move and delete channels,
+// and set the archive's overwrites.
+func (p *Plugin) Perms(string) discord.Permissions {
+	return discord.PermissionManageChannels | discord.PermissionManageRoles
 }

@@ -354,7 +354,31 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	if err := commands.Finalize(); err != nil {
 		return fmt.Errorf("finalize commands: %w", err)
 	}
-	hub.Describe(cfg.Discord.AppID, uint64(session.Identify.Intents), commands.Tiers())
+	// What merlin asks servers for: what the plugins in use need now,
+	// written to the app's install settings, which Discord's own invite
+	// link and cygnet both read. Recomputed a little after anything that
+	// could change it, since guilds arrive in a burst at boot; cygnet's
+	// manifest waits for the first.
+	permissioned := []core.Permissioned{rotationPlugin, rolesPlugin, aimodPlugin, contestPlugin, rapsheetPlugin, statisticsPlugin, adminconfigPlugin}
+	install := newInstaller(installSettle, func() {
+		var guilds []string
+		for g := range gw.Caches.Guilds() {
+			guilds = append(guilds, g.ID.String())
+		}
+		perms := core.Install(guilds, permissioned, settingsStore)
+		hub.Describe(cfg.Discord.AppID, uint64(core.GatewayIntents(granted)), uint64(perms), commands.Tiers())
+		app, err := ixRest.GetCurrentApplication()
+		if err != nil {
+			log.Warn("reading the install settings", "err", err)
+			return
+		}
+		if wrote, err := core.SyncInstall(ixRest, app, perms); err != nil {
+			log.Warn("updating the install settings", "err", err)
+		} else if wrote {
+			log.Info("install settings updated", "permissions", perms)
+		}
+	})
+	bus.Subscribe(core.EventConfigChanged, "install", func(context.Context, core.Event) { install.poke() })
 	// On ctx, so a shutdown says goaway to the hub before the gateway closes.
 	go hub.Run(ctx)
 	// This bot registers commands exclusively per-guild (RegisterGuild below,
@@ -383,6 +407,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// way, with no restart required for the latter.
 	var typed []bot.EventListener
 	guildUp := func(gc *discordgo.GuildCreate) {
+		defer install.poke()
 		guildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -673,6 +698,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		log.Warn("guild unavailable, keeping jobs registered", "guild", e.GuildID)
 	}))
 	typed = append(typed, bot.NewListenerFunc(func(e *events.GuildLeave) {
+		defer install.poke()
 		gd := struct{ ID string }{e.GuildID.String()}
 		dropped := sched.UnregisterGuild(gd.ID)
 		rotationPlugin.ForgetGuild(gd.ID)
