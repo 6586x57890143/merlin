@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/secret"
@@ -649,10 +650,12 @@ func TestRankSharesARankOnATieAndIsStable(t *testing.T) {
 // --- durations ------------------------------------------------------------
 
 func TestPhaseDurationsAreBounded(t *testing.T) {
-	arg := func(v string) map[string]*discordgo.ApplicationCommandInteractionDataOption {
-		return map[string]*discordgo.ApplicationCommandInteractionDataOption{
-			"submit-for": {Name: "submit-for", Type: discordgo.ApplicationCommandOptionString, Value: v},
-		}
+	str := func(name, v string) discord.SlashCommandOption {
+		raw, _ := json.Marshal(v)
+		return discord.SlashCommandOption{Name: name, Type: discord.ApplicationCommandOptionTypeString, Value: raw}
+	}
+	arg := func(v string) map[string]discord.SlashCommandOption {
+		return map[string]discord.SlashCommandOption{"submit-for": str("submit-for", v)}
 	}
 
 	if got, err := optDuration(nil, "submit-for", defaultSubmitFor, false); err != nil || got != defaultSubmitFor {
@@ -671,9 +674,7 @@ func TestPhaseDurationsAreBounded(t *testing.T) {
 		t.Error("accepted a duration that does not parse")
 	}
 
-	zero := map[string]*discordgo.ApplicationCommandInteractionDataOption{
-		"announce-for": {Name: "announce-for", Type: discordgo.ApplicationCommandOptionString, Value: "0"},
-	}
+	zero := map[string]discord.SlashCommandOption{"announce-for": str("announce-for", "0")}
 	if got, err := optDuration(zero, "announce-for", defaultAnnounceFor, true); err != nil || got != 0 {
 		t.Errorf("announce-for 0 = %v, %v, want zero and no error", got, err)
 	}

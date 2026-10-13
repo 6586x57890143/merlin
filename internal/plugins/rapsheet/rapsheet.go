@@ -62,12 +62,12 @@ type OpsProvider func(guildID string) DiscordOps
 
 // Ranker is the narrow view of *core.Permissions this plugin depends on:
 // the actor-versus-target rank check every restrictive action runs first,
-// the bootstrap carve-out, and Authorize for the one button whose real bar
+// the bootstrap carve-out, and AuthorizeIx for the one button whose real bar
 // is higher than the component's registered tier (applying a ban).
 type Ranker interface {
 	CanModerate(guildID string, actor *discordgo.Member, targetUserID string, targetRoleIDs []string) error
 	IsBootstrapAdmin(userID string) bool
-	Authorize(i *discordgo.InteractionCreate, spec core.PermSpec) error
+	AuthorizeIx(ix *core.Ix, spec core.PermSpec) error
 }
 
 // ModRoles is the one thing this plugin needs from internal/settings: who

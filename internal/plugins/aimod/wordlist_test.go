@@ -71,7 +71,7 @@ func TestWordListRewritesWithoutSanctionOrModel(t *testing.T) {
 	cfg.WordList = jokeList
 	store.setConfig(cfg)
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: cfg.GuildID, ChannelID: "c1",
 		Content: "anyone hiring? I need employment",
 		Author:  &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
@@ -96,7 +96,7 @@ func TestWordListRewritesWithoutSanctionOrModel(t *testing.T) {
 	other := sanctioningConfig()
 	other.GuildID = "g2"
 	store.setConfig(other)
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m2", GuildID: "g2", ChannelID: "c2",
 		Content: "back to work", Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
 	})
@@ -206,7 +206,7 @@ func TestSkippedListedWordIsLogged(t *testing.T) {
 	cfg.ExemptChannelIDs = []string{"c1"}
 	store.setConfig(cfg)
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: cfg.GuildID, ChannelID: "c1", Content: "work",
 		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
 	})

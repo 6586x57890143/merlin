@@ -67,8 +67,8 @@ func TestAJoinThatLooksLikeAReturnIsHintedAndPosted(t *testing.T) {
 	banned := snowflakeAt(base)
 	h.ops.addMember(banned)
 	h.ops.users[banned] = &discordgo.User{ID: banned, Username: "dana_k", GlobalName: "Dana", Avatar: "abc123"}
-	s, _ := stubSession()
-	h.p.handleBan(context.Background(), s, withResolved(banCmd(banned, strOpt("duration", "7d")), h.ops.users[banned]))
+	stubSession()
+	h.p.handleBan(context.Background(), withResolved(banCmd(banned, strOpt("duration", "7d")), h.ops.users[banned]))
 
 	joiner := &discordgo.Member{
 		User:     &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "danak2", Avatar: "abc123"},
@@ -85,8 +85,8 @@ func TestAJoinThatLooksLikeAReturnIsHintedAndPosted(t *testing.T) {
 		t.Fatalf("mod channel = %+v", posts)
 	}
 	// The sheet shows it from either side.
-	s2, rt := stubSession()
-	h.p.handleView(context.Background(), s2, interaction("view", userOpt("user", joiner.User.ID)))
+	rt := stubSession()
+	h.p.handleView(context.Background(), interaction("view", userOpt("user", joiner.User.ID)))
 	if !strings.Contains(rt.said(), "Possible alts") {
 		t.Errorf("got %s", rt.said())
 	}
@@ -125,8 +125,8 @@ func TestLinkingSharesTheScoreAndUnlinkingTakesItBack(t *testing.T) {
 	h := newHarness()
 	warnPts(h, "u1", 30)
 	warnPts(h, "u2", 30)
-	s, rt := stubSession()
-	h.p.handleLink(context.Background(), s, interaction("link", userOpt("user", "u2"), userOpt("other", "u1"), strOpt("reason", "admitted it")))
+	rt := stubSession()
+	h.p.handleLink(context.Background(), interaction("link", userOpt("user", "u2"), userOpt("other", "u1"), strOpt("reason", "admitted it")))
 	if !strings.Contains(rt.said(), "share one sheet") || !h.audit.has("rapsheet.linked") {
 		t.Errorf("said %s audit %v", rt.said(), h.audit.all())
 	}
@@ -137,30 +137,30 @@ func TestLinkingSharesTheScoreAndUnlinkingTakesItBack(t *testing.T) {
 	}
 	// A third account joins the same group.
 	warnPts(h, "u3", 10)
-	s2, _ := stubSession()
-	h.p.handleLink(context.Background(), s2, interaction("link", userOpt("user", "u3"), userOpt("other", "u2")))
+	stubSession()
+	h.p.handleLink(context.Background(), interaction("link", userOpt("user", "u3"), userOpt("other", "u2")))
 	if g, _ := h.store.Group(context.Background(), testGuild, "u1"); len(g) != 3 {
 		t.Errorf("group after a third link = %v", g)
 	}
-	s3, rt3 := stubSession()
-	h.p.handleView(context.Background(), s3, interaction("view", userOpt("user", "u1")))
+	rt3 := stubSession()
+	h.p.handleView(context.Background(), interaction("view", userOpt("user", "u1")))
 	if !strings.Contains(rt3.said(), "Linked accounts") {
 		t.Errorf("got %s", rt3.said())
 	}
 
-	s4, _ := stubSession()
-	h.p.handleUnlink(context.Background(), s4, interaction("unlink", userOpt("user", "u2")))
+	stubSession()
+	h.p.handleUnlink(context.Background(), interaction("unlink", userOpt("user", "u2")))
 	sh, _ = h.p.loadSheet(context.Background(), cfg, testGuild, "u2")
 	if sh.Score != 30 || len(sh.Group) != 1 {
 		t.Errorf("after unlink: score %v group %v", sh.Score, sh.Group)
 	}
-	s5, rt5 := stubSession()
-	h.p.handleUnlink(context.Background(), s5, interaction("unlink", userOpt("user", "u9")))
+	rt5 := stubSession()
+	h.p.handleUnlink(context.Background(), interaction("unlink", userOpt("user", "u9")))
 	if !strings.Contains(rt5.said(), "not linked") {
 		t.Errorf("got %s", rt5.said())
 	}
-	s6, rt6 := stubSession()
-	h.p.handleLink(context.Background(), s6, interaction("link", userOpt("user", "u1"), userOpt("other", "u1")))
+	rt6 := stubSession()
+	h.p.handleLink(context.Background(), interaction("link", userOpt("user", "u1"), userOpt("other", "u1")))
 	if !strings.Contains(rt6.said(), "same account") {
 		t.Errorf("got %s", rt6.said())
 	}
@@ -172,8 +172,8 @@ func TestTheAltNoticeButtonsLinkOrDismiss(t *testing.T) {
 	warnPts(h, "old", 10)
 
 	id := altDismissPrefix + "new:old"
-	s, rt := stubSession()
-	h.p.handleAltButton(context.Background(), s, componentClick(modID, id), id)
+	rt := stubSession()
+	h.p.handleAltButton(context.Background(), componentClick(modID, id), id)
 	if hints, _ := h.store.Hints(context.Background(), testGuild, "old"); len(hints) != 0 {
 		t.Error("dismiss left the hint")
 	}
@@ -183,8 +183,8 @@ func TestTheAltNoticeButtonsLinkOrDismiss(t *testing.T) {
 
 	_ = h.store.UpsertHint(context.Background(), AltHint{GuildID: testGuild, UserID: "new", CandidateID: "old", Signals: []string{"same avatar"}, Score: 3})
 	id = altLinkPrefix + "new:old"
-	s2, rt2 := stubSession()
-	h.p.handleAltButton(context.Background(), s2, componentClick(modID, id), id)
+	rt2 := stubSession()
+	h.p.handleAltButton(context.Background(), componentClick(modID, id), id)
 	if g, _ := h.store.Group(context.Background(), testGuild, "new"); len(g) != 2 {
 		t.Errorf("link button did not link: %v", g)
 	}
@@ -198,13 +198,13 @@ func TestTheAltNoticeButtonsLinkOrDismiss(t *testing.T) {
 
 func TestConfigureAltHintsRoundTrips(t *testing.T) {
 	h := newHarness()
-	s, _ := stubSession()
-	panelClick(h.p, s, panelSet+"alts:off")
+	stubSession()
+	panelClick(h.p, panelSet+"alts:off")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.AltHints {
 		t.Error("still on")
 	}
-	s2, _ := stubSession()
-	panelClick(h.p, s2, panelSet+"alts:on")
+	stubSession()
+	panelClick(h.p, panelSet+"alts:on")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); !cfg.AltHints {
 		t.Error("still off")
 	}

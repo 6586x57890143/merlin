@@ -69,8 +69,8 @@ func setup(t *testing.T) (*Plugin, *toggles, *audit) {
 			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "add", Description: "x"},
 		}},
 	}})
-	router.Handle("rotation", "list", core.PermSpec{Tier: core.TierMod, Action: "rotation.list"}, nil)
-	router.Handle("rotation", "configure/add", core.PermSpec{Tier: core.TierAdmin, Action: "rotation.x"}, nil)
+	router.HandleIx("rotation", "list", core.PermSpec{Tier: core.TierMod, Action: "rotation.list"}, nil)
+	router.HandleIx("rotation", "configure/add", core.PermSpec{Tier: core.TierAdmin, Action: "rotation.x"}, nil)
 	tg, au := &toggles{off: map[string]bool{"contest": true}}, &audit{}
 	var p *Plugin
 	p = New(func() []core.Plugin {

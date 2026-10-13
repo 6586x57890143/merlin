@@ -488,9 +488,9 @@ func TestAllowChannelWarnsWhenMembersCannotPost(t *testing.T) {
 		&discordgo.PermissionOverwrite{ID: "g1", Type: discordgo.PermissionOverwriteTypeRole, Deny: send})
 	ops.channel["appeals"] = lockedRoom("appeals", discordgo.ChannelTypeGuildText)
 	p.jailRoleID["g1"] = "jail-role"
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	set(p, s, panelJail+"allow", nil, "announce")
+	set(p, panelJail+"allow", nil, "announce")
 
 	ow := ops.overwrites[overwriteKey{"announce", "jail-role"}]
 	if ow.allow != view || ow.deny != restrictedBits|send {
@@ -504,7 +504,7 @@ func TestAllowChannelWarnsWhenMembersCannotPost(t *testing.T) {
 	}
 
 	// The appeals room is untouched by the cap: members can talk there.
-	set(p, s, panelJail+"allow", nil, "appeals")
+	set(p, panelJail+"allow", nil, "appeals")
 	if ow := ops.overwrites[overwriteKey{"appeals", "jail-role"}]; ow.allow != view|send {
 		t.Fatalf("expected view+send in the appeals room, got %+v", ow)
 	}
@@ -522,9 +522,9 @@ func TestAllowChannelWarnsWhenMembersCannotSee(t *testing.T) {
 	ops.channel["staff"] = lockedRoom("staff", discordgo.ChannelTypeGuildText,
 		&discordgo.PermissionOverwrite{ID: "g1", Type: discordgo.PermissionOverwriteTypeRole, Deny: view})
 	p.jailRoleID["g1"] = "jail-role"
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	set(p, s, panelJail+"allow", nil, "staff")
+	set(p, panelJail+"allow", nil, "staff")
 
 	if ow := ops.overwrites[overwriteKey{"staff", "jail-role"}]; ow.allow != 0 || ow.deny&view == 0 {
 		t.Fatalf("expected the room kept hidden, got %+v", ow)
@@ -552,9 +552,9 @@ func TestMemberRoleChangeResyncsBothMarkers(t *testing.T) {
 	ops.channel["locked"] = lockedRoom("locked", discordgo.ChannelTypeGuildText,
 		&discordgo.PermissionOverwrite{ID: "melted", Type: discordgo.PermissionOverwriteTypeRole, Deny: send})
 	p.jailRoleID["g1"] = "jail-role"
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	set(p, s, panelJail+"member", nil, "melted")
+	set(p, panelJail+"member", nil, "melted")
 
 	if settings.memberRole["g1"] != "melted" || !rt.said("Member role set") {
 		t.Fatalf("expected the role saved and confirmed, got %q / %v", settings.memberRole["g1"], rt.bodies)
@@ -572,7 +572,7 @@ func TestMemberRoleChangeResyncsBothMarkers(t *testing.T) {
 		t.Fatalf("audit: %v", got)
 	}
 
-	set(p, s, panelJail+"member", nil)
+	set(p, panelJail+"member", nil)
 	if settings.memberRole["g1"] != "" || !rt.said("Member role cleared") {
 		t.Fatalf("expected the role cleared, got %q / %v", settings.memberRole["g1"], rt.bodies)
 	}
@@ -585,13 +585,13 @@ func TestMemberRoleChangeResyncsBothMarkers(t *testing.T) {
 
 func TestListChannelsNamesTheBaseline(t *testing.T) {
 	p, _, _, _, _, settings := handlerFixture()
-	s, rt := handlerSession(t)
-	showPage(p, s, "jail")
+	rt := handlerSession(t)
+	showPage(p, "jail")
 	if !rt.said("**Member role**") || !rt.said("Now: @everyone") {
 		t.Fatalf("got %v", rt.bodies)
 	}
 	settings.memberRole["g1"] = "melted"
-	showPage(p, s, "jail")
+	showPage(p, "jail")
 	if !rt.said("Now: <@&melted>") {
 		t.Fatalf("got %v", rt.bodies)
 	}

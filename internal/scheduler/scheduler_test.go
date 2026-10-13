@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/6586x57890143/merlin/internal/core/paneltest"
 )
 
 func testLogger() *slog.Logger {
@@ -424,9 +424,9 @@ func TestAutocompleteJobCapsAtDiscordLimit(t *testing.T) {
 		}
 	}
 
-	choices := s.autocompleteJob(context.Background(), &discordgo.InteractionCreate{
-		Interaction: &discordgo.Interaction{GuildID: "g1"},
-	}, "job", "")
+	ix, _ := paneltest.IxCommand(t, "11", "scheduler", nil)
+	ix.GuildID = "g1" // the fixture's guild, which is not a snowflake
+	choices := s.autocompleteJob(context.Background(), ix, "job", "")
 	if len(choices) != maxAutocompleteChoices {
 		t.Fatalf("got %d autocomplete choices, want the Discord cap of %d", len(choices), maxAutocompleteChoices)
 	}

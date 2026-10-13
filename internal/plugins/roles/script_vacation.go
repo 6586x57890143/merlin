@@ -283,62 +283,62 @@ func (p *Plugin) detectManualTransfer(ctx context.Context, guildID string, rec J
 // handleVacation is /roles vacation: handleJail with the island's marker,
 // behind the script switch. Same deferral, same rank check before anything
 // is written, same jailMany, so the two cannot drift in behaviour.
-func (p *Plugin) handleVacation(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
+func (p *Plugin) handleVacation(ctx context.Context, ix *core.Ix) {
+	opts := ix.Args()
 	userIDs := collectJailUserIDs(opts)
-	duration, err := parseSentence(opts["duration"].StringValue())
+	duration, err := parseSentence(opts["duration"].String())
 	if err != nil {
-		core.RespondErr(s, i, "Invalid duration", err)
+		ix.RespondErr("Invalid duration", err)
 		return
 	}
 	reason := ""
 	if v, ok := opts["reason"]; ok {
-		reason = v.StringValue()
+		reason = v.String()
 	}
 	if len(userIDs) == 0 {
-		core.RespondErr(s, i, "No members given", errors.New("pick at least one member to send on vacation"))
+		ix.RespondErr("No members given", errors.New("pick at least one member to send on vacation"))
 		return
 	}
-	if !p.scriptOn(ctx, i.GuildID, scriptVacation) {
-		core.RespondErr(s, i, "Vacation is off", errVacationOff)
+	if !p.scriptOn(ctx, ix.GuildID, scriptVacation) {
+		ix.RespondErr("Vacation is off", errVacationOff)
 		return
 	}
 
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("roles: defer vacation response failed", "guild", i.GuildID, "err", err)
+	if err := ix.Defer(); err != nil {
+		p.log.Error("roles: defer vacation response failed", "guild", ix.GuildID, "err", err)
 		return
 	}
 	fail := func(title string, err error) {
-		if ferr := core.FollowUpErr(s, i, title, err); ferr != nil {
-			p.log.Error("roles: vacation follow-up failed", "guild", i.GuildID, "err", ferr)
+		if ferr := ix.FollowUpErr(title, err); ferr != nil {
+			p.log.Error("roles: vacation follow-up failed", "guild", ix.GuildID, "err", ferr)
 		}
 	}
-	if p.dryRun(i.GuildID) {
-		if err := core.FollowUpOK(s, i, "Dry-run", fmt.Sprintf("Dry-run is enabled for this server: %s not sent on vacation. Turn it off with `/config dryrun enabled:false`.",
+	if p.dryRun(ix.GuildID) {
+		if err := ix.FollowUpOK("Dry-run", fmt.Sprintf("Dry-run is enabled for this server: %s not sent on vacation. Turn it off with `/config dryrun enabled:false`.",
 			mentionList(userIDs))); err != nil {
-			p.log.Error("roles: vacation dry-run follow-up failed", "guild", i.GuildID, "err", err)
+			p.log.Error("roles: vacation dry-run follow-up failed", "guild", ix.GuildID, "err", err)
 		}
 		return
 	}
 
-	targets, fetchFailed := p.resolveTargets(i.GuildID, userIDs)
-	allowed, res := p.partitionByRank(i.GuildID, i.Member, targets)
+	targets, fetchFailed := p.resolveTargets(ix.GuildID, userIDs)
+	allowed, res := p.partitionByRank(ix.GuildID, ix.MemberGo(), targets)
 	res.failed = append(res.failed, fetchFailed...)
 
 	if len(allowed) > 0 {
-		roleID, err := p.resolveVacationRole(i.GuildID)
+		roleID, err := p.resolveVacationRole(ix.GuildID)
 		if err != nil {
 			fail("No vacation role", err)
 			return
 		}
-		if err := p.perms.CanManageRole(i.GuildID, roleID); err != nil {
+		if err := p.perms.CanManageRole(ix.GuildID, roleID); err != nil {
 			fail("Cannot use the vacation role", err)
 			return
 		}
-		res = res.merge(p.jailMany(ctx, i.GuildID, roleID, allowed, duration, actorID(i), reason))
+		res = res.merge(p.jailMany(ctx, ix.GuildID, roleID, allowed, duration, actorID(ix), reason))
 	}
 
-	p.reportSentence(ctx, s, i, vacationSentence, userIDs, duration, reason, res)
+	p.reportSentence(ctx, ix, vacationSentence, userIDs, duration, reason, res)
 }
 
 // scriptOn reads a script's switch, treating no store and an unreadable

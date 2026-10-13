@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 
 	"github.com/disgoorg/disgo/discord"
@@ -29,19 +30,13 @@ type Ix struct {
 	Rest rest.Rest
 	// GuildID is "" outside a server; the router refuses those first.
 	GuildID string
-	// UserID is whoever the interaction is from.
-	UserID string
+	// UserID is whoever the interaction is from, and ChannelID the channel
+	// it came from.
+	UserID, ChannelID string
 }
 
-// errNoPayload is an Ix handler reached without the raw interaction it is
-// decoded from, which only a test calling HandleInteraction can do.
-var errNoPayload = errors.New("core: no raw interaction payload for an Ix handler")
-
-// NewIx decodes raw, an INTERACTION_CREATE's data, for a plugin on disgo.
+// NewIx decodes raw, an INTERACTION_CREATE's data, as the gateway would.
 func NewIx(raw []byte, r rest.Rest) (*Ix, error) {
-	if raw == nil {
-		return nil, errNoPayload
-	}
 	if r == nil {
 		return nil, errors.New("core: no REST client for an Ix handler (CommandRouter.WithRest)")
 	}
@@ -49,11 +44,23 @@ func NewIx(raw []byte, r rest.Rest) (*Ix, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core: decoding the interaction: %w", err)
 	}
+	return IxOf(i, r), nil
+}
+
+// IxOf is the Ix for an interaction the gateway has decoded, answered
+// through r.
+func IxOf(i discord.Interaction, r rest.Rest) *Ix {
 	ix := &Ix{I: i, Rest: r, UserID: i.User().ID.String()}
+	// The channel is optional in the payload, and disgo's wraps an interface
+	// that is nil without it: read it only when it is there, since a panic
+	// here is outside every handler's recover.
+	if c := i.Channel(); c.MessageChannel != nil {
+		ix.ChannelID = c.ID().String()
+	}
 	if g := i.GuildID(); g != nil {
 		ix.GuildID = g.String()
 	}
-	return ix, nil
+	return ix
 }
 
 // Member is the invoking member, nil outside a server.
@@ -71,9 +78,16 @@ func noPings() *discord.AllowedMentions {
 func NoPings() *discord.AllowedMentions { return noPings() }
 
 // NewRest is the REST client the router hands every Ix: the bot's token,
-// and mentions off unless a call says otherwise.
-func NewRest(token string) rest.Rest {
-	return rest.New(rest.NewClient(token), rest.WithDefaultAllowedMentions(*noPings()))
+// mentions off unless a call says otherwise, and client, which is the
+// session's own so every interaction reply is timed for /perf and reported
+// to cygnet when refused, as every other request is. A nil client is
+// disgo's default.
+func NewRest(token string, client *http.Client) rest.Rest {
+	var opts []rest.ClientConfigOpt
+	if client != nil {
+		opts = append(opts, rest.WithHTTPClient(client))
+	}
+	return rest.New(rest.NewClient(token, opts...), rest.WithDefaultAllowedMentions(*noPings()))
 }
 
 func (ix *Ix) respond(t discord.InteractionResponseType, data discord.InteractionResponseData) error {
@@ -96,6 +110,36 @@ func (ix *Ix) RespondEmbed(embed discord.Embed) error {
 		Embeds: []discord.Embed{embed}, Files: EmbedUploads(embed),
 		Flags: discord.MessageFlagEphemeral, AllowedMentions: noPings(),
 	})
+}
+
+// RespondPublic answers in the channel for everyone, for a view somebody
+// asked to share (/rapsheet view public:true); Discord will not forward an
+// ephemeral message.
+func (ix *Ix) RespondPublic(embed discord.Embed, components []discord.LayoutComponent) error {
+	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
+		Embeds: []discord.Embed{embed}, Components: components, Files: EmbedUploads(embed), AllowedMentions: noPings(),
+	})
+}
+
+// errAlreadyAcknowledged is Discord's 40060: the interaction was already
+// responded to or deferred.
+const errAlreadyAcknowledged = 40060
+
+// Tell answers privately with msg, falling back to a follow-up when the
+// interaction was already acknowledged. The router's refusals and its panic
+// recovery use it; the fallback matters most there, since a handler that
+// deferred and then panicked would otherwise leave the member with nothing
+// and the log with nothing either.
+func (ix *Ix) Tell(msg string) {
+	err := ix.RespondText(msg)
+	if err == nil {
+		return
+	}
+	if re, ok := errors.AsType[*rest.Error](err); ok && re.Code == errAlreadyAcknowledged {
+		_, _ = ix.Rest.CreateFollowupMessage(ix.I.ApplicationID(), ix.I.Token(), discord.MessageCreate{
+			Content: msg, Flags: discord.MessageFlagEphemeral, AllowedMentions: noPings(),
+		})
+	}
 }
 
 // RespondText answers with plain text, privately.

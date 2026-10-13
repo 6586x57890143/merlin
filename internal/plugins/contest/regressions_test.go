@@ -445,8 +445,8 @@ func TestAnUnrecordedForumRetiresTheContest(t *testing.T) {
 	p.now = func() time.Time { return base }
 	store.setForumFail = errors.New("database went away")
 
-	sess, _ := stubSession()
-	p.handleNew(context.Background(), sess, interaction("new", strOpt("title", "neon cats")))
+	stubSession()
+	p.handleNew(context.Background(), interaction("new", strOpt("title", "neon cats")))
 
 	if _, err := store.LiveContest(context.Background(), "g1"); err != ErrNoLiveContest {
 		t.Fatal("a contest whose forum was never recorded is still live, so it blocks " +

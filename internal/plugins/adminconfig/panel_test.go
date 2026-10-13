@@ -75,7 +75,7 @@ func newPanelPlugin(t *testing.T, st SettingsAdmin) *Plugin {
 	log := discardLogger()
 	perms := core.NewPermissions(nil, fakeAuthData{}, bootstrapID)
 	router := core.NewCommandRouter(perms, fakeGate{}, log)
-	router.Handle("other", "", core.PermSpec{Tier: core.TierMod, Action: "rotation.configure"}, nil)
+	router.HandleIx("other", "", core.PermSpec{Tier: core.TierMod, Action: "rotation.configure"}, nil)
 	router.RegisterCommand("rotation", &discordgo.ApplicationCommand{Name: "other", Description: "x"})
 	session, _ := paneltest.Session()
 	p := New(st, "does-not-exist.yaml", nil, nil)

@@ -4,14 +4,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	snow "github.com/disgoorg/snowflake/v2"
 )
 
 // HandleMessage runs for every member message on every server.
 func BenchmarkHandleMessage(b *testing.B) {
 	p := &Plugin{count: newCounter(), now: time.Now}
-	m := &discordgo.Message{GuildID: "1459404984943644747", ChannelID: "1549707140753793054", Timestamp: time.Now(),
-		Author: &discordgo.User{ID: "175928847299117063", Username: "steve"}}
+	g := snow.ID(1459404984943644747)
+	m := discord.Message{GuildID: &g, ChannelID: 1549707140753793054, CreatedAt: time.Now(),
+		Author: discord.User{ID: 175928847299117063, Username: "steve"}}
 	b.ReportAllocs()
 	for b.Loop() {
 		p.HandleMessage(m)
@@ -20,11 +22,13 @@ func BenchmarkHandleMessage(b *testing.B) {
 
 func BenchmarkHandleVoiceState(b *testing.B) {
 	p := &Plugin{count: newCounter(), now: time.Now}
-	join := &discordgo.VoiceStateUpdate{VoiceState: &discordgo.VoiceState{GuildID: "1459404984943644747", UserID: "175928847299117063", ChannelID: "1"}}
-	leave := &discordgo.VoiceStateUpdate{VoiceState: &discordgo.VoiceState{GuildID: "1459404984943644747", UserID: "175928847299117063"}}
+	ch := snow.ID(1)
+	member := discord.Member{User: discord.User{ID: 175928847299117063, Username: "steve"}}
+	join := discord.VoiceState{GuildID: 1459404984943644747, UserID: 175928847299117063, ChannelID: &ch}
+	leave := discord.VoiceState{GuildID: 1459404984943644747, UserID: 175928847299117063}
 	b.ReportAllocs()
 	for b.Loop() {
-		p.HandleVoiceState(join)
-		p.HandleVoiceState(leave)
+		p.HandleVoiceState(join, leave, member)
+		p.HandleVoiceState(leave, join, member)
 	}
 }

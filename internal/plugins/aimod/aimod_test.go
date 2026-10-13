@@ -43,7 +43,7 @@ func TestRewriteRepostIsNotScanned(t *testing.T) {
 	client := &fakeClassifier{}
 	p := intakePlugin(t, newFakeStore(), client, newFakeOps())
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1", WebhookID: "w1",
 		Content: "i think [removed] is wrong about this",
 		Author:  &discordgo.User{ID: "u1", Username: "someguy"},
@@ -69,7 +69,7 @@ func TestHardHitActsWithoutAModel(t *testing.T) {
 	cfg.DailyBudgetUSD = 0
 	store.setConfig(cfg)
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "free nitro here https://grabify.link/abcdef",
 		Author:  &discordgo.User{ID: "u1"},
@@ -98,7 +98,7 @@ func TestHardHitNeverRewrites(t *testing.T) {
 	cfg.BucketActions[BucketMalicious] = ActionRewrite
 	store.setConfig(cfg)
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "grab it https://iplogger.org/abcdef quick",
 		Author:  &discordgo.User{ID: "u1"},
@@ -133,7 +133,7 @@ func TestHardSlurIsRewrittenWhereHateSpeechIsOn(t *testing.T) {
 		Author:  &discordgo.User{ID: "u1"},
 		Member:  &discordgo.Member{},
 	}
-	p.HandleMessage(msg)
+	p.handleGo(msg)
 	p.wg.Wait()
 
 	deleted, posted := ops.snapshot()
@@ -154,7 +154,7 @@ func TestHardSlurIsRewrittenWhereHateSpeechIsOn(t *testing.T) {
 	off := enforcingConfig()
 	off.BucketActions[BucketHateSpeech] = ActionOff
 	store2.setConfig(off)
-	p2.HandleMessage(msg)
+	p2.handleGo(msg)
 	p2.wg.Wait()
 	if deleted, posted := ops2.snapshot(); len(deleted) != 0 || len(posted) != 0 {
 		t.Errorf("acted with hate_speech off: deleted %v, posted %d", deleted, len(posted))
@@ -176,7 +176,7 @@ func TestSlurBlockRunsAheadOfEverySkip(t *testing.T) {
 	store.setConfig(cfg)
 	p.dedupe.markClean("g1", "Nibber", p.now())
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1", Content: "Nibber",
 		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{Roles: []string{"r1"}},
 	})
@@ -189,7 +189,7 @@ func TestSlurBlockRunsAheadOfEverySkip(t *testing.T) {
 	ops2, store2 := newFakeOps(), newFakeStore()
 	p2 := testPlugin(t, store2, &fakeClassifier{}, ops2, &fakeAudit{})
 	store2.setConfig(cfg)
-	p2.HandleMessage(&discordgo.Message{
+	p2.handleGo(&discordgo.Message{
 		ID: "m2", GuildID: "g1", ChannelID: "c2", Content: "nibber click here https://grabify.link/abc123",
 		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
 	})
@@ -207,7 +207,7 @@ func TestNothingIsScannedWithoutTheIntent(t *testing.T) {
 	p := intakePlugin(t, newFakeStore(), client, ops)
 	p.scanning = false
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "free nitro here https://grabify.link/abcdef",
 		Author:  &discordgo.User{ID: "u1"},
@@ -226,7 +226,7 @@ func TestDirectMessagesAreIgnored(t *testing.T) {
 	client := &fakeClassifier{}
 	p := intakePlugin(t, newFakeStore(), client, newFakeOps())
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", ChannelID: "c1",
 		Content: "a long enough message with no guild attached",
 		Author:  &discordgo.User{ID: "u1"},
@@ -329,7 +329,7 @@ func TestDisabledPluginScansNothing(t *testing.T) {
 	p := intakePlugin(t, newFakeStore(), client, ops)
 	p.gate = fakeGate{enabled: false}
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "free nitro here https://grabify.link/abcdef",
 		Author:  &discordgo.User{ID: "u1"},
@@ -352,7 +352,7 @@ func TestEnabledPluginStillScans(t *testing.T) {
 	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, ops)
 	p.gate = fakeGate{enabled: true}
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "free nitro here https://grabify.link/abcdef",
 		Author:  &discordgo.User{ID: "u1"},
@@ -407,7 +407,7 @@ func TestEditedMessagesAreScanned(t *testing.T) {
 	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, ops)
 
 	edited := time.Now()
-	p.HandleMessageEdit(&discordgo.Message{
+	p.handleEditGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content:         "free nitro here https://grabify.link/abcdef",
 		Author:          &discordgo.User{ID: "u1"},
@@ -428,7 +428,7 @@ func TestUneditedUpdatesAreIgnored(t *testing.T) {
 	ops := newFakeOps()
 	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, ops)
 
-	p.HandleMessageEdit(&discordgo.Message{
+	p.handleEditGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "free nitro here https://grabify.link/abcdef",
 		Author:  &discordgo.User{ID: "u1"},
@@ -449,7 +449,7 @@ func TestReplyTargetReachesTheFastPass(t *testing.T) {
 	client := &fakeClassifier{fast: []string{`{"v":[]}`}}
 	p := intakePlugin(t, newFakeStore(), client, newFakeOps())
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "you should genuinely do it",
 		Author:  &discordgo.User{ID: "u1"},
@@ -475,7 +475,7 @@ func TestForwardedMessagesAreScanned(t *testing.T) {
 	ops := newFakeOps()
 	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, ops)
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "",
 		Author:  &discordgo.User{ID: "u1"},
@@ -495,7 +495,7 @@ func TestForwardedMessagesAreScanned(t *testing.T) {
 // one whose opening line is innocuous and whose second is not doing exactly
 // what this closes.
 func TestMessageTextJoinsEverySnapshot(t *testing.T) {
-	text, forwarded := messageText(&discordgo.Message{
+	text, forwarded := messageTextGo(&discordgo.Message{
 		MessageSnapshots: []discordgo.MessageSnapshot{
 			{Message: &discordgo.Message{Content: "look at this"}},
 			{Message: &discordgo.Message{Content: "the actual violation"}},
@@ -512,7 +512,7 @@ func TestMessageTextJoinsEverySnapshot(t *testing.T) {
 // The member's own typing wins over a snapshot, and an ordinary message must
 // not read as forwarded: that flag downgrades rewrite to remove.
 func TestMessageTextPrefersTheMembersOwnContent(t *testing.T) {
-	text, forwarded := messageText(&discordgo.Message{
+	text, forwarded := messageTextGo(&discordgo.Message{
 		Content: "what i actually typed",
 		MessageSnapshots: []discordgo.MessageSnapshot{
 			{Message: &discordgo.Message{Content: "something forwarded alongside it"}},
@@ -577,7 +577,7 @@ func TestEveryHitInALargeBatchIsActedOn(t *testing.T) {
 // A message that replies to nothing must not carry the marker, or every
 // batch pays for a clause that says nothing.
 func TestNonReplyCarriesNoReplyMarker(t *testing.T) {
-	if got := replyContext(&discordgo.Message{Content: "hello"}); got != "" {
+	if got := replyContextGo(&discordgo.Message{Content: "hello"}); got != "" {
 		t.Errorf("replyContext = %q for a message replying to nothing", got)
 	}
 }

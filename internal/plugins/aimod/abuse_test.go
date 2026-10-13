@@ -373,7 +373,7 @@ func TestClearingSkipsWhatAModeratorReversed(t *testing.T) {
 func TestSpamNeverReachesTheModelOrSpendsTheCeiling(t *testing.T) {
 	p := intakePlugin(t, newFakeStore(), &fakeClassifier{}, newFakeOps())
 	for i := range 10 {
-		p.HandleMessage(&discordgo.Message{
+		p.handleGo(&discordgo.Message{
 			ID: fmt.Sprintf("m%d", i), GuildID: "g1", ChannelID: "c1",
 			Content: fmt.Sprintf("join my server for free robux, code %d, everyone is here", i),
 			Author:  &discordgo.User{ID: "u1"},

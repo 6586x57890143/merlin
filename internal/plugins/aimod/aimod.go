@@ -475,39 +475,9 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	}
 }
 
-// HandleMessage is the gateway entry point, called from the MessageCreate
-// handler in cmd/bot/main.go. It returns immediately: everything past the
-// free rungs happens on the batch timer, because discordgo dispatches events
-// serially per shard and blocking here would stall every other handler.
-// HandleMessageEdit is the MessageUpdate entry point.
-//
-// Scanning edits is what closes the plugin's most obvious bypass: post
-// something innocuous, let it be cleared, then edit it into a violation. The
-// classification path is identical, so this is a guard plus a call.
-//
-// The guard matters more than it looks. MessageUpdate also fires when Discord
-// resolves a link preview or pins a message, with the content untouched, and
-// those are common enough that scanning them would raise traffic
-// substantially for nothing. EditedTimestamp is nil on exactly those and set
-// on a real edit.
-//
-// The payload is partial in a way MessageCreate's never is: Author can be
-// nil. shouldSkip returns skipBot for that, so an edit whose author Discord
-// did not send is dropped rather than misattributed, which is the right
-// direction and is worth not rediscovering.
-//
-// Cost is bounded by dedupeCache: an edit that changes nothing this plugin
-// cares about (whitespace, a typo fixed) hashes to a key that may already
-// carry a verdict, and re-editing the same text repeatedly is free.
-func (p *Plugin) HandleMessageEdit(m *discordgo.Message) {
-	if m == nil || m.EditedTimestamp == nil {
-		return
-	}
-	p.HandleMessage(m)
-}
-
-func (p *Plugin) HandleMessage(m *discordgo.Message) {
-	if !p.scanning || m == nil || m.GuildID == "" {
+// handle is HandleMessage for a message already read (gatewayMessage).
+func (p *Plugin) handle(m message) {
+	if !p.scanning || m.GuildID == "" {
 		return
 	}
 	// Debug, and IDs only: the one line that says Discord delivered this
@@ -521,7 +491,7 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	if p.log.Enabled(context.Background(), slog.LevelDebug) {
 		text, _ := messageText(m)
 		p.log.Debug("aimod: received", "guild", m.GuildID, "channel", m.ChannelID, "message", m.ID,
-			"edit", m.EditedTimestamp != nil, "webhook", m.WebhookID != "", "author_known", m.Author != nil,
+			"edit", m.Edited, "webhook", m.Webhook, "author_known", m.AuthorID != "",
 			"bytes", len(text), "runes", utf8.RuneCountInString(text), "folded_bytes", len(fold(text)))
 	}
 	// The checks that need no configuration run first, ahead of the store
@@ -531,7 +501,7 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	//
 	// The webhook case is also the loop guard (see shouldSkip), so keeping
 	// it ahead of everything is worth doing on its own merits.
-	if m.WebhookID != "" || m.Author == nil || m.Author.Bot {
+	if m.Webhook || m.AuthorID == "" || m.Bot {
 		return
 	}
 	// The gate the router applies to every command, applied to the one entry
@@ -555,7 +525,7 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// rather than in Content; see messageText.
 	text, forwarded := messageText(m)
 	c := candidate{
-		MessageID: m.ID, ChannelID: m.ChannelID, AuthorID: m.Author.ID,
+		MessageID: m.ID, ChannelID: m.ChannelID, AuthorID: m.AuthorID,
 		Content: text, Forwarded: forwarded, ReplyTo: replyContext(m),
 	}
 
@@ -619,7 +589,7 @@ func rung1Of(content string) *rung1 {
 // and the queue for the model rungs. r1 is rung 1's answer for c.Content,
 // or nil if HandleMessage did not need it. slurCleared is set when the second look has already overruled a slur hit
 // on this exact text, so rung 1 does not act on it again here.
-func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c candidate, r1 *rung1, slurCleared bool) {
+func (p *Plugin) scan(ctx context.Context, cfg Config, m message, c candidate, r1 *rung1, slurCleared bool) {
 	if reason := p.shouldSkip(cfg, m, p.now()); reason != skipNone {
 		// A skip is silent by design, which made "the word list missed this"
 		// unanswerable from the logs. Info when the skipped text is something

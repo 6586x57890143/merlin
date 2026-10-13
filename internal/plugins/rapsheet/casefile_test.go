@@ -20,9 +20,9 @@ func withForum(h *harness) {
 }
 
 func warn(h *harness, userID, reason string) {
-	s, _ := stubSession()
+	stubSession()
 	h.ops.addMember(userID)
-	h.p.handleWarn(context.Background(), s, withResolved(
+	h.p.handleWarn(context.Background(), withResolved(
 		interaction("warn", userOpt("user", userID), strOpt("category", "spam"), strOpt("reason", reason)),
 		&discordgo.User{ID: userID, Username: "dana", GlobalName: "Dana"}))
 }
@@ -31,15 +31,15 @@ func TestTheFirstEntryOpensACaseFileAndLaterOnesAppend(t *testing.T) {
 	h := newHarness()
 	withForum(h)
 
-	warn(h, "u1", "first")
+	warn(h, "1001", "first")
 	if h.ops.threadsOpened != 1 {
 		t.Fatalf("threads opened = %d, want 1", h.ops.threadsOpened)
 	}
 	th := h.ops.channels["t-1"]
-	if th.Name != "Dana (u1)" || th.ParentID != "forum-1" {
+	if th.Name != "Dana (1001)" || th.ParentID != "forum-1" {
 		t.Errorf("thread = %+v", th)
 	}
-	cf, _, _ := h.store.CaseFile(context.Background(), testGuild, "u1")
+	cf, _, _ := h.store.CaseFile(context.Background(), testGuild, "1001")
 	if cf.ThreadID != "t-1" {
 		t.Errorf("case file thread = %q", cf.ThreadID)
 	}
@@ -47,7 +47,7 @@ func TestTheFirstEntryOpensACaseFileAndLaterOnesAppend(t *testing.T) {
 		t.Errorf("starter message id should be the thread id, got %q", e.ThreadMessageID)
 	}
 
-	warn(h, "u1", "second")
+	warn(h, "1001", "second")
 	if h.ops.threadsOpened != 1 {
 		t.Errorf("a second entry opened another thread")
 	}
@@ -61,7 +61,7 @@ func TestTheFirstEntryOpensACaseFileAndLaterOnesAppend(t *testing.T) {
 	}
 
 	// A different member gets their own post.
-	warn(h, "u2", "other")
+	warn(h, "1002", "other")
 	if h.ops.threadsOpened != 2 {
 		t.Errorf("threads opened = %d, want 2", h.ops.threadsOpened)
 	}
@@ -69,7 +69,7 @@ func TestTheFirstEntryOpensACaseFileAndLaterOnesAppend(t *testing.T) {
 
 func TestNoForumMeansNoMirrorAndNoFailure(t *testing.T) {
 	h := newHarness()
-	warn(h, "u1", "r")
+	warn(h, "1001", "r")
 	if h.ops.threadsOpened != 0 || len(h.store.all()) != 1 {
 		t.Errorf("threads %d entries %d", h.ops.threadsOpened, len(h.store.all()))
 	}
@@ -82,9 +82,9 @@ func TestAMirrorFailureNeverFailsTheEntry(t *testing.T) {
 	h := newHarness()
 	withForum(h)
 	h.ops.threadErr = errors.New("rate limited")
-	s, rt := stubSession()
-	h.ops.addMember("u1")
-	h.p.handleWarn(context.Background(), s, interaction("warn", userOpt("user", "u1"), strOpt("category", "spam"), strOpt("reason", "r")))
+	rt := stubSession()
+	h.ops.addMember("1001")
+	h.p.handleWarn(context.Background(), interaction("warn", userOpt("user", "1001"), strOpt("category", "spam"), strOpt("reason", "r")))
 	if len(h.store.all()) != 1 || !strings.Contains(rt.said(), "Case #1") {
 		t.Errorf("the warning should have landed regardless: %s", rt.said())
 	}
@@ -100,7 +100,7 @@ func TestADeletedForumUnsetsItself(t *testing.T) {
 	h := newHarness()
 	withForum(h)
 	delete(h.ops.channels, "forum-1")
-	warn(h, "u1", "r")
+	warn(h, "1001", "r")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.ForumChannelID != "" {
 		t.Errorf("forum still configured after Discord said it is gone: %q", cfg.ForumChannelID)
 	}
@@ -109,13 +109,13 @@ func TestADeletedForumUnsetsItself(t *testing.T) {
 func TestADeletedThreadIsReopenedOnce(t *testing.T) {
 	h := newHarness()
 	withForum(h)
-	warn(h, "u1", "first")
+	warn(h, "1001", "first")
 	delete(h.ops.channels, "t-1")
-	warn(h, "u1", "second")
+	warn(h, "1001", "second")
 	if h.ops.threadsOpened != 2 {
 		t.Fatalf("threads opened = %d, want 2", h.ops.threadsOpened)
 	}
-	cf, _, _ := h.store.CaseFile(context.Background(), testGuild, "u1")
+	cf, _, _ := h.store.CaseFile(context.Background(), testGuild, "1001")
 	if cf.ThreadID != "t-2" {
 		t.Errorf("case file should point at the new thread, got %q", cf.ThreadID)
 	}
@@ -124,13 +124,13 @@ func TestADeletedThreadIsReopenedOnce(t *testing.T) {
 func TestVoidAndEditRewriteTheMirroredMessage(t *testing.T) {
 	h := newHarness()
 	withForum(h)
-	warn(h, "u1", "first")
+	warn(h, "1001", "first")
 	h.ops.addMember(modID)
 
-	s, _ := stubSession()
-	h.p.handleEdit(context.Background(), s, interaction("edit", intOpt("case", 1), strOpt("reason", "clearer")))
-	s2, _ := stubSession()
-	h.p.handleVoid(context.Background(), s2, interaction("void", intOpt("case", 1), strOpt("reason", "wrong person")))
+	stubSession()
+	h.p.handleEdit(context.Background(), interaction("edit", intOpt("case", 1), strOpt("reason", "clearer")))
+	stubSession()
+	h.p.handleVoid(context.Background(), interaction("void", intOpt("case", 1), strOpt("reason", "wrong person")))
 
 	if len(h.ops.edits) != 2 {
 		t.Fatalf("edits = %d, want 2 (edit, void)", len(h.ops.edits))
@@ -153,10 +153,10 @@ func TestVoidAndEditRewriteTheMirroredMessage(t *testing.T) {
 
 func TestAmendingAnUnmirroredEntryMirrorsIt(t *testing.T) {
 	h := newHarness()
-	seedEntries(h, "u1", 1)
+	seedEntries(h, "1001", 1)
 	withForum(h)
-	s, _ := stubSession()
-	h.p.handleEdit(context.Background(), s, interaction("edit", intOpt("case", 1), strOpt("reason", "now with a forum")))
+	stubSession()
+	h.p.handleEdit(context.Background(), interaction("edit", intOpt("case", 1), strOpt("reason", "now with a forum")))
 	if h.ops.threadsOpened != 1 || len(h.ops.edits) != 0 {
 		t.Errorf("threads %d edits %d; want the entry posted, not edited", h.ops.threadsOpened, len(h.ops.edits))
 	}
@@ -165,7 +165,7 @@ func TestAmendingAnUnmirroredEntryMirrorsIt(t *testing.T) {
 func TestEntryEmbedShapes(t *testing.T) {
 	ends := testNow.Add(time.Hour)
 	e := Entry{ID: 7, Kind: KindBan, Category: CategoryThreats, Points: 100, ActorID: modID, Reason: "r",
-		Duration: time.Hour, EndsAt: &ends, Source: SourceCommand, UserID: "u1"}
+		Duration: time.Hour, EndsAt: &ends, Source: SourceCommand, UserID: "1001"}
 	em := entryEmbed(e)
 	if !strings.HasPrefix(em.Title, "#7 · banned 1h") || fieldValue(em, "Offence") != "threats · 100 pts" || fieldValue(em, "Until") == "" || fieldValue(em, "Source") != "" {
 		t.Errorf("embed = %+v", em)
@@ -183,10 +183,10 @@ func TestEntryEmbedShapes(t *testing.T) {
 	if note.Description != "(no reason given)" || fieldValue(note, "Offence") != "" {
 		t.Errorf("note embed = %+v", note)
 	}
-	if threadName(CaseFile{Username: "dana"}, "u1") != "dana (u1)" || threadName(CaseFile{}, "u1") != "member (u1)" {
+	if threadName(CaseFile{Username: "dana"}, "1001") != "dana (1001)" || threadName(CaseFile{}, "1001") != "member (1001)" {
 		t.Error("threadName")
 	}
-	if got := threadName(CaseFile{Username: strings.Repeat("x", 200)}, "u1"); len(got) != maxThreadName {
+	if got := threadName(CaseFile{Username: strings.Repeat("x", 200)}, "1001"); len(got) != maxThreadName {
 		t.Errorf("thread name not capped: %d", len(got))
 	}
 }
@@ -196,8 +196,8 @@ func TestEntryEmbedShapes(t *testing.T) {
 func TestConfigureForumCreatesAHiddenForumForTheModRoles(t *testing.T) {
 	h := newHarness()
 	h.p.botID = "merlin-1"
-	s, rt := stubSession()
-	panelClick(h.p, s, panelSet+"forumnew")
+	rt := stubSession()
+	panelClick(h.p, panelSet+"forumnew")
 	if len(h.ops.created) != 1 {
 		t.Fatalf("created %d channels", len(h.ops.created))
 	}
@@ -232,10 +232,10 @@ func TestConfigureForumAcceptsAnExistingForumAndWarnsAboutItsPermissions(t *test
 	h := newHarness()
 	h.ops.addForum("their-forum")
 	h.ops.channels["text"] = &discordgo.Channel{ID: "text", Type: discordgo.ChannelTypeGuildText}
-	seedEntries(h, "u1", 3)
+	seedEntries(h, "1001", 3)
 
-	s, rt := stubSession()
-	panelClick(h.p, s, panelSet+"forum", "their-forum")
+	rt := stubSession()
+	panelClick(h.p, panelSet+"forum", "their-forum")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.ForumChannelID != "their-forum" {
 		t.Errorf("config forum = %q", cfg.ForumChannelID)
 	}
@@ -243,8 +243,8 @@ func TestConfigureForumAcceptsAnExistingForumAndWarnsAboutItsPermissions(t *test
 		t.Errorf("created %d, said %s", len(h.ops.created), rt.said())
 	}
 
-	s2, rt2 := stubSession()
-	panelClick(h.p, s2, panelSet+"forum", "text")
+	rt2 := stubSession()
+	panelClick(h.p, panelSet+"forum", "text")
 	if !strings.Contains(rt2.said(), "not a forum") {
 		t.Errorf("got %s", rt2.said())
 	}
@@ -256,8 +256,8 @@ func TestConfigureForumRefusesNearTheChannelCap(t *testing.T) {
 	for i := 0; i < 500-channelCapHeadroom; i++ {
 		h.ops.channels[strings.Repeat("c", i+1)] = &discordgo.Channel{}
 	}
-	s, rt := stubSession()
-	panelClick(h.p, s, panelSet+"forumnew")
+	rt := stubSession()
+	panelClick(h.p, panelSet+"forumnew")
 	if len(h.ops.created) != 0 || !strings.Contains(rt.said(), "500 cap") {
 		t.Errorf("created %d, said %s", len(h.ops.created), rt.said())
 	}
@@ -269,8 +269,8 @@ func TestConfigureShowListsTheConfiguration(t *testing.T) {
 	cfg.ModChannelID = "mods"
 	cfg.CategoryPoints[CategorySpam] = 3
 	_ = h.store.SetConfig(context.Background(), cfg)
-	s, rt := stubSession()
-	h.p.handleSettings(context.Background(), s, interaction("settings"))
+	rt := stubSession()
+	h.p.handleSettings(context.Background(), interaction("settings"))
 	for _, want := range []string{"#mods", "not set", "spam=3", "defaults"} {
 		if !strings.Contains(rt.said(), want) {
 			t.Errorf("want %q in %s", want, rt.said())

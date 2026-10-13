@@ -326,9 +326,9 @@ func TestScriptsSetWarnsAndEnforcesOnEnable(t *testing.T) {
 	f := newEternalFixture(t)
 	f.scripts.on = map[string]bool{}
 	f.ops.setMember(etGuild, etUser, []string{"other"})
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	setOn(f.p, s, etGuild, "admin", panelScripts+"on:"+scriptEternalRole, nil)
+	setOn(f.p, etGuild, "admin", panelScripts+"on:"+scriptEternalRole, nil)
 	if !f.scripts.on[etGuild+":"+scriptEternalRole] {
 		t.Fatal("script should be on")
 	}
@@ -342,7 +342,7 @@ func TestScriptsSetWarnsAndEnforcesOnEnable(t *testing.T) {
 		t.Fatalf("audit: %v", got)
 	}
 
-	setOn(f.p, s, etGuild, "admin", panelScripts+"off:"+scriptEternalRole, nil)
+	setOn(f.p, etGuild, "admin", panelScripts+"off:"+scriptEternalRole, nil)
 	if f.scripts.on[etGuild+":"+scriptEternalRole] {
 		t.Fatal("script should be off")
 	}
@@ -354,8 +354,8 @@ func TestScriptsSetWarnsAndEnforcesOnEnable(t *testing.T) {
 
 func TestScriptsSetRefusesUnknownScript(t *testing.T) {
 	f := newEternalFixture(t)
-	s, rt := handlerSession(t)
-	setOn(f.p, s, etGuild, "admin", panelScripts+"on:"+"nope", nil)
+	rt := handlerSession(t)
+	setOn(f.p, etGuild, "admin", panelScripts+"on:"+"nope", nil)
 	if !rt.said("Unknown script") {
 		t.Fatalf("got %v", rt.bodies)
 	}
@@ -363,13 +363,13 @@ func TestScriptsSetRefusesUnknownScript(t *testing.T) {
 
 func TestScriptsListShowsStateAndDefinitions(t *testing.T) {
 	f := newEternalFixture(t)
-	s, rt := handlerSession(t)
-	showPageIn(f.p, s, etGuild, "scripts")
+	rt := handlerSession(t)
+	showPageIn(f.p, etGuild, "scripts")
 	if !rt.said("`eternal-role` is **on**") || !rt.said("<@"+etUser+"> keeps <@&"+etRole+">") {
 		t.Fatalf("got %v", rt.bodies)
 	}
 	f.scripts.err = errors.New("db down")
-	showPageIn(f.p, s, etGuild, "scripts")
+	showPageIn(f.p, etGuild, "scripts")
 	if !rt.said("treated as off") {
 		t.Fatalf("got %v", rt.bodies)
 	}
@@ -382,42 +382,42 @@ func TestEternalAddAndRemoveAreOwnerOrOperatorOnly(t *testing.T) {
 	f := newEternalFixture(t)
 	f.perms.bootstrapID = "operator"
 	f.ops.roles[etGuild] = append(f.ops.roles[etGuild], &discordgo.Role{ID: "r2", Name: "second"})
-	s, rt := handlerSession(t)
+	rt := handlerSession(t)
 
-	setOn(f.p, s, etGuild, "admin", panelDefine+"eternal:"+"u2", nil, "r2")
+	setOn(f.p, etGuild, "admin", panelDefine+"eternal:"+"u2", nil, "r2")
 	if !rt.said("only the server owner") {
 		t.Fatalf("an admin must be refused, got %v", rt.bodies)
 	}
 	if recs, _ := f.store.ListEternalRoles(context.Background(), etGuild); len(recs) != 1 {
 		t.Fatal("a refused add must write nothing")
 	}
-	setOn(f.p, s, etGuild, "admin", panelDefine+"eternal:"+etUser, []string{etRole})
+	setOn(f.p, etGuild, "admin", panelDefine+"eternal:"+etUser, []string{etRole})
 	f.copyRec(t)
 
-	setOn(f.p, s, etGuild, "operator", panelDefine+"eternal:"+"u2", nil, "r2")
+	setOn(f.p, etGuild, "operator", panelDefine+"eternal:"+"u2", nil, "r2")
 	if !rt.said("Eternal role added") {
 		t.Fatalf("the operator may add, got %v", rt.bodies)
 	}
-	setOn(f.p, s, etGuild, etOwner, panelDefine+"eternal:"+"u2", nil, "r2")
+	setOn(f.p, etGuild, etOwner, panelDefine+"eternal:"+"u2", nil, "r2")
 	if !rt.said("already has that role") {
 		t.Fatalf("a duplicate is refused, got %v", rt.bodies)
 	}
 
-	setOn(f.p, s, etGuild, etOwner, panelDefine+"eternal:"+"u2", []string{"r2"})
+	setOn(f.p, etGuild, etOwner, panelDefine+"eternal:"+"u2", []string{"r2"})
 	if !rt.said("Eternal role removed") || !slices.Contains(auditActions(f.audit), "roles.eternal_removed") {
 		t.Fatalf("the owner may remove, got %v / %v", rt.bodies, auditActions(f.audit))
 	}
 	if recs, _ := f.store.ListEternalRoles(context.Background(), etGuild); len(recs) != 1 {
 		t.Fatal("remove should drop exactly that row")
 	}
-	setOn(f.p, s, etGuild, etOwner, panelDefine+"eternal:"+"u2", []string{"r2"})
+	setOn(f.p, etGuild, etOwner, panelDefine+"eternal:"+"u2", []string{"r2"})
 	if !rt.said("does not keep") {
 		t.Fatalf("removing what is not there is an error, got %v", rt.bodies)
 	}
 
 	// An unreadable guild fails closed.
 	f.ops.guildErr = errors.New("502")
-	setOn(f.p, s, etGuild, etOwner, panelDefine+"eternal:"+"u3", nil, "r2")
+	setOn(f.p, etGuild, etOwner, panelDefine+"eternal:"+"u3", nil, "r2")
 	if !rt.said("could not read this server") {
 		t.Fatalf("got %v", rt.bodies)
 	}
@@ -428,8 +428,8 @@ func TestEternalAddWhileOffSaysSo(t *testing.T) {
 	f := newEternalFixture(t)
 	f.scripts.on = map[string]bool{}
 	f.ops.roles[etGuild] = append(f.ops.roles[etGuild], &discordgo.Role{ID: "r2", Name: "second"})
-	s, rt := handlerSession(t)
-	setOn(f.p, s, etGuild, etOwner, panelDefine+"eternal:"+"u2", nil, "r2")
+	rt := handlerSession(t)
+	setOn(f.p, etGuild, etOwner, panelDefine+"eternal:"+"u2", nil, "r2")
 	if !rt.said("Eternal role added") || !rt.said("The script is **off**") {
 		t.Fatalf("got %v", rt.bodies)
 	}

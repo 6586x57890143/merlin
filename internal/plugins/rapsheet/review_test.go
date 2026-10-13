@@ -33,16 +33,16 @@ func TestSummaryAsksTheModelWithLedgerTextOnly(t *testing.T) {
 	h := newHarness()
 	rev := &fakeReviewer{out: "Two spam warnings a month apart and one automatic removal; recent, but not escalating."}
 	h.p.reviewer = rev
-	seedEntries(h, "u1", 2)
-	_, _ = h.store.Insert(context.Background(), Entry{GuildID: testGuild, UserID: "u1", Kind: KindRemoval, Category: CategoryHateSpeech, Points: 50,
+	seedEntries(h, "1001", 2)
+	_, _ = h.store.Insert(context.Background(), Entry{GuildID: testGuild, UserID: "1001", Kind: KindRemoval, Category: CategoryHateSpeech, Points: 50,
 		ActorID: "system", Reason: "message removed automatically: a slur", Source: SourceAIMod, Ref: "9", CreatedAt: testNow.Add(-48 * time.Hour)})
 
-	s, rt := stubSession()
-	h.p.handleSummary(context.Background(), s, withResolved(interaction("summary", userOpt("user", "u1")), &discordgo.User{ID: "u1", Username: "dana"}))
+	rt := stubSession()
+	h.p.handleSummary(context.Background(), withResolved(interaction("summary", userOpt("user", "1001")), &discordgo.User{ID: "1001", Username: "dana"}))
 	if rev.calls != 1 {
 		t.Fatalf("model calls = %d", rev.calls)
 	}
-	if strings.Contains(rev.lastUsr, "u1") || strings.Contains(rev.lastUsr, modID) || strings.Contains(rev.lastUsr, "<@") {
+	if strings.Contains(rev.lastUsr, "1001") || strings.Contains(rev.lastUsr, modID) || strings.Contains(rev.lastUsr, "<@") {
 		t.Errorf("the prompt carried an id or a mention: %s", rev.lastUsr)
 	}
 	for _, want := range []string{"by a moderator", "by the bot (AI moderation)", "hate speech", "50 points", "Server ladder", "Current score: 68"} {
@@ -57,29 +57,29 @@ func TestSummaryAsksTheModelWithLedgerTextOnly(t *testing.T) {
 
 func TestSummaryDegradesToTheSheetWithoutAModel(t *testing.T) {
 	h := newHarness()
-	seedEntries(h, "u1", 1)
-	s, rt := stubSession()
-	h.p.handleSummary(context.Background(), s, interaction("summary", userOpt("user", "u1")))
+	seedEntries(h, "1001", 1)
+	rt := stubSession()
+	h.p.handleSummary(context.Background(), interaction("summary", userOpt("user", "1001")))
 	if !strings.Contains(rt.said(), "Summary unavailable") || !strings.Contains(rt.said(), "No model is wired") || !strings.Contains(rt.said(), "#1 warned") {
 		t.Errorf("got %s", rt.said())
 	}
 
 	h.p.reviewer = &fakeReviewer{err: noModel{"aimod: no gateway key configured for this guild"}}
-	s2, rt2 := stubSession()
-	h.p.handleSummary(context.Background(), s2, interaction("summary", userOpt("user", "u1")))
+	rt2 := stubSession()
+	h.p.handleSummary(context.Background(), interaction("summary", userOpt("user", "1001")))
 	if !strings.Contains(rt2.said(), "no model key is configured") || strings.Contains(rt2.said(), "aimod:") || !strings.Contains(rt2.said(), "#1 warned") {
 		t.Errorf("got %s", rt2.said())
 	}
 
 	h.p.reviewer = &fakeReviewer{err: errors.New("gateway exploded")}
-	s3, rt3 := stubSession()
-	h.p.handleSummary(context.Background(), s3, interaction("summary", userOpt("user", "u1")))
+	rt3 := stubSession()
+	h.p.handleSummary(context.Background(), interaction("summary", userOpt("user", "1001")))
 	if !strings.Contains(rt3.said(), "did not answer") {
 		t.Errorf("a real failure should say so: %s", rt3.said())
 	}
 
-	s4, rt4 := stubSession()
-	h.p.handleSummary(context.Background(), s4, interaction("summary", userOpt("user", "clean")))
+	rt4 := stubSession()
+	h.p.handleSummary(context.Background(), interaction("summary", userOpt("user", "clean")))
 	if !strings.Contains(rt4.said(), "nothing to summarise") {
 		t.Errorf("got %s", rt4.said())
 	}
@@ -107,8 +107,8 @@ func TestWeeklyReviewRunsOnlyWhereItCanAndPostsToTheModChannel(t *testing.T) {
 	if err := h.sched.RunNow(context.Background(), reviewKey(testGuild)); err != nil || rev.calls != 0 || len(h.ops.sentTo("mods")) != 0 {
 		t.Errorf("empty month: err %v calls %d posts %d", err, rev.calls, len(h.ops.sentTo("mods")))
 	}
-	seedEntries(h, "u1", 3)
-	seedEntries(h, "u2", 2)
+	seedEntries(h, "1001", 3)
+	seedEntries(h, "1002", 2)
 	if err := h.sched.RunNow(context.Background(), reviewKey(testGuild)); err != nil {
 		t.Fatalf("review: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestWeeklyReviewRunsOnlyWhereItCanAndPostsToTheModChannel(t *testing.T) {
 	if rev.calls != 1 || len(posts) != 1 || !strings.Contains(posts[0].Embeds[0].Description, "Otherwise consistent") || !strings.Contains(posts[0].Embeds[0].Description, "5 entries") {
 		t.Errorf("calls %d posts %+v", rev.calls, posts)
 	}
-	if strings.Contains(rev.lastUsr, "<@") || strings.Contains(rev.lastUsr, "u1") {
+	if strings.Contains(rev.lastUsr, "<@") || strings.Contains(rev.lastUsr, "1001") {
 		t.Errorf("review prompt carried ids: %s", rev.lastUsr)
 	}
 
@@ -149,8 +149,8 @@ func TestAltNoticeCarriesASecondOpinionWhenThereIsAModel(t *testing.T) {
 	banned := snowflakeAt(base)
 	h.ops.addMember(banned)
 	h.ops.users[banned] = &discordgo.User{ID: banned, Username: "dana_k", Avatar: "abc123"}
-	s, _ := stubSession()
-	h.p.handleBan(context.Background(), s, withResolved(banCmd(banned, strOpt("duration", "7d")), h.ops.users[banned]))
+	stubSession()
+	h.p.handleBan(context.Background(), withResolved(banCmd(banned, strOpt("duration", "7d")), h.ops.users[banned]))
 
 	h.p.HandleMemberJoin(context.Background(), testGuild, &discordgo.Member{
 		User: &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "danak2", Avatar: "abc123"}, JoinedAt: testNow.Add(2 * time.Minute)})
@@ -176,16 +176,16 @@ func TestAltNoticeCarriesASecondOpinionWhenThereIsAModel(t *testing.T) {
 
 func TestStatusNamesTheModelState(t *testing.T) {
 	h := newHarness()
-	s, rt := stubSession()
-	h.p.handleStatus(context.Background(), s, interaction("status"))
+	rt := stubSession()
+	h.p.handleStatus(context.Background(), interaction("status"))
 	if !strings.Contains(rt.said(), "none in this build") {
 		t.Errorf("got %s", rt.said())
 	}
 	h.p.reviewer = &fakeReviewer{}
 	withModChannel(h, ModeSuggest)
 	h.p.SyncGuild(context.Background(), testGuild)
-	s2, rt2 := stubSession()
-	h.p.handleStatus(context.Background(), s2, interaction("status"))
+	rt2 := stubSession()
+	h.p.handleStatus(context.Background(), interaction("status"))
 	if !strings.Contains(rt2.said(), "Mondays 09:00 UTC") {
 		t.Errorf("got %s", rt2.said())
 	}

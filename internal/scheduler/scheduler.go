@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 	"github.com/robfig/cron/v3"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -181,10 +182,10 @@ func (s *Scheduler) Init(deps core.Deps) error {
 		},
 	}
 	s.commands.RegisterCommand(s.Name(), cmd)
-	s.commands.Handle("scheduler", "list", core.PermSpec{Tier: core.TierMod, Action: "scheduler.list"}, s.handleList)
-	s.commands.Handle("scheduler", "run-now", core.PermSpec{Tier: core.TierMod, Action: "scheduler.run_now"}, s.handleRunNow)
-	s.commands.Autocomplete("scheduler", "run-now", s.autocompleteJob)
-	s.commands.HandleComponent(s.Name(), schedulerListComponentPrefix, core.PermSpec{Tier: core.TierMod, Action: "scheduler.list"}, s.handleListPage)
+	s.commands.HandleIx("scheduler", "list", core.PermSpec{Tier: core.TierMod, Action: "scheduler.list"}, s.handleList)
+	s.commands.HandleIx("scheduler", "run-now", core.PermSpec{Tier: core.TierMod, Action: "scheduler.run_now"}, s.handleRunNow)
+	s.commands.AutocompleteIx("scheduler", "run-now", s.autocompleteJob)
+	s.commands.HandleComponentIx(s.Name(), schedulerListComponentPrefix, core.PermSpec{Tier: core.TierMod, Action: "scheduler.list"}, s.handleListPage)
 	return nil
 }
 
@@ -517,14 +518,14 @@ func (s *Scheduler) jobsForGuild(guildID string) []*registeredJob {
 // scheduler job keys themselves aren't reused here for anything but display.
 const schedulerListComponentPrefix = "scheduler:list:page:"
 
-func (s *Scheduler) handleList(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	lines := s.jobLines(ctx, i.GuildID)
+func (s *Scheduler) handleList(ctx context.Context, ix *core.Ix) {
+	lines := s.jobLines(ctx, ix.GuildID)
 	if len(lines) == 0 {
-		core.RespondInfo(sess, i, "Registered jobs", "No background jobs are registered for this server.")
+		ix.RespondInfo("Registered jobs", "No background jobs are registered for this server.")
 		return
 	}
 	embed, components := s.renderJobsPage(lines, 0)
-	if err := core.RespondEmbedWithComponents(sess, i, embed, components); err != nil {
+	if err := ix.RespondEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
 		s.log.Error("scheduler: list response failed", "err", err)
 	}
 }
@@ -533,14 +534,14 @@ func (s *Scheduler) handleList(ctx context.Context, sess *discordgo.Session, i *
 // Prev/Next button's CustomID and edits the message in place. jobLines is
 // re-queried fresh rather than reused from the original response, since
 // nothing survives in memory between the two interactions.
-func (s *Scheduler) handleListPage(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (s *Scheduler) handleListPage(ctx context.Context, ix *core.Ix, customID string) {
 	page, err := core.ParsePaginationPage(customID, schedulerListComponentPrefix)
 	if err != nil {
 		s.log.Error("scheduler: parse pagination page", "custom_id", customID, "err", err)
 		page = 0
 	}
-	embed, components := s.renderJobsPage(s.jobLines(ctx, i.GuildID), page)
-	if err := core.UpdateEmbedWithComponents(sess, i, embed, components); err != nil {
+	embed, components := s.renderJobsPage(s.jobLines(ctx, ix.GuildID), page)
+	if err := ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
 		s.log.Error("scheduler: list page update failed", "err", err)
 	}
 }
@@ -637,13 +638,13 @@ func (s *Scheduler) renderJobsPage(lines []string, page int) (*discordgo.Message
 // posts several messages, which comfortably outlives Discord's 3-second
 // response deadline. Responding only after the job finished meant a job that
 // ran perfectly still surfaced as "the application did not respond."
-func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i *discordgo.InteractionCreate) {
+func (s *Scheduler) handleRunNow(ctx context.Context, ix *core.Ix) {
 	var jobName string
-	if opt, ok := core.LeafArgs(i)["job"]; ok {
-		jobName = opt.StringValue()
+	if opt, ok := ix.Args()["job"]; ok {
+		jobName = opt.String()
 	}
 
-	if err := core.DeferResponse(sess, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		s.log.Error("scheduler: defer run-now response failed", "job", jobName, "err", err)
 		return
 	}
@@ -655,10 +656,10 @@ func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i
 	defer cancel()
 
 	var err error
-	if runErr := s.RunNow(runCtx, JobKey(i.GuildID, jobName)); runErr != nil {
-		err = core.FollowUpErr(sess, i, fmt.Sprintf("Failed to run %q", jobName), runErr)
+	if runErr := s.RunNow(runCtx, JobKey(ix.GuildID, jobName)); runErr != nil {
+		err = ix.FollowUpErr(fmt.Sprintf("Failed to run %q", jobName), runErr)
 	} else {
-		err = core.FollowUpOK(sess, i, "Job run", fmt.Sprintf("Ran `%s`.", jobName))
+		err = ix.FollowUpOK("Job run", fmt.Sprintf("Ran `%s`.", jobName))
 	}
 	if err != nil {
 		s.log.Error("scheduler: run-now follow-up failed", "job", jobName, "err", err)
@@ -671,14 +672,14 @@ func (s *Scheduler) handleRunNow(ctx context.Context, sess *discordgo.Session, i
 // channels would lose autocomplete entirely.
 const maxAutocompleteChoices = 25
 
-func (s *Scheduler) autocompleteJob(ctx context.Context, i *discordgo.InteractionCreate, focusedOption, focusedValue string) []*discordgo.ApplicationCommandOptionChoice {
-	var choices []*discordgo.ApplicationCommandOptionChoice
-	for _, j := range s.jobsForGuild(i.GuildID) {
-		name := strings.TrimPrefix(j.key, i.GuildID+":")
+func (s *Scheduler) autocompleteJob(ctx context.Context, ix *core.Ix, focusedOption, focusedValue string) []discord.AutocompleteChoice {
+	var choices []discord.AutocompleteChoice
+	for _, j := range s.jobsForGuild(ix.GuildID) {
+		name := strings.TrimPrefix(j.key, ix.GuildID+":")
 		if focusedValue != "" && !strings.Contains(name, focusedValue) {
 			continue
 		}
-		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: name, Value: name})
+		choices = append(choices, discord.AutocompleteChoiceString{Name: name, Value: name})
 		if len(choices) == maxAutocompleteChoices {
 			break
 		}

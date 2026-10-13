@@ -162,10 +162,10 @@ func TestApprovingAPledgePublishesIt(t *testing.T) {
 
 	p := newTestPlugin(t, store, ops, sched, audit, srv.URL)
 	p.now = func() time.Time { return base }
-	s, _ := stubSession()
+	stubSession()
 
 	id := reviewPrefix + "approve:" + pr.ID
-	p.handleReviewButton(context.Background(), s, componentClick(id), id)
+	p.handleReviewButton(context.Background(), componentClick(id), id)
 
 	got, _ := store.Prizes(context.Background(), "c1")
 	if !got[0].Approved || got[0].ReviewedBy != "mod-1" {
@@ -189,10 +189,10 @@ func TestRejectingAPledgeWipesTheCodeAndKeepsTheRow(t *testing.T) {
 
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
-	s, _ := stubSession()
+	stubSession()
 
 	id := reviewPrefix + "reject:" + pr.ID
-	p.handleReviewButton(context.Background(), s, componentClick(id), id)
+	p.handleReviewButton(context.Background(), componentClick(id), id)
 
 	got, _ := store.Prizes(context.Background(), "c1")
 	if len(got) != 1 {
@@ -215,7 +215,7 @@ func TestRejectingAPledgeWipesTheCodeAndKeepsTheRow(t *testing.T) {
 	// The claim is what makes the buttons safe to leave on screen: the
 	// message a mod is looking at can be older than the queue it describes,
 	// and two mods can be working it at once.
-	p.handleReviewButton(context.Background(), s, componentClick(id), id)
+	p.handleReviewButton(context.Background(), componentClick(id), id)
 	if n := len(ops.sentTo("dm-u9")); n != 1 {
 		t.Errorf("a stale button re-ran the rejection: donor DMs = %d", n)
 	}
@@ -232,10 +232,10 @@ func TestARejectionSurvivesAClosedDM(t *testing.T) {
 
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
-	s, _ := stubSession()
+	stubSession()
 
 	id := reviewPrefix + "reject:" + pr.ID
-	p.handleReviewButton(context.Background(), s, componentClick(id), id)
+	p.handleReviewButton(context.Background(), componentClick(id), id)
 
 	got, _ := store.Prizes(context.Background(), "c1")
 	if !got[0].Rejected() || got[0].HasSecret() {

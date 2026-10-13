@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -190,36 +191,36 @@ func (p *Plugin) registerCommands() {
 	})
 
 	view := core.PermSpec{Tier: core.TierMod, Action: actionView}
-	p.commands.Handle("rapsheet", "view", view, p.handleView)
-	p.commands.Handle("rapsheet", "me", core.PermSpec{Tier: core.TierPublic, Action: actionMe}, p.handleMe)
-	p.commands.Handle("rapsheet", "warn", core.PermSpec{Tier: core.TierMod, Action: actionWarn}, p.handleWarn)
-	p.commands.Handle("rapsheet", "note", core.PermSpec{Tier: core.TierMod, Action: actionNote}, p.handleNote)
-	p.commands.Handle(cmdTimeout, "", core.PermSpec{Tier: core.TierMod, Action: actionTimeout}, p.handleTimeout)
-	p.commands.Handle(cmdKick, "", core.PermSpec{Tier: core.TierMod, Action: actionKick}, p.handleKick)
+	p.commands.HandleIx("rapsheet", "view", view, p.handleView)
+	p.commands.HandleIx("rapsheet", "me", core.PermSpec{Tier: core.TierPublic, Action: actionMe}, p.handleMe)
+	p.commands.HandleIx("rapsheet", "warn", core.PermSpec{Tier: core.TierMod, Action: actionWarn}, p.handleWarn)
+	p.commands.HandleIx("rapsheet", "note", core.PermSpec{Tier: core.TierMod, Action: actionNote}, p.handleNote)
+	p.commands.HandleIx(cmdTimeout, "", core.PermSpec{Tier: core.TierMod, Action: actionTimeout}, p.handleTimeout)
+	p.commands.HandleIx(cmdKick, "", core.PermSpec{Tier: core.TierMod, Action: actionKick}, p.handleKick)
 	// Ban is TierAdmin by default: it is the one consequence here a member
 	// cannot see the end of from inside the server, and a guild that wants
 	// mods to hold it lowers the bar on purpose with set-tier.
-	p.commands.Handle(cmdBan, "", core.PermSpec{Tier: core.TierAdmin, Action: actionBan}, p.handleBan)
-	p.commands.Handle("rapsheet", "unban", core.PermSpec{Tier: core.TierAdmin, Action: actionUnban}, p.handleUnban)
-	p.commands.Handle("rapsheet", "summary", core.PermSpec{Tier: core.TierMod, Action: actionSummary}, p.handleSummary)
+	p.commands.HandleIx(cmdBan, "", core.PermSpec{Tier: core.TierAdmin, Action: actionBan}, p.handleBan)
+	p.commands.HandleIx("rapsheet", "unban", core.PermSpec{Tier: core.TierAdmin, Action: actionUnban}, p.handleUnban)
+	p.commands.HandleIx("rapsheet", "summary", core.PermSpec{Tier: core.TierMod, Action: actionSummary}, p.handleSummary)
 	linkSpec := core.PermSpec{Tier: core.TierMod, Action: actionLink}
-	p.commands.Handle("rapsheet", "link", linkSpec, p.handleLink)
-	p.commands.Handle("rapsheet", "unlink", linkSpec, p.handleUnlink)
-	p.commands.HandleComponent(p.Name(), altPrefix, linkSpec, p.handleAltButton)
-	p.commands.Handle("rapsheet", "void", core.PermSpec{Tier: core.TierMod, Action: actionVoid}, p.handleVoid)
-	p.commands.Handle("rapsheet", "edit", core.PermSpec{Tier: core.TierMod, Action: actionEdit}, p.handleEdit)
-	p.commands.Handle("rapsheet", "list/categories", view, p.handleListCategories)
-	p.commands.Handle("rapsheet", "list/bands", view, p.handleListBands)
-	p.commands.Handle("rapsheet", "status", view, p.handleStatus)
-	p.commands.Handle("rapsheet", "settings", view, p.handleSettings)
+	p.commands.HandleIx("rapsheet", "link", linkSpec, p.handleLink)
+	p.commands.HandleIx("rapsheet", "unlink", linkSpec, p.handleUnlink)
+	p.commands.HandleComponentIx(p.Name(), altPrefix, linkSpec, p.handleAltButton)
+	p.commands.HandleIx("rapsheet", "void", core.PermSpec{Tier: core.TierMod, Action: actionVoid}, p.handleVoid)
+	p.commands.HandleIx("rapsheet", "edit", core.PermSpec{Tier: core.TierMod, Action: actionEdit}, p.handleEdit)
+	p.commands.HandleIx("rapsheet", "list/categories", view, p.handleListCategories)
+	p.commands.HandleIx("rapsheet", "list/bands", view, p.handleListBands)
+	p.commands.HandleIx("rapsheet", "status", view, p.handleStatus)
+	p.commands.HandleIx("rapsheet", "settings", view, p.handleSettings)
 	p.registerPanel()
 
-	p.commands.HandleComponent(p.Name(), suggestPrefix, core.PermSpec{Tier: core.TierMod, Action: actionApply}, p.handleSuggestion)
-	p.commands.HandleComponent(p.Name(), viewPrefix, view, p.handleViewPage)
+	p.commands.HandleComponentIx(p.Name(), suggestPrefix, core.PermSpec{Tier: core.TierMod, Action: actionApply}, p.handleSuggestion)
+	p.commands.HandleComponentIx(p.Name(), viewPrefix, view, p.handleViewPage)
 	// Paging a public post is mod-only like the post itself: the button id
 	// names the member, and the sheet it renders is one a mod chose to show.
-	p.commands.HandleComponent(p.Name(), pubPrefix, view, p.handlePubPage)
-	p.commands.HandleComponent(p.Name(), mePrefix, core.PermSpec{Tier: core.TierPublic, Action: actionMe}, p.handleMePage)
+	p.commands.HandleComponentIx(p.Name(), pubPrefix, view, p.handlePubPage)
+	p.commands.HandleComponentIx(p.Name(), mePrefix, core.PermSpec{Tier: core.TierPublic, Action: actionMe}, p.handleMePage)
 }
 
 // categoryOption is the fixed category picker. Twelve values known at
@@ -242,21 +243,17 @@ func categoryOption() *discordgo.ApplicationCommandOption {
 
 func ptr[T any](v T) *T { return &v }
 
-func actorID(i *discordgo.InteractionCreate) string {
-	if i.Member != nil && i.Member.User != nil {
-		return i.Member.User.ID
+func actorID(ix *core.Ix) string {
+	if ix.Member() != nil {
+		return ix.UserID
 	}
 	return ""
 }
 
 // resolvedUser is the user object Discord attached to a User option, free
 // with the interaction, or nil for an id it did not resolve.
-func resolvedUser(i *discordgo.InteractionCreate, userID string) *discordgo.User {
-	data := i.ApplicationCommandData()
-	if data.Resolved == nil {
-		return nil
-	}
-	return data.Resolved.Users[userID]
+func resolvedUser(ix *core.Ix, userID string) *discordgo.User {
+	return ix.ResolvedUserGo(userID)
 }
 
 // viewTarget reads /rapsheet view's user input: an @mention (<@id> or
@@ -268,17 +265,17 @@ func resolvedUser(i *discordgo.InteractionCreate, userID string) *discordgo.User
 // the sheet, and it is the only thing that tells a typo from somebody
 // with a clean record: Discord saying the account does not exist refuses;
 // any other failure renders without a name rather than blocking a read.
-func (p *Plugin) viewTarget(i *discordgo.InteractionCreate, o *discordgo.ApplicationCommandInteractionDataOption) (string, *discordgo.User, error) {
-	if o.Type == discordgo.ApplicationCommandOptionUser {
-		id := o.Value.(string)
-		return id, resolvedUser(i, id), nil
+func (p *Plugin) viewTarget(ix *core.Ix, o discord.SlashCommandOption) (string, *discordgo.User, error) {
+	if o.Type == discord.ApplicationCommandOptionTypeUser {
+		id := o.String()
+		return id, resolvedUser(ix, id), nil
 	}
-	raw := strings.TrimSpace(o.StringValue())
+	raw := strings.TrimSpace(o.String())
 	id := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(raw, "<@"), "!"), ">")
 	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
 		return "", nil, fmt.Errorf("%q is not a member or a user ID; use @name, or paste the numeric ID", raw)
 	}
-	u, err := p.ops(i.GuildID).User(id)
+	u, err := p.ops(ix.GuildID).User(id)
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			return "", nil, fmt.Errorf("no Discord account has the ID %s", id)
@@ -310,27 +307,27 @@ func displayName(u *discordgo.User, cf *CaseFile, userID string) string {
 
 // --- view -----------------------------------------------------------------
 
-func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	userID, u, err := p.viewTarget(i, args["user"])
+func (p *Plugin) handleView(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	userID, u, err := p.viewTarget(ix, args["user"])
 	if err != nil {
-		core.RespondErr(s, i, "Rapsheet", err)
+		ix.RespondErr("Rapsheet", err)
 		return
 	}
 	page := 0
 	if a, ok := args["page"]; ok {
-		page = int(a.IntValue()) - 1
+		page = int(int64(a.Int())) - 1
 	}
-	if a, ok := args["public"]; ok && a.BoolValue() {
-		p.postView(ctx, s, i, userID, u, page)
+	if a, ok := args["public"]; ok && a.Bool() {
+		p.postView(ctx, ix, userID, u, page)
 		return
 	}
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, u, page, false, false)
+	embed, components, err := p.renderFor(ctx, ix.GuildID, userID, u, page, false, false)
 	if err != nil {
-		core.RespondErr(s, i, "Rapsheet", err)
+		ix.RespondErr("Rapsheet", err)
 		return
 	}
-	if err := core.RespondEmbedWithComponents(s, i, embed, components); err != nil {
+	if err := ix.RespondEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
 		p.log.Error("rapsheet: view response", "err", err)
 	}
 }
@@ -339,66 +336,58 @@ func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discor
 // privately, because Discord will not forward an ephemeral message. It is
 // the mod view with the linked-accounts and alt-hint lines left off (see
 // view.go), since a channel post can be forwarded anywhere.
-func (p *Plugin) postView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, userID string, u *discordgo.User, page int) {
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, u, page, false, true)
+func (p *Plugin) postView(ctx context.Context, ix *core.Ix, userID string, u *discordgo.User, page int) {
+	embed, components, err := p.renderFor(ctx, ix.GuildID, userID, u, page, false, true)
 	if err != nil {
-		core.RespondErr(s, i, "Rapsheet", err)
+		ix.RespondErr("Rapsheet", err)
 		return
 	}
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Embeds:          []*discordgo.MessageEmbed{embed},
-			Components:      components,
-			Files:           core.EmbedFiles(embed),
-			AllowedMentions: &discordgo.MessageAllowedMentions{},
-		},
-	})
+	err = ix.RespondPublic(core.EmbedOf(embed), core.LayoutOf(components))
 	if err != nil {
 		p.log.Error("rapsheet: public view response", "err", err)
 	}
 }
 
-func (p *Plugin) handleViewPage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.turnPage(ctx, s, i, customID, viewPrefix, false)
+func (p *Plugin) handleViewPage(ctx context.Context, ix *core.Ix, customID string) {
+	p.turnPage(ctx, ix, customID, viewPrefix, false)
 }
 
 // handlePubPage pages a public post. Its buttons carry their own prefix so
 // a click keeps the alts lines off: sharing the mod view's buttons would put
 // linked accounts and hints into the channel on the first click.
-func (p *Plugin) handlePubPage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.turnPage(ctx, s, i, customID, pubPrefix, true)
+func (p *Plugin) handlePubPage(ctx context.Context, ix *core.Ix, customID string) {
+	p.turnPage(ctx, ix, customID, pubPrefix, true)
 }
 
-func (p *Plugin) turnPage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID, prefix string, hideAlts bool) {
+func (p *Plugin) turnPage(ctx context.Context, ix *core.Ix, customID, prefix string, hideAlts bool) {
 	userID, page, err := parseSheetCustomID(prefix, customID)
 	if err != nil {
 		p.log.Error("rapsheet: parse sheet page", "custom_id", customID, "err", err)
 		return
 	}
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, nil, page, false, hideAlts)
+	embed, components, err := p.renderFor(ctx, ix.GuildID, userID, nil, page, false, hideAlts)
 	if err != nil {
 		p.log.Error("rapsheet: sheet page", "err", err)
 		return
 	}
-	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
+	if err := ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
 		p.log.Error("rapsheet: sheet page update", "err", err)
 	}
 }
 
-func (p *Plugin) handleMe(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := actorID(i)
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, i.Member.User, 0, true, false)
+func (p *Plugin) handleMe(ctx context.Context, ix *core.Ix) {
+	userID := actorID(ix)
+	embed, components, err := p.renderFor(ctx, ix.GuildID, userID, ix.MemberGo().User, 0, true, false)
 	if err != nil {
-		core.RespondErr(s, i, "Your record", err)
+		ix.RespondErr("Your record", err)
 		return
 	}
-	if err := core.RespondEmbedWithComponents(s, i, embed, components); err != nil {
+	if err := ix.RespondEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
 		p.log.Error("rapsheet: me response", "err", err)
 	}
 }
 
-func (p *Plugin) handleMePage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleMePage(ctx context.Context, ix *core.Ix, customID string) {
 	page, err := core.ParsePaginationPage(customID, mePrefix)
 	if err != nil {
 		p.log.Error("rapsheet: parse me page", "custom_id", customID, "err", err)
@@ -407,12 +396,12 @@ func (p *Plugin) handleMePage(ctx context.Context, s *discordgo.Session, i *disc
 	// The subject is whoever clicked, never anything in the CustomID: a
 	// member paging their own sheet must not be able to page somebody
 	// else's by editing a button id.
-	embed, components, err := p.renderFor(ctx, i.GuildID, actorID(i), i.Member.User, page, true, false)
+	embed, components, err := p.renderFor(ctx, ix.GuildID, actorID(ix), ix.MemberGo().User, page, true, false)
 	if err != nil {
 		p.log.Error("rapsheet: me page", "err", err)
 		return
 	}
-	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
+	if err := ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
 		p.log.Error("rapsheet: me page update", "err", err)
 	}
 }
@@ -457,14 +446,14 @@ func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *disco
 // thing to record, so the rank check runs on an empty role set (which still
 // refuses the bootstrap operator and DB-listed admins) and the caller
 // decides whether its action makes sense for an absent member.
-func (p *Plugin) checkTarget(_ context.Context, i *discordgo.InteractionCreate, userID string) (member *discordgo.Member, present bool, err error) {
-	if userID == actorID(i) {
+func (p *Plugin) checkTarget(_ context.Context, ix *core.Ix, userID string) (member *discordgo.Member, present bool, err error) {
+	if userID == actorID(ix) {
 		return nil, false, errors.New("you cannot put an entry on your own sheet")
 	}
-	if u := resolvedUser(i, userID); u != nil && u.Bot {
+	if u := resolvedUser(ix, userID); u != nil && u.Bot {
 		return nil, false, errors.New("that is a bot")
 	}
-	member, err = p.ops(i.GuildID).GuildMember(i.GuildID, userID)
+	member, err = p.ops(ix.GuildID).GuildMember(ix.GuildID, userID)
 	present = err == nil
 	if err != nil {
 		if !core.IsUnknownResource(err) {
@@ -472,7 +461,7 @@ func (p *Plugin) checkTarget(_ context.Context, i *discordgo.InteractionCreate, 
 		}
 		member = &discordgo.Member{User: &discordgo.User{ID: userID}}
 	}
-	if err := p.perms.CanModerate(i.GuildID, i.Member, userID, member.Roles); err != nil {
+	if err := p.perms.CanModerate(ix.GuildID, ix.MemberGo(), userID, member.Roles); err != nil {
 		var forbidden core.ErrForbidden
 		if errors.As(err, &forbidden) {
 			if strings.Contains(forbidden.Reason, "bootstrap") {
@@ -485,47 +474,47 @@ func (p *Plugin) checkTarget(_ context.Context, i *discordgo.InteractionCreate, 
 	return member, present, nil
 }
 
-func (p *Plugin) handleWarn(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	userID := args["user"].Value.(string)
-	category := Category(args["category"].StringValue())
-	reason := strings.TrimSpace(args["reason"].StringValue())
+func (p *Plugin) handleWarn(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	userID := args["user"].String()
+	category := Category(args["category"].String())
+	reason := strings.TrimSpace(args["reason"].String())
 	override := 0
 	if a, ok := args["points"]; ok {
-		override = int(a.IntValue())
+		override = int(int64(a.Int()))
 	}
 
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer warn", "err", err)
 		return
 	}
-	if _, _, err := p.checkTarget(ctx, i, userID); err != nil {
-		_ = core.FollowUpErr(s, i, "Not warned", err)
+	if _, _, err := p.checkTarget(ctx, ix, userID); err != nil {
+		_ = ix.FollowUpErr("Not warned", err)
 		return
 	}
 
-	cfg := p.config(ctx, i.GuildID)
+	cfg := p.config(ctx, ix.GuildID)
 	e, _, err := p.record(ctx, cfg, newEntry{
-		GuildID: i.GuildID, UserID: userID, Kind: KindWarn, Category: category,
-		ActorID: actorID(i), Reason: reason, Source: SourceCommand,
-		PointsOverride: override, Identity: resolvedUser(i, userID),
+		GuildID: ix.GuildID, UserID: userID, Kind: KindWarn, Category: category,
+		ActorID: actorID(ix), Reason: reason, Source: SourceCommand,
+		PointsOverride: override, Identity: resolvedUser(ix, userID),
 	})
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Not warned", err)
+		_ = ix.FollowUpErr("Not warned", err)
 		return
 	}
 
-	p.notifyWarned(ctx, i.GuildID, userID, category, reason)
+	p.notifyWarned(ctx, ix.GuildID, userID, category, reason)
 	p.auditEntry(ctx, "rapsheet.warn", e)
-	_ = core.FollowUpOK(s, i, "Warned", p.caseSummary(ctx, cfg, e))
+	_ = ix.FollowUpOK("Warned", p.caseSummary(ctx, cfg, e))
 }
 
-func (p *Plugin) handleNote(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	userID := args["user"].Value.(string)
-	reason := strings.TrimSpace(args["reason"].StringValue())
+func (p *Plugin) handleNote(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	userID := args["user"].String()
+	reason := strings.TrimSpace(args["reason"].String())
 
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer note", "err", err)
 		return
 	}
@@ -533,17 +522,17 @@ func (p *Plugin) handleNote(ctx context.Context, s *discordgo.Session, i *discor
 	// that an admin said something worth remembering. It carries no points
 	// and is never shown to its subject, so there is nothing to escalate
 	// and nothing to retaliate against.
-	cfg := p.config(ctx, i.GuildID)
+	cfg := p.config(ctx, ix.GuildID)
 	e, _, err := p.record(ctx, cfg, newEntry{
-		GuildID: i.GuildID, UserID: userID, Kind: KindNote,
-		ActorID: actorID(i), Reason: reason, Source: SourceCommand, Identity: resolvedUser(i, userID),
+		GuildID: ix.GuildID, UserID: userID, Kind: KindNote,
+		ActorID: actorID(ix), Reason: reason, Source: SourceCommand, Identity: resolvedUser(ix, userID),
 	})
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Note", err)
+		_ = ix.FollowUpErr("Note", err)
 		return
 	}
 	p.auditEntry(ctx, "rapsheet.note", e)
-	_ = core.FollowUpOK(s, i, "Noted", fmt.Sprintf("Case #%d added to %s's sheet.", e.ID, core.MentionUser(userID)))
+	_ = ix.FollowUpOK("Noted", fmt.Sprintf("Case #%d added to %s's sheet.", e.ID, core.MentionUser(userID)))
 }
 
 // caseSummary is the follow-up after a scored entry: the case number, what
@@ -608,51 +597,51 @@ func (p *Plugin) canAmend(guildID string, actor *discordgo.Member, e Entry) erro
 	return nil
 }
 
-func (p *Plugin) handleVoid(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	id := args["case"].IntValue()
-	reason := strings.TrimSpace(args["reason"].StringValue())
+func (p *Plugin) handleVoid(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	id := int64(args["case"].Int())
+	reason := strings.TrimSpace(args["reason"].String())
 
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer void", "err", err)
 		return
 	}
-	e, err := p.store.Entry(ctx, i.GuildID, id)
+	e, err := p.store.Entry(ctx, ix.GuildID, id)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Not voided", err)
+		_ = ix.FollowUpErr("Not voided", err)
 		return
 	}
 	if e.Voided() {
-		_ = core.FollowUpErr(s, i, "Not voided", fmt.Errorf("case #%d is already voided", e.ID))
+		_ = ix.FollowUpErr("Not voided", fmt.Errorf("case #%d is already voided", e.ID))
 		return
 	}
-	if err := p.canAmend(i.GuildID, i.Member, e); err != nil {
-		_ = core.FollowUpErr(s, i, "Not voided", err)
+	if err := p.canAmend(ix.GuildID, ix.MemberGo(), e); err != nil {
+		_ = ix.FollowUpErr("Not voided", err)
 		return
 	}
 	if e.Kind == KindBan && e.Standing(p.now()) {
 		// Voiding the record of a ban that is still in force would leave a
 		// banned member with nothing saying so and nothing scheduled to lift
 		// it. The unban is the decision; the void follows from it.
-		_ = core.FollowUpErr(s, i, "Not voided", fmt.Errorf("case #%d is a ban still in force; unban first", e.ID))
+		_ = ix.FollowUpErr("Not voided", fmt.Errorf("case #%d is a ban still in force; unban first", e.ID))
 		return
 	}
 	now := p.now()
 	// Read before the entry is marked voided below: a voided entry is by
 	// definition not standing, and the consequence still is.
 	wasStanding := e.Standing(now)
-	if err := p.store.Void(ctx, i.GuildID, e.ID, actorID(i), reason, now); err != nil {
-		_ = core.FollowUpErr(s, i, "Not voided", err)
+	if err := p.store.Void(ctx, ix.GuildID, e.ID, actorID(ix), reason, now); err != nil {
+		_ = ix.FollowUpErr("Not voided", err)
 		return
 	}
-	e.VoidedAt, e.VoidedBy, e.VoidReason = &now, actorID(i), reason
+	e.VoidedAt, e.VoidedBy, e.VoidReason = &now, actorID(ix), reason
 	p.afterAmend(ctx, e)
 	if e.Points > 0 {
-		p.withdrawStaleSuggestions(ctx, p.config(ctx, i.GuildID), i.GuildID, e.UserID)
+		p.withdrawStaleSuggestions(ctx, p.config(ctx, ix.GuildID), ix.GuildID, e.UserID)
 	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.void", "",
+	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "rapsheet.void", "",
 		fmt.Sprintf("case #%d user=%s was %s reason=%q", e.ID, core.MentionUser(e.UserID), kindWords(e), reason)); err != nil {
-		p.log.Error("rapsheet: audit void", "guild", i.GuildID, "err", err)
+		p.log.Error("rapsheet: audit void", "guild", ix.GuildID, "err", err)
 	}
 	msg := fmt.Sprintf("Case #%d voided. It stays on the sheet, struck through, and counts for nothing.", e.ID)
 	switch {
@@ -662,44 +651,44 @@ func (p *Plugin) handleVoid(ctx context.Context, s *discordgo.Session, i *discor
 		// A timeout is this plugin's own to lift, so voiding its record
 		// lifts it: a struck-through timeout that stays in force would be
 		// the sheet saying one thing and Discord doing another.
-		if err := p.ops(i.GuildID).GuildMemberTimeout(i.GuildID, e.UserID, nil); err != nil {
+		if err := p.ops(ix.GuildID).GuildMemberTimeout(ix.GuildID, e.UserID, nil); err != nil {
 			msg += fmt.Sprintf(" The timeout itself could not be lifted (%v); clear it by hand.", err)
 		} else {
 			msg += " The timeout was lifted."
 		}
 	}
-	_ = core.FollowUpOK(s, i, "Voided", msg)
+	_ = ix.FollowUpOK("Voided", msg)
 }
 
-func (p *Plugin) handleEdit(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	id := args["case"].IntValue()
-	reason := strings.TrimSpace(args["reason"].StringValue())
+func (p *Plugin) handleEdit(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	id := int64(args["case"].Int())
+	reason := strings.TrimSpace(args["reason"].String())
 
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer edit", "err", err)
 		return
 	}
-	e, err := p.store.Entry(ctx, i.GuildID, id)
+	e, err := p.store.Entry(ctx, ix.GuildID, id)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Not edited", err)
+		_ = ix.FollowUpErr("Not edited", err)
 		return
 	}
-	if err := p.canAmend(i.GuildID, i.Member, e); err != nil {
-		_ = core.FollowUpErr(s, i, "Not edited", err)
+	if err := p.canAmend(ix.GuildID, ix.MemberGo(), e); err != nil {
+		_ = ix.FollowUpErr("Not edited", err)
 		return
 	}
 	old := e.Reason
-	if err := p.store.UpdateReason(ctx, i.GuildID, e.ID, reason); err != nil {
-		_ = core.FollowUpErr(s, i, "Not edited", err)
+	if err := p.store.UpdateReason(ctx, ix.GuildID, e.ID, reason); err != nil {
+		_ = ix.FollowUpErr("Not edited", err)
 		return
 	}
 	e.Reason = reason
 	p.afterAmend(ctx, e)
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.edit", old, fmt.Sprintf("case #%d: %s", e.ID, reason)); err != nil {
-		p.log.Error("rapsheet: audit edit", "guild", i.GuildID, "err", err)
+	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "rapsheet.edit", old, fmt.Sprintf("case #%d: %s", e.ID, reason)); err != nil {
+		p.log.Error("rapsheet: audit edit", "guild", ix.GuildID, "err", err)
 	}
-	_ = core.FollowUpOK(s, i, "Edited", fmt.Sprintf("Case #%d's reason updated.", e.ID))
+	_ = ix.FollowUpOK("Edited", fmt.Sprintf("Case #%d's reason updated.", e.ID))
 }
 
 // afterAmend is everything that follows a void or edit and must not fail
@@ -710,11 +699,11 @@ func (p *Plugin) afterAmend(ctx context.Context, e Entry) {
 
 // --- list / status ----------------------------------------------------------
 
-func (p *Plugin) handleListCategories(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg := p.config(ctx, i.GuildID)
+func (p *Plugin) handleListCategories(ctx context.Context, ix *core.Ix) {
+	cfg := p.config(ctx, ix.GuildID)
 	// Highest first, then by name, so the list reads as the ladder does.
 	sorted := append([]Category(nil), categories...)
-	pts := func(c Category) int { return pointsFor(cfg, KindWarn, c, actorID(i), 0) }
+	pts := func(c Category) int { return pointsFor(cfg, KindWarn, c, actorID(ix), 0) }
 	sort.SliceStable(sorted, func(a, b int) bool {
 		if pts(sorted[a]) != pts(sorted[b]) {
 			return pts(sorted[a]) > pts(sorted[b])
@@ -730,11 +719,11 @@ func (p *Plugin) handleListCategories(ctx context.Context, s *discordgo.Session,
 		b.WriteString("\n")
 	}
 	b.WriteString("\nThese are what one offence costs when a moderator records it, or when aimod removes a message. A jail, timeout or ban that follows from an offence carries no points of its own: the offence already did.")
-	core.RespondInfo(s, i, "Categories", b.String())
+	ix.RespondInfo("Categories", b.String())
 }
 
-func (p *Plugin) handleListBands(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg := p.config(ctx, i.GuildID)
+func (p *Plugin) handleListBands(ctx context.Context, ix *core.Ix) {
+	cfg := p.config(ctx, ix.GuildID)
 	bands := cfg.Bands
 	note := ""
 	if len(bands) == 0 {
@@ -746,11 +735,11 @@ func (p *Plugin) handleListBands(ctx context.Context, s *discordgo.Session, i *d
 		b.WriteString(band.String() + "\n")
 	}
 	fmt.Fprintf(&b, "\nMode: **%s**. Half-life: **%s**.%s", cfg.EscalationMode, core.FormatDuration(cfg.HalfLife), note)
-	core.RespondInfo(s, i, "Ladder", b.String())
+	ix.RespondInfo("Ladder", b.String())
 }
 
-func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg := p.config(ctx, i.GuildID)
+func (p *Plugin) handleStatus(ctx context.Context, ix *core.Ix) {
+	cfg := p.config(ctx, ix.GuildID)
 	var b strings.Builder
 	warn := false
 	fmt.Fprintf(&b, "**Escalation:** %s\n", cfg.EscalationMode)
@@ -763,11 +752,11 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 			warn = true
 		}
 	}
-	switch ok, err := p.auditLogPermission(i.GuildID); {
+	switch ok, err := p.auditLogPermission(ix.GuildID); {
 	case err != nil:
 		// Not interpolated: a Discord error is a paragraph, and the one
 		// fact that matters here is that the check did not happen.
-		p.log.Warn("rapsheet: check View Audit Log", "guild", i.GuildID, "err", err)
+		p.log.Warn("rapsheet: check View Audit Log", "guild", ix.GuildID, "err", err)
 		b.WriteString("**Discord's own bans and kicks:** could not check whether merlin holds View Audit Log; try again in a moment.\n")
 	case ok:
 		b.WriteString("**Discord's own bans and kicks:** recorded (View Audit Log held)\n")
@@ -775,20 +764,20 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		b.WriteString("⚠️ merlin does not hold View Audit Log, so bans, kicks and timeouts done through Discord itself are not recorded. Re-invite with the rapsheet link in the README.\n")
 		warn = true
 	}
-	if n, err := p.store.CountPendingBans(ctx, i.GuildID); err == nil && n > 0 {
+	if n, err := p.store.CountPendingBans(ctx, ix.GuildID); err == nil && n > 0 {
 		fmt.Fprintf(&b, "**Temporary bans pending:** %d\n", n)
 	}
 	switch {
 	case p.reviewer == nil:
 		b.WriteString("**Model:** none in this build; summaries and the weekly review are off.\n")
-	case p.reviewRegistered[i.GuildID]:
+	case p.reviewRegistered[ix.GuildID]:
 		b.WriteString("**Weekly review:** Mondays 09:00 UTC, in the mod channel, on the AI moderation model and budget.\n")
 	default:
 		b.WriteString("**Weekly review:** not running (needs a mode other than off and a mod channel). `/rapsheet summary` still works if AI moderation has a key.\n")
 	}
 	if cfg.ForumChannelID != "" {
 		fmt.Fprintf(&b, "**Case files:** %s\n", core.MentionChannel(cfg.ForumChannelID))
-		if n, err := p.store.CountUnmirrored(ctx, i.GuildID); err == nil && n > 0 {
+		if n, err := p.store.CountUnmirrored(ctx, ix.GuildID); err == nil && n > 0 {
 			fmt.Fprintf(&b, "⚠️ %d entries are not mirrored into a case file yet.\n", n)
 			warn = true
 		}
@@ -796,10 +785,10 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		b.WriteString("**Case files:** no forum set; entries live in the database only.\n")
 	}
 	if warn {
-		core.RespondWarn(s, i, "Rapsheet status", strings.TrimRight(b.String(), "\n"))
+		ix.RespondWarn("Rapsheet status", strings.TrimRight(b.String(), "\n"))
 		return
 	}
-	core.RespondInfo(s, i, "Rapsheet status", strings.TrimRight(b.String(), "\n"))
+	ix.RespondInfo("Rapsheet status", strings.TrimRight(b.String(), "\n"))
 }
 
 func onOff(b bool) string {

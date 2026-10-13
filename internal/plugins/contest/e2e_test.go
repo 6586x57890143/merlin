@@ -122,11 +122,11 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 
 	now := base
 	p.now = func() time.Time { return now }
-	sess, _ := stubSession()
+	stubSession()
 
 	// --- a mod starts it ---------------------------------------------------
 
-	p.handleNew(context.Background(), sess, interaction("new",
+	p.handleNew(context.Background(), interaction("new",
 		strOpt("title", "Neon Cats"), strOpt("theme", "cats, but neon"),
 		strOpt("announce-for", "1h"), strOpt("submit-for", "48h"), strOpt("vote-for", "24h"),
 		intOpt("picks", 3)))
@@ -151,10 +151,10 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 
 	// --- two people pledge prizes while it is still being announced --------
 
-	p.handlePrizeModal(context.Background(), sess, modalSubmit(prizeModalPrefix+c.ID, map[string]string{
+	p.handlePrizeModal(context.Background(), modalSubmit(prizeModalPrefix+c.ID, map[string]string{
 		prizeFieldTitle: "a steam key", prizeFieldCode: "STEAM-AAAA-BBBB",
 	}), prizeModalPrefix+c.ID)
-	p.handlePrizeModal(context.Background(), sess, modalSubmit(prizeModalPrefix+c.ID, map[string]string{
+	p.handlePrizeModal(context.Background(), modalSubmit(prizeModalPrefix+c.ID, map[string]string{
 		prizeFieldTitle: "a drawing of your cat",
 	}), prizeModalPrefix+c.ID)
 	prizes, err := store.Prizes(context.Background(), c.ID)
@@ -171,7 +171,7 @@ func TestTwelveMembersRunAWholeContest(t *testing.T) {
 		t.Fatalf("an unreviewed pledge reached the announce channel: %d posts", len(ops.sentTo(c.AnnounceChannelID)))
 	}
 	for _, pr := range prizes {
-		p.handleReviewButton(context.Background(), sess, componentClick(reviewPrefix+"approve:"+pr.ID),
+		p.handleReviewButton(context.Background(), componentClick(reviewPrefix+"approve:"+pr.ID),
 			reviewPrefix+"approve:"+pr.ID)
 	}
 	prizes, _ = store.Prizes(context.Background(), c.ID)
@@ -393,21 +393,21 @@ func TestAWholeContestWithNoVotesCrownsNobody(t *testing.T) {
 
 	now := base
 	p.now = func() time.Time { return now }
-	sess, _ := stubSession()
+	stubSession()
 
-	p.handleNew(context.Background(), sess, interaction("new",
+	p.handleNew(context.Background(), interaction("new",
 		strOpt("title", "quiet one"), strOpt("announce-for", "0")))
 	c, err := store.LiveContest(context.Background(), "g1")
 	if err != nil {
 		t.Fatalf("no contest: %v", err)
 	}
-	p.handlePrizeModal(context.Background(), sess, modalSubmit(prizeModalPrefix+c.ID, map[string]string{
+	p.handlePrizeModal(context.Background(), modalSubmit(prizeModalPrefix+c.ID, map[string]string{
 		prizeFieldTitle: "a steam key", prizeFieldCode: "STEAM-CCCC-DDDD",
 	}), prizeModalPrefix+c.ID)
 	// Approved, so that "nothing was awarded" below is about nobody voting
 	// rather than about the pledge never having been reviewed.
 	pending, _ := store.Prizes(context.Background(), c.ID)
-	p.handleReviewButton(context.Background(), sess, componentClick(reviewPrefix+"approve:"+pending[0].ID),
+	p.handleReviewButton(context.Background(), componentClick(reviewPrefix+"approve:"+pending[0].ID),
 		reviewPrefix+"approve:"+pending[0].ID)
 
 	for n, m := range testGroup[:3] {

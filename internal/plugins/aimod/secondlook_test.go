@@ -38,7 +38,7 @@ func TestSecondLookGatesRegexSlurHits(t *testing.T) {
 			cfg.BucketActions[BucketHateSpeech] = ActionRewrite
 			store.setConfig(cfg)
 
-			p.HandleMessage(&discordgo.Message{
+			p.handleGo(&discordgo.Message{
 				ID: "m1", GuildID: "g1", ChannelID: "c1", Content: tc.content,
 				Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
 			})

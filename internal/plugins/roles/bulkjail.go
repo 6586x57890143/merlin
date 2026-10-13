@@ -311,52 +311,52 @@ func (p *Plugin) validateJailRoleTarget(guildID, roleID string) error {
 // reasoning that already puts configure_jail_channels on its own Admin-only
 // action. A guild that wants its mods to have this can lower it deliberately
 // with /config permissions set-tier roles.jail_role.
-func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
-	roleID := opts["role"].Value.(string)
-	duration, err := parseSentence(opts["duration"].StringValue())
+func (p *Plugin) handleJailRole(ctx context.Context, ix *core.Ix) {
+	opts := ix.Args()
+	roleID := opts["role"].String()
+	duration, err := parseSentence(opts["duration"].String())
 	if err != nil {
-		core.RespondErr(s, i, "Invalid duration", err)
+		ix.RespondErr("Invalid duration", err)
 		return
 	}
 	reason := ""
 	if v, ok := opts["reason"]; ok {
-		reason = v.StringValue()
+		reason = v.String()
 	}
 
 	// Enumerating a large guild plus up to maxBulkJailTargets member edits is
 	// far past Discord's 3-second deadline. Every path below answers with a
 	// follow-up.
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("roles: defer jail-role response failed", "guild", i.GuildID, "err", err)
+	if err := ix.Defer(); err != nil {
+		p.log.Error("roles: defer jail-role response failed", "guild", ix.GuildID, "err", err)
 		return
 	}
 	fail := func(title string, err error) {
-		if ferr := core.FollowUpErr(s, i, title, err); ferr != nil {
-			p.log.Error("roles: jail-role follow-up failed", "guild", i.GuildID, "err", ferr)
+		if ferr := ix.FollowUpErr(title, err); ferr != nil {
+			p.log.Error("roles: jail-role follow-up failed", "guild", ix.GuildID, "err", ferr)
 		}
 	}
 
-	if err := p.validateJailRoleTarget(i.GuildID, roleID); err != nil {
+	if err := p.validateJailRoleTarget(ix.GuildID, roleID); err != nil {
 		fail("Cannot jail that role", err)
 		return
 	}
 
-	if p.dryRun(i.GuildID) {
-		targets, complete, err := p.membersWithRole(i.GuildID, roleID)
+	if p.dryRun(ix.GuildID) {
+		targets, complete, err := p.membersWithRole(ix.GuildID, roleID)
 		if err != nil {
 			fail("Dry-run: failed to enumerate members", err)
 			return
 		}
 		msg := fmt.Sprintf("Dry-run is enabled, so nobody was jailed. <@&%s> currently has %s member(s) who would be considered.",
 			roleID, describeCount(len(targets), complete))
-		if ferr := core.FollowUpOK(s, i, "Dry-run", msg); ferr != nil {
-			p.log.Error("roles: jail-role dry-run follow-up failed", "guild", i.GuildID, "err", ferr)
+		if ferr := ix.FollowUpOK("Dry-run", msg); ferr != nil {
+			p.log.Error("roles: jail-role dry-run follow-up failed", "guild", ix.GuildID, "err", ferr)
 		}
 		return
 	}
 
-	targets, complete, err := p.membersWithRole(i.GuildID, roleID)
+	targets, complete, err := p.membersWithRole(ix.GuildID, roleID)
 	if err != nil {
 		fail("Failed to list members", fmt.Errorf("%w (note this needs the privileged GUILD_MEMBERS intent)", err))
 		return
@@ -379,10 +379,10 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 		return
 	}
 
-	targets = p.excludeSelfAndBot(targets, actorID(i), s)
+	targets = p.excludeSelfAndBot(targets, actorID(ix), p.session)
 	if len(targets) == 0 {
-		if ferr := core.FollowUpOK(s, i, "Nobody to jail", fmt.Sprintf("No other members hold <@&%s>.", roleID)); ferr != nil {
-			p.log.Error("roles: jail-role follow-up failed", "guild", i.GuildID, "err", ferr)
+		if ferr := ix.FollowUpOK("Nobody to jail", fmt.Sprintf("No other members hold <@&%s>.", roleID)); ferr != nil {
+			p.log.Error("roles: jail-role follow-up failed", "guild", ix.GuildID, "err", ferr)
 		}
 		return
 	}
@@ -390,28 +390,28 @@ func (p *Plugin) handleJailRole(ctx context.Context, s *discordgo.Session, i *di
 	// Rank-check before resolving the jail role, so a batch the actor may not
 	// touch at all doesn't create the role and rewrite every channel's
 	// overwrites on its way to refusing.
-	allowed, res := p.partitionByRank(i.GuildID, i.Member, targets)
+	allowed, res := p.partitionByRank(ix.GuildID, ix.MemberGo(), targets)
 	if len(allowed) == 0 {
-		if ferr := core.FollowUpOK(s, i, "Nobody was jailed", summarizeBulkJail(res, duration, jailSentence)); ferr != nil {
-			p.log.Error("roles: jail-role follow-up failed", "guild", i.GuildID, "err", ferr)
+		if ferr := ix.FollowUpOK("Nobody was jailed", summarizeBulkJail(res, duration, jailSentence)); ferr != nil {
+			p.log.Error("roles: jail-role follow-up failed", "guild", ix.GuildID, "err", ferr)
 		}
 		return
 	}
 
-	jailRoleID, err := p.resolveJailRole(i.GuildID)
+	jailRoleID, err := p.resolveJailRole(ix.GuildID)
 	if err != nil {
 		fail("Failed to resolve jail role", err)
 		return
 	}
 
-	res = res.merge(p.jailMany(ctx, i.GuildID, jailRoleID, allowed, duration, actorID(i), reason))
-	p.announceJail(ctx, i.GuildID, i.ChannelID, res.jailed, duration, reason, jailSentence)
-	p.announceMoved(ctx, i.GuildID, i.ChannelID, res.transferred, p.releaseAtFor(duration), jailSentence)
-	p.recordBulkAudit(ctx, i.GuildID, actorID(i), fmt.Sprintf("role=%s", roleID), duration, reason, res, jailSentence)
+	res = res.merge(p.jailMany(ctx, ix.GuildID, jailRoleID, allowed, duration, actorID(ix), reason))
+	p.announceJail(ctx, ix.GuildID, ix.ChannelID, res.jailed, duration, reason, jailSentence)
+	p.announceMoved(ctx, ix.GuildID, ix.ChannelID, res.transferred, p.releaseAtFor(duration), jailSentence)
+	p.recordBulkAudit(ctx, ix.GuildID, actorID(ix), fmt.Sprintf("role=%s", roleID), duration, reason, res, jailSentence)
 
 	title := fmt.Sprintf("Jailed %d member(s) from role", len(res.jailed))
-	if ferr := core.FollowUpOK(s, i, title, summarizeBulkJail(res, duration, jailSentence)); ferr != nil {
-		p.log.Error("roles: jail-role follow-up failed", "guild", i.GuildID, "err", ferr)
+	if ferr := ix.FollowUpOK(title, summarizeBulkJail(res, duration, jailSentence)); ferr != nil {
+		p.log.Error("roles: jail-role follow-up failed", "guild", ix.GuildID, "err", ferr)
 	}
 }
 

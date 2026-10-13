@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -116,54 +115,6 @@ func (p Panel) Files() []*discordgo.File {
 	return files
 }
 
-// RespondPanel opens p as a fresh ephemeral message.
-func RespondPanel(s *discordgo.Session, i *discordgo.InteractionCreate, p Panel) error {
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Components:      p.Components(),
-			Files:           p.Files(),
-			Flags:           discordgo.MessageFlagsEphemeral | discordgo.MessageFlagsIsComponentsV2,
-			AllowedMentions: &discordgo.MessageAllowedMentions{},
-		},
-	})
-}
-
-// UpdatePanel redraws the panel a control was clicked on. Attachments is
-// empty rather than omitted for the reason followUpFiles gives: omitted keeps
-// the last draw's files and appends this one's, until Discord's cap refuses
-// the eleventh click.
-func UpdatePanel(s *discordgo.Session, i *discordgo.InteractionCreate, p Panel) error {
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Components:      p.Components(),
-			Files:           p.Files(),
-			Attachments:     &[]*discordgo.MessageAttachment{},
-			Flags:           discordgo.MessageFlagsIsComponentsV2,
-			AllowedMentions: &discordgo.MessageAllowedMentions{},
-		},
-	})
-}
-
-// DeferPanelUpdate acknowledges a click whose work may outrun Discord's 3
-// seconds; FollowUpPanel then redraws.
-func DeferPanelUpdate(s *discordgo.Session, i *discordgo.InteractionCreate) error {
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredMessageUpdate})
-}
-
-// FollowUpPanel redraws a panel after DeferPanelUpdate.
-func FollowUpPanel(s *discordgo.Session, i *discordgo.InteractionCreate, p Panel) error {
-	c := p.Components()
-	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Components:      &c,
-		Files:           p.Files(),
-		Attachments:     &[]*discordgo.MessageAttachment{},
-		AllowedMentions: &discordgo.MessageAllowedMentions{},
-	})
-	return err
-}
-
 // Text is a TextDisplay, for building a Panel's Body.
 func Text(s string) discordgo.TextDisplay { return discordgo.TextDisplay{Content: s} }
 
@@ -194,79 +145,6 @@ func Readout(rows [][2]string) string {
 	}
 	b.WriteString("```")
 	return b.String()
-}
-
-// SelectDiff is what a member changed on a multi-select that was drawn with
-// the current values preselected: what they picked that was not preselected,
-// and what was preselected that they unpicked.
-//
-// Diffed against what *this panel* showed, read back off the message the
-// click arrived on, not against current settings. Two admins on two panels
-// would otherwise undo each other: the second to submit would silently remove
-// whatever the first had just added, because it was never on their screen.
-// The message comes from Discord, not the member's client, so it is what was
-// really drawn.
-func SelectDiff(i *discordgo.InteractionCreate, customID string) (added, removed []string) {
-	var shown []string
-	if i.Message != nil {
-		if menu := findSelect(i.Message.Components, customID); menu != nil {
-			for _, d := range menu.DefaultValues {
-				shown = append(shown, d.ID)
-			}
-			for _, o := range menu.Options {
-				if o.Default {
-					shown = append(shown, o.Value)
-				}
-			}
-		}
-	}
-	picked := i.MessageComponentData().Values
-	for _, v := range picked {
-		if !slices.Contains(shown, v) {
-			added = append(added, v)
-		}
-	}
-	for _, v := range shown {
-		if !slices.Contains(picked, v) {
-			removed = append(removed, v)
-		}
-	}
-	return added, removed
-}
-
-func findSelect(cs []discordgo.MessageComponent, customID string) *discordgo.SelectMenu {
-	for _, c := range cs {
-		var children []discordgo.MessageComponent
-		switch v := c.(type) {
-		case *discordgo.SelectMenu:
-			if v.CustomID == customID {
-				return v
-			}
-		case discordgo.SelectMenu:
-			if v.CustomID == customID {
-				return &v
-			}
-		case *discordgo.ActionsRow:
-			children = v.Components
-		case discordgo.ActionsRow:
-			children = v.Components
-		case *discordgo.Container:
-			children = v.Components
-		case discordgo.Container:
-			children = v.Components
-		}
-		if m := findSelect(children, customID); m != nil {
-			return m
-		}
-	}
-	return nil
-}
-
-// Allows is whether p would let i's member through spec, for drawing a
-// control disabled rather than offering a click the router will refuse. A
-// nil p allows nothing.
-func (p *Permissions) Allows(i *discordgo.InteractionCreate, spec PermSpec) bool {
-	return p != nil && p.Authorize(i, spec) == nil
 }
 
 // MaxSelectValues is Discord's cap on a select's options and picks.
@@ -344,21 +222,4 @@ func Field(id, label, value, placeholder string, paragraph, required bool) disco
 		style, maxLen = discordgo.TextInputParagraph, 4000
 	}
 	return Row(discordgo.TextInput{CustomID: id, Label: label, Value: value, Placeholder: placeholder, Style: style, Required: required, MaxLength: maxLen})
-}
-
-// OpenModal answers a click with a form. Its submission comes back to the
-// router as a modal, under whatever spec customID's prefix carries.
-func OpenModal(s *discordgo.Session, i *discordgo.InteractionCreate, customID, title string, fields ...discordgo.MessageComponent) error {
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseModal,
-		Data: &discordgo.InteractionResponseData{CustomID: customID, Title: title, Components: fields},
-	})
-}
-
-// FirstValue is the first value a select submitted, or "".
-func FirstValue(i *discordgo.InteractionCreate) string {
-	if v := i.MessageComponentData().Values; len(v) > 0 {
-		return v[0]
-	}
-	return ""
 }

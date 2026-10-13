@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/secret"
@@ -53,27 +54,17 @@ const (
 	prizeFieldCode    = "code"
 )
 
-func actorID(i *discordgo.InteractionCreate) string {
-	if i.Member != nil && i.Member.User != nil {
-		return i.Member.User.ID
-	}
-	if i.User != nil {
-		return i.User.ID
-	}
-	return ""
-}
+func actorID(ix *core.Ix) string { return ix.UserID }
 
-func actorName(i *discordgo.InteractionCreate) string {
-	if i.Member != nil {
-		if i.Member.Nick != "" {
-			return i.Member.Nick
+func actorName(ix *core.Ix) string {
+	if m := ix.Member(); m != nil {
+		if m.Nick != nil && *m.Nick != "" {
+			return *m.Nick
 		}
-		if i.Member.User != nil {
-			if i.Member.User.GlobalName != "" {
-				return i.Member.User.GlobalName
-			}
-			return i.Member.User.Username
+		if m.User.GlobalName != nil && *m.User.GlobalName != "" {
+			return *m.User.GlobalName
 		}
+		return m.User.Username
 	}
 	return "someone"
 }
@@ -151,23 +142,23 @@ func (p *Plugin) registerCommands() {
 	admin := core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}
 	public := core.PermSpec{Tier: core.TierPublic}
 
-	p.commands.Handle("contest", "new", mod, p.handleNew)
-	p.commands.Handle("contest", "prize", public, p.handlePrize)
-	p.commands.Handle("contest", "unpledge", public, p.handleUnpledge)
-	p.commands.Autocomplete("contest", "unpledge", p.autocompletePledges)
-	p.commands.Handle("contest", "link", public, p.handleLink)
-	p.commands.Handle("contest", "claim", public, p.handleClaim)
-	p.commands.Handle("contest", "status", mod, p.handleStatus)
-	p.commands.Handle("contest", "review", core.PermSpec{Tier: core.TierMod, Action: actionReview}, p.handleReview)
-	p.commands.Handle("contest", "advance", mod, p.handleAdvance)
-	p.commands.Handle("contest", "cancel", mod, p.handleCancel)
-	p.commands.Handle("contest", "settings", admin, p.handleSettings)
+	p.commands.HandleIx("contest", "new", mod, p.handleNew)
+	p.commands.HandleIx("contest", "prize", public, p.handlePrize)
+	p.commands.HandleIx("contest", "unpledge", public, p.handleUnpledge)
+	p.commands.AutocompleteIx("contest", "unpledge", p.autocompletePledges)
+	p.commands.HandleIx("contest", "link", public, p.handleLink)
+	p.commands.HandleIx("contest", "claim", public, p.handleClaim)
+	p.commands.HandleIx("contest", "status", mod, p.handleStatus)
+	p.commands.HandleIx("contest", "review", core.PermSpec{Tier: core.TierMod, Action: actionReview}, p.handleReview)
+	p.commands.HandleIx("contest", "advance", mod, p.handleAdvance)
+	p.commands.HandleIx("contest", "cancel", mod, p.handleCancel)
+	p.commands.HandleIx("contest", "settings", admin, p.handleSettings)
 	p.registerPanel()
 
-	p.commands.HandleComponent(p.Name(), linkButtonPrefix, public, p.handleLinkButton)
-	p.commands.HandleComponent(p.Name(), reviewPrefix,
+	p.commands.HandleComponentIx(p.Name(), linkButtonPrefix, public, p.handleLinkButton)
+	p.commands.HandleComponentIx(p.Name(), reviewPrefix,
 		core.PermSpec{Tier: core.TierMod, Action: actionReview}, p.handleReviewButton)
-	p.commands.HandleModal(p.Name(), prizeModalPrefix, public, p.handlePrizeModal)
+	p.commands.HandleModalIx(p.Name(), prizeModalPrefix, public, p.handlePrizeModal)
 }
 
 func ptr(f float64) *float64 { return &f }
@@ -175,24 +166,24 @@ func ptr(f float64) *float64 { return &f }
 // handleNew creates a contest, its forum, and the opening announcement.
 // Defers first: this makes a channel, writes an overwrite and posts a
 // message, none of which fits in Discord's three second window.
-func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponse(s, i); err != nil {
+func (p *Plugin) handleNew(ctx context.Context, ix *core.Ix) {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("contest: defer new", "err", err)
 		return
 	}
-	args := core.LeafArgs(i)
+	args := ix.Args()
 
-	if _, err := p.store.LiveContest(ctx, i.GuildID); err == nil {
-		followErr(s, i, p, "There's already a contest running", ErrAlreadyLive)
+	if _, err := p.store.LiveContest(ctx, ix.GuildID); err == nil {
+		followErr(ix, p, "There's already a contest running", ErrAlreadyLive)
 		return
 	} else if !errors.Is(err, ErrNoLiveContest) {
-		followErr(s, i, p, "Couldn't check for a running contest", err)
+		followErr(ix, p, "Couldn't check for a running contest", err)
 		return
 	}
 
-	cfg, err := p.store.GetConfig(ctx, i.GuildID)
+	cfg, err := p.store.GetConfig(ctx, ix.GuildID)
 	if err != nil {
-		followErr(s, i, p, "Couldn't read the contest setup", err)
+		followErr(ix, p, "Couldn't read the contest setup", err)
 		return
 	}
 
@@ -204,61 +195,61 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 	// channel @everyone can see, and the config then records a decision
 	// somebody made rather than a default nobody chose.
 	if !cfg.Gated() {
-		followErr(s, i, p, "Nothing is gating the contest forum", ErrUngated)
+		followErr(ix, p, "Nothing is gating the contest forum", ErrUngated)
 		return
 	}
 
 	announceFor, err := optDuration(args, "announce-for", defaultAnnounceFor, true)
 	if err != nil {
-		followErr(s, i, p, "That announce window doesn't parse", err)
+		followErr(ix, p, "That announce window doesn't parse", err)
 		return
 	}
 	submitFor, err := optDuration(args, "submit-for", defaultSubmitFor, false)
 	if err != nil {
-		followErr(s, i, p, "That submission window doesn't parse", err)
+		followErr(ix, p, "That submission window doesn't parse", err)
 		return
 	}
 	voteFor, err := optDuration(args, "vote-for", defaultVoteFor, false)
 	if err != nil {
-		followErr(s, i, p, "That voting window doesn't parse", err)
+		followErr(ix, p, "That voting window doesn't parse", err)
 		return
 	}
 
 	slug, err := newSlug()
 	if err != nil {
-		followErr(s, i, p, "Couldn't start the contest", err)
+		followErr(ix, p, "Couldn't start the contest", err)
 		return
 	}
 
 	now := p.now()
 	c := Contest{
 		ID:                newID(),
-		GuildID:           i.GuildID,
+		GuildID:           ix.GuildID,
 		Slug:              slug,
-		Title:             strings.TrimSpace(args["title"].StringValue()),
+		Title:             strings.TrimSpace(args["title"].String()),
 		MaxVotes:          cfg.DefaultMaxVotes,
 		SubmitAt:          now.Add(announceFor),
 		AnnounceChannelID: cfg.AnnounceChannelID,
-		CreatedBy:         actorID(i),
+		CreatedBy:         actorID(ix),
 		Phase:             PhaseAnnounce,
 	}
 	c.VoteAt = c.SubmitAt.Add(submitFor)
 	c.ResultsAt = c.VoteAt.Add(voteFor)
 
 	if opt, ok := args["theme"]; ok {
-		c.Theme = strings.TrimSpace(opt.StringValue())
+		c.Theme = strings.TrimSpace(opt.String())
 	}
 	if opt, ok := args["picks"]; ok {
-		c.MaxVotes = int(opt.IntValue())
+		c.MaxVotes = int(int64(opt.Int()))
 	}
 	if opt, ok := args["channel"]; ok {
-		c.AnnounceChannelID = opt.ChannelValue(nil).ID
+		c.AnnounceChannelID = opt.Snowflake().String()
 	}
 	if c.AnnounceChannelID == "" {
-		c.AnnounceChannelID = i.ChannelID
+		c.AnnounceChannelID = ix.ChannelID
 	}
 	if c.Title == "" {
-		followErr(s, i, p, "A contest needs a title", errors.New("contest: empty title"))
+		followErr(ix, p, "A contest needs a title", errors.New("contest: empty title"))
 		return
 	}
 
@@ -271,7 +262,7 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 	}
 
 	if err := p.store.CreateContest(ctx, c); err != nil {
-		followErr(s, i, p, "Couldn't save the contest", err)
+		followErr(ix, p, "Couldn't save the contest", err)
 		return
 	}
 
@@ -286,7 +277,7 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 		if _, cerr := p.store.AdvancePhase(ctx, c.ID, c.Phase, PhaseCancelled); cerr != nil {
 			p.log.Error("contest: cancel after failed forum create", "contest", c.ID, "err", cerr)
 		}
-		followErr(s, i, p, "Couldn't create the contest forum", err)
+		followErr(ix, p, "Couldn't create the contest forum", err)
 		return
 	}
 	c.ForumChannelID = forumID
@@ -302,7 +293,7 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 		if _, cerr := p.store.AdvancePhase(ctx, c.ID, c.Phase, PhaseCancelled); cerr != nil {
 			p.log.Error("contest: cancel after unrecorded forum", "contest", c.ID, "err", cerr)
 		}
-		followErr(s, i, p, "Couldn't record the contest forum", err)
+		followErr(ix, p, "Couldn't record the contest forum", err)
 		return
 	}
 	p.announceCreated(ctx, c)
@@ -312,15 +303,15 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 	p.pushBestEffort(ctx, c)
 
 	p.mu.Lock()
-	p.reconcileTickJob(ctx, i.GuildID)
+	p.reconcileTickJob(ctx, ix.GuildID)
 	p.mu.Unlock()
 
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "contest.created", "",
+	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "contest.created", "",
 		c.Title+" in "+core.MentionChannel(forumID)); err != nil {
 		p.log.Error("contest: audit create", "contest", c.ID, "err", err)
 	}
 
-	if err := core.FollowUpOK(s, i, "Contest started",
+	if err := ix.FollowUpOK("Contest started",
 		c.Title+" is live in "+core.MentionChannel(forumID)+". Announcements go to "+
 			core.MentionChannel(c.AnnounceChannelID)+"."); err != nil {
 		p.log.Error("contest: follow up new", "err", err)
@@ -330,12 +321,12 @@ func (p *Plugin) handleNew(ctx context.Context, s *discordgo.Session, i *discord
 // optDuration reads one of the phase-length options. Reuses
 // core.ParseFlexibleDuration so "90m", "3d" and "2h" all work the same way
 // they do everywhere else in this bot.
-func optDuration(args map[string]*discordgo.ApplicationCommandInteractionDataOption, name string, fallback time.Duration, allowZero bool) (time.Duration, error) {
+func optDuration(args map[string]discord.SlashCommandOption, name string, fallback time.Duration, allowZero bool) (time.Duration, error) {
 	opt, ok := args[name]
 	if !ok {
 		return fallback, nil
 	}
-	raw := strings.TrimSpace(opt.StringValue())
+	raw := strings.TrimSpace(opt.String())
 	if raw == "" {
 		return fallback, nil
 	}
@@ -360,65 +351,56 @@ func optDuration(args map[string]*discordgo.ApplicationCommandInteractionDataOpt
 // looking over the shoulder of whoever typed it, appears in Discord's own
 // client-side command history, and is exactly the thing that must not be
 // seen once.
-func (p *Plugin) handlePrize(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	c, err := p.store.LiveContest(ctx, i.GuildID)
+func (p *Plugin) handlePrize(ctx context.Context, ix *core.Ix) {
+	c, err := p.store.LiveContest(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondWarn(s, i, "Nothing to pledge to", "There's no contest running right now.")
+		ix.RespondWarn("Nothing to pledge to", "There's no contest running right now.")
 		return
 	}
 
-	code := &discordgo.TextInput{
+	code := discord.TextInputComponent{
 		CustomID:    prizeFieldCode,
-		Label:       "Code, key or claim link (optional)",
-		Style:       discordgo.TextInputParagraph,
+		Style:       discord.TextInputStyleParagraph,
 		Placeholder: "Only merlin sees this, and only the winner gets it.",
-		Required:    false,
 		MaxLength:   1000,
 	}
+	codeLabel := "Code, key or claim link (optional)"
 	if p.sealer == nil {
 		// No MERLIN_SECRET_KEY means there is nowhere safe to put a code, so
 		// the field is not offered at all. Refusing to store it is right;
 		// offering a box and then dropping what is typed into it is not.
-		code.Label = "Codes are off on this bot"
+		codeLabel = "Codes are off on this bot"
 		code.Placeholder = "MERLIN_SECRET_KEY is not set, so leave this empty."
 		code.MaxLength = 1
 	}
 
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseModal,
-		Data: &discordgo.InteractionResponseData{
-			CustomID: prizeModalPrefix + c.ID,
-			Title:    truncate("Pledge a prize: "+c.Title, 45),
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{Components: []discordgo.MessageComponent{&discordgo.TextInput{
-					CustomID: prizeFieldTitle, Label: "What is it", Style: discordgo.TextInputShort,
-					Placeholder: "a steam key for Hollow Knight", Required: true, MaxLength: 100,
-				}}},
-				discordgo.ActionsRow{Components: []discordgo.MessageComponent{&discordgo.TextInput{
-					CustomID: prizeFieldDetails, Label: "Anything the winner should know",
-					Style: discordgo.TextInputParagraph, Required: false, MaxLength: 500,
-				}}},
-				discordgo.ActionsRow{Components: []discordgo.MessageComponent{code}},
-			},
-		},
-	})
+	err = ix.OpenModal(prizeModalPrefix+c.ID, truncate("Pledge a prize: "+c.Title, 45),
+		discord.LabelComponent{Label: "What is it", Component: discord.TextInputComponent{
+			CustomID: prizeFieldTitle, Style: discord.TextInputStyleShort,
+			Placeholder: "a steam key for Hollow Knight", Required: true, MaxLength: 100,
+		}},
+		discord.LabelComponent{Label: "Anything the winner should know", Component: discord.TextInputComponent{
+			CustomID: prizeFieldDetails, Style: discord.TextInputStyleParagraph, MaxLength: 500,
+		}},
+		discord.LabelComponent{Label: codeLabel, Component: code},
+	)
 	if err != nil {
 		p.log.Error("contest: open prize modal", "err", err)
 	}
 }
 
-func (p *Plugin) handlePrizeModal(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handlePrizeModal(ctx context.Context, ix *core.Ix, customID string) {
 	contestID := strings.TrimPrefix(customID, prizeModalPrefix)
-	vals := core.ModalValues(i)
+	vals := ix.ModalValues()
 	title := strings.TrimSpace(vals[prizeFieldTitle])
 	if title == "" {
-		core.RespondWarn(s, i, "Nothing pledged", "A prize needs at least a name.")
+		ix.RespondWarn("Nothing pledged", "A prize needs at least a name.")
 		return
 	}
 
-	c, err := p.store.LiveContest(ctx, i.GuildID)
+	c, err := p.store.LiveContest(ctx, ix.GuildID)
 	if err != nil || c.ID != contestID {
-		core.RespondWarn(s, i, "That contest has moved on",
+		ix.RespondWarn("That contest has moved on",
 			"The contest this form was opened for isn't taking pledges any more.")
 		return
 	}
@@ -426,8 +408,8 @@ func (p *Plugin) handlePrizeModal(ctx context.Context, s *discordgo.Session, i *
 	prize := Prize{
 		ID:        newID(),
 		ContestID: c.ID,
-		DonorID:   actorID(i),
-		DonorName: actorName(i),
+		DonorID:   actorID(ix),
+		DonorName: actorName(ix),
 		Title:     title,
 		Details:   strings.TrimSpace(vals[prizeFieldDetails]),
 	}
@@ -439,24 +421,24 @@ func (p *Plugin) handlePrizeModal(ctx context.Context, s *discordgo.Session, i *
 		sealed, err := p.sealer.Seal(code)
 		if err != nil {
 			if errors.Is(err, secret.ErrNoKey) {
-				core.RespondWarn(s, i, "Codes are off on this bot",
+				ix.RespondWarn("Codes are off on this bot",
 					"MERLIN_SECRET_KEY isn't set, so there's nowhere safe to keep a code. Pledge it without one and hand it over yourself.")
 				return
 			}
-			core.RespondErr(s, i, "Couldn't store that code", err)
+			ix.RespondErr("Couldn't store that code", err)
 			return
 		}
 		prize.SecretSealed = sealed
 	}
 
 	if err := p.store.AddPrize(ctx, prize); err != nil {
-		core.RespondErr(s, i, "Couldn't record the pledge", err)
+		ix.RespondErr("Couldn't record the pledge", err)
 		return
 	}
 
 	// The audit row names the prize and never the code, and there is no
 	// branch here that could change that.
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "contest.prize_pledged", "", prize.Title); err != nil {
+	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "contest.prize_pledged", "", prize.Title); err != nil {
 		p.log.Error("contest: audit prize", "contest", c.ID, "err", err)
 	}
 
@@ -468,28 +450,28 @@ func (p *Plugin) handlePrizeModal(ctx context.Context, s *discordgo.Session, i *
 	if prize.HasSecret() {
 		note = "Code stored encrypted, and nobody reviewing it can read it. merlin sends it straight to the winner and wipes it after."
 	}
-	core.RespondOK(s, i, "Pledged, waiting on a mod", note)
+	ix.RespondOK("Pledged, waiting on a mod", note)
 }
 
-func (p *Plugin) handleUnpledge(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	c, err := p.store.LiveContest(ctx, i.GuildID)
+func (p *Plugin) handleUnpledge(ctx context.Context, ix *core.Ix) {
+	c, err := p.store.LiveContest(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondWarn(s, i, "Nothing running", "There's no contest to pull a pledge from.")
+		ix.RespondWarn("Nothing running", "There's no contest to pull a pledge from.")
 		return
 	}
-	mine, err := p.myPledges(ctx, c, actorID(i))
+	mine, err := p.myPledges(ctx, c, actorID(ix))
 	if err != nil {
-		core.RespondErr(s, i, "Couldn't read the prize pool", err)
+		ix.RespondErr("Couldn't read the prize pool", err)
 		return
 	}
 	if len(mine) == 0 {
-		core.RespondWarn(s, i, "Nothing to take back", "You haven't pledged anything to this one.")
+		ix.RespondWarn("Nothing to take back", "You haven't pledged anything to this one.")
 		return
 	}
 
 	target := mine[len(mine)-1]
-	if opt, ok := core.LeafArgs(i)["which"]; ok && opt.StringValue() != "" {
-		wanted := opt.StringValue()
+	if opt, ok := ix.Args()["which"]; ok && opt.String() != "" {
+		wanted := opt.String()
 		found := false
 		for _, pr := range mine {
 			if pr.ID == wanted {
@@ -498,22 +480,22 @@ func (p *Plugin) handleUnpledge(ctx context.Context, s *discordgo.Session, i *di
 			}
 		}
 		if !found {
-			core.RespondWarn(s, i, "Can't find that one", "That pledge isn't yours, or it's already been handed out.")
+			ix.RespondWarn("Can't find that one", "That pledge isn't yours, or it's already been handed out.")
 			return
 		}
 	}
 
-	ok, err := p.store.RemovePrize(ctx, c.ID, target.ID, actorID(i))
+	ok, err := p.store.RemovePrize(ctx, c.ID, target.ID, actorID(ix))
 	if err != nil {
-		core.RespondErr(s, i, "Couldn't take that back", err)
+		ix.RespondErr("Couldn't take that back", err)
 		return
 	}
 	if !ok {
-		core.RespondWarn(s, i, "Too late", "That one has already been handed out.")
+		ix.RespondWarn("Too late", "That one has already been handed out.")
 		return
 	}
 	p.pushBestEffort(ctx, c)
-	core.RespondOK(s, i, "Taken back", target.Title+" is out of the pool.")
+	ix.RespondOK("Taken back", target.Title+" is out of the pool.")
 }
 
 func (p *Plugin) myPledges(ctx context.Context, c Contest, userID string) ([]Prize, error) {
@@ -532,21 +514,21 @@ func (p *Plugin) myPledges(ctx context.Context, c Contest, userID string) ([]Pri
 	return mine, nil
 }
 
-func (p *Plugin) autocompletePledges(ctx context.Context, i *discordgo.InteractionCreate, _, focused string) []*discordgo.ApplicationCommandOptionChoice {
-	c, err := p.store.LiveContest(ctx, i.GuildID)
+func (p *Plugin) autocompletePledges(ctx context.Context, ix *core.Ix, _, focused string) []discord.AutocompleteChoice {
+	c, err := p.store.LiveContest(ctx, ix.GuildID)
 	if err != nil {
 		return nil
 	}
-	mine, err := p.myPledges(ctx, c, actorID(i))
+	mine, err := p.myPledges(ctx, c, actorID(ix))
 	if err != nil {
 		return nil
 	}
-	var out []*discordgo.ApplicationCommandOptionChoice
+	var out []discord.AutocompleteChoice
 	for _, pr := range mine {
 		if focused != "" && !strings.Contains(strings.ToLower(pr.Title), strings.ToLower(focused)) {
 			continue
 		}
-		out = append(out, &discordgo.ApplicationCommandOptionChoice{
+		out = append(out, discord.AutocompleteChoiceString{
 			Name: truncate(pr.Title, 100), Value: pr.ID,
 		})
 		// Discord rejects a response over 25 choices outright, leaving the
@@ -558,68 +540,68 @@ func (p *Plugin) autocompletePledges(ctx context.Context, i *discordgo.Interacti
 	return out
 }
 
-func (p *Plugin) handleLink(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	p.sendLink(ctx, s, i)
+func (p *Plugin) handleLink(ctx context.Context, ix *core.Ix) {
+	p.sendLink(ctx, ix)
 }
 
-func (p *Plugin) handleLinkButton(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, _ string) {
-	p.sendLink(ctx, s, i)
+func (p *Plugin) handleLinkButton(ctx context.Context, ix *core.Ix, _ string) {
+	p.sendLink(ctx, ix)
 }
 
 // sendLink is the one contextual surface: it answers with whatever the
 // current phase actually calls for, so nobody has to know which of three
 // commands applies right now.
-func (p *Plugin) sendLink(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	c, err := p.store.LatestContest(ctx, i.GuildID)
+func (p *Plugin) sendLink(ctx context.Context, ix *core.Ix) {
+	c, err := p.store.LatestContest(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondWarn(s, i, "Nothing running", "No contest right now. Ask a mod to start one.")
+		ix.RespondWarn("Nothing running", "No contest right now. Ask a mod to start one.")
 		return
 	}
 
 	switch c.Phase {
 	case PhaseAnnounce:
-		core.RespondInfo(s, i, c.Title,
+		ix.RespondInfo(c.Title,
 			"Submissions open "+discordTS(c.SubmitAt.Unix())+" in "+core.MentionChannel(c.ForumChannelID)+
 				". You can pledge a prize now with `/contest prize`.")
 	case PhaseSubmit:
-		core.RespondInfo(s, i, c.Title,
+		ix.RespondInfo(c.Title,
 			"Post your entry in "+core.MentionChannel(c.ForumChannelID)+". One each, closing "+
 				discordTS(c.VoteAt.Unix())+".")
 	case PhaseVote:
 		if !p.worker.Configured() {
-			core.RespondWarn(s, i, c.Title, "There's no voting page set up on this bot.")
+			ix.RespondWarn(c.Title, "There's no voting page set up on this bot.")
 			return
 		}
-		core.RespondOK(s, i, c.Title,
+		ix.RespondOK(c.Title,
 			p.worker.PageURL(c.Slug)+"\n\nSign in with Discord on the page and pick up to "+
 				strconv.Itoa(c.MaxVotes)+". Voting closes "+discordTS(c.ResultsAt.Unix())+".")
 	default:
 		if !p.worker.Configured() {
-			core.RespondInfo(s, i, c.Title, "This one is finished.")
+			ix.RespondInfo(c.Title, "This one is finished.")
 			return
 		}
-		core.RespondInfo(s, i, c.Title, "Finished. The gallery is still up:\n"+p.worker.PageURL(c.Slug))
+		ix.RespondInfo(c.Title, "Finished. The gallery is still up:\n"+p.worker.PageURL(c.Slug))
 	}
 }
 
 // handleClaim is the fallback for a prize DM that never landed, which is
 // the common case for anybody with DMs closed to non-friends. An ephemeral
 // interaction response reaches them where a DM cannot.
-func (p *Plugin) handleClaim(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (p *Plugin) handleClaim(ctx context.Context, ix *core.Ix) {
 	// Every contest this guild has run, not just the newest one. Reading the
 	// latest contest meant a winner whose DM bounced had until the next
 	// /contest new to collect, after which their prize was unreachable and
 	// its ciphertext sat in contest_prizes forever.
-	prizes, err := p.store.PrizesAwardedTo(ctx, i.GuildID, actorID(i))
+	prizes, err := p.store.PrizesAwardedTo(ctx, ix.GuildID, actorID(ix))
 	if err != nil {
-		core.RespondErr(s, i, "Couldn't read the prize pool", err)
+		ix.RespondErr("Couldn't read the prize pool", err)
 		return
 	}
 
-	var fields []*discordgo.MessageEmbedField
+	var fields []discord.EmbedField
 	var toWipe []string
 	for _, pr := range prizes {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: core.TruncateEmbedField(pr.Title), Value: prizeClaimBody(p, pr),
 		})
 		if pr.HasSecret() {
@@ -627,15 +609,15 @@ func (p *Plugin) handleClaim(ctx context.Context, s *discordgo.Session, i *disco
 		}
 	}
 	if len(fields) == 0 {
-		core.RespondWarn(s, i, "Nothing to claim", "Nothing here is waiting for you.")
+		ix.RespondWarn("Nothing to claim", "Nothing here is waiting for you.")
 		return
 	}
 
-	if err := core.RespondEmbed(s, i, core.NewEmbed(core.ColorSuccess, "your prizes",
+	if err := ix.RespondEmbed(core.Embed(core.ColorSuccess, "your prizes",
 		"here you go. this message is only visible to you.", fields...)); err != nil {
 		// Wiping after a failed send would destroy the only copy, so the
 		// wipe below is deliberately downstream of a successful response.
-		core.RespondErr(s, i, "Couldn't show that", err)
+		ix.RespondErr("Couldn't show that", err)
 		return
 	}
 	for _, id := range toWipe {
@@ -663,14 +645,14 @@ func prizeClaimBody(p *Plugin, pr Prize) string {
 	return core.TruncateEmbedField(b.String())
 }
 
-func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponse(s, i); err != nil {
+func (p *Plugin) handleStatus(ctx context.Context, ix *core.Ix) {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("contest: defer status", "err", err)
 		return
 	}
-	c, err := p.store.LatestContest(ctx, i.GuildID)
+	c, err := p.store.LatestContest(ctx, ix.GuildID)
 	if err != nil {
-		if err := core.FollowUpOK(s, i, "Contests", "Nothing has been run in this server yet."); err != nil {
+		if err := ix.FollowUpOK("Contests", "Nothing has been run in this server yet."); err != nil {
 			p.log.Error("contest: follow up status", "err", err)
 		}
 		return
@@ -678,17 +660,17 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 
 	subs, subErr := p.store.Submissions(ctx, c.ID)
 	prizes, prizeErr := p.store.Prizes(ctx, c.ID)
-	cfg, cfgErr := p.store.GetConfig(ctx, i.GuildID)
+	cfg, cfgErr := p.store.GetConfig(ctx, ix.GuildID)
 
-	fields := []*discordgo.MessageEmbedField{
-		{Name: "phase", Value: string(c.Phase), Inline: true},
-		{Name: "entries", Value: countOrErr(len(subs), subErr), Inline: true},
-		{Name: "prizes", Value: prizeCount(prizes, prizeErr), Inline: true},
-		{Name: "forum", Value: core.MentionChannel(c.ForumChannelID), Inline: true},
+	fields := []discord.EmbedField{
+		{Name: "phase", Value: string(c.Phase), Inline: core.Inline()},
+		{Name: "entries", Value: countOrErr(len(subs), subErr), Inline: core.Inline()},
+		{Name: "prizes", Value: prizeCount(prizes, prizeErr), Inline: core.Inline()},
+		{Name: "forum", Value: core.MentionChannel(c.ForumChannelID), Inline: core.Inline()},
 	}
 	if d, has := c.Deadline(); has {
-		fields = append(fields, &discordgo.MessageEmbedField{
-			Name: "next", Value: discordTS(d.Unix()), Inline: true,
+		fields = append(fields, discord.EmbedField{
+			Name: "next", Value: discordTS(d.Unix()), Inline: core.Inline(),
 		})
 	}
 
@@ -707,20 +689,20 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 	switch {
 	case cfgErr != nil:
 		colour = core.ColorWarning
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "who can see it", Value: core.TruncateEmbedField("couldn't read the setup: " + cfgErr.Error()),
 		})
 	case len(cfg.AccessRoleIDs) > 0:
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "who can see it", Value: core.TruncateEmbedField(roleList(cfg.AccessRoleIDs)),
 		})
 	case cfg.GateChannelID != "":
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "who can see it", Value: "whoever can see " + core.MentionChannel(cfg.GateChannelID),
 		})
 	default:
 		colour = core.ColorWarning
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "who can see it",
 			Value: "nobody has said, so this forum inherited its category. `/contest settings`: copy a channel, then Resync forum.",
 		})
@@ -730,20 +712,20 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 		voters, votes, err := p.worker.Stats(ctx, c.Slug)
 		if err != nil {
 			colour = core.ColorWarning
-			fields = append(fields, &discordgo.MessageEmbedField{
+			fields = append(fields, discord.EmbedField{
 				Name: "voting page", Value: core.TruncateEmbedField("unreachable: " + err.Error()),
 			})
 		} else {
-			fields = append(fields, &discordgo.MessageEmbedField{
-				Name: "votes", Value: strconv.Itoa(votes) + " from " + strconv.Itoa(voters) + " people", Inline: true,
+			fields = append(fields, discord.EmbedField{
+				Name: "votes", Value: strconv.Itoa(votes) + " from " + strconv.Itoa(voters) + " people", Inline: core.Inline(),
 			})
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "gallery", Value: p.worker.PageURL(c.Slug),
 		})
 	} else {
 		colour = core.ColorWarning
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "voting page",
 			Value: "not set up. MERLIN_CONTEST_WORKER_URL is empty, so nothing can be browsed or voted on.",
 		})
@@ -751,19 +733,19 @@ func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *disc
 
 	if c.TallyError != "" {
 		colour = core.ColorError
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "last close attempt failed",
 			Value: core.TruncateEmbedField(c.TallyError + "\nThe scheduler keeps retrying."),
 		})
 	}
 	if p.sealer == nil {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "prize codes",
 			Value: "off. MERLIN_SECRET_KEY is not set, so pledges cannot carry a code.",
 		})
 	}
 
-	if err := core.FollowUpEmbed(s, i, core.NewEmbed(colour, c.Title, "where this one is up to.", fields...)); err != nil {
+	if err := ix.FollowUpEmbed(core.Embed(colour, c.Title, "where this one is up to.", fields...)); err != nil {
 		p.log.Error("contest: follow up status", "err", err)
 	}
 }
@@ -802,26 +784,26 @@ func countOrErr(n int, err error) string {
 	return strconv.Itoa(n)
 }
 
-func (p *Plugin) handleAdvance(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponse(s, i); err != nil {
+func (p *Plugin) handleAdvance(ctx context.Context, ix *core.Ix) {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("contest: defer advance", "err", err)
 		return
 	}
-	c, err := p.store.LiveContest(ctx, i.GuildID)
+	c, err := p.store.LiveContest(ctx, ix.GuildID)
 	if err != nil {
-		followErr(s, i, p, "Nothing to advance", err)
+		followErr(ix, p, "Nothing to advance", err)
 		return
 	}
 	from := c.Phase
 	if err := p.advance(ctx, c); err != nil {
-		followErr(s, i, p, "Couldn't advance", err)
+		followErr(ix, p, "Couldn't advance", err)
 		return
 	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "contest.phase_advanced",
+	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "contest.phase_advanced",
 		string(from), "forced early"); err != nil {
 		p.log.Error("contest: audit advance", "contest", c.ID, "err", err)
 	}
-	if err := core.FollowUpOK(s, i, "Moved on", c.Title+" is past "+string(from)+"."); err != nil {
+	if err := ix.FollowUpOK("Moved on", c.Title+" is past "+string(from)+"."); err != nil {
 		p.log.Error("contest: follow up advance", "err", err)
 	}
 }
@@ -829,19 +811,19 @@ func (p *Plugin) handleAdvance(ctx context.Context, s *discordgo.Session, i *dis
 // handleCancel stops a contest without destroying anything. The forum, the
 // posts and the pledges all stay: cancelling is a decision about the
 // contest, not about anybody's work, and channel deletion has no undo.
-func (p *Plugin) handleCancel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	c, err := p.store.LiveContest(ctx, i.GuildID)
+func (p *Plugin) handleCancel(ctx context.Context, ix *core.Ix) {
+	c, err := p.store.LiveContest(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondWarn(s, i, "Nothing to cancel", "No contest is running.")
+		ix.RespondWarn("Nothing to cancel", "No contest is running.")
 		return
 	}
 	won, err := p.store.AdvancePhase(ctx, c.ID, c.Phase, PhaseCancelled)
 	if err != nil {
-		core.RespondErr(s, i, "Couldn't cancel", err)
+		ix.RespondErr("Couldn't cancel", err)
 		return
 	}
 	if !won {
-		core.RespondWarn(s, i, "Already moved", "The contest changed phase while you were typing. Try again.")
+		ix.RespondWarn("Already moved", "The contest changed phase while you were typing. Try again.")
 		return
 	}
 
@@ -854,10 +836,10 @@ func (p *Plugin) handleCancel(ctx context.Context, s *discordgo.Session, i *disc
 	p.pushBestEffort(ctx, c)
 	p.afterFinish(ctx, c)
 
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "contest.cancelled", c.Title, ""); err != nil {
+	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "contest.cancelled", c.Title, ""); err != nil {
 		p.log.Error("contest: audit cancel", "contest", c.ID, "err", err)
 	}
-	core.RespondOK(s, i, "Called off",
+	ix.RespondOK("Called off",
 		"Nothing was deleted. "+core.MentionChannel(c.ForumChannelID)+" is still there.")
 }
 
@@ -883,8 +865,8 @@ func orNone(v, fallback string) string {
 
 // followErr is the deferred-response half of core.RespondErr, with the
 // logging every call site would otherwise repeat.
-func followErr(s *discordgo.Session, i *discordgo.InteractionCreate, p *Plugin, title string, err error) {
-	if ferr := core.FollowUpErr(s, i, title, err); ferr != nil {
+func followErr(ix *core.Ix, p *Plugin, title string, err error) {
+	if ferr := ix.FollowUpErr(title, err); ferr != nil {
 		p.log.Error("contest: follow up error", "title", title, "err", ferr)
 	}
 }

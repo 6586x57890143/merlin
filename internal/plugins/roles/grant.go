@@ -12,26 +12,26 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
-func (p *Plugin) handleGrant(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
-	userID := opts["user"].Value.(string)
-	roleID := opts["role"].Value.(string)
+func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
+	opts := ix.Args()
+	userID := opts["user"].String()
+	roleID := opts["role"].String()
 	reason := ""
 	if v, ok := opts["reason"]; ok {
-		reason = v.StringValue()
+		reason = v.String()
 	}
 
-	if err := p.perms.CanManageRole(i.GuildID, roleID); err != nil {
-		core.RespondErr(s, i, "Cannot manage that role", err)
+	if err := p.perms.CanManageRole(ix.GuildID, roleID); err != nil {
+		ix.RespondErr("Cannot manage that role", err)
 		return
 	}
 
 	var expiresAt *time.Time
 	durationLabel := "permanently"
 	if v, ok := opts["duration"]; ok {
-		duration, err := core.ParseFlexibleDuration(v.StringValue())
+		duration, err := core.ParseFlexibleDuration(v.String())
 		if err != nil {
-			core.RespondErr(s, i, "Invalid duration", err)
+			ix.RespondErr("Invalid duration", err)
 			return
 		}
 		at := p.now().Add(duration)
@@ -39,56 +39,56 @@ func (p *Plugin) handleGrant(ctx context.Context, s *discordgo.Session, i *disco
 		durationLabel = "for " + core.FormatDuration(duration)
 	}
 
-	if err := p.ops(i.GuildID).GuildMemberRoleAdd(i.GuildID, userID, roleID); err != nil {
-		core.RespondErr(s, i, "Failed to grant role", err)
+	if err := p.ops(ix.GuildID).GuildMemberRoleAdd(ix.GuildID, userID, roleID); err != nil {
+		ix.RespondErr("Failed to grant role", err)
 		return
 	}
 
 	if err := p.store.InsertGrant(ctx, GrantRecord{
-		GuildID:   i.GuildID,
+		GuildID:   ix.GuildID,
 		UserID:    userID,
 		RoleID:    roleID,
 		GrantedAt: p.now(),
 		ExpiresAt: expiresAt,
-		GrantedBy: actorID(i),
+		GrantedBy: actorID(ix),
 		Reason:    reason,
 	}); err != nil {
-		core.RespondErr(s, i, "Failed to save grant record", err)
+		ix.RespondErr("Failed to save grant record", err)
 		return
 	}
 	if expiresAt != nil {
-		p.armGrantRevoke(i.GuildID, userID, roleID, *expiresAt)
+		p.armGrantRevoke(ix.GuildID, userID, roleID, *expiresAt)
 	}
 
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "roles.grant", "", fmt.Sprintf("user=%s role=%s reason=%q", core.MentionUser(userID), core.MentionRole(roleID), reason)); err != nil {
-		p.log.Error("roles: audit grant failed", "guild", i.GuildID, "user", userID, "err", err)
+	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "roles.grant", "", fmt.Sprintf("user=%s role=%s reason=%q", core.MentionUser(userID), core.MentionRole(roleID), reason)); err != nil {
+		p.log.Error("roles: audit grant failed", "guild", ix.GuildID, "user", userID, "err", err)
 	}
 
-	core.RespondOK(s, i, "Role granted", fmt.Sprintf("<@&%s> granted to <@%s> %s.", roleID, userID, durationLabel))
+	ix.RespondOK("Role granted", fmt.Sprintf("<@&%s> granted to <@%s> %s.", roleID, userID, durationLabel))
 }
 
-func (p *Plugin) handleRevoke(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts := core.LeafArgs(i)
-	userID := opts["user"].Value.(string)
-	roleID := opts["role"].Value.(string)
+func (p *Plugin) handleRevoke(ctx context.Context, ix *core.Ix) {
+	opts := ix.Args()
+	userID := opts["user"].String()
+	roleID := opts["role"].String()
 
-	if _, ok, err := p.store.GetGrant(ctx, i.GuildID, userID, roleID); err != nil {
-		core.RespondErr(s, i, "Failed to look up grant", err)
+	if _, ok, err := p.store.GetGrant(ctx, ix.GuildID, userID, roleID); err != nil {
+		ix.RespondErr("Failed to look up grant", err)
 		return
 	} else if !ok {
-		core.RespondErr(s, i, "Not a tracked grant", fmt.Errorf("merlin isn't tracking a grant of <@&%s> to <@%s>. Revoke it directly in Discord if needed", roleID, userID))
+		ix.RespondErr("Not a tracked grant", fmt.Errorf("merlin isn't tracking a grant of <@&%s> to <@%s>. Revoke it directly in Discord if needed", roleID, userID))
 		return
 	}
 
-	if err := p.revokeGrant(ctx, i.GuildID, userID, roleID, actorID(i)); err != nil {
+	if err := p.revokeGrant(ctx, ix.GuildID, userID, roleID, actorID(ix)); err != nil {
 		if errors.Is(err, errReleaseInProgress) {
-			core.RespondErr(s, i, "Revoke in progress", fmt.Errorf("<@&%s> is being revoked from <@%s> right now", roleID, userID))
+			ix.RespondErr("Revoke in progress", fmt.Errorf("<@&%s> is being revoked from <@%s> right now", roleID, userID))
 			return
 		}
-		core.RespondErr(s, i, "Failed to revoke", err)
+		ix.RespondErr("Failed to revoke", err)
 		return
 	}
-	core.RespondOK(s, i, "Role revoked", fmt.Sprintf("<@&%s> revoked from <@%s>.", roleID, userID))
+	ix.RespondOK("Role revoked", fmt.Sprintf("<@&%s> revoked from <@%s>.", roleID, userID))
 }
 
 // revokeGrant removes roleID from userID and stops tracking the grant.
