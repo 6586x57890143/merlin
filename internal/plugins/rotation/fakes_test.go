@@ -8,10 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/json/v2"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
@@ -27,8 +31,76 @@ func testLogger() *slog.Logger {
 // where it should", deliberately looser than rotate's own replacement
 // matching so a test can catch a replacement that landed in the wrong
 // category instead of silently failing to find it.
-func findOtherChannelByName(channels []*discordgo.Channel, name, excludeID string) *discordgo.Channel {
-	return findChannel(channels, func(c *discordgo.Channel) bool { return c.Name == name && c.ID != excludeID })
+func findOtherChannelByName(channels []*fch, name, excludeID string) *fch {
+	for _, c := range channels {
+		if c.Name == name && c.ID != excludeID {
+			return c
+		}
+	}
+	return nil
+}
+
+// fch is a channel as the fake holds it, with string IDs so fixtures read
+// as the settings they sit beside. disgo's channels are immutable values
+// with unexported fields, so the fake keeps its own and builds disgo's
+// from them on the way out, through the same JSON Discord sends.
+type fch struct {
+	ID, GuildID, ParentID, Name, Topic string
+	Type                               discord.ChannelType
+	Position, RateLimitPerUser         int
+	NSFW                               bool
+	PermissionOverwrites               []*fow
+}
+
+// fow is one permission overwrite, string-ID'd like fch.
+type fow struct {
+	ID          string
+	Type        discord.PermissionOverwriteType
+	Allow, Deny discord.Permissions
+}
+
+func (c *fch) disgo() discord.GuildChannel {
+	ows := make([]overwrite, len(c.PermissionOverwrites))
+	for i, o := range c.PermissionOverwrites {
+		ows[i] = overwrite{Type: o.Type, ID: core.ID(o.ID), Allow: o.Allow, Deny: o.Deny}
+	}
+	raw := map[string]any{
+		"name": c.Name, "type": c.Type, "position": c.Position,
+		"topic": c.Topic, "nsfw": c.NSFW, "rate_limit_per_user": c.RateLimitPerUser,
+		"permission_overwrites": disgoOverwrites(ows),
+	}
+	for k, v := range map[string]string{"id": c.ID, "guild_id": c.GuildID, "parent_id": c.ParentID} {
+		if v != "" {
+			raw[k] = v
+		}
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		panic(err)
+	}
+	var u discord.UnmarshalChannel
+	if err := json.Unmarshal(b, &u); err != nil {
+		panic(err)
+	}
+	return u.Channel.(discord.GuildChannel)
+}
+
+func fowsOf(ows []discord.PermissionOverwrite) []*fow {
+	out := make([]*fow, 0, len(ows))
+	for _, o := range overwritesOf(ows) {
+		out = append(out, &fow{ID: o.ID.String(), Type: o.Type, Allow: o.Allow, Deny: o.Deny})
+	}
+	return out
+}
+
+// fmsg is a message the fake holds.
+type fmsg struct{ ID, ChannelID, Content string }
+
+// sentEmbed is a message the fake was sent with an embed: the embed and the
+// files that travelled with it.
+type sentEmbed struct {
+	Embed *discord.Embed
+	Files []*discord.File
 }
 
 // fakeOps is an in-memory DiscordChannelOps used to unit test the rotation
@@ -40,29 +112,29 @@ func findOtherChannelByName(channels []*discordgo.Channel, name, excludeID strin
 // method with a specific error, until the test removes the entry.
 type fakeOps struct {
 	mu         sync.Mutex
-	channels   map[string]*discordgo.Channel
-	messages   map[string][]*discordgo.Message
+	channels   map[string]*fch
+	messages   map[string][]*fmsg
 	nextID     int
 	callCounts map[string]int
 	failOnCall map[string]int
 	failWith   map[string]error
 
-	// editCalls records every ChannelEditComplex in order. Final state alone
+	// editCalls records every UpdateChannel in order. Final state alone
 	// can't express the position restore's correctness argument, which is
 	// about *when* it happens relative to the old channel leaving the
 	// category; an assertion on the end state would pass even if the two
 	// were swapped.
 	editCalls []recordedEdit
 
-	// complexSends records the full MessageSend payloads, so a test can
+	// complexSends records every message sent with an embed, so a test can
 	// assert on the embed and its attachments rather than only on the fact
 	// that something was posted.
-	complexSends []*discordgo.MessageSend
+	complexSends []sentEmbed
 
-	// threads is what GuildThreadsActive returns. Guild-scoped now, so it
+	// threads is what GetActiveGuildThreads returns. Guild-scoped, so it
 	// deliberately holds threads from more than one parent: the filtering is
 	// the part worth testing.
-	threads []*discordgo.Channel
+	threads []*fch
 }
 
 type recordedEdit struct {
@@ -72,58 +144,59 @@ type recordedEdit struct {
 	position  *int
 }
 
-// testArchiveCategoryID is the archive category every rotation test's config
-// points at. It is pre-registered by newFakeOps because a real guild always
-// has one: rotate() reconciles the category's permissions before archiving
-// into it (archiveperms.go), so a fake guild where the category simply does
-// not exist is not a case worth making every test set up by hand.
-const testArchiveCategoryID = "archivecat"
+// Fixture IDs. Snowflakes, because the plugin parses what it stores.
+const (
+	testArchiveCategoryID = "200"
+	testBotID             = "800"
+)
 
 func newFakeOps() *fakeOps {
 	f := &fakeOps{
-		channels:   make(map[string]*discordgo.Channel),
-		messages:   make(map[string][]*discordgo.Message),
+		channels:   make(map[string]*fch),
+		messages:   make(map[string][]*fmsg),
 		callCounts: make(map[string]int),
 		failOnCall: make(map[string]int),
 		failWith:   make(map[string]error),
 		nextID:     1000,
 	}
-	f.channels[testArchiveCategoryID] = &discordgo.Channel{
+	// testArchiveCategoryID is pre-registered because a real guild always
+	// has one: rotate() reconciles the category's permissions before
+	// archiving into it (archiveperms.go), so a fake guild where the
+	// category simply does not exist is not a case worth making every test
+	// set up by hand.
+	f.channels[testArchiveCategoryID] = &fch{
 		ID:   testArchiveCategoryID,
 		Name: defaultArchiveCategoryName,
-		Type: discordgo.ChannelTypeGuildCategory,
+		Type: discord.ChannelTypeGuildCategory,
 	}
 	return f
 }
 
-func (f *fakeOps) addChannel(ch *discordgo.Channel) {
+func (f *fakeOps) addChannel(ch *fch) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.channels[ch.ID] = ch
 }
 
-// unknownChannelErr mirrors what discordgo returns for a channel that no
-// longer exists: a *discordgo.RESTError carrying Discord's own 10003 code,
-// rather than a bare error string. Callers distinguish that case from a
-// transient failure (core.IsUnknownResource), so a fake that returned an
-// undifferentiated error would let "gone" and "try again later" test
-// identically, which is precisely the bug that distinction exists to catch.
+// restErr is the error disgo returns for a Discord error response.
+func restErr(status int, code rest.JSONErrorCode, msg string) error {
+	return &rest.Error{Code: code, Message: msg, Response: &http.Response{StatusCode: status}}
+}
+
+// unknownChannelErr is what Discord answers for a channel that no longer
+// exists: its own 10003 code, rather than a bare error string. Callers
+// distinguish that case from a transient failure (core.IsUnknownResource),
+// so a fake that returned an undifferentiated error would let "gone" and
+// "try again later" test identically, which is precisely the bug that
+// distinction exists to catch.
 func unknownChannelErr(channelID string) error {
-	return &discordgo.RESTError{
-		Response:     &http.Response{StatusCode: http.StatusNotFound},
-		ResponseBody: []byte(`{"code":10003,"message":"Unknown Channel"}`),
-		Message:      &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownChannel, Message: "Unknown Channel: " + channelID},
-	}
+	return restErr(http.StatusNotFound, rest.JSONErrorCode(10003), "Unknown Channel: "+channelID)
 }
 
 // transientErr is a retryable Discord failure (a 500), the counterpart to
 // unknownChannelErr.
 func transientErr() error {
-	return &discordgo.RESTError{
-		Response:     &http.Response{StatusCode: http.StatusInternalServerError},
-		ResponseBody: []byte(`{"code":0,"message":"500: Internal Server Error"}`),
-		Message:      &discordgo.APIErrorMessage{Code: 0, Message: "500: Internal Server Error"},
-	}
+	return restErr(http.StatusInternalServerError, 0, "500: Internal Server Error")
 }
 
 func (f *fakeOps) shouldFail(method string) error {
@@ -139,10 +212,9 @@ func (f *fakeOps) shouldFail(method string) error {
 	return nil
 }
 
-func (f *fakeOps) Channel(channelID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := f.shouldFail("Channel"); err != nil {
-		return nil, err
-	}
+// Channel is the test's own read of a channel: a copy, never failed or
+// counted.
+func (f *fakeOps) Channel(channelID string) (*fch, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ch, ok := f.channels[channelID]
@@ -153,13 +225,11 @@ func (f *fakeOps) Channel(channelID string, _ ...discordgo.RequestOption) (*disc
 	return &cp, nil
 }
 
-func (f *fakeOps) GuildChannels(guildID string, _ ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
-	if err := f.shouldFail("GuildChannels"); err != nil {
-		return nil, err
-	}
+// GuildChannels is the test's own read of a guild's channels.
+func (f *fakeOps) GuildChannels(guildID string) ([]*fch, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []*discordgo.Channel
+	var out []*fch
 	for _, ch := range f.channels {
 		if ch.GuildID == guildID {
 			cp := *ch
@@ -169,66 +239,113 @@ func (f *fakeOps) GuildChannels(guildID string, _ ...discordgo.RequestOption) ([
 	return out, nil
 }
 
-func (f *fakeOps) GuildThreadsActive(guildID string, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
-	if err := f.shouldFail("GuildThreadsActive"); err != nil {
+func (f *fakeOps) GetChannel(channelID snowflake.ID) (discord.Channel, error) {
+	if err := f.shouldFail("GetChannel"); err != nil {
+		return nil, err
+	}
+	ch, err := f.Channel(channelID.String())
+	if err != nil {
+		return nil, err
+	}
+	return ch.disgo(), nil
+}
+
+func (f *fakeOps) GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel, error) {
+	if err := f.shouldFail("GetGuildChannels"); err != nil {
+		return nil, err
+	}
+	chans, _ := f.GuildChannels(guildID.String())
+	out := make([]discord.GuildChannel, len(chans))
+	for i, c := range chans {
+		out[i] = c.disgo()
+	}
+	return out, nil
+}
+
+func (f *fakeOps) GetActiveGuildThreads(snowflake.ID) (*discord.GuildActiveThreads, error) {
+	if err := f.shouldFail("GetActiveGuildThreads"); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return &discordgo.ThreadsList{Threads: f.threads}, nil
+	out := &discord.GuildActiveThreads{}
+	for _, t := range f.threads {
+		cp := *t
+		cp.Type = discord.ChannelTypeGuildPublicThread
+		out.Threads = append(out.Threads, cp.disgo().(discord.GuildThread))
+	}
+	return out, nil
 }
 
-func (f *fakeOps) GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := f.shouldFail("GuildChannelCreateComplex"); err != nil {
+func (f *fakeOps) CreateGuildChannel(guildID snowflake.ID, c discord.GuildChannelCreate) (discord.GuildChannel, error) {
+	if err := f.shouldFail("CreateGuildChannel"); err != nil {
 		return nil, err
+	}
+	var text discord.GuildTextChannelCreate
+	switch c := c.(type) {
+	case discord.GuildTextChannelCreate:
+		text = c
+	case discord.GuildNewsChannelCreate:
+		text = discord.GuildTextChannelCreate(c)
+	case discord.GuildCategoryChannelCreate:
+		text = discord.GuildTextChannelCreate{Name: c.Name, Position: c.Position, PermissionOverwrites: c.PermissionOverwrites}
+	default:
+		return nil, fmt.Errorf("fakeOps: cannot create a %T", c)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
-	ch := &discordgo.Channel{
-		ID:                   fmt.Sprintf("ch%d", f.nextID),
-		GuildID:              guildID,
-		Name:                 data.Name,
-		Type:                 data.Type,
-		Topic:                data.Topic,
-		RateLimitPerUser:     data.RateLimitPerUser,
-		Position:             data.Position,
-		PermissionOverwrites: data.PermissionOverwrites,
-		ParentID:             data.ParentID,
-		NSFW:                 data.NSFW,
+	ch := &fch{
+		ID:                   strconv.Itoa(f.nextID),
+		GuildID:              guildID.String(),
+		Name:                 text.Name,
+		Type:                 c.Type(),
+		Topic:                text.Topic,
+		RateLimitPerUser:     text.RateLimitPerUser,
+		Position:             text.Position,
+		PermissionOverwrites: fowsOf(text.PermissionOverwrites),
+		NSFW:                 text.NSFW,
+	}
+	if text.ParentID != 0 {
+		ch.ParentID = text.ParentID.String()
 	}
 	f.channels[ch.ID] = ch
-	return ch, nil
+	return ch.disgo(), nil
 }
 
-func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := f.shouldFail("ChannelEditComplex"); err != nil {
+func (f *fakeOps) UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate) (discord.Channel, error) {
+	if err := f.shouldFail("UpdateChannel"); err != nil {
 		return nil, err
 	}
+	data, ok := u.(discord.GuildTextChannelUpdate)
+	if !ok {
+		return nil, fmt.Errorf("fakeOps: rotation sends GuildTextChannelUpdate, got %T", u)
+	}
+	id := channelID.String()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.editCalls = append(f.editCalls, recordedEdit{
-		channelID: channelID, name: data.Name, parentID: data.ParentID, position: data.Position,
-	})
-	ch, ok := f.channels[channelID]
+	rec := recordedEdit{channelID: id, position: data.Position}
+	if data.Name != nil {
+		rec.name = *data.Name
+	}
+	if data.ParentID != nil {
+		rec.parentID = data.ParentID.String()
+	}
+	f.editCalls = append(f.editCalls, rec)
+	ch, ok := f.channels[id]
 	if !ok {
-		return nil, unknownChannelErr(channelID)
+		return nil, unknownChannelErr(id)
 	}
-	if data.Name != "" {
-		ch.Name = data.Name
+	if rec.name != "" {
+		ch.Name = rec.name
 	}
-	if data.ParentID != "" {
-		ch.ParentID = data.ParentID
+	if rec.parentID != "" {
+		ch.ParentID = rec.parentID
 	}
-	if len(data.PermissionOverwrites) > 0 {
-		// Mirrors discordgo's real wire behavior: ChannelEdit.PermissionOverwrites
-		// is `json:"...,omitempty"`, so a nil OR empty slice is dropped from the
-		// outgoing PATCH entirely; Discord then leaves existing overwrites
-		// untouched. A `!= nil` check here (an empty-but-non-nil slice) would
-		// let a test believe an explicit-clear succeeded when the real API
-		// would silently no-op it, exactly the bug that shipped in
-		// revealNewChannel because this fake didn't reproduce it.
-		ch.PermissionOverwrites = data.PermissionOverwrites
+	// As Discord does: no list leaves the overwrites alone, and any list,
+	// an empty one included, replaces them.
+	if data.PermissionOverwrites != nil {
+		ch.PermissionOverwrites = fowsOf(*data.PermissionOverwrites)
 	}
 	// Position is a *int precisely so "move to 0" is distinguishable from
 	// "leave it alone"; reproducing that here is what lets a test catch a
@@ -236,95 +353,66 @@ func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEd
 	if data.Position != nil {
 		ch.Position = *data.Position
 	}
-	return ch, nil
+	return ch.disgo(), nil
 }
 
-func (f *fakeOps) ChannelDelete(channelID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	if err := f.shouldFail("ChannelDelete"); err != nil {
-		return nil, err
+func (f *fakeOps) DeleteChannel(channelID snowflake.ID) error {
+	if err := f.shouldFail("DeleteChannel"); err != nil {
+		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ch, ok := f.channels[channelID]
-	if !ok {
-		return nil, unknownChannelErr(channelID)
+	if _, ok := f.channels[channelID.String()]; !ok {
+		return unknownChannelErr(channelID.String())
 	}
-	delete(f.channels, channelID)
-	return ch, nil
+	delete(f.channels, channelID.String())
+	return nil
 }
 
-func (f *fakeOps) ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, _ ...discordgo.RequestOption) ([]*discordgo.Message, error) {
-	if err := f.shouldFail("ChannelMessages"); err != nil {
-		return nil, err
-	}
+// ChannelMessages is the test's own read of up to limit of a channel's
+// messages.
+func (f *fakeOps) ChannelMessages(channelID string, limit int) []*fmsg {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	msgs := f.messages[channelID]
 	if len(msgs) > limit {
 		msgs = msgs[:limit]
 	}
-	return msgs, nil
+	return msgs
 }
 
-func (f *fakeOps) appendMessage(channelID, content string) (*discordgo.Message, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.nextID++
-	msg := &discordgo.Message{ID: fmt.Sprintf("msg%d", f.nextID), ChannelID: channelID, Content: content}
-	f.messages[channelID] = append(f.messages[channelID], msg)
-	return msg, nil
-}
-
-func (f *fakeOps) ChannelMessageSend(channelID, content string, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := f.shouldFail("ChannelMessageSend"); err != nil {
+func (f *fakeOps) GetMessages(channelID, _ snowflake.ID, limit int) ([]discord.Message, error) {
+	if err := f.shouldFail("GetMessages"); err != nil {
 		return nil, err
 	}
-	return f.appendMessage(channelID, content)
-}
-
-func (f *fakeOps) ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := f.shouldFail("ChannelMessageSendEmbed"); err != nil {
-		return nil, err
+	msgs := f.ChannelMessages(channelID.String(), limit)
+	out := make([]discord.Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = discord.Message{ID: core.ID(m.ID), ChannelID: channelID, Content: m.Content}
 	}
-	return f.appendMessage(channelID, "")
+	return out, nil
 }
 
-// ChannelMessageSendComplex records the whole payload, not just that a send
+// CreateMessage records an embed's whole payload, not just that a send
 // happened, so a test can check the retention notice actually carries the
 // file its thumbnail references.
-//
-// It honours the failure keys of *both* plainer send methods, because
-// callers that inject a failure are simulating "this message could not be
-// posted" and which discordgo method carries it is an implementation detail
-// they should not have to track. That is not hypothetical: the pre-rotation
-// heads-up moved from ChannelMessageSend to this method when it became an
-// embed, and its two claim-handling tests inject under the old key.
-func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
-	if err := f.shouldFail("ChannelMessageSendEmbed"); err != nil {
-		return nil, err
-	}
-	if err := f.shouldFail("ChannelMessageSend"); err != nil {
+func (f *fakeOps) CreateMessage(channelID snowflake.ID, m discord.MessageCreate) (*discord.Message, error) {
+	if err := f.shouldFail("CreateMessage"); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
-	f.complexSends = append(f.complexSends, data)
-	f.mu.Unlock()
-	content := ""
-	if data != nil {
-		content = data.Content
+	defer f.mu.Unlock()
+	if len(m.Embeds) > 0 {
+		f.complexSends = append(f.complexSends, sentEmbed{Embed: &m.Embeds[0], Files: m.Files})
 	}
-	return f.appendMessage(channelID, content)
+	f.nextID++
+	msg := &fmsg{ID: strconv.Itoa(f.nextID), ChannelID: channelID.String(), Content: m.Content}
+	f.messages[msg.ChannelID] = append(f.messages[msg.ChannelID], msg)
+	return &discord.Message{ID: core.ID(msg.ID), ChannelID: channelID, Content: m.Content}, nil
 }
 
-func (f *fakeOps) ChannelMessagePin(channelID, messageID string, _ ...discordgo.RequestOption) error {
-	return f.shouldFail("ChannelMessagePin")
-}
-
-func (f *fakeOps) User(userID string, _ ...discordgo.RequestOption) (*discordgo.User, error) {
-	if err := f.shouldFail("User"); err != nil {
-		return nil, err
-	}
-	return &discordgo.User{ID: "bot-user-id"}, nil
+func (f *fakeOps) PinMessage(_, _ snowflake.ID) error {
+	return f.shouldFail("PinMessage")
 }
 
 // fakeArchiveStore is an in-memory ArchiveStore for tests.
@@ -603,6 +691,7 @@ func newTestPlugin(ops *fakeOps, archives ArchiveStore, audit *fakeAudit, fs *fa
 		log:      testLogger(),
 		now:      func() time.Time { return at },
 		voice:    testVoice(),
+		botID:    core.ID(testBotID),
 	}
 }
 

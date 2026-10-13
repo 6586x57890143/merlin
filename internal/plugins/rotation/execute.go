@@ -8,7 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
@@ -84,18 +85,19 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	// list) with no data dependency on each other. Only the processing
 	// below needs both results. Fetch-channel's error takes priority if
 	// both fail, matching the original sequential short-circuit order.
-	var oldChannel *discordgo.Channel
-	var channels []*discordgo.Channel
+	gid, cat := core.ID(guildID), core.ID(rc.ArchiveCategoryID)
+	var oldChannel discord.GuildChannel
+	var channels []discord.GuildChannel
 	var channelErr, listErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		oldChannel, channelErr = p.ops(guildID).Channel(rc.ChannelID)
+		oldChannel, channelErr = guildChannel(p.ops(guildID), core.ID(rc.ChannelID))
 	}()
 	go func() {
 		defer wg.Done()
-		channels, listErr = p.ops(guildID).GuildChannels(guildID)
+		channels, listErr = p.ops(guildID).GetGuildChannels(gid)
 	}()
 	wg.Wait()
 
@@ -104,7 +106,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	if channelErr != nil {
 		return fmt.Errorf("rotation: fetch channel %s: %w", rc.ChannelID, channelErr)
 	}
-	if oldChannel.GuildID != guildID {
+	if oldChannel.GuildID() != gid {
 		return fmt.Errorf("rotation: channel %s does not belong to guild %s", rc.ChannelID, guildID)
 	}
 	// Capacity check: fail loud and clean, not with a raw Discord error.
@@ -134,21 +136,21 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	//   - a prior run created the hidden staging channel but failed before
 	//     reveal, found by its deterministic temp name.
 	// Otherwise, this is a fresh run: create it.
-	originalName, alreadyArchived := archivedChannelOrigin(oldChannel, rc.ArchiveCategoryID)
+	originalName, alreadyArchived := archivedChannelOrigin(oldChannel, cat)
 
 	// Discord allows duplicate channel names, so matching on name alone can
 	// find an unrelated channel and make this rotation archive a live
 	// channel and retarget itself onto a stranger's. A genuine replacement
 	// also sits outside the archive category and, until the old channel is
 	// archived and moved, in the same category as the channel it replaces.
-	newChannel := findChannel(channels, func(c *discordgo.Channel) bool {
-		return c.Name == originalName && c.ID != oldChannel.ID &&
-			c.ParentID != rc.ArchiveCategoryID &&
-			(alreadyArchived || c.ParentID == oldChannel.ParentID)
+	newChannel := findChannel(channels, func(c discord.GuildChannel) bool {
+		return c.Name() == originalName && c.ID() != oldChannel.ID() &&
+			parent(c) != cat &&
+			(alreadyArchived || parent(c) == parent(oldChannel))
 	})
 	alreadyRevealed := newChannel != nil
 	if newChannel == nil {
-		newChannel = findChannel(channels, func(c *discordgo.Channel) bool { return c.Name == tempName })
+		newChannel = findChannel(channels, func(c discord.GuildChannel) bool { return c.Name() == tempName })
 	}
 	if newChannel == nil {
 		// Normally the replacement belongs wherever the channel it replaces
@@ -157,9 +159,9 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// would bury the live channel inside the archive. The original
 		// category isn't recoverable, so it lands uncategorized, where it's
 		// plainly visible for a mod to move.
-		parentID := oldChannel.ParentID
+		parentID := parent(oldChannel)
 		if alreadyArchived {
-			parentID = ""
+			parentID = 0
 		}
 		var err error
 		newChannel, err = p.createHiddenChannel(guildID, oldChannel, tempName, parentID)
@@ -176,12 +178,12 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	// again on a retry is a pure wasted call.
 	var threadNames []string
 	if !alreadyRevealed {
-		threadNames = p.captureThreadNames(guildID, rc.ChannelID)
+		threadNames = p.captureThreadNames(guildID, oldChannel.ID())
 
 		// 5. Populate the still-hidden channel: sticky repost + pin, then
 		// the transparency notice. Any failure here leaves the OLD channel
 		// completely untouched and still live, with zero member-visible impact.
-		if err := p.populateIfNeeded(ctx, newChannel.ID, rc); err != nil {
+		if err := p.populateIfNeeded(ctx, newChannel.ID(), rc); err != nil {
 			return fmt.Errorf("rotation: populate staging channel: %w", err)
 		}
 
@@ -198,7 +200,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// channel has the right name, which is strictly worse than today's
 		// accepted "both visible" window. The realistic time saved (well
 		// under a second) isn't worth trading away that guarantee.
-		overwrites := oldChannel.PermissionOverwrites
+		overwrites := []discord.PermissionOverwrite(oldChannel.PermissionOverwrites())
 		if alreadyArchived {
 			// Resuming after the flip already happened, with the replacement
 			// since deleted: the old channel's overwrites are the archive's
@@ -209,7 +211,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 			// what a typical rotating channel had to begin with.
 			overwrites = nil
 		}
-		if err := p.revealNewChannel(newChannel.ID, originalName, guildID, overwrites); err != nil {
+		if err := p.revealNewChannel(newChannel.ID(), originalName, guildID, overwrites); err != nil {
 			return fmt.Errorf("rotation: reveal new channel: %w", err)
 		}
 	}
@@ -226,11 +228,11 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// until some later pass notices. This is the moment the check matters
 		// most: a rotation is precisely when a channel people could read
 		// becomes one only mods and the guild's archive viewer roles may.
-		desired, _, err := p.reconcileArchiveCategory(guildID, rc.ArchiveCategoryID)
+		desired, _, err := p.reconcileArchiveCategory(guildID, cat)
 		if err != nil {
 			return fmt.Errorf("rotation: reconcile archive category: %w", err)
 		}
-		if err := p.archiveOldChannel(oldChannel.ID, archiveName, rc.ArchiveCategoryID, guildID, desired); err != nil {
+		if err := p.archiveOldChannel(oldChannel.ID(), archiveName, cat, guildID, desired); err != nil {
 			return fmt.Errorf("rotation: archive old channel: %w", err)
 		}
 
@@ -241,7 +243,7 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		// re-flowed out from under us the moment the old channel moves. Doing
 		// it here, with the slot genuinely free, is the only ordering that
 		// lands the channel where members expect to find it.
-		p.restorePosition(guildID, newChannel.ID, oldChannel.Position)
+		p.restorePosition(guildID, newChannel.ID(), oldChannel.Position())
 	}
 
 	// 8. Record the archive for eventual sweep-based permanent deletion.
@@ -254,8 +256,9 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 		deleteAfter = &t
 	}
 	rotationID := rc.ID
+	oldID, newID := oldChannel.ID().String(), newChannel.ID().String()
 	if err := p.archives.Insert(ctx, ArchiveRecord{
-		ChannelID:         oldChannel.ID,
+		ChannelID:         oldID,
 		GuildID:           guildID,
 		SourceChannelID:   rc.ChannelID,
 		ArchiveCategoryID: rc.ArchiveCategoryID,
@@ -273,14 +276,14 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	// the live replacement. RetargetRotationChannel publishes
 	// core.EventConfigChanged, which reconcile (subscribed in Init) picks up
 	// to re-key the Scheduler job from the old channel ID to the new one.
-	if err := p.settings.RetargetRotationChannel(ctx, guildID, oldChannel.ID, newChannel.ID); err != nil {
+	if err := p.settings.RetargetRotationChannel(ctx, guildID, oldID, newID); err != nil {
 		return fmt.Errorf("rotation: retarget rotation config to new channel: %w", err)
 	}
 
 	// 9. Audit + event.
 	if len(threadNames) > 0 {
 		p.log.Info("rotation: active threads archived with channel",
-			"channel", oldChannel.ID, "threads", strings.Join(threadNames, ", "))
+			"channel", oldID, "threads", strings.Join(threadNames, ", "))
 	}
 	// The rotation itself has already fully succeeded by this point (rename,
 	// archive, new channel live, archive record persisted). An audit-embed
@@ -290,33 +293,32 @@ func (p *Plugin) rotate(ctx context.Context, guildID string, rc settings.Rotatio
 	// maxConsecutiveFailures, masking the fact that rotation itself is fine.
 	// Matches the log-and-continue policy every other audit call site uses
 	// (sweep.go, adminconfig.go, rotation/configure.go).
-	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "channel.rotated", core.MentionChannel(oldChannel.ID), core.MentionChannel(newChannel.ID)); err != nil {
-		p.log.Error("rotation: audit failed", "old_channel", oldChannel.ID, "new_channel", newChannel.ID, "err", err)
+	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "channel.rotated", core.MentionChannel(oldID), core.MentionChannel(newID)); err != nil {
+		p.log.Error("rotation: audit failed", "old_channel", oldID, "new_channel", newID, "err", err)
 	}
 	p.bus.Publish(ctx, core.Event{
 		Type:    core.EventChannelRotated,
 		GuildID: guildID,
-		Payload: core.ChannelRotatedPayload{OldChannelID: oldChannel.ID, NewChannelID: newChannel.ID},
+		Payload: core.ChannelRotatedPayload{OldChannelID: oldID, NewChannelID: newID},
 	})
 	return nil
 }
 
 // captureThreadNames reads the guild's active threads and keeps the ones
 // hanging off this channel. Guild-scoped because Discord removed the
-// channel-scoped endpoint (see discordguard.GuildOps.GuildThreadsActive), so
-// the ParentID filter below is the only thing keeping one channel's rotation
-// from logging the thread names of every other channel in the server.
-func (p *Plugin) captureThreadNames(guildID, channelID string) []string {
-	list, err := p.ops(guildID).GuildThreadsActive(guildID)
+// channel-scoped endpoint, so the parent filter below is the only thing
+// keeping one channel's rotation from logging the thread names of every other
+// channel in the server.
+func (p *Plugin) captureThreadNames(guildID string, channelID snowflake.ID) []string {
+	list, err := p.ops(guildID).GetActiveGuildThreads(core.ID(guildID))
 	if err != nil || list == nil {
 		return nil
 	}
-	names := make([]string, 0, len(list.Threads))
+	var names []string
 	for _, t := range list.Threads {
-		if t.ParentID != channelID {
-			continue
+		if parent(t) == channelID {
+			names = append(names, t.Name())
 		}
-		names = append(names, t.Name)
 	}
 	return names
 }
@@ -325,27 +327,34 @@ func (p *Plugin) captureThreadNames(guildID, channelID string) []string {
 // channel: enough to read/post while checking/populating it. Deliberately
 // does NOT include PermissionManageMessages (which pinning would need).
 // The bot's own Discord role only holds Manage Channels + Manage Roles
-// (least privilege, spec.MD §4), and core.DenyEveryoneExceptBot's overwrite
+// (least privilege, spec.MD §4), and core.DenyEveryone's overwrite
 // grant fails the entire channel-creation request (403 Missing Permissions)
 // if it tries to grant a bit the bot doesn't actually hold. Pinning is
 // attempted best-effort in populateIfNeeded instead of required here.
-const stagingChannelBotAllow = discordgo.PermissionViewChannel | discordgo.PermissionSendMessages
+const stagingChannelBotAllow = discord.PermissionViewChannel | discord.PermissionSendMessages
 
-func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Channel, tempName, parentID string) (*discordgo.Channel, error) {
-	botUserID, err := p.getBotUserID(guildID)
-	if err != nil {
-		return nil, err
-	}
-	return p.ops(guildID).GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+// createHiddenChannel makes the replacement as a copy of oldChannel that only
+// the bird can see. Rotation only accepts text channels, but one may have been
+// made an announcement channel since, and the copy keeps that.
+func (p *Plugin) createHiddenChannel(guildID string, oldChannel discord.GuildChannel, tempName string, parentID snowflake.ID) (discord.GuildChannel, error) {
+	gid := core.ID(guildID)
+	c := discord.GuildTextChannelCreate{
 		Name:                 tempName,
-		Type:                 oldChannel.Type,
-		Topic:                oldChannel.Topic,
-		RateLimitPerUser:     oldChannel.RateLimitPerUser,
-		Position:             oldChannel.Position,
-		PermissionOverwrites: core.DenyEveryoneExceptBot(oldChannel.PermissionOverwrites, guildID, botUserID, stagingChannelBotAllow),
+		Position:             oldChannel.Position(),
+		PermissionOverwrites: core.DenyEveryone(oldChannel.PermissionOverwrites(), gid, p.botID, stagingChannelBotAllow),
 		ParentID:             parentID,
-		NSFW:                 oldChannel.NSFW,
-	})
+	}
+	if m, ok := oldChannel.(discord.GuildMessageChannel); ok {
+		if t := m.Topic(); t != nil {
+			c.Topic = *t
+		}
+		c.RateLimitPerUser = m.RateLimitPerUser()
+		c.NSFW = m.NSFW()
+	}
+	if oldChannel.Type() == discord.ChannelTypeGuildNews {
+		return p.ops(guildID).CreateGuildChannel(gid, discord.GuildNewsChannelCreate(c))
+	}
+	return p.ops(guildID).CreateGuildChannel(gid, c)
 }
 
 // populateIfNeeded posts sticky messages (pinned if the bot happens to hold
@@ -353,8 +362,8 @@ func (p *Plugin) createHiddenChannel(guildID string, oldChannel *discordgo.Chann
 // the staging channel, unless it already has messages, which only happens
 // on a retry after a prior run got this far, and reposting would duplicate
 // content in what will shortly become a very-visible channel.
-func (p *Plugin) populateIfNeeded(ctx context.Context, channelID string, rc settings.RotationChannel) error {
-	existing, err := p.ops(rc.GuildID).ChannelMessages(channelID, 1, "", "", "")
+func (p *Plugin) populateIfNeeded(ctx context.Context, channelID snowflake.ID, rc settings.RotationChannel) error {
+	existing, err := p.ops(rc.GuildID).GetMessages(channelID, 0, 1)
 	if err != nil {
 		return fmt.Errorf("check existing messages: %w", err)
 	}
@@ -363,7 +372,7 @@ func (p *Plugin) populateIfNeeded(ctx context.Context, channelID string, rc sett
 	}
 
 	for _, msg := range resolveSticky(rc) {
-		sent, err := p.ops(rc.GuildID).ChannelMessageSend(channelID, msg)
+		sent, err := p.ops(rc.GuildID).CreateMessage(channelID, discord.MessageCreate{Content: msg})
 		if err != nil {
 			return fmt.Errorf("post sticky message: %w", err)
 		}
@@ -371,25 +380,24 @@ func (p *Plugin) populateIfNeeded(ctx context.Context, channelID string, rc sett
 		// doesn't currently request, so treat it as a nice-to-have, not a
 		// reason to fail the whole rotation. The sticky message itself
 		// still posted successfully either way.
-		if err := p.ops(rc.GuildID).ChannelMessagePin(channelID, sent.ID); err != nil {
+		if err := p.ops(rc.GuildID).PinMessage(channelID, sent.ID); err != nil {
 			p.log.Warn("rotation: pin sticky message failed, continuing without pin", "channel", channelID, "err", err)
 		}
 	}
 
-	// Sent through core.NewEmbed like every other embed this bot produces,
+	// Sent through core.Embed like every other embed this bot produces,
 	// rather than as a bare literal. This one is the most-read message
 	// merlin sends: it lands in the busiest channel in the server on every
 	// single rotation, and until now it was the only embed with no colour,
 	// no footer and no timestamp, which made the server's own retention
 	// notice look less like the bot than the bot's error messages did.
 	//
-	// It needs SendComplex rather than SendEmbed because the footer icon is
-	// an attachment:// reference, so the file has to travel with it or the
-	// icon renders broken.
-	notice := core.NewEmbed(core.ColorPrimary, "", p.retentionNotice(ctx, rc))
-	if _, err := p.ops(rc.GuildID).ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Embed: notice,
-		Files: core.EmbedFiles(notice),
+	// The footer icon is an attachment:// reference, so the file has to
+	// travel with it or the icon renders broken.
+	notice := core.Embed(core.ColorPrimary, "", p.retentionNotice(ctx, rc))
+	if _, err := p.ops(rc.GuildID).CreateMessage(channelID, discord.MessageCreate{
+		Embeds: []discord.Embed{notice},
+		Files:  core.EmbedUploads(notice),
 	}); err != nil {
 		return fmt.Errorf("post retention notice: %w", err)
 	}
@@ -401,29 +409,15 @@ func (p *Plugin) populateIfNeeded(ctx context.Context, channelID string, rc sett
 // contract this whole feature promises.
 //
 // If the old channel had zero explicit overwrites (the common case for a
-// fully public channel like general chat: @everyone sees it purely via
-// guild-level role permissions, no channel-specific entry needed), that's an
-// empty slice here, but discordgo's ChannelEdit.PermissionOverwrites is
-// `json:"...,omitempty"`, so an empty/nil slice is dropped from the outgoing
-// PATCH entirely rather than sent as `[]`. Discord then leaves the channel's
-// existing overwrites untouched, which at this point are still
-// createHiddenChannel's staging ones (@everyone denied, only the bot
-// allowed), permanently locking everyone but the bot out of what's meant to
-// become the fully public replacement. An explicit no-op @everyone overwrite
-// (zero Allow/Deny) is functionally identical to no overwrite at all, but as
-// a non-empty slice it actually reaches the API and replaces the staging
-// overwrites instead of being silently skipped.
-func (p *Plugin) revealNewChannel(channelID, finalName, guildID string, originalOverwrites []*discordgo.PermissionOverwrite) error {
-	overwrites := originalOverwrites
-	if len(overwrites) == 0 {
-		overwrites = []*discordgo.PermissionOverwrite{{
-			ID:   guildID,
-			Type: discordgo.PermissionOverwriteTypeRole,
-		}}
-	}
-	_, err := p.ops(guildID).ChannelEditComplex(channelID, &discordgo.ChannelEdit{
-		Name:                 finalName,
-		PermissionOverwrites: overwrites,
+// fully public channel like general chat), the list sent is an empty one,
+// never a missing one: a PATCH without the field leaves the staging
+// overwrites in place (@everyone denied, only the bird allowed), locking
+// everyone out of what's meant to become the public replacement.
+func (p *Plugin) revealNewChannel(channelID snowflake.ID, finalName, guildID string, originalOverwrites []discord.PermissionOverwrite) error {
+	overwrites := append([]discord.PermissionOverwrite{}, originalOverwrites...)
+	_, err := p.ops(guildID).UpdateChannel(channelID, discord.GuildTextChannelUpdate{
+		Name:                 &finalName,
+		PermissionOverwrites: &overwrites,
 	})
 	return err
 }
@@ -444,8 +438,8 @@ func (p *Plugin) revealNewChannel(channelID, finalName, guildID string, original
 // Deliberately not attempted on the resumed-after-archive path: the old
 // channel's position by then is its position inside the archive category, and
 // applying that to the live channel would be worse than leaving it alone.
-func (p *Plugin) restorePosition(guildID, channelID string, position int) {
-	if _, err := p.ops(guildID).ChannelEditComplex(channelID, &discordgo.ChannelEdit{Position: &position}); err != nil {
+func (p *Plugin) restorePosition(guildID string, channelID snowflake.ID, position int) {
+	if _, err := p.ops(guildID).UpdateChannel(channelID, discord.GuildTextChannelUpdate{Position: &position}); err != nil {
 		p.log.Error("rotation: could not restore channel position; rotation itself succeeded",
 			"guild", guildID, "channel", channelID, "position", position, "err", err)
 	}
@@ -456,16 +450,16 @@ func (p *Plugin) restorePosition(guildID, channelID string, position int) {
 // the same thing Discord's "sync permissions with category" does, and the
 // reason overwrites is passed in rather than computed here (see
 // archiveperms.go for why the category owns this).
-func (p *Plugin) archiveOldChannel(channelID, archiveName, archiveCategoryID, guildID string, overwrites []*discordgo.PermissionOverwrite) error {
-	_, err := p.ops(guildID).ChannelEditComplex(channelID, &discordgo.ChannelEdit{
-		Name:                 archiveName,
-		ParentID:             archiveCategoryID,
-		PermissionOverwrites: overwrites,
+func (p *Plugin) archiveOldChannel(channelID snowflake.ID, archiveName string, archiveCategoryID snowflake.ID, guildID string, overwrites []discord.PermissionOverwrite) error {
+	_, err := p.ops(guildID).UpdateChannel(channelID, discord.GuildTextChannelUpdate{
+		Name:                 &archiveName,
+		ParentID:             &archiveCategoryID,
+		PermissionOverwrites: &overwrites,
 	})
 	return err
 }
 
-func findChannel(channels []*discordgo.Channel, match func(*discordgo.Channel) bool) *discordgo.Channel {
+func findChannel(channels []discord.GuildChannel, match func(discord.GuildChannel) bool) discord.GuildChannel {
 	for _, c := range channels {
 		if match(c) {
 			return c
@@ -498,13 +492,13 @@ var archiveNamePattern = regexp.MustCompile(`^(.+)-archive-\d{4}-\d{2}-\d{2}-\d{
 // in the configured archive category, neither alone being conclusive) and
 // returns the name it had before that. For a channel that hasn't been
 // archived, its current name is its original name.
-func archivedChannelOrigin(ch *discordgo.Channel, archiveCategoryID string) (originalName string, archived bool) {
-	if archiveCategoryID == "" || ch.ParentID != archiveCategoryID {
-		return ch.Name, false
+func archivedChannelOrigin(ch discord.GuildChannel, archiveCategoryID snowflake.ID) (originalName string, archived bool) {
+	if archiveCategoryID == 0 || parent(ch) != archiveCategoryID {
+		return ch.Name(), false
 	}
-	m := archiveNamePattern.FindStringSubmatch(ch.Name)
+	m := archiveNamePattern.FindStringSubmatch(ch.Name())
 	if m == nil {
-		return ch.Name, false
+		return ch.Name(), false
 	}
 	return m[1], true
 }

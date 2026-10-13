@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/settings"
 )
@@ -17,8 +17,8 @@ import (
 // missing.
 func TestValidateRotationChannelAcceptsNilRetention(t *testing.T) {
 	rc := settings.RotationChannel{
-		GuildID: "g1", ChannelID: "c1", IntervalMinutes: 24 * 60,
-		ArchiveCategoryID: "cat1", ArchiveVisibility: "mod_only",
+		GuildID: "100", ChannelID: "303", IntervalMinutes: 24 * 60,
+		ArchiveCategoryID: "202", ArchiveVisibility: "mod_only",
 		RetentionHours: nil,
 	}
 	if err := ValidateChannel(rc); err != nil {
@@ -28,8 +28,8 @@ func TestValidateRotationChannelAcceptsNilRetention(t *testing.T) {
 
 func TestValidateRotationChannelRejectsZeroRetention(t *testing.T) {
 	rc := settings.RotationChannel{
-		GuildID: "g1", ChannelID: "c1", IntervalMinutes: 24 * 60,
-		ArchiveCategoryID: "cat1", ArchiveVisibility: "mod_only",
+		GuildID: "100", ChannelID: "303", IntervalMinutes: 24 * 60,
+		ArchiveCategoryID: "202", ArchiveVisibility: "mod_only",
 		RetentionHours: intPtr(0),
 	}
 	if err := ValidateChannel(rc); err == nil {
@@ -45,27 +45,27 @@ func TestValidateRotationChannelRejectsZeroRetention(t *testing.T) {
 // as-is rather than ignoring it in favor of the auto-create fallback.
 func TestResolveArchiveCategoryUsesGivenOption(t *testing.T) {
 	ops, _, _, p, _ := setupRotation(t, finiteRetentionRC())
-	got, err := p.resolveArchiveCategory("g1", "explicit-cat")
+	got, err := p.resolveArchiveCategory("100", "205")
 	if err != nil {
 		t.Fatalf("resolveArchiveCategory: %v", err)
 	}
-	if got != "explicit-cat" {
+	if got != "205" {
 		t.Fatalf("expected the explicitly-given category ID, got %q", got)
 	}
-	if _, err := ops.Channel("explicit-cat"); err == nil {
+	if _, err := ops.Channel("205"); err == nil {
 		t.Fatal("expected no new category to have been created when one was already given")
 	}
 }
 
 func TestResolveArchiveCategoryReusesExistingArchiveCategory(t *testing.T) {
 	ops, _, _, p, _ := setupRotation(t, finiteRetentionRC())
-	ops.addChannel(&discordgo.Channel{ID: "existing-archive-cat", GuildID: "g1", Name: defaultArchiveCategoryName, Type: discordgo.ChannelTypeGuildCategory})
+	ops.addChannel(&fch{ID: "204", GuildID: "100", Name: defaultArchiveCategoryName, Type: discord.ChannelTypeGuildCategory})
 
-	got, err := p.resolveArchiveCategory("g1", "")
+	got, err := p.resolveArchiveCategory("100", "")
 	if err != nil {
 		t.Fatalf("resolveArchiveCategory: %v", err)
 	}
-	if got != "existing-archive-cat" {
+	if got != "204" {
 		t.Fatalf("expected the existing %q category to be reused, got %q", defaultArchiveCategoryName, got)
 	}
 }
@@ -73,7 +73,7 @@ func TestResolveArchiveCategoryReusesExistingArchiveCategory(t *testing.T) {
 func TestResolveArchiveCategoryCreatesArchiveCategoryWhenMissing(t *testing.T) {
 	ops, _, _, p, _ := setupRotation(t, finiteRetentionRC())
 
-	got, err := p.resolveArchiveCategory("g1", "")
+	got, err := p.resolveArchiveCategory("100", "")
 	if err != nil {
 		t.Fatalf("resolveArchiveCategory: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestResolveArchiveCategoryCreatesArchiveCategoryWhenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected a new category to have been created, got err: %v", err)
 	}
-	if created.Name != defaultArchiveCategoryName || created.Type != discordgo.ChannelTypeGuildCategory {
+	if created.Name != defaultArchiveCategoryName || created.Type != discord.ChannelTypeGuildCategory {
 		t.Fatalf("expected a category named %q, got name=%q type=%v", defaultArchiveCategoryName, created.Name, created.Type)
 	}
 }
@@ -91,7 +91,7 @@ func TestResolveArchiveCategoryCreatesArchiveCategoryWhenMissing(t *testing.T) {
 // some other mode.
 func TestValidateRejectsAnUnknownDisclosure(t *testing.T) {
 	base := settings.RotationChannel{
-		ChannelID: "c1", ArchiveCategoryID: "cat1", ArchiveVisibility: "mod_only",
+		ChannelID: "303", ArchiveCategoryID: "202", ArchiveVisibility: "mod_only",
 		IntervalMinutes: 24 * 60, NoticeLeadMinutes: 10,
 	}
 
@@ -124,7 +124,7 @@ func TestValidateRejectsAnUnknownDisclosure(t *testing.T) {
 // and can no longer even select.
 func TestLegacyWhitelistVisibilityStillValidates(t *testing.T) {
 	rc := settings.RotationChannel{
-		ChannelID: "c1", ArchiveCategoryID: "cat1", ArchiveVisibility: "whitelist",
+		ChannelID: "303", ArchiveCategoryID: "202", ArchiveVisibility: "whitelist",
 		IntervalMinutes: 24 * 60, NoticeLeadMinutes: 10,
 	}
 	if err := ValidateChannel(rc); err != nil {

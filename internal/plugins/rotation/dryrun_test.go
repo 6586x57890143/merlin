@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // enableDryRun flips the plugin into rehearsal mode the same way a guild
@@ -24,16 +22,16 @@ func TestRotateDryRunTouchesNothing(t *testing.T) {
 	ops, archives, audit, p, rc := setupRotation(t, finiteRetentionRC())
 	enableDryRun(p)
 
-	before, err := ops.GuildChannels("g1")
+	before, err := ops.GuildChannels("100")
 	if err != nil {
 		t.Fatalf("GuildChannels: %v", err)
 	}
 
-	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+	if err := p.rotate(context.Background(), "100", rc); err != nil {
 		t.Fatalf("rotate under dry-run should succeed silently: %v", err)
 	}
 
-	after, err := ops.GuildChannels("g1")
+	after, err := ops.GuildChannels("100")
 	if err != nil {
 		t.Fatalf("GuildChannels: %v", err)
 	}
@@ -41,14 +39,14 @@ func TestRotateDryRunTouchesNothing(t *testing.T) {
 		t.Errorf("dry-run changed the channel list: %d -> %d", len(before), len(after))
 	}
 
-	old, err := ops.Channel("old1")
+	old, err := ops.Channel("300")
 	if err != nil {
 		t.Fatalf("Channel(old1): %v", err)
 	}
 	if old.Name != "general-chat" {
 		t.Errorf("dry-run renamed the live channel to %q", old.Name)
 	}
-	if old.ParentID != "cat0" {
+	if old.ParentID != "201" {
 		t.Errorf("dry-run moved the live channel to %q", old.ParentID)
 	}
 
@@ -80,20 +78,20 @@ func TestSweepDryRunDeletesNothingAndKeepsTracking(t *testing.T) {
 	seedDueArchive(t, ops, archives)
 	beforeRows := len(archives.records)
 
-	if err := p.sweep(context.Background(), "g1"); err != nil {
+	if err := p.sweep(context.Background(), "100"); err != nil {
 		t.Fatalf("sweep under dry-run should succeed silently: %v", err)
 	}
 
 	if got := len(archives.records); got != beforeRows {
 		t.Errorf("dry-run sweep dropped tracking rows: %d -> %d", beforeRows, got)
 	}
-	if _, err := ops.Channel("archived1"); err != nil {
+	if _, err := ops.Channel("402"); err != nil {
 		t.Errorf("dry-run sweep deleted the archived channel: %v", err)
 	}
 
 	found := false
 	for _, r := range audit.records {
-		if r.action == "archive.dryrun" && strings.Contains(r.oldValue, "archived1") {
+		if r.action == "archive.dryrun" && strings.Contains(r.oldValue, "402") {
 			found = true
 		}
 	}
@@ -111,28 +109,28 @@ func TestDryRunJobsReportSuccessToScheduler(t *testing.T) {
 	_, _, _, p, rc := setupRotation(t, finiteRetentionRC())
 	enableDryRun(p)
 
-	if err := p.makeRotationJob("g1", rc.ID)(context.Background()); err != nil {
+	if err := p.makeRotationJob("100", rc.ID)(context.Background()); err != nil {
 		t.Errorf("rotation job under dry-run returned %v, want nil", err)
 	}
-	if err := p.makeSweepJob("g1")(context.Background()); err != nil {
+	if err := p.makeSweepJob("100")(context.Background()); err != nil {
 		t.Errorf("sweep job under dry-run returned %v, want nil", err)
 	}
 }
 
 func seedDueArchive(t *testing.T, ops *fakeOps, archives *fakeArchiveStore) {
 	t.Helper()
-	ops.addChannel(&discordgo.Channel{
-		ID:       "archived1",
-		GuildID:  "g1",
+	ops.addChannel(&fch{
+		ID:       "402",
+		GuildID:  "100",
 		Name:     "general-chat-archive-2026-01-01-0000",
-		ParentID: "archivecat",
+		ParentID: "200",
 	})
 	deleteAfter := fixedNow.Add(-time.Hour)
 	if err := archives.Insert(context.Background(), ArchiveRecord{
-		GuildID:           "g1",
-		ChannelID:         "archived1",
-		SourceChannelID:   "old1",
-		ArchiveCategoryID: "archivecat",
+		GuildID:           "100",
+		ChannelID:         "402",
+		SourceChannelID:   "300",
+		ArchiveCategoryID: "200",
 		ArchivedAt:        fixedNow.Add(-48 * time.Hour),
 		DeleteAfter:       &deleteAfter,
 	}); err != nil {

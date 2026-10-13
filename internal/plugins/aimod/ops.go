@@ -5,6 +5,7 @@ import (
 
 	"github.com/disgoorg/disgo/discord"
 
+	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 )
 
@@ -57,11 +58,11 @@ func GuardOps(o *discordguard.GuildOps) DiscordOps { return guardOps{o} }
 type guardOps struct{ o *discordguard.GuildOps }
 
 func (g guardOps) DeleteMessage(channelID, messageID string) error {
-	return g.o.DeleteMessage(channelID, messageID)
+	return g.o.DeleteMessage(core.ID(channelID), core.ID(messageID))
 }
 
 func (g guardOps) History(channelID, before string, limit int) ([]Line, error) {
-	msgs, err := g.o.GetMessages(channelID, before, limit)
+	msgs, err := g.o.GetMessages(core.ID(channelID), core.ID(before), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +77,7 @@ func (g guardOps) History(channelID, before string, limit int) ([]Line, error) {
 }
 
 func (g guardOps) Webhooks(channelID string) ([]Hook, error) {
-	hooks, err := g.o.GetWebhooks(channelID)
+	hooks, err := g.o.GetWebhooks(core.ID(channelID))
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +91,7 @@ func (g guardOps) Webhooks(channelID string) ([]Hook, error) {
 }
 
 func (g guardOps) CreateWebhook(channelID, name string) (Hook, error) {
-	h, err := g.o.CreateWebhook(channelID, name)
+	h, err := g.o.CreateWebhook(core.ID(channelID), name)
 	if err != nil {
 		return Hook{}, err
 	}
@@ -98,7 +99,7 @@ func (g guardOps) CreateWebhook(channelID, name string) (Hook, error) {
 }
 
 func (g guardOps) PostAs(hook Hook, m discord.WebhookMessageCreate, wait bool) (string, error) {
-	msg, err := g.o.CreateWebhookMessage(hook.ID, hook.Token, m, wait)
+	msg, err := g.o.CreateWebhookMessage(core.ID(hook.ID), hook.Token, m, wait)
 	if err != nil || msg == nil {
 		return "", err
 	}
@@ -106,7 +107,7 @@ func (g guardOps) PostAs(hook Hook, m discord.WebhookMessageCreate, wait bool) (
 }
 
 func (g guardOps) Member(guildID, userID string) (Member, error) {
-	m, err := g.o.GetMember(guildID, userID)
+	m, err := g.o.GetMember(core.ID(guildID), core.ID(userID))
 	if err != nil {
 		return Member{}, err
 	}
@@ -118,11 +119,11 @@ func (g guardOps) Member(guildID, userID string) (Member, error) {
 }
 
 func (g guardOps) TimeoutMember(guildID, userID string, until *time.Time) error {
-	return g.o.TimeoutMember(guildID, userID, until)
+	return g.o.TimeoutMember(core.ID(guildID), core.ID(userID), until)
 }
 
 func (g guardOps) Guild(guildID string) (Guild, error) {
-	rg, err := g.o.GetGuild(guildID)
+	rg, err := g.o.GetGuild(core.ID(guildID))
 	if err != nil {
 		return Guild{}, err
 	}
@@ -134,10 +135,10 @@ func (g guardOps) Guild(guildID string) (Guild, error) {
 }
 
 func (g guardOps) DM(userID string, m discord.MessageCreate) error {
-	dm, err := g.o.CreateDMChannel(userID)
+	dm, err := g.o.CreateDMChannel(core.ID(userID))
 	if err != nil {
 		return err
 	}
-	_, err = g.o.CreateMessage(dm.ID().String(), m)
+	_, err = g.o.CreateMessage(dm.ID(), m)
 	return err
 }

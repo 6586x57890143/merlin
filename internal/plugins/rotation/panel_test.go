@@ -64,7 +64,7 @@ func TestListShowsEveryRotatingChannel(t *testing.T) {
 func TestNonAdminsCannotPressAnything(t *testing.T) {
 	p, _, _, _ := panelPlugin(t)
 	rc := panelRC()
-	for _, ch := range []string{"", rc.ChannelID, "fresh"} {
+	for _, ch := range []string{"", rc.ChannelID, "305"} {
 		pn := p.panel(context.Background(), click(t, member, "", nil), ch, "")
 		for id, b := range paneltest.IxButtons(pn) {
 			if !strings.HasPrefix(id, panelView) && !b.Disabled {
@@ -81,12 +81,12 @@ func TestNonAdminsCannotPressAnything(t *testing.T) {
 
 func TestStartingRotationWaitsAFullInterval(t *testing.T) {
 	p, _, audit, fs := panelPlugin(t)
-	ix, wire := paneltest.IxSubmit(t, boss, formStruct+"add:fresh", map[string]string{
+	ix, wire := paneltest.IxSubmit(t, boss, formStruct+"add:305", map[string]string{
 		"interval": "2d", "retention": "", "notice": "off",
 	})
-	p.handleForm(context.Background(), ix, formStruct+"add:fresh")
+	p.handleForm(context.Background(), ix, formStruct+"add:305")
 
-	rc, ok := fs.RotationChannel(guild, "fresh")
+	rc, ok := fs.RotationChannel(guild, "305")
 	if !ok {
 		t.Fatalf("not saved; panel said:\n%.600s", wire.All())
 	}
@@ -141,7 +141,7 @@ func TestEveryRotationControlAnswers(t *testing.T) {
 		{panelView + "ch", []string{ch}},
 		{panelView + "home", nil},
 		{panelStruct + "readers", []string{"21"}},
-		{panelStruct + "add:fresh", nil},
+		{panelStruct + "add:305", nil},
 		{panelAdjust + "timing:" + ch, nil},
 		{panelAdjust + "sticky:" + ch, nil},
 		{panelAdjust + "stickyon:" + ch, nil},

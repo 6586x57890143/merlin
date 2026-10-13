@@ -6,6 +6,14 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 )
 
+// ID is s as a snowflake, or 0 if it is not one. merlin stores Discord's
+// IDs as strings that came from Discord, so 0 only ever means a stored row
+// that was never a real ID, and discordguard refuses 0 before sending.
+func ID(s string) snowflake.ID {
+	id, _ := snowflake.Parse(s)
+	return id
+}
+
 // DenyEveryone is DenyEveryoneExceptBot on disgo's types: @everyone denied
 // View Channel and the bot granted botAllow, merged into src's own
 // overwrites for either rather than added beside them.

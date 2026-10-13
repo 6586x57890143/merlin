@@ -135,7 +135,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 }
 
 func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord) error {
-	ch, err := p.ops(guildID).Channel(rec.ChannelID)
+	ch, err := guildChannel(p.ops(guildID), core.ID(rec.ChannelID))
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			// Already gone (e.g. manually deleted), nothing left to sweep.
@@ -148,7 +148,7 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 		// Fail loudly instead and let the next hourly sweep retry.
 		return fmt.Errorf("fetch archived channel %s: %w", rec.ChannelID, err)
 	}
-	if ch.GuildID != guildID {
+	if ch.GuildID() != core.ID(guildID) {
 		// Confused-deputy guard: this row no longer describes a channel in
 		// this guild. Drop it rather than act on it.
 		return p.archives.Delete(ctx, rec.ChannelID)
@@ -162,7 +162,7 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 	// archive look permanently "rescued." Empty means a pre-migration row
 	// whose real category was never recorded: treat that the same as an
 	// actual mismatch: don't guess, don't delete.
-	if rec.ArchiveCategoryID == "" || ch.ParentID != rec.ArchiveCategoryID {
+	if rec.ArchiveCategoryID == "" || parent(ch) != core.ID(rec.ArchiveCategoryID) {
 		// Rescue hatch: a mod moved this archived channel out of its archive
 		// category, treat that as an implicit "keep it," stop tracking it,
 		// don't delete.
@@ -170,7 +170,7 @@ func (p *Plugin) sweepOne(ctx context.Context, guildID string, rec ArchiveRecord
 		return p.archives.Delete(ctx, rec.ChannelID)
 	}
 
-	if _, err := p.ops(guildID).ChannelDelete(rec.ChannelID); err != nil {
+	if err := p.ops(guildID).DeleteChannel(core.ID(rec.ChannelID)); err != nil {
 		return fmt.Errorf("delete channel %s: %w", rec.ChannelID, err)
 	}
 	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "archive.deleted", core.MentionChannel(rec.ChannelID), ""); err != nil {

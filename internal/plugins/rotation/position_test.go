@@ -27,15 +27,15 @@ func TestRotationPutsReplacementBackInTheOriginalSlot(t *testing.T) {
 	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
 	// setupRotation seeds old1 at position 3 in category cat0.
 
-	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+	if err := p.rotate(context.Background(), "100", rc); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 
-	channels, err := ops.GuildChannels("g1")
+	channels, err := ops.GuildChannels("100")
 	if err != nil {
 		t.Fatalf("GuildChannels: %v", err)
 	}
-	replacement := findOtherChannelByName(channels, "general-chat", "old1")
+	replacement := findOtherChannelByName(channels, "general-chat", "300")
 	if replacement == nil {
 		t.Fatal("no replacement channel found")
 	}
@@ -60,15 +60,15 @@ func TestRotationPutsReplacementBackInTheOriginalSlot(t *testing.T) {
 func TestPositionRestoreHappensAfterTheOldChannelLeavesTheCategory(t *testing.T) {
 	ops, _, _, p, rc := setupRotation(t, finiteRetentionRC())
 
-	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+	if err := p.rotate(context.Background(), "100", rc); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 
 	archiveAt := findEdit(ops.editCalls, func(e recordedEdit) bool {
-		return e.channelID == "old1" && e.parentID == "archivecat"
+		return e.channelID == "300" && e.parentID == "200"
 	})
 	positionAt := findEdit(ops.editCalls, func(e recordedEdit) bool {
-		return e.channelID != "old1" && e.position != nil
+		return e.channelID != "300" && e.position != nil
 	})
 	if archiveAt < 0 {
 		t.Fatal("the old channel was never moved into the archive category")
@@ -91,9 +91,9 @@ func TestRotationSucceedsEvenIfThePositionEditFails(t *testing.T) {
 	// Calls: 1 reveal, 2 the archive category's own permission reconcile
 	// (archiveperms.go, which the fake category starts out failing), 3
 	// archive, 4 position.
-	ops.failOnCall["ChannelEditComplex"] = 4
+	ops.failOnCall["UpdateChannel"] = 4
 
-	if err := p.rotate(context.Background(), "g1", rc); err != nil {
+	if err := p.rotate(context.Background(), "100", rc); err != nil {
 		t.Fatalf("a failed position edit failed the whole rotation: %v", err)
 	}
 

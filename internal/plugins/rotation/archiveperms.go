@@ -1,12 +1,13 @@
 package rotation
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
-	"sort"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -37,13 +38,13 @@ import (
 // archiveModAllow is what a mod role gets on an archive: view, and whatever
 // else their own role already carries. Mods are the people who go back through
 // an archive to work out what happened, so nothing is taken off them here.
-const archiveModAllow = discordgo.PermissionViewChannel
+const archiveModAllow = discord.PermissionViewChannel
 
 // archiveViewerAllow is what a non-mod archive viewer role gets: look at it and
 // read the history back, nothing more. ReadMessageHistory is granted rather
 // than assumed, since ViewChannel on its own shows an empty channel to anyone
 // whose roles do not already carry it.
-const archiveViewerAllow = discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory
+const archiveViewerAllow = discord.PermissionViewChannel | discord.PermissionReadMessageHistory
 
 // archiveViewerDeny is everything else, taken away explicitly.
 //
@@ -59,43 +60,43 @@ const archiveViewerAllow = discordgo.PermissionViewChannel | discordgo.Permissio
 // Voice bits are in here because a category's overwrites are copied onto
 // anything created under it, and there is no reason for a viewer role to be
 // able to sit in a voice channel somebody makes inside the archive category.
-const archiveViewerDeny = discordgo.PermissionSendMessages |
-	discordgo.PermissionSendMessagesInThreads |
-	discordgo.PermissionSendTTSMessages |
-	discordgo.PermissionSendVoiceMessages |
-	discordgo.PermissionSendPolls |
-	discordgo.PermissionAddReactions |
-	discordgo.PermissionCreatePublicThreads |
-	discordgo.PermissionCreatePrivateThreads |
-	discordgo.PermissionManageThreads |
-	discordgo.PermissionManageMessages |
-	discordgo.PermissionEmbedLinks |
-	discordgo.PermissionAttachFiles |
-	discordgo.PermissionMentionEveryone |
-	discordgo.PermissionUseExternalEmojis |
-	discordgo.PermissionUseExternalStickers |
-	discordgo.PermissionUseApplicationCommands |
-	discordgo.PermissionUseExternalApps |
-	discordgo.PermissionCreateInstantInvite |
-	discordgo.PermissionManageWebhooks |
-	discordgo.PermissionManageChannels |
-	discordgo.PermissionManageRoles |
-	discordgo.PermissionVoiceConnect |
-	discordgo.PermissionVoiceSpeak |
-	discordgo.PermissionVoiceStreamVideo
+const archiveViewerDeny = discord.PermissionSendMessages |
+	discord.PermissionSendMessagesInThreads |
+	discord.PermissionSendTTSMessages |
+	discord.PermissionSendVoiceMessages |
+	discord.PermissionSendPolls |
+	discord.PermissionAddReactions |
+	discord.PermissionCreatePublicThreads |
+	discord.PermissionCreatePrivateThreads |
+	discord.PermissionManageThreads |
+	discord.PermissionManageMessages |
+	discord.PermissionEmbedLinks |
+	discord.PermissionAttachFiles |
+	discord.PermissionMentionEveryone |
+	discord.PermissionUseExternalEmojis |
+	discord.PermissionUseExternalStickers |
+	discord.PermissionUseApplicationCommands |
+	discord.PermissionUseExternalApps |
+	discord.PermissionCreateInstantInvite |
+	discord.PermissionManageWebhooks |
+	discord.PermissionManageChannels |
+	discord.PermissionManageRoles |
+	discord.PermissionConnect |
+	discord.PermissionSpeak |
+	discord.PermissionStream
 
 // archiveAccess is who may see one guild's archives, split by how much they
 // get. Mods read an archive as part of moderating and keep their own
 // permissions inside it; anyone else added to an archive is there to read it,
 // and gets read-only.
 type archiveAccess struct {
-	modRoleIDs    []string
-	viewerRoleIDs []string
-	viewerUserIDs []string // legacy /config import whitelist, read-only like the roles
+	modRoleIDs    []snowflake.ID
+	viewerRoleIDs []snowflake.ID
+	viewerUserIDs []snowflake.ID // legacy /config import whitelist, read-only like the roles
 }
 
-func (a archiveAccess) grantsTo(id string, kind discordgo.PermissionOverwriteType) (allow, deny int64, ok bool) {
-	if kind == discordgo.PermissionOverwriteTypeMember {
+func (a archiveAccess) grantsTo(id snowflake.ID, kind discord.PermissionOverwriteType) (allow, deny discord.Permissions, ok bool) {
+	if kind == discord.PermissionOverwriteTypeMember {
 		if slices.Contains(a.viewerUserIDs, id) {
 			return archiveViewerAllow, archiveViewerDeny, true
 		}
@@ -129,12 +130,16 @@ func (a archiveAccess) grantsTo(id string, kind discordgo.PermissionOverwriteTyp
 // The result is sorted, and applying it to its own output is a no-op, which is
 // what lets the periodic drift check write (and audit) only when something
 // genuinely changed.
-func desiredArchiveOverwrites(current []*discordgo.PermissionOverwrite, guildID, botUserID string, access archiveAccess) []*discordgo.PermissionOverwrite {
+func desiredArchiveOverwrites(current []discord.PermissionOverwrite, guildID, botUserID snowflake.ID, access archiveAccess) []discord.PermissionOverwrite {
 	// Denies @everyone View and grants the bot itself View, merging into the
 	// existing entries for both rather than duplicating them.
-	out := core.DenyEveryoneExceptBot(current, guildID, botUserID, archiveModAllow)
+	var out []*overwrite
+	for _, ow := range core.DenyEveryone(current, guildID, botUserID, archiveModAllow) {
+		e := overwriteOf(ow)
+		out = append(out, &e)
+	}
 
-	grant := func(id string, kind discordgo.PermissionOverwriteType, allow, deny int64) {
+	grant := func(id snowflake.ID, kind discord.PermissionOverwriteType, allow, deny discord.Permissions) {
 		for _, ow := range out {
 			if ow.ID == id && ow.Type == kind {
 				// A role promoted from read-only viewer to mod role still
@@ -151,30 +156,30 @@ func desiredArchiveOverwrites(current []*discordgo.PermissionOverwrite, guildID,
 				return
 			}
 		}
-		out = append(out, &discordgo.PermissionOverwrite{ID: id, Type: kind, Allow: allow, Deny: deny})
+		out = append(out, &overwrite{ID: id, Type: kind, Allow: allow, Deny: deny})
 	}
-	for _, roleID := range append(append([]string{}, access.modRoleIDs...), access.viewerRoleIDs...) {
-		if roleID == "" || roleID == guildID { // @everyone is never granted archive access
+	for _, roleID := range append(slices.Clone(access.modRoleIDs), access.viewerRoleIDs...) {
+		if roleID == 0 || roleID == guildID { // @everyone is never granted archive access
 			continue
 		}
-		allow, deny, _ := access.grantsTo(roleID, discordgo.PermissionOverwriteTypeRole)
-		grant(roleID, discordgo.PermissionOverwriteTypeRole, allow, deny)
+		allow, deny, _ := access.grantsTo(roleID, discord.PermissionOverwriteTypeRole)
+		grant(roleID, discord.PermissionOverwriteTypeRole, allow, deny)
 	}
 	for _, userID := range access.viewerUserIDs {
-		if userID == "" {
+		if userID == 0 {
 			continue
 		}
-		allow, deny, _ := access.grantsTo(userID, discordgo.PermissionOverwriteTypeMember)
-		grant(userID, discordgo.PermissionOverwriteTypeMember, allow, deny)
+		allow, deny, _ := access.grantsTo(userID, discord.PermissionOverwriteTypeMember)
+		grant(userID, discord.PermissionOverwriteTypeMember, allow, deny)
 	}
 
-	kept := out[:0]
+	var kept []overwrite
 	for _, ow := range out {
 		if _, _, ok := access.grantsTo(ow.ID, ow.Type); !ok && ow.ID != botUserID && ow.ID != guildID {
 			// Not on the list: it may not reveal the archive. Its own denies,
 			// including a read-only deny left behind by an earlier grant, are
 			// left where they are.
-			ow.Allow &^= discordgo.PermissionViewChannel
+			ow.Allow &^= discord.PermissionViewChannel
 		}
 		// An entry that now permits and forbids nothing says nothing. Dropping
 		// it is what keeps a stripped stray from lingering as a confusing
@@ -182,36 +187,61 @@ func desiredArchiveOverwrites(current []*discordgo.PermissionOverwrite, guildID,
 		if ow.Allow == 0 && ow.Deny == 0 {
 			continue
 		}
-		kept = append(kept, ow)
+		kept = append(kept, *ow)
 	}
-	sort.SliceStable(kept, func(i, j int) bool {
-		if kept[i].Type != kept[j].Type {
-			return kept[i].Type < kept[j].Type
+	return disgoOverwrites(sorted(kept))
+}
+
+// overwrite is one permission overwrite as a value this file can edit in
+// place; disgo's are an interface over two struct types.
+type overwrite struct {
+	Type        discord.PermissionOverwriteType
+	ID          snowflake.ID
+	Allow, Deny discord.Permissions
+}
+
+func overwriteOf(ow discord.PermissionOverwrite) overwrite {
+	switch o := ow.(type) {
+	case discord.RolePermissionOverwrite:
+		return overwrite{discord.PermissionOverwriteTypeRole, o.RoleID, o.Allow, o.Deny}
+	case discord.MemberPermissionOverwrite:
+		return overwrite{discord.PermissionOverwriteTypeMember, o.UserID, o.Allow, o.Deny}
+	}
+	return overwrite{Type: ow.Type(), ID: ow.ID()}
+}
+
+func overwritesOf(ows []discord.PermissionOverwrite) []overwrite {
+	out := make([]overwrite, len(ows))
+	for i, ow := range ows {
+		out[i] = overwriteOf(ow)
+	}
+	return out
+}
+
+func disgoOverwrites(ows []overwrite) []discord.PermissionOverwrite {
+	out := make([]discord.PermissionOverwrite, len(ows))
+	for i, o := range ows {
+		if o.Type == discord.PermissionOverwriteTypeMember {
+			out[i] = discord.MemberPermissionOverwrite{UserID: o.ID, Allow: o.Allow, Deny: o.Deny}
+		} else {
+			out[i] = discord.RolePermissionOverwrite{RoleID: o.ID, Allow: o.Allow, Deny: o.Deny}
 		}
-		return kept[i].ID < kept[j].ID
+	}
+	return out
+}
+
+func sorted(ows []overwrite) []overwrite {
+	slices.SortFunc(ows, func(a, b overwrite) int {
+		return cmp.Or(cmp.Compare(a.Type, b.Type), cmp.Compare(a.ID, b.ID), cmp.Compare(a.Allow, b.Allow), cmp.Compare(a.Deny, b.Deny))
 	})
-	return kept
+	return ows
 }
 
 // overwritesEqual compares two overwrite lists ignoring order. Both sides come
 // out of desiredArchiveOverwrites sorted, but Discord returns a channel's own
 // list in whatever order it likes, so the live side has to be sorted here.
-func overwritesEqual(a, b []*discordgo.PermissionOverwrite) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	key := func(ow *discordgo.PermissionOverwrite) string {
-		return fmt.Sprintf("%d:%s:%d:%d", ow.Type, ow.ID, ow.Allow, ow.Deny)
-	}
-	ka := make([]string, 0, len(a))
-	kb := make([]string, 0, len(b))
-	for i := range a {
-		ka = append(ka, key(a[i]))
-		kb = append(kb, key(b[i]))
-	}
-	slices.Sort(ka)
-	slices.Sort(kb)
-	return slices.Equal(ka, kb)
+func overwritesEqual(a, b []discord.PermissionOverwrite) bool {
+	return slices.Equal(sorted(overwritesOf(a)), sorted(overwritesOf(b)))
 }
 
 // archiveViewers is who may see guildID's archives, split into the mod roles
@@ -228,23 +258,23 @@ func overwritesEqual(a, b []*discordgo.PermissionOverwrite) bool {
 // A role that is both a mod role and an archive viewer role counts as a mod:
 // the mod list is subtracted from the viewer list rather than the other way
 // round, so adding a mod role here can never end up restricting it.
-func (p *Plugin) archiveViewers(guildID, categoryID string) archiveAccess {
-	// Copied, not aliased: settings.Store hands back the slice it caches, and
-	// the sort below would otherwise reorder the store's own copy underneath
-	// every other reader of it.
-	access := archiveAccess{modRoleIDs: slices.Clone(p.settings.ModRoleIDs(guildID))}
-	access.viewerRoleIDs = append(access.viewerRoleIDs, p.settings.ArchiveViewerRoleIDs(guildID)...)
+func (p *Plugin) archiveViewers(guildID string, categoryID snowflake.ID) archiveAccess {
+	// Copied, not aliased (ids builds a new slice): settings.Store hands back
+	// the slice it caches, and the sort below would otherwise reorder the
+	// store's own copy underneath every other reader of it.
+	access := archiveAccess{modRoleIDs: ids(p.settings.ModRoleIDs(guildID))}
+	access.viewerRoleIDs = ids(p.settings.ArchiveViewerRoleIDs(guildID))
 	for _, rc := range p.settings.RotationChannels(guildID) {
-		if rc.ArchiveCategoryID != categoryID || rc.ArchiveVisibility != "whitelist" {
+		if core.ID(rc.ArchiveCategoryID) != categoryID || rc.ArchiveVisibility != "whitelist" {
 			continue
 		}
-		access.viewerRoleIDs = append(access.viewerRoleIDs, rc.ArchiveWhitelistRoleIDs...)
-		access.viewerUserIDs = append(access.viewerUserIDs, rc.ArchiveWhitelistUserIDs...)
+		access.viewerRoleIDs = append(access.viewerRoleIDs, ids(rc.ArchiveWhitelistRoleIDs)...)
+		access.viewerUserIDs = append(access.viewerUserIDs, ids(rc.ArchiveWhitelistUserIDs)...)
 	}
-	access.viewerRoleIDs = slices.DeleteFunc(access.viewerRoleIDs, func(id string) bool {
+	access.viewerRoleIDs = slices.DeleteFunc(access.viewerRoleIDs, func(id snowflake.ID) bool {
 		return slices.Contains(access.modRoleIDs, id)
 	})
-	for _, list := range []*[]string{&access.modRoleIDs, &access.viewerRoleIDs, &access.viewerUserIDs} {
+	for _, list := range []*[]snowflake.ID{&access.modRoleIDs, &access.viewerRoleIDs, &access.viewerUserIDs} {
 		slices.Sort(*list)
 		*list = slices.Compact(*list)
 	}
@@ -255,25 +285,21 @@ func (p *Plugin) archiveViewers(guildID, categoryID string) archiveAccess {
 // back if it has drifted, and returns it either way so the caller can apply
 // the same list to a channel it is about to archive. The bool reports whether
 // anything actually had to change.
-func (p *Plugin) reconcileArchiveCategory(guildID, categoryID string) ([]*discordgo.PermissionOverwrite, bool, error) {
-	if categoryID == "" {
+func (p *Plugin) reconcileArchiveCategory(guildID string, categoryID snowflake.ID) ([]discord.PermissionOverwrite, bool, error) {
+	if categoryID == 0 {
 		return nil, false, nil
 	}
-	botUserID, err := p.getBotUserID(guildID)
-	if err != nil {
-		return nil, false, err
-	}
-	cat, err := p.ops(guildID).Channel(categoryID)
+	cat, err := guildChannel(p.ops(guildID), categoryID)
 	if err != nil {
 		return nil, false, fmt.Errorf("fetch archive category %s: %w", categoryID, err)
 	}
-	desired := desiredArchiveOverwrites(cat.PermissionOverwrites, guildID, botUserID, p.archiveViewers(guildID, categoryID))
-	if overwritesEqual(cat.PermissionOverwrites, desired) {
+	desired := desiredArchiveOverwrites(cat.PermissionOverwrites(), core.ID(guildID), p.botID, p.archiveViewers(guildID, categoryID))
+	if overwritesEqual(cat.PermissionOverwrites(), desired) {
 		return desired, false, nil
 	}
-	// A whole-list PATCH, not per-target ChannelPermissionSet calls: removing
-	// a stray entry outright is not expressible as a set.
-	if _, err := p.ops(guildID).ChannelEditComplex(categoryID, &discordgo.ChannelEdit{PermissionOverwrites: desired}); err != nil {
+	// A whole-list PATCH, not per-target overwrite calls: removing a stray
+	// entry outright is not expressible as a set.
+	if _, err := p.ops(guildID).UpdateChannel(categoryID, discord.GuildTextChannelUpdate{PermissionOverwrites: &desired}); err != nil {
 		return desired, false, fmt.Errorf("set archive category %s permissions: %w", categoryID, err)
 	}
 	return desired, true, nil
@@ -286,25 +312,25 @@ func (p *Plugin) reconcileArchiveCategory(guildID, categoryID string) ([]*discor
 // ponytail: serial, one PATCH at a time. An archive category holds a handful
 // of channels and only drifted ones are written at all; borrow
 // roles.forEachChannelConcurrent if one ever holds hundreds.
-func (p *Plugin) syncArchiveChannels(guildID, categoryID string, desired []*discordgo.PermissionOverwrite) (int, error) {
-	if categoryID == "" || len(desired) == 0 {
+func (p *Plugin) syncArchiveChannels(guildID string, categoryID snowflake.ID, desired []discord.PermissionOverwrite) (int, error) {
+	if categoryID == 0 || len(desired) == 0 {
 		return 0, nil
 	}
-	channels, err := p.ops(guildID).GuildChannels(guildID)
+	channels, err := p.ops(guildID).GetGuildChannels(core.ID(guildID))
 	if err != nil {
 		return 0, fmt.Errorf("list channels for guild %s: %w", guildID, err)
 	}
 	fixed := 0
 	var firstErr error
 	for _, ch := range channels {
-		if ch.ParentID != categoryID || ch.Type == discordgo.ChannelTypeGuildCategory {
+		if parent(ch) != categoryID || ch.Type() == discord.ChannelTypeGuildCategory {
 			continue
 		}
-		if overwritesEqual(ch.PermissionOverwrites, desired) {
+		if overwritesEqual(ch.PermissionOverwrites(), desired) {
 			continue
 		}
-		if _, err := p.ops(guildID).ChannelEditComplex(ch.ID, &discordgo.ChannelEdit{PermissionOverwrites: desired}); err != nil {
-			p.log.Error("rotation: sync archive channel permissions failed", "guild", guildID, "channel", ch.ID, "err", err)
+		if _, err := p.ops(guildID).UpdateChannel(ch.ID(), discord.GuildTextChannelUpdate{PermissionOverwrites: &desired}); err != nil {
+			p.log.Error("rotation: sync archive channel permissions failed", "guild", guildID, "channel", ch.ID(), "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -320,11 +346,11 @@ func (p *Plugin) syncArchiveChannels(guildID, categoryID string, desired []*disc
 // changed, so a guild whose archives are already correct never touches the
 // audit log, which is what makes it safe to run on every hourly sweep.
 func (p *Plugin) syncArchivePermissions(ctx context.Context, guildID, categoryID string) error {
-	desired, catFixed, err := p.reconcileArchiveCategory(guildID, categoryID)
+	desired, catFixed, err := p.reconcileArchiveCategory(guildID, core.ID(categoryID))
 	if err != nil {
 		return err
 	}
-	fixed, err := p.syncArchiveChannels(guildID, categoryID, desired)
+	fixed, err := p.syncArchiveChannels(guildID, core.ID(categoryID), desired)
 	if catFixed || fixed > 0 {
 		detail := fmt.Sprintf("%d channel(s) resynced", fixed)
 		if catFixed {

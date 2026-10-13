@@ -120,7 +120,7 @@ func TestNoticeFiresInsideTheLeadWindow(t *testing.T) {
 	ops, sched, _, p := setupNotice(t, rc)
 	sched.nextDue[rotationKey(rc)] = fixedNow.Add(6 * time.Minute)
 
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("postDueNotices: %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestNoticeFiresOnlyOncePerRotation(t *testing.T) {
 	sched.nextDue[rotationKey(rc)] = due
 
 	for range 5 {
-		if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+		if err := p.postDueNotices(context.Background(), "100"); err != nil {
 			t.Fatalf("postDueNotices: %v", err)
 		}
 	}
@@ -181,7 +181,7 @@ func TestTheNextRotationGetsItsOwnNotice(t *testing.T) {
 	ops, sched, _, p := setupNotice(t, rc)
 
 	sched.nextDue[rotationKey(rc)] = fixedNow.Add(5 * time.Minute)
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("postDueNotices: %v", err)
 	}
 	// A day later, with the clock moved forward too, the next rotation is
@@ -189,7 +189,7 @@ func TestTheNextRotationGetsItsOwnNotice(t *testing.T) {
 	// window and prove nothing.
 	testNoticeClock.advance(24 * time.Hour)
 	sched.nextDue[rotationKey(rc)] = testNoticeClock.now().Add(5 * time.Minute)
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("postDueNotices: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestNoticeStaysQuietWhenItShould(t *testing.T) {
 				sched.nextDue[rotationKey(rc)] = due
 			}
 
-			if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+			if err := p.postDueNotices(context.Background(), "100"); err != nil {
 				t.Fatalf("postDueNotices: %v", err)
 			}
 			if got := len(ops.messages[rc.ChannelID]); got != 0 {
@@ -260,7 +260,7 @@ func TestAFailedClaimPostsNothing(t *testing.T) {
 	sched.nextDue[rotationKey(rc)] = fixedNow.Add(5 * time.Minute)
 	notices.claimErr = errors.New("database is down")
 
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("a failed claim aborted the whole pass: %v", err)
 	}
 	if got := len(ops.messages[rc.ChannelID]); got != 0 {
@@ -280,9 +280,9 @@ func TestASkippedSendGivesItsClaimBack(t *testing.T) {
 	due := fixedNow.Add(5 * time.Minute)
 	sched.nextDue[rotationKey(rc)] = due
 
-	ops.failWith["ChannelMessageSend"] = fmt.Errorf("message.send: %w", discordguard.ErrDryRun)
+	ops.failWith["CreateMessage"] = fmt.Errorf("message.send: %w", discordguard.ErrDryRun)
 
-	if err := p.postDueNotices(context.Background(), "g1"); !discordguard.Skipped(err) {
+	if err := p.postDueNotices(context.Background(), "100"); !discordguard.Skipped(err) {
 		t.Fatalf("postDueNotices returned %v, want a skip so the job reports success", err)
 	}
 	if got := len(ops.messages[rc.ChannelID]); got != 0 {
@@ -293,8 +293,8 @@ func TestASkippedSendGivesItsClaimBack(t *testing.T) {
 	}
 
 	// Dry-run cleared, still inside the window: the notice goes out.
-	delete(ops.failWith, "ChannelMessageSend")
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	delete(ops.failWith, "CreateMessage")
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("postDueNotices: %v", err)
 	}
 	if got := len(ops.messages[rc.ChannelID]); got != 1 {
@@ -312,9 +312,9 @@ func TestAGenuinelyFailedSendKeepsItsClaim(t *testing.T) {
 	due := fixedNow.Add(5 * time.Minute)
 	sched.nextDue[rotationKey(rc)] = due
 
-	ops.failWith["ChannelMessageSend"] = errors.New("500 internal server error")
+	ops.failWith["CreateMessage"] = errors.New("500 internal server error")
 
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("one channel's failure aborted the whole pass: %v", err)
 	}
 	if !notices.claimed[noticeKey(rc.ID, due)] {
@@ -326,9 +326,9 @@ func TestAGenuinelyFailedSendKeepsItsClaim(t *testing.T) {
 func TestNoticeJobExistsOnlyWhereALeadIsSet(t *testing.T) {
 	rc := noticeRC()
 	_, sched, _, p := setupNotice(t, rc)
-	key := scheduler.JobKey("g1", noticeJobName)
+	key := scheduler.JobKey("100", noticeJobName)
 
-	p.reconcileNoticeJob("g1")
+	p.reconcileNoticeJob("100")
 	if !sched.registered[key] {
 		t.Fatal("no notice job registered for a guild that wants notices")
 	}
@@ -338,7 +338,7 @@ func TestNoticeJobExistsOnlyWhereALeadIsSet(t *testing.T) {
 	if err := p.settings.(*fakeSettings).UpsertRotationChannel(context.Background(), rc); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
-	p.reconcileNoticeJob("g1")
+	p.reconcileNoticeJob("100")
 	if sched.registered[key] {
 		t.Error("notice job still registered after every lead was turned off")
 	}
@@ -383,7 +383,7 @@ func TestGenericDisclosureWarnsWithoutACountdown(t *testing.T) {
 	ops, sched, _, p := setupNotice(t, rc)
 	sched.nextDue[rotationKey(rc)] = fixedNow.Add(6 * time.Minute)
 
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("postDueNotices: %v", err)
 	}
 
@@ -412,7 +412,7 @@ func TestNoticeLeadOffSilencesGenericDisclosureToo(t *testing.T) {
 	ops, sched, _, p := setupNotice(t, rc)
 	sched.nextDue[rotationKey(rc)] = fixedNow.Add(6 * time.Minute)
 
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("postDueNotices: %v", err)
 	}
 	if got := len(ops.messages[rc.ChannelID]); got != 0 {
@@ -430,7 +430,7 @@ func TestASubMinuteRotationGetsNoCountdown(t *testing.T) {
 	due := fixedNow.Add(20 * time.Second)
 	sched.nextDue[rotationKey(rc)] = due
 
-	if err := p.postDueNotices(context.Background(), "g1"); err != nil {
+	if err := p.postDueNotices(context.Background(), "100"); err != nil {
 		t.Fatalf("postDueNotices: %v", err)
 	}
 	if got := len(ops.messages[rc.ChannelID]); got != 0 {

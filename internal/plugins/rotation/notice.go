@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
@@ -164,12 +164,12 @@ func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settin
 	// (moodForColor -> MoodWarn) rather than the intro's ColorPrimary
 	// (MoodNotice) on purpose: this one is asking people to wrap up now,
 	// and the pair reads as escalate-then-settle.
-	notice := core.NewEmbed(core.ColorWarning, "", line)
-	if _, err := p.ops(guildID).ChannelMessageSendComplex(rc.ChannelID, &discordgo.MessageSend{
-		Embed: notice,
+	notice := core.Embed(core.ColorWarning, "", line)
+	if _, err := p.ops(guildID).CreateMessage(core.ID(rc.ChannelID), discord.MessageCreate{
+		Embeds: []discord.Embed{notice},
 		// Without the files the thumbnail URL points at an attachment that
 		// was never uploaded, which Discord renders as a broken frame.
-		Files: core.EmbedFiles(notice),
+		Files: core.EmbedUploads(notice),
 	}); err != nil {
 		// A guard skip is the one failure where we know for certain that
 		// Discord was never called: allow returns before touching the
