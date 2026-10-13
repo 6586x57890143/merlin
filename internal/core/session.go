@@ -107,9 +107,9 @@ func GatewayIntents(intents Intents) gateway.Intents {
 }
 
 // NewGateway builds merlin's one gateway connection, unopened: disgo, with
-// zstd transport compression (its default), raw events for the handlers
-// that still decode Discord's JSON into discordgo's types, and every
-// listener run on its own goroutine, as discordgo ran them, so a slow
+// zstd transport compression (its default), no raw events (each would be
+// a second dispatch of every gateway event), and every listener run on its
+// own goroutine, as discordgo ran them, so a slow
 // handler never holds up the connection.
 //
 // The cache keeps what merlin reads: guilds and their roles (authorization
@@ -123,7 +123,7 @@ func NewGateway(token string, intents Intents, log *slog.Logger, listeners ...bo
 	}
 	return disgo.New(token,
 		bot.WithLogger(log),
-		bot.WithGatewayConfigOpts(gateway.WithIntents(GatewayIntents(intents)), gateway.WithEnableRawEvents(true)),
+		bot.WithGatewayConfigOpts(gateway.WithIntents(GatewayIntents(intents))),
 		bot.WithCacheConfigOpts(
 			cache.WithCaches(cache.FlagGuilds, cache.FlagRoles, cache.FlagChannels, cache.FlagVoiceStates, cache.FlagMembers),
 			cache.WithMemberCachePolicy(func(m discord.Member) bool { return m.User.ID == self }),
