@@ -14,7 +14,7 @@ import (
 func TestSettingsPanelDisablesWhatTheViewerCannotDo(t *testing.T) {
 	p, _, _, _, _, _ := handlerFixture()
 	for _, pg := range rolesPages {
-		pn := p.panel(context.Background(), rolesInteraction("", "settings"), pg.key, "someone", "")
+		pn := p.panel(context.Background(), rolesInteraction("", "settings"), pg.key, "7000120", "")
 		for id, m := range paneltest.IxSelects(pn) {
 			if !strings.HasPrefix(id, panelView) && !disabled(m) {
 				t.Errorf("%s: %s is usable without permission", pg.key, id)

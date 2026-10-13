@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -31,8 +29,8 @@ func (r *busRecorder) payloads() []core.ModerationActionPayload {
 
 func TestJailAndReleasePublishToTheLedger(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
-	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "jail-role"}}
+	ops.setMember("7000001", "7000102", []string{"7000302"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "7000301"}}
 	audit := newFakeAudit()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), audit, newFakePerms(), newFakeScheduler())
 	bus := core.NewEventBus(testLogger())
@@ -40,12 +38,12 @@ func TestJailAndReleasePublishToTheLedger(t *testing.T) {
 	rec.record(bus)
 	p.bus = bus
 
-	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, 2*time.Hour, "mod-1", "spam"); err != nil {
+	if _, err := p.applyJail(context.Background(), "7000001", "7000301", jailTarget{userID: "7000102", roles: []string{"7000302"}}, 2*time.Hour, "7000114", "spam"); err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
-	jr, _, _ := p.store.GetJail(context.Background(), "g1", "u1")
-	ops.setMember("g1", "u1", []string{"jail-role"})
-	if err := p.releaseJail(context.Background(), "g1", "u1", jr, "mod-2"); err != nil {
+	jr, _, _ := p.store.GetJail(context.Background(), "7000001", "7000102")
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", jr, "7000115"); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
 
@@ -54,11 +52,11 @@ func TestJailAndReleasePublishToTheLedger(t *testing.T) {
 		t.Fatalf("published %d events, want jail + release: %+v", len(got), got)
 	}
 	jail, release := got[0], got[1]
-	if jail.Kind != "jail" || jail.UserID != "u1" || jail.ActorID != "mod-1" || jail.Reason != "spam" ||
+	if jail.Kind != "jail" || jail.UserID != "7000102" || jail.ActorID != "7000114" || jail.Reason != "spam" ||
 		jail.Duration != 2*time.Hour || jail.EndsAt == nil || jail.Source != "roles" {
 		t.Errorf("jail payload = %+v", jail)
 	}
-	if release.Kind != "release" || release.ActorID != "mod-2" || release.Source != "roles" {
+	if release.Kind != "release" || release.ActorID != "7000115" || release.Source != "roles" {
 		t.Errorf("release payload = %+v", release)
 	}
 
@@ -68,7 +66,7 @@ func TestJailAndReleasePublishToTheLedger(t *testing.T) {
 	for _, r := range audit.records {
 		if r.action == "roles.release" {
 			found = true
-			if r.actorID != "mod-2" {
+			if r.actorID != "7000115" {
 				t.Errorf("release audited as %q, want the mod", r.actorID)
 			}
 		}
@@ -80,21 +78,21 @@ func TestJailAndReleasePublishToTheLedger(t *testing.T) {
 
 func TestAResentenceIsPublishedAsANoteNotASecondJail(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 	bus := core.NewEventBus(testLogger())
 	rec := &busRecorder{}
 	rec.record(bus)
 	p.bus = bus
-	_ = p.store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", JailedAt: p.now()})
+	_ = p.store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", JailedAt: p.now()})
 
-	res := p.jailMany(context.Background(), "g1", "jail-role",
-		[]jailTarget{{userID: "u1", roles: []string{"jail-role"}}}, 3*time.Hour, "mod-1", "again")
+	res := p.jailMany(context.Background(), "7000001", "7000301",
+		[]jailTarget{{userID: "7000102", roles: []string{"7000301"}}}, 3*time.Hour, "7000114", "again")
 	if len(res.redated) != 1 {
 		t.Fatalf("res = %+v, want one redated", res)
 	}
 	got := rec.payloads()
-	if len(got) != 1 || got[0].Kind != "note" || got[0].ActorID != "mod-1" || got[0].Reason != "sentence moved to 3h: again" {
+	if len(got) != 1 || got[0].Kind != "note" || got[0].ActorID != "7000114" || got[0].Reason != "sentence moved to 3h: again" {
 		t.Errorf("payloads = %+v", got)
 	}
 }
@@ -102,7 +100,7 @@ func TestAResentenceIsPublishedAsANoteNotASecondJail(t *testing.T) {
 func TestPublishingWithNoBusIsANoOp(t *testing.T) {
 	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 	p.bus = nil
-	p.publishJailed(context.Background(), "g1", "u1", "m", "r", time.Hour, ptrTime(time.Now()))
-	p.publishResentenced(context.Background(), "g1", "u1", "m", "", time.Hour)
-	p.publishReleased(context.Background(), "g1", "u1", core.ActorSystem)
+	p.publishJailed(context.Background(), "7000001", "7000102", "m", "r", time.Hour, ptrTime(time.Now()))
+	p.publishResentenced(context.Background(), "7000001", "7000102", "m", "", time.Hour)
+	p.publishReleased(context.Background(), "7000001", "7000102", core.ActorSystem)
 }

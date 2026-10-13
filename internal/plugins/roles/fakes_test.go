@@ -8,13 +8,17 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordtest"
 )
 
 func testLogger() *slog.Logger {
@@ -25,41 +29,94 @@ func testLogger() *slog.Logger {
 
 type overwriteKey struct{ channelID, targetID string }
 
+type permPair struct{ allow, deny discord.Permissions }
+
 // sentDM is one direct message the bot tried to deliver.
 type sentDM struct {
 	channelID string
-	data      *discordgo.MessageSend
+	data      discord.MessageCreate
+}
+
+// fch and fow are the shared channel fixtures.
+type (
+	fch = discordtest.Channel
+	fow = discordtest.Overwrite
+)
+
+// fuser, fmember and frole are a user, a member and a role as the fake
+// holds them: string IDs, as the tests and merlin's stores spell them.
+type fuser struct {
+	ID, Username string
+	Bot          bool
+}
+
+type fmember struct {
+	User     *fuser
+	GuildID  string
+	Roles    []string
+	JoinedAt time.Time
+}
+
+func (m *fmember) disgo() *discord.Member {
+	out := &discord.Member{User: discord.User{ID: core.ID(m.User.ID), Username: m.User.Username, Bot: m.User.Bot},
+		GuildID: core.ID(m.GuildID), RoleIDs: core.IDs(m.Roles)}
+	if !m.JoinedAt.IsZero() {
+		at := m.JoinedAt
+		out.JoinedAt = &at
+	}
+	return out
+}
+
+type frole struct {
+	ID, Name, UnicodeEmoji, Icon string
+	Color, Position              int
+	Hoist, Mentionable, Managed  bool
+	Permissions                  discord.Permissions
+}
+
+func (r *frole) disgo() discord.Role {
+	out := discord.Role{ID: core.ID(r.ID), Name: r.Name, Color: r.Color, Position: r.Position,
+		Hoist: r.Hoist, Mentionable: r.Mentionable, Managed: r.Managed, Permissions: r.Permissions}
+	if r.UnicodeEmoji != "" {
+		e := r.UnicodeEmoji
+		out.Emoji = &e
+	}
+	if r.Icon != "" {
+		i := r.Icon
+		out.Icon = &i
+	}
+	return out
 }
 
 type fakeOps struct {
 	mu sync.Mutex
 
-	members map[string]*discordgo.Member // guildID+":"+userID -> member
-	roles   map[string][]*discordgo.Role // guildID -> guild roles
-	channel map[string]*discordgo.Channel
+	members map[string]*fmember // guildID+":"+userID -> member
+	roles   map[string][]*frole // guildID -> guild roles
+	channel map[string]*fch
 
 	nextRoleID int
-	overwrites map[overwriteKey]struct{ allow, deny int64 }
-	// roleCreateErr fails the next GuildRoleCreate once, standing in for a
-	// guild refusing a role icon; reorders records every GuildRoleReorder.
+	overwrites map[overwriteKey]permPair
+	// roleCreateErr fails the next CreateRole once, standing in for a guild
+	// refusing a role icon; reorders records every UpdateRolePositions.
 	roleCreateErr bool
-	reorders      [][]*discordgo.Role
+	reorders      [][]discord.RolePositionUpdate
 
-	// memberFetchErr, when set, fails every GuildMember call with it, for
+	// memberFetchErr, when set, fails every GetMember call with it, for
 	// tests that care about how a *kind* of failure is handled rather than
 	// which call fails.
 	memberFetchErr error
-	// memberFetchErrFor fails GuildMember for one user only, so a sweep can
+	// memberFetchErrFor fails GetMember for one user only, so a sweep can
 	// be shown carrying on past a single bad row.
 	memberFetchErrFor map[string]error
-	// memberEditErr does the same for GuildMemberEdit.
+	// memberEditErr does the same for UpdateMember.
 	memberEditErr error
 	// onMemberEdit, when set, runs after a role edit lands with the roles
 	// just set, standing in for the GUILD_MEMBER_UPDATE Discord dispatches
 	// for the bot's own edit, which arrives while the caller is still
 	// mid-mutation.
 	onMemberEdit func(guildID, userID string, roles []string)
-	// memberListErr does the same for GuildMembers, standing in for a guild
+	// memberListErr does the same for GetMembers, standing in for a guild
 	// whose member list can't be paged (most realistically, the GUILD_MEMBERS
 	// intent not being granted).
 	memberListErr   error
@@ -68,26 +125,25 @@ type fakeOps struct {
 	// guildErr and dmErr stand in for a member with DMs closed or a guild
 	// lookup that fails, both of which must leave the jail itself intact.
 	guildErr error
-	// guildOwner is Guild's OwnerID, for the owner-or-operator gate.
+	// guildOwner is the guild's OwnerID, for the owner-or-operator gate.
 	guildOwner string
 	dmErr      error
 	dmSends    []sentDM
 
 	roleAddCalls    []string // "guildID:userID:roleID"
 	roleRemoveCalls []string
-	memberEditCalls map[string][]string // userID -> Roles set on each GuildMemberEdit call
+	memberEditCalls map[string][]string // userID -> Roles set on each UpdateMember call
 
-	// voiceKickCalls records every disconnectFromVoice call (the
-	// ChannelID-only GuildMemberEdit), by userID, kept separate from
-	// memberEditCalls since it's a distinct API call carrying no Roles.
-	// voiceKickErr, when set, fails only that call, independent of
+	// voiceKickCalls records every disconnectFromVoice call by userID, kept
+	// separate from memberEditCalls since it's a distinct API call carrying
+	// no roles. voiceKickErr, when set, fails only that call, independent of
 	// memberEditErr, so a test can simulate a failing kick without also
 	// failing the role strip that precedes it.
 	voiceKickCalls []string
 	voiceKickErr   error
 
-	// guildChannelsErr, when set, fails every GuildChannels call, standing in
-	// for a Discord outage or missing permission mid-fan-out.
+	// guildChannelsErr, when set, fails every GetGuildChannels call, standing
+	// in for a Discord outage or missing permission mid-fan-out.
 	guildChannelsErr error
 
 	// permSetCalls/permDeleteCalls count permission writes, which is what a
@@ -108,10 +164,10 @@ type fakeOps struct {
 
 func newFakeOps() *fakeOps {
 	return &fakeOps{
-		members:         make(map[string]*discordgo.Member),
-		roles:           make(map[string][]*discordgo.Role),
-		channel:         make(map[string]*discordgo.Channel),
-		overwrites:      make(map[overwriteKey]struct{ allow, deny int64 }),
+		members:         make(map[string]*fmember),
+		roles:           make(map[string][]*frole),
+		channel:         make(map[string]*fch),
+		overwrites:      make(map[overwriteKey]permPair),
 		memberEditCalls: make(map[string][]string),
 		knownUsers:      make(map[string]bool),
 	}
@@ -125,52 +181,42 @@ func (f *fakeOps) setUser(userID string) {
 	f.knownUsers[userID] = true
 }
 
-func (f *fakeOps) User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error) {
+func restErr(status, code int, msg string) error {
+	return &rest.Error{Code: rest.JSONErrorCode(code), Message: msg, Response: &http.Response{StatusCode: status}}
+}
+
+func (f *fakeOps) GetUser(userID snowflake.ID) (*discord.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.userCalls = append(f.userCalls, userID)
-	if !f.knownUsers[userID] {
-		return nil, &discordgo.RESTError{
-			Response:     &http.Response{StatusCode: http.StatusNotFound},
-			ResponseBody: []byte(`{"code":10013,"message":"Unknown User"}`),
-			Message:      &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownUser, Message: "Unknown User"},
-		}
+	id := userID.String()
+	f.userCalls = append(f.userCalls, id)
+	if !f.knownUsers[id] {
+		return nil, restErr(http.StatusNotFound, 10013, "Unknown User")
 	}
-	return &discordgo.User{ID: userID, Username: "absent-" + userID}, nil
+	return &discord.User{ID: userID, Username: "absent-" + id}, nil
 }
 
 func memberKey(guildID, userID string) string { return guildID + ":" + userID }
 
-// unknownMemberErr mirrors what discordgo returns for a member who has left
-// the guild: a *discordgo.RESTError carrying Discord's own 10007 code.
-// Callers distinguish that from a transient failure (core.IsUnknownResource)
-// before deciding to stop tracking a jail or grant, so an undifferentiated
-// error here would make "they left" and "Discord hiccuped" test identically.
+// unknownMemberErr is what Discord answers for a member who has left the
+// guild: its own 10007 code. Callers distinguish that from a transient
+// failure (core.IsUnknownResource) before deciding to stop tracking a jail
+// or grant, so an undifferentiated error here would make "they left" and
+// "Discord hiccuped" test identically.
 func unknownMemberErr(guildID, userID string) error {
-	return &discordgo.RESTError{
-		Response:     &http.Response{StatusCode: http.StatusNotFound},
-		ResponseBody: []byte(`{"code":10007,"message":"Unknown Member"}`),
-		Message: &discordgo.APIErrorMessage{
-			Code:    discordgo.ErrCodeUnknownMember,
-			Message: fmt.Sprintf("Unknown Member: %s in %s", userID, guildID),
-		},
-	}
+	return restErr(http.StatusNotFound, 10007, fmt.Sprintf("Unknown Member: %s in %s", userID, guildID))
 }
 
 // transientErr is a retryable Discord failure (a 500), the counterpart to
 // unknownMemberErr.
 func transientErr() error {
-	return &discordgo.RESTError{
-		Response:     &http.Response{StatusCode: http.StatusInternalServerError},
-		ResponseBody: []byte(`{"code":0,"message":"500: Internal Server Error"}`),
-		Message:      &discordgo.APIErrorMessage{Message: "500: Internal Server Error"},
-	}
+	return restErr(http.StatusInternalServerError, 0, "500: Internal Server Error")
 }
 
 func (f *fakeOps) setMember(guildID, userID string, roleIDs []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.members[memberKey(guildID, userID)] = &discordgo.Member{User: &discordgo.User{ID: userID}, GuildID: guildID, Roles: roleIDs}
+	f.members[memberKey(guildID, userID)] = &fmember{User: &fuser{ID: userID}, GuildID: guildID, Roles: roleIDs}
 }
 
 // setMemberJoined is setMember plus a JoinedAt, which is what distinguishes a
@@ -179,27 +225,22 @@ func (f *fakeOps) setMember(guildID, userID string, roleIDs []string) {
 func (f *fakeOps) setMemberJoined(guildID, userID string, roleIDs []string, joinedAt time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.members[memberKey(guildID, userID)] = &discordgo.Member{
-		User:     &discordgo.User{ID: userID},
+	f.members[memberKey(guildID, userID)] = &fmember{
+		User:     &fuser{ID: userID},
 		GuildID:  guildID,
 		Roles:    roleIDs,
 		JoinedAt: joinedAt,
 	}
 }
 
-func memberWithJoinedAt(joinedAt time.Time) *discordgo.Member {
-	return &discordgo.Member{User: &discordgo.User{ID: "u1"}, JoinedAt: joinedAt}
+func memberWithJoinedAt(joinedAt time.Time) *discord.Member {
+	return (&fmember{User: &fuser{ID: "7000102"}, JoinedAt: joinedAt}).disgo()
 }
 
-func (f *fakeOps) GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error) {
+// GuildMember is the test's own read of a member: a copy, never failed.
+func (f *fakeOps) GuildMember(guildID, userID string) (*fmember, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.memberFetchErr != nil {
-		return nil, f.memberFetchErr
-	}
-	if err := f.memberFetchErrFor[userID]; err != nil {
-		return nil, err
-	}
 	m, ok := f.members[memberKey(guildID, userID)]
 	if !ok {
 		return nil, unknownMemberErr(guildID, userID)
@@ -209,10 +250,35 @@ func (f *fakeOps) GuildMember(guildID, userID string, options ...discordgo.Reque
 	return &cp, nil
 }
 
-// GuildMembers pages this guild's members in a stable (ID-sorted) order, so
+// disgoRoles is roles as GetRoles hands them out.
+func disgoRoles(roles []*frole) []discord.Role {
+	out := make([]discord.Role, len(roles))
+	for i, r := range roles {
+		out[i] = r.disgo()
+	}
+	return out
+}
+
+func (f *fakeOps) GetMember(guildID, userID snowflake.ID) (*discord.Member, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.memberFetchErr != nil {
+		return nil, f.memberFetchErr
+	}
+	if err := f.memberFetchErrFor[userID.String()]; err != nil {
+		return nil, err
+	}
+	m, ok := f.members[memberKey(guildID.String(), userID.String())]
+	if !ok {
+		return nil, unknownMemberErr(guildID.String(), userID.String())
+	}
+	return m.disgo(), nil
+}
+
+// GetMembers pages this guild's members in a stable (ID-sorted) order, so
 // pagination behaviour is deterministic and membersWithRole's "after" cursor
 // is actually exercised rather than always fitting in one page.
-func (f *fakeOps) GuildMembers(guildID string, after string, limit int, options ...discordgo.RequestOption) ([]*discordgo.Member, error) {
+func (f *fakeOps) GetMembers(guildID snowflake.ID, limit int, after snowflake.ID) ([]discord.Member, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.memberListErr != nil {
@@ -220,105 +286,116 @@ func (f *fakeOps) GuildMembers(guildID string, after string, limit int, options 
 	}
 	f.memberListCalls++
 
-	var all []*discordgo.Member
+	var all []*fmember
 	for key, m := range f.members {
-		if strings.HasPrefix(key, guildID+":") {
+		if strings.HasPrefix(key, guildID.String()+":") {
 			all = append(all, m)
 		}
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].User.ID < all[j].User.ID })
+	sort.Slice(all, func(i, j int) bool { return core.ID(all[i].User.ID) < core.ID(all[j].User.ID) })
 
-	var page []*discordgo.Member
+	var page []discord.Member
 	for _, m := range all {
-		if after != "" && m.User.ID <= after {
+		if after != 0 && core.ID(m.User.ID) <= after {
 			continue
 		}
 		if len(page) == limit {
 			break
 		}
-		page = append(page, m)
+		page = append(page, *m.disgo())
 	}
 	return page, nil
 }
 
-func (f *fakeOps) GuildMemberEdit(guildID, userID string, data *discordgo.GuildMemberParams, options ...discordgo.RequestOption) (*discordgo.Member, error) {
-	if data.ChannelID != nil {
-		// The voice-disconnect call: a separate GuildMemberEdit carrying only
-		// ChannelID, never combined with a Roles change (see
-		// Plugin.disconnectFromVoice).
-		f.mu.Lock()
-		f.voiceKickCalls = append(f.voiceKickCalls, userID)
-		f.mu.Unlock()
-		return nil, f.voiceKickErr
-	}
-
+func (f *fakeOps) UpdateMember(guildID, userID snowflake.ID, data discord.MemberUpdate) (*discord.Member, error) {
 	if f.memberEditErr != nil {
 		return nil, f.memberEditErr
 	}
+	g, u := guildID.String(), userID.String()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	m, ok := f.members[memberKey(guildID, userID)]
+	m, ok := f.members[memberKey(g, u)]
 	if !ok {
-		return nil, unknownMemberErr(guildID, userID)
+		return nil, unknownMemberErr(g, u)
 	}
+	var roles []string
 	if data.Roles != nil {
-		m.Roles = append([]string(nil), (*data.Roles)...)
-		f.memberEditCalls[userID] = append(f.memberEditCalls[userID], append([]string(nil), *data.Roles...)...)
+		roles = core.IDStrings(*data.Roles)
+		m.Roles = append([]string(nil), roles...)
+		f.memberEditCalls[u] = append(f.memberEditCalls[u], roles...)
 	}
-	cp := *m
+	out := m.disgo()
 	if data.Roles != nil && f.onMemberEdit != nil {
 		f.mu.Unlock()
-		f.onMemberEdit(guildID, userID, append([]string(nil), *data.Roles...))
+		f.onMemberEdit(g, u, roles)
 		f.mu.Lock()
 	}
-	return &cp, nil
+	return out, nil
+}
+
+// DisconnectMember is the voice disconnect: its own call, never combined
+// with a role change (see Plugin.disconnectFromVoice).
+func (f *fakeOps) DisconnectMember(_, userID snowflake.ID) error {
+	f.mu.Lock()
+	f.voiceKickCalls = append(f.voiceKickCalls, userID.String())
+	f.mu.Unlock()
+	return f.voiceKickErr
 }
 
 // The DM path: a fake guild name, an in-memory DM channel, and a record of
 // every notice sent, so a test can assert on what a jailed member is
 // actually told rather than only that something was attempted.
-func (f *fakeOps) Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error) {
+func (f *fakeOps) GetGuild(guildID snowflake.ID) (*discord.RestGuild, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.guildErr != nil {
 		return nil, f.guildErr
 	}
-	return &discordgo.Guild{ID: guildID, Name: "The Melting Pot", OwnerID: f.guildOwner}, nil
+	g := &discord.RestGuild{}
+	g.ID, g.Name, g.OwnerID = guildID, "The Melting Pot", core.ID(f.guildOwner)
+	return g, nil
 }
 
-func (f *fakeOps) UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
+func (f *fakeOps) CreateDMChannel(recipientID snowflake.ID) (*discord.DMChannel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.dmErr != nil {
 		return nil, f.dmErr
 	}
-	return &discordgo.Channel{ID: "dm:" + recipientID, Type: discordgo.ChannelTypeDM}, nil
+	return discordtest.DM(dmWith(recipientID.String())), nil
 }
 
-func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+// dmWith is the DM channel the fake opens with userID.
+func dmWith(userID string) string { return "9" + userID }
+
+func (f *fakeOps) CreateMessage(channelID snowflake.ID, data discord.MessageCreate) (*discord.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.dmSends = append(f.dmSends, sentDM{channelID: channelID, data: data})
-	return &discordgo.Message{ID: "m1"}, nil
+	f.dmSends = append(f.dmSends, sentDM{channelID: channelID.String(), data: data})
+	return &discord.Message{ID: 9001}, nil
 }
 
 // everyonePerms is what the fake guild's @everyone role carries: a plain
 // member can see, talk, react and join voice, the ordinary Discord default.
 // memberBaseline caps a marker role against this, so a fixture that never
 // set up an @everyone role would otherwise withhold everything.
-const everyonePerms = int64(discordgo.PermissionViewChannel | discordgo.PermissionSendMessages |
-	discordgo.PermissionReadMessageHistory | discordgo.PermissionAddReactions |
-	discordgo.PermissionVoiceConnect | discordgo.PermissionVoiceSpeak)
+const everyonePerms = discord.PermissionViewChannel | discord.PermissionSendMessages |
+	discord.PermissionReadMessageHistory | discord.PermissionAddReactions |
+	discord.PermissionConnect | discord.PermissionSpeak
 
-func (f *fakeOps) GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {
+func (f *fakeOps) GetRoles(guildID snowflake.ID) ([]discord.Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := append([]*discordgo.Role(nil), f.roles[guildID]...)
+	g := guildID.String()
+	var out []discord.Role
+	for _, r := range f.roles[g] {
+		out = append(out, r.disgo())
+	}
 	// Every real guild has its @everyone role, ID equal to the guild's.
 	// Fixtures list only the roles they care about, so it is synthesised
 	// here unless a test set its own (to lock the guild down, say).
-	if !slices.ContainsFunc(out, func(r *discordgo.Role) bool { return r.ID == guildID }) {
-		out = append(out, &discordgo.Role{ID: guildID, Name: "@everyone", Permissions: everyonePerms})
+	if !slices.ContainsFunc(out, func(r discord.Role) bool { return r.ID == guildID }) {
+		out = append(out, discord.Role{ID: guildID, Name: "@everyone", Permissions: everyonePerms})
 	}
 	return out, nil
 }
@@ -330,12 +407,12 @@ func (f *fakeOps) GuildRoles(guildID string, options ...discordgo.RequestOption)
 func (f *fakeOps) deleteRole(guildID, roleID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.roles[guildID] = slices.DeleteFunc(f.roles[guildID], func(r *discordgo.Role) bool {
+	f.roles[guildID] = slices.DeleteFunc(f.roles[guildID], func(r *frole) bool {
 		return r.ID == roleID
 	})
 }
 
-func (f *fakeOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
+func (f *fakeOps) CreateRole(guildID snowflake.ID, data discord.RoleCreate) (*discord.Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.roleCreateErr {
@@ -343,164 +420,134 @@ func (f *fakeOps) GuildRoleCreate(guildID string, data *discordgo.RoleParams, op
 		return nil, fmt.Errorf("fakeOps: role create refused")
 	}
 	f.nextRoleID++
-	r := &discordgo.Role{ID: fmt.Sprintf("role-created-%d", f.nextRoleID), Name: data.Name}
 	// Everything the eternal-role script recreates from, so a test can
 	// check the copy was faithful. Icon becomes a hash the way Discord
 	// answers an upload with one.
-	if data.Color != nil {
-		r.Color = *data.Color
-	}
-	if data.Hoist != nil {
-		r.Hoist = *data.Hoist
-	}
-	if data.Mentionable != nil {
-		r.Mentionable = *data.Mentionable
-	}
+	r := &frole{ID: strconv.Itoa(7900000 + f.nextRoleID), Name: data.Name, Color: data.Color,
+		Hoist: data.Hoist, Mentionable: data.Mentionable, UnicodeEmoji: data.Emoji}
 	if data.Permissions != nil {
 		r.Permissions = *data.Permissions
 	}
-	if data.UnicodeEmoji != nil {
-		r.UnicodeEmoji = *data.UnicodeEmoji
-	}
 	if data.Icon != nil {
-		r.Icon = "hash-of-" + (*data.Icon)[len(*data.Icon)-8:]
+		r.Icon = "hash-of-" + string(data.Icon.Data[len(data.Icon.Data)-8:])
 	}
-	f.roles[guildID] = append(f.roles[guildID], r)
-	return r, nil
+	g := guildID.String()
+	f.roles[g] = append(f.roles[g], r)
+	out := r.disgo()
+	return &out, nil
 }
 
-// GuildRoleReorder applies the positions given and records the call.
-func (f *fakeOps) GuildRoleReorder(guildID string, roles []*discordgo.Role, options ...discordgo.RequestOption) ([]*discordgo.Role, error) {
+// UpdateRolePositions applies the positions given and records the call.
+func (f *fakeOps) UpdateRolePositions(guildID snowflake.ID, u []discord.RolePositionUpdate) ([]discord.Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.reorders = append(f.reorders, roles)
-	for _, moved := range roles {
-		for _, r := range f.roles[guildID] {
-			if r.ID == moved.ID {
-				r.Position = moved.Position
+	f.reorders = append(f.reorders, u)
+	var out []discord.Role
+	for _, moved := range u {
+		for _, r := range f.roles[guildID.String()] {
+			if core.ID(r.ID) == moved.ID && moved.Position != nil {
+				r.Position = *moved.Position
+				out = append(out, r.disgo())
 			}
-		}
-	}
-	return roles, nil
-}
-
-func (f *fakeOps) GuildRoleEdit(guildID, roleID string, data *discordgo.RoleParams, options ...discordgo.RequestOption) (*discordgo.Role, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, r := range f.roles[guildID] {
-		if r.ID == roleID {
-			if data.Permissions != nil {
-				r.Permissions = *data.Permissions
-			}
-			// RoleParams uses *bool for Hoist/Mentionable; if nil leave as-is
-			if data.Hoist != nil {
-				r.Hoist = *data.Hoist
-			}
-			if data.Mentionable != nil {
-				r.Mentionable = *data.Mentionable
-			}
-			return r, nil
-		}
-	}
-	return nil, fmt.Errorf("fakeOps: role %s not found in guild %s", roleID, guildID)
-}
-
-func (f *fakeOps) GuildMemberRoleAdd(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.roleAddCalls = append(f.roleAddCalls, guildID+":"+userID+":"+roleID)
-	if m, ok := f.members[memberKey(guildID, userID)]; ok {
-		for _, r := range m.Roles {
-			if r == roleID {
-				return nil
-			}
-		}
-		m.Roles = append(m.Roles, roleID)
-	}
-	return nil
-}
-
-func (f *fakeOps) GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.roleRemoveCalls = append(f.roleRemoveCalls, guildID+":"+userID+":"+roleID)
-	if m, ok := f.members[memberKey(guildID, userID)]; ok {
-		out := m.Roles[:0]
-		for _, r := range m.Roles {
-			if r != roleID {
-				out = append(out, r)
-			}
-		}
-		m.Roles = out
-	}
-	return nil
-}
-
-func (f *fakeOps) Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	ch, ok := f.channel[channelID]
-	if !ok {
-		return nil, fmt.Errorf("fakeOps: unknown channel %s", channelID)
-	}
-	return ch, nil
-}
-
-func (f *fakeOps) GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.guildChannelsErr != nil {
-		return nil, f.guildChannelsErr
-	}
-	var out []*discordgo.Channel
-	for _, ch := range f.channel {
-		if ch.GuildID == guildID {
-			out = append(out, ch)
 		}
 	}
 	return out, nil
 }
 
-// ChannelPermissionSet records the write and mirrors it onto the channel's
-// own PermissionOverwrites, the way Discord does. The callers now read those
-// back to skip writes that would change nothing, so a fake that only kept a
-// side map would report every repeat sync as still needed.
-func (f *fakeOps) ChannelPermissionSet(channelID, targetID string, targetType discordgo.PermissionOverwriteType, allow, deny int64, options ...discordgo.RequestOption) error {
+func (f *fakeOps) AddMemberRole(guildID, userID, roleID snowflake.ID, _ ...rest.RequestOpt) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.permSetCalls++
-	f.overwrites[overwriteKey{channelID, targetID}] = struct{ allow, deny int64 }{allow, deny}
-	ch, ok := f.channel[channelID]
-	if !ok {
-		return nil
+	g, u, r := guildID.String(), userID.String(), roleID.String()
+	f.roleAddCalls = append(f.roleAddCalls, g+":"+u+":"+r)
+	if m, ok := f.members[memberKey(g, u)]; ok && !slices.Contains(m.Roles, r) {
+		m.Roles = append(m.Roles, r)
 	}
-	for _, ow := range ch.PermissionOverwrites {
-		if ow.Type == targetType && ow.ID == targetID {
-			ow.Allow, ow.Deny = allow, deny
-			return nil
-		}
-	}
-	ch.PermissionOverwrites = append(ch.PermissionOverwrites, &discordgo.PermissionOverwrite{
-		ID: targetID, Type: targetType, Allow: allow, Deny: deny,
-	})
 	return nil
 }
 
-func (f *fakeOps) ChannelPermissionDelete(channelID, targetID string, options ...discordgo.RequestOption) error {
+func (f *fakeOps) RemoveMemberRole(guildID, userID, roleID snowflake.ID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	g, u, r := guildID.String(), userID.String(), roleID.String()
+	f.roleRemoveCalls = append(f.roleRemoveCalls, g+":"+u+":"+r)
+	if m, ok := f.members[memberKey(g, u)]; ok {
+		m.Roles = slices.DeleteFunc(m.Roles, func(id string) bool { return id == r })
+	}
+	return nil
+}
+
+func (f *fakeOps) GetChannel(channelID snowflake.ID) (discord.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch, ok := f.channel[channelID.String()]
+	if !ok {
+		return nil, fmt.Errorf("fakeOps: unknown channel %s", channelID)
+	}
+	return ch.Disgo(), nil
+}
+
+func (f *fakeOps) GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.guildChannelsErr != nil {
+		return nil, f.guildChannelsErr
+	}
+	var out []discord.GuildChannel
+	for _, ch := range f.channel {
+		if ch.GuildID == guildID.String() {
+			out = append(out, ch.Disgo())
+		}
+	}
+	return out, nil
+}
+
+// UpdatePermissionOverwrite records the write and mirrors it onto the
+// channel's own overwrites, the way Discord does. The callers read those
+// back to skip writes that would change nothing, so a fake that only kept a
+// side map would report every repeat sync as still needed.
+func (f *fakeOps) UpdatePermissionOverwrite(channelID, targetID snowflake.ID, u discord.PermissionOverwriteUpdate) error {
+	var allow, deny discord.Permissions
+	var kind discord.PermissionOverwriteType
+	switch v := u.(type) {
+	case discord.RolePermissionOverwriteUpdate:
+		kind, allow, deny = discord.PermissionOverwriteTypeRole, permOf(v.Allow), permOf(v.Deny)
+	case discord.MemberPermissionOverwriteUpdate:
+		kind, allow, deny = discord.PermissionOverwriteTypeMember, permOf(v.Allow), permOf(v.Deny)
+	}
+	c, t := channelID.String(), targetID.String()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.permSetCalls++
+	f.overwrites[overwriteKey{c, t}] = permPair{allow, deny}
+	ch, ok := f.channel[c]
+	if !ok {
+		return nil
+	}
+	if ow := discordtest.Find(ch.PermissionOverwrites, t, kind); ow != nil {
+		ow.Allow, ow.Deny = allow, deny
+		return nil
+	}
+	ch.PermissionOverwrites = append(ch.PermissionOverwrites, &fow{ID: t, Type: kind, Allow: allow, Deny: deny})
+	return nil
+}
+
+func (f *fakeOps) DeletePermissionOverwrite(channelID, targetID snowflake.ID) error {
+	c, t := channelID.String(), targetID.String()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.permDeleteCalls++
-	delete(f.overwrites, overwriteKey{channelID, targetID})
-	if ch, ok := f.channel[channelID]; ok {
-		out := ch.PermissionOverwrites[:0]
-		for _, ow := range ch.PermissionOverwrites {
-			if ow.ID != targetID {
-				out = append(out, ow)
-			}
-		}
-		ch.PermissionOverwrites = out
+	delete(f.overwrites, overwriteKey{c, t})
+	if ch, ok := f.channel[c]; ok {
+		ch.PermissionOverwrites = slices.DeleteFunc(ch.PermissionOverwrites, func(ow *fow) bool { return ow.ID == t })
 	}
 	return nil
+}
+
+func permOf(p *discord.Permissions) discord.Permissions {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // --- fakeStore: in-memory Store ---
@@ -952,7 +999,7 @@ func (f *fakePerms) IsBootstrapAdmin(userID string) bool {
 	return f.bootstrapID != "" && userID == f.bootstrapID
 }
 
-func (f *fakePerms) CanModerate(guildID string, actor *discordgo.Member, targetUserID string, targetRoleIDs []string) error {
+func (f *fakePerms) CanModerate(guildID string, actor *core.Actor, targetUserID string, targetRoleIDs []string) error {
 	if f.moderateErr != nil {
 		return f.moderateErr
 	}

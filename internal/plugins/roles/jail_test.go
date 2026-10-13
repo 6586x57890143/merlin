@@ -7,9 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/bwmarrin/discordgo"
 )
 
 // TestReleaseJailRestoresSnapshotFilteredToExistingRoles verifies release
@@ -18,25 +17,25 @@ import (
 // dangling role ID Discord would reject).
 func TestReleaseJailRestoresSnapshotFilteredToExistingRoles(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
-	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "jail-role"}} // role-b was deleted since jailing
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "7000301"}} // role-b was deleted since jailing
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	rec := JailRecord{
-		GuildID: "g1", UserID: "u1",
-		SnapshotRoleIDs: []string{"role-a", "role-b"},
-		JailRoleID:      "jail-role",
+		GuildID: "7000001", UserID: "7000102",
+		SnapshotRoleIDs: []string{"7000302", "7000303"},
+		JailRoleID:      "7000301",
 	}
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
 
-	m, _ := ops.GuildMember("g1", "u1")
-	if len(m.Roles) != 1 || m.Roles[0] != "role-a" {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if len(m.Roles) != 1 || m.Roles[0] != "7000302" {
 		t.Fatalf("expected only surviving role-a restored, got %v", m.Roles)
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected jail record removed after release")
 	}
 }
@@ -47,19 +46,19 @@ func TestReleaseJailRestoresSnapshotFilteredToExistingRoles(t *testing.T) {
 // that override: no restore write, just stop tracking.
 func TestReleaseJailConfusedDeputyRescue(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"some-other-role"}) // jail-role no longer present
+	ops.setMember("7000001", "7000102", []string{"7000327"}) // jail-role no longer present
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	rec := JailRecord{GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a"}, JailRoleID: "jail-role"}
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
+	rec := JailRecord{GuildID: "7000001", UserID: "7000102", SnapshotRoleIDs: []string{"7000302"}, JailRoleID: "7000301"}
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
 
-	if len(ops.memberEditCalls["u1"]) != 0 {
-		t.Fatalf("expected no GuildMemberEdit call when jail marker already gone, got %v", ops.memberEditCalls["u1"])
+	if len(ops.memberEditCalls["7000102"]) != 0 {
+		t.Fatalf("expected no GuildMemberEdit call when jail marker already gone, got %v", ops.memberEditCalls["7000102"])
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected jail record removed even though no restore happened")
 	}
 }
@@ -70,13 +69,13 @@ func TestReleaseJailMemberGoneCleansUpRecord(t *testing.T) {
 	ops := newFakeOps() // no member registered at all
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-	_ = p.store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role"})
+	_ = p.store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301"})
 
-	rec, _, _ := p.store.GetJail(context.Background(), "g1", "u1")
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
+	rec, _, _ := p.store.GetJail(context.Background(), "7000001", "7000102")
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected jail record removed for a member who left the guild")
 	}
 }
@@ -87,14 +86,14 @@ func TestReleaseJailMemberGoneCleansUpRecord(t *testing.T) {
 // causing the whole operation to fail.
 func TestJailRolesKeepsUnmanageableRolesInPlace(t *testing.T) {
 	perms := newFakePerms()
-	perms.unmanageable["unmanageable-role"] = true
+	perms.unmanageable["7000326"] = true
 
-	newRoles, unmanageable := jailRoles(perms, "g1", "jail-role", []string{"managed-role", "unmanageable-role"})
+	newRoles, unmanageable := jailRoles(perms, "7000001", "7000301", []string{"7000337", "7000326"})
 
-	if len(unmanageable) != 1 || unmanageable[0] != "unmanageable-role" {
+	if len(unmanageable) != 1 || unmanageable[0] != "7000326" {
 		t.Fatalf("expected exactly unmanageable-role flagged, got %v", unmanageable)
 	}
-	if len(newRoles) != 2 || newRoles[0] != "jail-role" || newRoles[1] != "unmanageable-role" {
+	if len(newRoles) != 2 || newRoles[0] != "7000301" || newRoles[1] != "7000326" {
 		t.Fatalf("expected the jail marker plus the untouchable role, got %v", newRoles)
 	}
 }
@@ -102,12 +101,12 @@ func TestJailRolesKeepsUnmanageableRolesInPlace(t *testing.T) {
 // TestJailRolesStripsEverythingItCan is the ordinary case: a member whose
 // roles are all below the bot's ends up holding nothing but the marker.
 func TestJailRolesStripsEverythingItCan(t *testing.T) {
-	newRoles, unmanageable := jailRoles(newFakePerms(), "g1", "jail-role", []string{"role-a", "role-b", "role-c"})
+	newRoles, unmanageable := jailRoles(newFakePerms(), "7000001", "7000301", []string{"7000302", "7000303", "7000304"})
 
 	if len(unmanageable) != 0 {
 		t.Fatalf("expected nothing flagged as unmanageable, got %v", unmanageable)
 	}
-	if len(newRoles) != 1 || newRoles[0] != "jail-role" {
+	if len(newRoles) != 1 || newRoles[0] != "7000301" {
 		t.Fatalf("expected only the jail marker to remain, got %v", newRoles)
 	}
 }
@@ -116,33 +115,33 @@ func TestJailRolesStripsEverythingItCan(t *testing.T) {
 // the marker still has to be applied, and an empty roles list must not read
 // as "strip nothing."
 func TestJailRolesOnRolelessMember(t *testing.T) {
-	newRoles, unmanageable := jailRoles(newFakePerms(), "g1", "jail-role", nil)
-	if len(unmanageable) != 0 || len(newRoles) != 1 || newRoles[0] != "jail-role" {
+	newRoles, unmanageable := jailRoles(newFakePerms(), "7000001", "7000301", nil)
+	if len(unmanageable) != 0 || len(newRoles) != 1 || newRoles[0] != "7000301" {
 		t.Fatalf("jailRoles(no roles) = (%v, %v), want ([jail-role], [])", newRoles, unmanageable)
 	}
 }
 
 func TestSweepReleasesDueJailsAndSkipsNotYetDue(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
-	ops.setMember("g1", "u2", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	ops.setMember("7000001", "7000103", []string{"7000301"})
 
 	store := newFakeStore()
 	due := fixedNow.Add(-time.Minute)
 	notDue := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", ReleaseAt: &due})
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u2", JailRoleID: "jail-role", ReleaseAt: &notDue})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", ReleaseAt: &due})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000103", JailRoleID: "7000301", ReleaseAt: &notDue})
 
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if err := p.sweep(context.Background(), "g1"); err != nil {
+	if err := p.sweep(context.Background(), "7000001"); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected due jail released and untracked")
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u2"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000103"); !ok {
 		t.Fatal("expected not-yet-due jail left untouched")
 	}
 }
@@ -155,33 +154,33 @@ func TestSweepReleasesDueJailsAndSkipsNotYetDue(t *testing.T) {
 // Only Discord's own "unknown member" may untrack.
 func TestReleaseJailKeepsTrackingOnTransientFetchFailure(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
-	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "jail-role"}}
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "7000301"}}
 	ops.memberFetchErr = transientErr()
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-	rec := JailRecord{GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a"}, JailRoleID: "jail-role"}
+	rec := JailRecord{GuildID: "7000001", UserID: "7000102", SnapshotRoleIDs: []string{"7000302"}, JailRoleID: "7000301"}
 	if err := p.store.InsertJail(context.Background(), rec); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err == nil {
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err == nil {
 		t.Fatal("expected releaseJail to report the transient fetch failure")
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("jail record was dropped on a transient error; the member would stay jailed forever")
 	}
 
 	// Discord recovers: the next sweep releases them properly.
 	ops.memberFetchErr = nil
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("retry releaseJail: %v", err)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
-	if len(m.Roles) != 1 || m.Roles[0] != "role-a" {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if len(m.Roles) != 1 || m.Roles[0] != "7000302" {
 		t.Fatalf("expected prior roles restored on retry, got %v", m.Roles)
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected the jail record to be cleared once the release succeeded")
 	}
 }
@@ -191,31 +190,31 @@ func TestReleaseJailKeepsTrackingOnTransientFetchFailure(t *testing.T) {
 // couldn't be released must still be due on the next minute's sweep.
 func TestSweepRetriesJailReleaseUntilItSucceeds(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
-	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "jail-role"}}
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "7000301"}}
 	ops.memberFetchErr = transientErr()
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 	due := fixedNow.Add(-time.Minute)
 	if err := p.store.InsertJail(context.Background(), JailRecord{
-		GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a"},
-		JailRoleID: "jail-role", ReleaseAt: &due,
+		GuildID: "7000001", UserID: "7000102", SnapshotRoleIDs: []string{"7000302"},
+		JailRoleID: "7000301", ReleaseAt: &due,
 	}); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
-	if err := p.sweep(context.Background(), "g1"); err == nil {
+	if err := p.sweep(context.Background(), "7000001"); err == nil {
 		t.Fatal("expected the sweep to report the failed release")
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("expected the due jail to still be tracked after a failed sweep")
 	}
 
 	ops.memberFetchErr = nil
-	if err := p.sweep(context.Background(), "g1"); err != nil {
+	if err := p.sweep(context.Background(), "7000001"); err != nil {
 		t.Fatalf("second sweep: %v", err)
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected the jail to be released on the retry sweep")
 	}
 }
@@ -228,35 +227,35 @@ func TestSweepRetriesJailReleaseUntilItSucceeds(t *testing.T) {
 // stripped or the guild carrying a role it never needed.
 func TestJailRefusesProtectedTargetBeforeMutatingAnything(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "admin-user", []string{"admin-role"})
+	ops.setMember("7000001", "7000111", []string{"7000336"})
 
 	perms := newFakePerms()
-	perms.protected["admin-user"] = true
+	perms.protected["7000111"] = true
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), perms, newFakeScheduler())
 
-	member, err := ops.GuildMember("g1", "admin-user")
+	member, err := ops.GuildMember("7000001", "7000111")
 	if err != nil {
 		t.Fatalf("GuildMember: %v", err)
 	}
-	if err := p.perms.CanModerate("g1", actorMember("mod-user"), "admin-user", member.Roles); err == nil {
+	if err := p.perms.CanModerate("7000001", actorMember("7000116"), "7000111", member.Roles); err == nil {
 		t.Fatal("expected the rank check to refuse a mod jailing an admin")
 	}
 
 	// Nothing downstream of the check may have run.
-	if len(ops.memberEditCalls["admin-user"]) != 0 {
-		t.Fatalf("a refused jail edited the member's roles: %v", ops.memberEditCalls["admin-user"])
+	if len(ops.memberEditCalls["7000111"]) != 0 {
+		t.Fatalf("a refused jail edited the member's roles: %v", ops.memberEditCalls["7000111"])
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "admin-user"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000111"); ok {
 		t.Fatal("a refused jail left a jail record behind")
 	}
-	if roles := ops.roles["g1"]; len(roles) != 0 {
+	if roles := ops.roles["7000001"]; len(roles) != 0 {
 		t.Fatalf("a refused jail created guild roles: %v", roles)
 	}
 }
 
-func actorMember(userID string) *discordgo.Member {
-	return &discordgo.Member{User: &discordgo.User{ID: userID}}
+func actorMember(userID string) *core.Actor {
+	return &core.Actor{ID: userID}
 }
 
 // --- applyJail ordering ---
@@ -272,21 +271,21 @@ func actorMember(userID string) *discordgo.Member {
 // ordinary jail that simply never ends.
 func TestApplyJailNeverStripsRolesWithoutTrackingThem(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a", "role-b"})
+	ops.setMember("7000001", "7000102", []string{"7000302", "7000303"})
 
 	store := newFakeStore()
 	store.insertJailErr = errors.New("connection reset by peer")
 
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a", "role-b"}}, time.Hour, "mod", ""); err == nil {
+	if _, err := p.applyJail(context.Background(), "7000001", "7000301", jailTarget{userID: "7000102", roles: []string{"7000302", "7000303"}}, time.Hour, "7000319", ""); err == nil {
 		t.Fatal("expected applyJail to report the failed record write")
 	}
 
-	if len(ops.memberEditCalls["u1"]) != 0 {
-		t.Fatalf("roles were stripped even though the jail could not be recorded; the member would stay jailed forever, got %v", ops.memberEditCalls["u1"])
+	if len(ops.memberEditCalls["7000102"]) != 0 {
+		t.Fatalf("roles were stripped even though the jail could not be recorded; the member would stay jailed forever, got %v", ops.memberEditCalls["7000102"])
 	}
-	m, _ := ops.GuildMember("g1", "u1")
+	m, _ := ops.GuildMember("7000001", "7000102")
 	if len(m.Roles) != 2 {
 		t.Fatalf("expected the member's roles left untouched, got %v", m.Roles)
 	}
@@ -297,15 +296,15 @@ func TestApplyJailNeverStripsRolesWithoutTrackingThem(t *testing.T) {
 // a jail nobody is actually in.
 func TestApplyJailRollsBackRecordWhenRoleUpdateFails(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
+	ops.setMember("7000001", "7000102", []string{"7000302"})
 	ops.memberEditErr = transientErr()
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, time.Hour, "mod", ""); err == nil {
+	if _, err := p.applyJail(context.Background(), "7000001", "7000301", jailTarget{userID: "7000102", roles: []string{"7000302"}}, time.Hour, "7000319", ""); err == nil {
 		t.Fatal("expected applyJail to report the failed role update")
 	}
-	if _, ok, _ := p.store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected the jail record rolled back after the role update failed")
 	}
 }
@@ -314,30 +313,30 @@ func TestApplyJailRollsBackRecordWhenRoleUpdateFails(t *testing.T) {
 // landed and the unmanageable-role report survives the extraction.
 func TestApplyJailSucceedsAndTracks(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a", "untouchable"})
+	ops.setMember("7000001", "7000102", []string{"7000302", "7000325"})
 
 	perms := newFakePerms()
-	perms.unmanageable["untouchable"] = true
+	perms.unmanageable["7000325"] = true
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), perms, newFakeScheduler())
 
-	unmanageable, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a", "untouchable"}}, 2*time.Hour, "mod", "spam")
+	unmanageable, err := p.applyJail(context.Background(), "7000001", "7000301", jailTarget{userID: "7000102", roles: []string{"7000302", "7000325"}}, 2*time.Hour, "7000319", "spam")
 	if err != nil {
 		t.Fatalf("applyJail: %v", err)
 	}
-	if len(unmanageable) != 1 || unmanageable[0] != "untouchable" {
+	if len(unmanageable) != 1 || unmanageable[0] != "7000325" {
 		t.Fatalf("expected the untouchable role reported back, got %v", unmanageable)
 	}
 
-	m, _ := ops.GuildMember("g1", "u1")
-	if len(m.Roles) != 2 || m.Roles[0] != "jail-role" || m.Roles[1] != "untouchable" {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if len(m.Roles) != 2 || m.Roles[0] != "7000301" || m.Roles[1] != "7000325" {
 		t.Fatalf("expected the marker plus the untouchable role, got %v", m.Roles)
 	}
-	rec, ok, _ := p.store.GetJail(context.Background(), "g1", "u1")
+	rec, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102")
 	if !ok {
 		t.Fatal("expected the jail to be tracked")
 	}
-	if len(rec.SnapshotRoleIDs) != 2 || rec.JailedBy != "mod" || rec.Reason != "spam" {
+	if len(rec.SnapshotRoleIDs) != 2 || rec.JailedBy != "7000319" || rec.Reason != "spam" {
 		t.Fatalf("jail record did not capture the pre-jail state: %+v", rec)
 	}
 	if rec.ReleaseAt == nil || !rec.ReleaseAt.Equal(fixedNow.Add(2*time.Hour)) {
@@ -361,22 +360,22 @@ func TestApplyJailForgetsCachedRoleOnlyWhenTheRoleIsGone(t *testing.T) {
 		wantForgets bool
 	}{
 		{"marker role deleted", roleGone, true},
-		{"member left the guild", unknownMemberErr("g1", "u1"), false},
+		{"member left the guild", unknownMemberErr("7000001", "7000102"), false},
 		{"transient failure", transientErr(), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ops := newFakeOps()
-			ops.setMember("g1", "u1", []string{"role-a"})
+			ops.setMember("7000001", "7000102", []string{"7000302"})
 			ops.memberEditErr = tc.editErr
 
 			p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-			p.jailRoleID["g1"] = "cached-jail-role"
+			p.jailRoleID["7000001"] = "7000334"
 
-			if _, err := p.applyJail(context.Background(), "g1", "cached-jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, time.Hour, "mod", ""); err == nil {
+			if _, err := p.applyJail(context.Background(), "7000001", "7000334", jailTarget{userID: "7000102", roles: []string{"7000302"}}, time.Hour, "7000319", ""); err == nil {
 				t.Fatal("expected applyJail to fail")
 			}
 
-			_, stillCached := p.jailRoleID["g1"]
+			_, stillCached := p.jailRoleID["7000001"]
 			if tc.wantForgets && stillCached {
 				t.Fatal("expected the cached jail role to be forgotten when Discord says the role is gone")
 			}
@@ -394,20 +393,20 @@ func TestApplyJailForgetsCachedRoleOnlyWhenTheRoleIsGone(t *testing.T) {
 // Release only ever removes the marker.
 func TestReleaseJailKeepsRolesGainedWhileJailed(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role", "booster"})
-	ops.roles["g1"] = []*discordgo.Role{{ID: "role-a"}, {ID: "moved-up"}, {ID: "jail-role"}, {ID: "booster"}}
+	ops.setMember("7000001", "7000102", []string{"7000301", "7000329"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "moved-up"}, {ID: "7000301"}, {ID: "7000329"}}
 	perms := newFakePerms()
-	perms.unmanageable["booster"] = true
+	perms.unmanageable["7000329"] = true
 	perms.unmanageable["moved-up"] = true // manageable when jailed, not any more
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), perms, newFakeScheduler())
 
-	rec := JailRecord{GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a", "moved-up"}, JailRoleID: "jail-role"}
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
+	rec := JailRecord{GuildID: "7000001", UserID: "7000102", SnapshotRoleIDs: []string{"7000302", "moved-up"}, JailRoleID: "7000301"}
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
-	if len(m.Roles) != 2 || m.Roles[0] != "booster" || m.Roles[1] != "role-a" {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if len(m.Roles) != 2 || m.Roles[0] != "7000329" || m.Roles[1] != "7000302" {
 		t.Fatalf("expected [booster role-a] (marker gone, unmanageable snapshot role skipped), got %v", m.Roles)
 	}
 }
@@ -426,12 +425,12 @@ func TestForeverJailHasNoReleaseTime(t *testing.T) {
 	}
 
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-a"})
+	ops.setMember("7000001", "7000102", []string{"7000302"})
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-	if _, err := p.applyJail(context.Background(), "g1", "jail-role", jailTarget{userID: "u1", roles: []string{"role-a"}}, foreverSentence, "mod", "r"); err != nil {
+	if _, err := p.applyJail(context.Background(), "7000001", "7000301", jailTarget{userID: "7000102", roles: []string{"7000302"}}, foreverSentence, "7000319", "r"); err != nil {
 		t.Fatal(err)
 	}
-	rec, ok, _ := p.store.GetJail(context.Background(), "g1", "u1")
+	rec, ok, _ := p.store.GetJail(context.Background(), "7000001", "7000102")
 	if !ok || rec.ReleaseAt != nil {
 		t.Fatalf("want a tracked jail with no release time, got ok=%v ReleaseAt=%v", ok, rec.ReleaseAt)
 	}

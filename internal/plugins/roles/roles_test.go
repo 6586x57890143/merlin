@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -88,14 +88,14 @@ func TestResolveJailRoleCreatesWhenMissing(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	id, err := p.resolveJailRole("g1")
+	id, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
 	if id == "" {
 		t.Fatal("expected a non-empty role ID")
 	}
-	roles := ops.roles["g1"]
+	roles := ops.roles["7000001"]
 	if len(roles) != 1 || roles[0].Name != jailRoleName {
 		t.Fatalf("expected exactly one %q role created, got %+v", jailRoleName, roles)
 	}
@@ -103,38 +103,38 @@ func TestResolveJailRoleCreatesWhenMissing(t *testing.T) {
 
 func TestResolveJailRoleReusesExisting(t *testing.T) {
 	ops := newFakeOps()
-	ops.roles["g1"] = []*discordgo.Role{{ID: "existing-jail-role", Name: jailRoleName}}
+	ops.roles["7000001"] = []*frole{{ID: "7000333", Name: jailRoleName}}
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	id, err := p.resolveJailRole("g1")
+	id, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
-	if id != "existing-jail-role" {
+	if id != "7000333" {
 		t.Fatalf("expected to reuse existing role, got %q", id)
 	}
 	// Must not have created a second one.
-	if len(ops.roles["g1"]) != 1 {
-		t.Fatalf("expected no new role created, got %d roles", len(ops.roles["g1"]))
+	if len(ops.roles["7000001"]) != 1 {
+		t.Fatalf("expected no new role created, got %d roles", len(ops.roles["7000001"]))
 	}
 }
 
 func TestResolveJailRoleUsesConfiguredMarkerRoleDirectly(t *testing.T) {
 	ops := newFakeOps()
-	ops.roles["g1"] = []*discordgo.Role{{ID: "marker-role", Name: "Marker"}}
+	ops.roles["7000001"] = []*frole{{ID: "7000324", Name: "Marker"}}
 	settings := newFakeSettings()
-	settings.markerRole["g1"] = "marker-role"
+	settings.markerRole["7000001"] = "7000324"
 	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	id, err := p.resolveJailRole("g1")
+	id, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
-	if id != "marker-role" {
+	if id != "7000324" {
 		t.Fatalf("expected configured marker role to be used directly, got %q", id)
 	}
-	if len(ops.roles["g1"]) != 1 {
-		t.Fatalf("expected no new role created, got %d roles", len(ops.roles["g1"]))
+	if len(ops.roles["7000001"]) != 1 {
+		t.Fatalf("expected no new role created, got %d roles", len(ops.roles["7000001"]))
 	}
 }
 
@@ -150,15 +150,15 @@ func TestResolveJailRoleUsesConfiguredMarkerRoleDirectly(t *testing.T) {
 // again after a restart must be a cache-fill, not another full resync.
 func TestResolveJailRoleColdCacheDoesNotResyncConfiguredMarkerRole(t *testing.T) {
 	ops := newFakeOps()
-	ops.roles["g1"] = []*discordgo.Role{{ID: "marker-role", Name: "Marker"}}
-	ops.channel["chan1"] = &discordgo.Channel{ID: "chan1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	ops.roles["7000001"] = []*frole{{ID: "7000324", Name: "Marker"}}
+	ops.channel["7000602"] = &fch{ID: "7000602", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
 	settings := newFakeSettings()
-	settings.markerRole["g1"] = "marker-role"
+	settings.markerRole["7000001"] = "7000324"
 	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	// No prior sync has happened; this simulates the first resolve after a
 	// fresh process start finds an already-configured marker role.
-	if _, err := p.resolveJailRole("g1"); err != nil {
+	if _, err := p.resolveJailRole("7000001"); err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
 	if len(ops.overwrites) != 0 {
@@ -168,7 +168,7 @@ func TestResolveJailRoleColdCacheDoesNotResyncConfiguredMarkerRole(t *testing.T)
 
 func TestResolveJailRoleUsesMeltingPotDefaultWhenPresent(t *testing.T) {
 	ops := newFakeOps()
-	ops.roles[meltingPotGuildID] = []*discordgo.Role{{ID: meltingPotDefaultJailRoleID, Name: "Melting Pot Jail Marker"}}
+	ops.roles[meltingPotGuildID] = []*frole{{ID: meltingPotDefaultJailRoleID, Name: "Melting Pot Jail Marker"}}
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	id, err := p.resolveJailRole(meltingPotGuildID)
@@ -187,19 +187,19 @@ func TestResolveJailRoleIsCachedPerGuild(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	first, err := p.resolveJailRole("g1")
+	first, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
-	second, err := p.resolveJailRole("g1")
+	second, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
 	if first != second {
 		t.Fatalf("expected cached role ID, got %q then %q", first, second)
 	}
-	if len(ops.roles["g1"]) != 1 {
-		t.Fatalf("expected exactly one role ever created, got %d", len(ops.roles["g1"]))
+	if len(ops.roles["7000001"]) != 1 {
+		t.Fatalf("expected exactly one role ever created, got %d", len(ops.roles["7000001"]))
 	}
 }
 
@@ -207,10 +207,10 @@ func TestSyncGuildRegistersSweepJobOnce(t *testing.T) {
 	sched := newFakeScheduler()
 	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), sched)
 
-	p.SyncGuild("g1")
-	p.SyncGuild("g1") // idempotent: must not attempt a second Register
+	p.SyncGuild("7000001")
+	p.SyncGuild("7000001") // idempotent: must not attempt a second Register
 
-	if !sched.registered["g1:roles-sweep"] {
+	if !sched.registered["7000001:roles-sweep"] {
 		t.Fatal("expected roles-sweep job registered for g1")
 	}
 	if len(sched.registered) != 1 {
@@ -224,22 +224,22 @@ func TestSyncGuildRegistersSweepJobOnce(t *testing.T) {
 // would keep failing against a dead role ID until the bot restarted.
 func TestForgetJailRoleAllowsRecreation(t *testing.T) {
 	ops := newFakeOps()
-	ops.roles["g1"] = []*discordgo.Role{{ID: "existing-jail", Name: jailRoleName}}
+	ops.roles["7000001"] = []*frole{{ID: "7000397", Name: jailRoleName}}
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	first, err := p.resolveJailRole("g1")
+	first, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
-	if first != "existing-jail" {
+	if first != "7000397" {
 		t.Fatalf("expected the existing role to be reused, got %q", first)
 	}
 
 	// The mod deletes it in Discord, and the bot is told so.
-	ops.roles["g1"] = nil
-	p.forgetJailRole("g1")
+	ops.roles["7000001"] = nil
+	p.forgetJailRole("7000001")
 
-	second, err := p.resolveJailRole("g1")
+	second, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole after invalidation: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestSyncGuildIsIdempotentAcrossRepeatedCalls(t *testing.T) {
 	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), sched)
 
 	for range 3 {
-		p.SyncGuild("g1")
+		p.SyncGuild("7000001")
 	}
 	if len(sched.registered) != 1 {
 		t.Fatalf("expected exactly 1 registered job across repeated SyncGuild calls, got %v", sched.registered)
@@ -276,16 +276,16 @@ func TestDeletingTheJailRoleDropsTheCachedID(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	first, err := p.resolveJailRole("g1")
+	first, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
 
 	// The role really is gone from Discord's side, not just from the cache.
-	ops.deleteRole("g1", first)
-	p.HandleRoleDeleted(context.Background(), "g1", first)
+	ops.deleteRole("7000001", first)
+	p.HandleRoleDeleted(context.Background(), "7000001", first)
 
-	second, err := p.resolveJailRole("g1")
+	second, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole after deletion: %v", err)
 	}
@@ -302,15 +302,15 @@ func TestDeletingAnUnrelatedRoleLeavesTheCacheAlone(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	first, err := p.resolveJailRole("g1")
+	first, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
 
-	p.HandleRoleDeleted(context.Background(), "g1", "some-other-role")
-	p.HandleRoleDeleted(context.Background(), "some-other-guild", first)
+	p.HandleRoleDeleted(context.Background(), "7000001", "7000327")
+	p.HandleRoleDeleted(context.Background(), "7000003", first)
 
-	second, err := p.resolveJailRole("g1")
+	second, err := p.resolveJailRole("7000001")
 	if err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
@@ -323,5 +323,5 @@ func TestDeletingAnUnrelatedRoleLeavesTheCacheAlone(t *testing.T) {
 // a no-op rather than a panic on a nil map read or a spurious warning.
 func TestRoleDeletedBeforeAnyJailIsHarmless(t *testing.T) {
 	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-	p.HandleRoleDeleted(context.Background(), "never-seen", "some-role")
+	p.HandleRoleDeleted(context.Background(), "7000124", "7000328")
 }

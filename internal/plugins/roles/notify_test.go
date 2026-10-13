@@ -19,19 +19,19 @@ func TestJailNoticeSaysWhereAndWhenItEnds(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	releaseAt := fixedNow.Add(3 * time.Hour)
-	p.notifyJailed(context.Background(), "g1", "u1", &releaseAt, "", jailSentence)
+	p.notifyJailed(context.Background(), "7000001", "7000102", &releaseAt, "", jailSentence)
 
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("DMs sent = %d, want 1", len(ops.dmSends))
 	}
 	sent := ops.dmSends[0]
-	if sent.channelID != "dm:u1" {
+	if sent.channelID != "97000102" {
 		t.Errorf("notice went to %q, not the member's DM channel", sent.channelID)
 	}
-	if sent.data.Embed == nil {
+	if len(sent.data.Embeds) == 0 {
 		t.Fatal("notice was not an embed")
 	}
-	body := sent.data.Embed.Description
+	body := sent.data.Embeds[0].Description
 	if !strings.Contains(body, "The Melting Pot") {
 		t.Errorf("notice never names the server: %q", body)
 	}
@@ -52,19 +52,19 @@ func TestJailNoticeCarriesTheReasonSeparately(t *testing.T) {
 	ops := newFakeOps()
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	p.notifyJailed(context.Background(), "g1", "u1", ptrTime(fixedNow.Add(time.Hour)), "spamming the same link", jailSentence)
+	p.notifyJailed(context.Background(), "7000001", "7000102", ptrTime(fixedNow.Add(time.Hour)), "spamming the same link", jailSentence)
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("DMs sent = %d, want 1", len(ops.dmSends))
 	}
-	fields := ops.dmSends[0].data.Embed.Fields
+	fields := ops.dmSends[0].data.Embeds[0].Fields
 	if len(fields) != 1 || !strings.Contains(fields[0].Value, "spamming the same link") {
 		t.Errorf("the reason did not survive into the notice: %+v", fields)
 	}
 
 	// With no reason there should be no empty field hanging off the embed.
 	ops.dmSends = nil
-	p.notifyJailed(context.Background(), "g1", "u2", ptrTime(fixedNow.Add(time.Hour)), "", jailSentence)
-	if got := len(ops.dmSends[0].data.Embed.Fields); got != 0 {
+	p.notifyJailed(context.Background(), "7000001", "7000103", ptrTime(fixedNow.Add(time.Hour)), "", jailSentence)
+	if got := len(ops.dmSends[0].data.Embeds[0].Fields); got != 0 {
 		t.Errorf("fields = %d with no reason given, want 0", got)
 	}
 }
@@ -81,19 +81,19 @@ func TestAFailedDMDoesNotFailTheRelease(t *testing.T) {
 	ops.dmErr = errors.New("cannot send messages to this user")
 
 	rec := JailRecord{
-		GuildID:         "g1",
-		UserID:          "u1",
-		SnapshotRoleIDs: []string{"role-a"},
-		JailRoleID:      "jail-role",
+		GuildID:         "7000001",
+		UserID:          "7000102",
+		SnapshotRoleIDs: []string{"7000302"},
+		JailRoleID:      "7000301",
 		JailedAt:        fixedNow,
 	}
-	ops.setMember("g1", "u1", []string{"jail-role"})
-	store.jails[jailKey("g1", "u1")] = rec
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	store.jails[jailKey("7000001", "7000102")] = rec
 
-	if err := p.releaseJail(context.Background(), "g1", "u1", rec, core.ActorSystem); err != nil {
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("a member with DMs closed made the release fail: %v", err)
 	}
-	if _, ok := store.jails[jailKey("g1", "u1")]; ok {
+	if _, ok := store.jails[jailKey("7000001", "7000102")]; ok {
 		t.Error("the jail record survived a successful release")
 	}
 	if len(ops.dmSends) != 0 {
@@ -108,12 +108,12 @@ func TestNoticeStillSendsWhenTheGuildNameIsUnavailable(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
 	ops.guildErr = errors.New("500 internal server error")
-	p.notifyReleased(context.Background(), "g1", "u1", jailSentence)
+	p.notifyReleased(context.Background(), "7000001", "7000102", jailSentence)
 
 	if len(ops.dmSends) != 1 {
 		t.Fatalf("DMs sent = %d, want 1", len(ops.dmSends))
 	}
-	body := ops.dmSends[0].data.Embed.Description
+	body := ops.dmSends[0].data.Embeds[0].Description
 	if !strings.Contains(body, "this server") {
 		t.Errorf("expected the vague fallback naming, got %q", body)
 	}
@@ -140,17 +140,17 @@ func TestForeverSentenceNamesNoEnd(t *testing.T) {
 	for _, sn := range []sentence{jailSentence, vacationSentence} {
 		ops := newFakeOps()
 		p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-		p.notifyJailed(context.Background(), "g1", "u1", nil, "r", sn)
-		p.notifyMoved(context.Background(), "g1", "u1", nil, sn, "r")
-		p.announceJail(context.Background(), "g1", "chan1", []string{"u1"}, foreverSentence, "r", sn)
-		p.announceMoved(context.Background(), "g1", "chan1", []string{"u1"}, nil, sn)
+		p.notifyJailed(context.Background(), "7000001", "7000102", nil, "r", sn)
+		p.notifyMoved(context.Background(), "7000001", "7000102", nil, sn, "r")
+		p.announceJail(context.Background(), "7000001", "7000602", []string{"7000102"}, foreverSentence, "r", sn)
+		p.announceMoved(context.Background(), "7000001", "7000602", []string{"7000102"}, nil, sn)
 		if len(ops.dmSends) != 4 {
 			t.Fatalf("%s: sends = %d, want 4", sn.name, len(ops.dmSends))
 		}
 		for _, s := range ops.dmSends {
 			body := s.data.Content
-			if s.data.Embed != nil {
-				body = s.data.Embed.Description
+			if len(s.data.Embeds) > 0 {
+				body = s.data.Embeds[0].Description
 			}
 			if body == "" || strings.Contains(body, "<t:") || strings.ContainsAny(body, "{}") ||
 				strings.Contains(body, "temporary") || strings.Contains(body, "isn't permanent") {

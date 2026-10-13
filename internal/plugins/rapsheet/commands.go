@@ -461,7 +461,7 @@ func (p *Plugin) checkTarget(_ context.Context, ix *core.Ix, userID string) (mem
 		}
 		member = &discordgo.Member{User: &discordgo.User{ID: userID}}
 	}
-	if err := p.perms.CanModerate(ix.GuildID, ix.MemberGo(), userID, member.Roles); err != nil {
+	if err := p.perms.CanModerate(ix.GuildID, ix.Actor(), userID, member.Roles); err != nil {
 		var forbidden core.ErrForbidden
 		if errors.As(err, &forbidden) {
 			if strings.Contains(forbidden.Reason, "bootstrap") {
@@ -580,8 +580,8 @@ func (p *Plugin) auditEntry(ctx context.Context, action string, e Entry) {
 // else runs CanModerate against the entry's recorder, which refuses when
 // they are admin-equivalent and the amender is not. A recorder who has left
 // the server outranks nobody. An unresolvable recorder fails closed.
-func (p *Plugin) canAmend(guildID string, actor *discordgo.Member, e Entry) error {
-	if e.ActorID == core.ActorSystem || e.ActorID == "" || (actor != nil && actor.User != nil && e.ActorID == actor.User.ID) {
+func (p *Plugin) canAmend(guildID string, actor *core.Actor, e Entry) error {
+	if e.ActorID == core.ActorSystem || e.ActorID == "" || (actor != nil && e.ActorID == actor.ID) {
 		return nil
 	}
 	recorder, err := p.ops(guildID).GuildMember(guildID, e.ActorID)
@@ -615,7 +615,7 @@ func (p *Plugin) handleVoid(ctx context.Context, ix *core.Ix) {
 		_ = ix.FollowUpErr("Not voided", fmt.Errorf("case #%d is already voided", e.ID))
 		return
 	}
-	if err := p.canAmend(ix.GuildID, ix.MemberGo(), e); err != nil {
+	if err := p.canAmend(ix.GuildID, ix.Actor(), e); err != nil {
 		_ = ix.FollowUpErr("Not voided", err)
 		return
 	}
@@ -674,7 +674,7 @@ func (p *Plugin) handleEdit(ctx context.Context, ix *core.Ix) {
 		_ = ix.FollowUpErr("Not edited", err)
 		return
 	}
-	if err := p.canAmend(ix.GuildID, ix.MemberGo(), e); err != nil {
+	if err := p.canAmend(ix.GuildID, ix.Actor(), e); err != nil {
 		_ = ix.FollowUpErr("Not edited", err)
 		return
 	}

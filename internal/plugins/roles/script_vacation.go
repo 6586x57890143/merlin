@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -137,7 +137,7 @@ func (p *Plugin) resolveVacationRole(guildID string) (string, error) {
 	if want == "" {
 		return "", errors.New("no vacation role is configured for this server: set one under Vacation on `/roles settings`")
 	}
-	rolesList, err := p.ops(guildID).GuildRoles(guildID)
+	rolesList, err := p.ops(guildID).GetRoles(core.ID(guildID))
 	if err != nil {
 		return "", fmt.Errorf("roles: list guild roles: %w", err)
 	}
@@ -322,7 +322,7 @@ func (p *Plugin) handleVacation(ctx context.Context, ix *core.Ix) {
 	}
 
 	targets, fetchFailed := p.resolveTargets(ix.GuildID, userIDs)
-	allowed, res := p.partitionByRank(ix.GuildID, ix.MemberGo(), targets)
+	allowed, res := p.partitionByRank(ix.GuildID, ix.Actor(), targets)
 	res.failed = append(res.failed, fetchFailed...)
 
 	if len(allowed) > 0 {
@@ -361,21 +361,21 @@ func (p *Plugin) scriptOn(ctx context.Context, guildID, script string) bool {
 // what an admin needs to confirm the beach is the only room left open.
 func (p *Plugin) describeRoleAccess(guildID, roleID string) string {
 	const wontTouch = "merlin only moves this role's View (and Connect) bits, deny everywhere but the vacation allowlist; everything else on each channel's overwrite is left as the server set it."
-	channels, err := p.ops(guildID).GuildChannels(guildID)
+	channels, err := p.ops(guildID).GetGuildChannels(core.ID(guildID))
 	if err != nil {
 		return "Could not read this server's channels to describe what the role sees. " + wontTouch
 	}
 	var allowed, denied []string
 	for _, ch := range channels {
-		ow := findOverwrite(ch, roleID, discordgo.PermissionOverwriteTypeRole)
+		ow := findOverwrite(ch, roleID, discord.PermissionOverwriteTypeRole)
 		if ow == nil {
 			continue
 		}
 		switch {
-		case ow.Deny&discordgo.PermissionViewChannel != 0:
-			denied = append(denied, core.MentionChannel(ch.ID))
-		case ow.Allow&discordgo.PermissionViewChannel != 0:
-			allowed = append(allowed, core.MentionChannel(ch.ID))
+		case ow.Deny&discord.PermissionViewChannel != 0:
+			denied = append(denied, core.MentionChannel(ch.ID().String()))
+		case ow.Allow&discord.PermissionViewChannel != 0:
+			allowed = append(allowed, core.MentionChannel(ch.ID().String()))
 		}
 	}
 	if len(allowed) == 0 && len(denied) == 0 {
@@ -427,7 +427,7 @@ func (p *Plugin) syncAllVacationOverwrites(guildID string) error {
 	return p.syncAllVisibility(guildID, p.vacationMarker(guildID, roleID))
 }
 
-func (p *Plugin) syncVacationChannel(guildID, channelID string) (withheld int64, err error) {
+func (p *Plugin) syncVacationChannel(guildID, channelID string) (withheld discord.Permissions, err error) {
 	roleID := p.configuredVacationRole(guildID)
 	if roleID == "" {
 		return 0, nil

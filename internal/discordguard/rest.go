@@ -139,6 +139,23 @@ func (o *GuildOps) GetGuild(guildID snowflake.ID) (*discord.RestGuild, error) {
 	return o.guard.rest.GetGuild(guildID, false)
 }
 
+// GetMembers pages the guild's member list. A read, but the one whose cost
+// scales with guild size, and it needs the GUILD_MEMBERS intent to return
+// anything.
+func (o *GuildOps) GetMembers(guildID snowflake.ID, limit int, after snowflake.ID) ([]discord.Member, error) {
+	if err := known(guildID); err != nil {
+		return nil, err
+	}
+	return o.guard.rest.GetMembers(guildID, limit, after)
+}
+
+func (o *GuildOps) GetUser(userID snowflake.ID) (*discord.User, error) {
+	if err := known(userID); err != nil {
+		return nil, err
+	}
+	return o.guard.rest.GetUser(userID)
+}
+
 // CreateDMChannel opens a DM with userID. Not a write anybody sees, so
 // ungated, as UserChannelCreate is.
 func (o *GuildOps) CreateDMChannel(userID snowflake.ID) (*discord.DMChannel, error) {
@@ -230,6 +247,77 @@ func (o *GuildOps) CreateWebhookMessage(webhookID snowflake.ID, token string, m 
 	m.AllowedMentions = noPings()
 	return gated(o, opWebhookExecute, webhookID, func() (*discord.Message, error) {
 		return o.guard.rest.CreateWebhookMessage(webhookID, token, m, rest.CreateWebhookMessageParams{Wait: wait})
+	})
+}
+
+// UpdateMember edits a member: in merlin, replaces their roles.
+func (o *GuildOps) UpdateMember(guildID, userID snowflake.ID, u discord.MemberUpdate) (*discord.Member, error) {
+	if err := known(guildID, userID); err != nil {
+		return nil, err
+	}
+	return gated(o, opMemberEdit, userID, func() (*discord.Member, error) {
+		return o.guard.rest.UpdateMember(guildID, userID, u)
+	})
+}
+
+// DisconnectMember drops userID from whatever voice channel they are in.
+// That is a channel_id of null, which disgo's MemberUpdate cannot say (a
+// nil pointer is left out), so the request is written by hand.
+func (o *GuildOps) DisconnectMember(guildID, userID snowflake.ID) error {
+	if err := known(guildID, userID); err != nil {
+		return err
+	}
+	return gatedErr(o, opMemberEdit, userID, func() error {
+		return o.guard.rest.Do(rest.UpdateMember.Compile(nil, guildID, userID), map[string]any{"channel_id": nil}, nil)
+	})
+}
+
+// AddMemberRole adds one role. opts carries an audit log reason where the
+// caller has one.
+func (o *GuildOps) AddMemberRole(guildID, userID, roleID snowflake.ID, opts ...rest.RequestOpt) error {
+	if err := known(guildID, userID, roleID); err != nil {
+		return err
+	}
+	return gatedErr(o, opMemberRoleAdd, userID, func() error {
+		return o.guard.rest.AddMemberRole(guildID, userID, roleID, opts...)
+	})
+}
+
+func (o *GuildOps) RemoveMemberRole(guildID, userID, roleID snowflake.ID) error {
+	if err := known(guildID, userID, roleID); err != nil {
+		return err
+	}
+	return gatedErr(o, opMemberRoleRemove, userID, func() error {
+		return o.guard.rest.RemoveMemberRole(guildID, userID, roleID)
+	})
+}
+
+func (o *GuildOps) CreateRole(guildID snowflake.ID, r discord.RoleCreate) (*discord.Role, error) {
+	if err := known(guildID); err != nil {
+		return nil, err
+	}
+	return gated(o, opRoleCreate, guildID, func() (*discord.Role, error) {
+		return o.guard.rest.CreateRole(guildID, r)
+	})
+}
+
+// UpdateRolePositions moves roles in the hierarchy. Same budget as an
+// edit, since to Discord it is one: a PATCH on the roles collection.
+func (o *GuildOps) UpdateRolePositions(guildID snowflake.ID, u []discord.RolePositionUpdate) ([]discord.Role, error) {
+	if err := known(guildID); err != nil {
+		return nil, err
+	}
+	return gated(o, opRoleEdit, guildID, func() ([]discord.Role, error) {
+		return o.guard.rest.UpdateRolePositions(guildID, u)
+	})
+}
+
+func (o *GuildOps) DeletePermissionOverwrite(channelID, targetID snowflake.ID) error {
+	if err := known(channelID, targetID); err != nil {
+		return err
+	}
+	return gatedErr(o, opChannelPermissions, channelID, func() error {
+		return o.guard.rest.DeletePermissionOverwrite(channelID, targetID)
 	})
 }
 

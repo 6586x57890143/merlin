@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -90,24 +91,24 @@ func (p *Plugin) giveJoinRole(ctx context.Context, guildID, userID string) {
 		return
 	}
 	ops := p.ops(guildID)
-	member, err := ops.GuildMember(guildID, userID)
+	member, err := ops.GetMember(core.ID(guildID), core.ID(userID))
 	if err != nil {
-		if !core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
+		if !core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownMember)) {
 			p.log.Error("roles: join-role: fetch member", "guild", guildID, "user", userID, "err", err)
 		}
 		return
 	}
-	if member.User != nil && member.User.Bot {
+	if member.User.Bot {
 		return
 	}
 	// One additive call per role rather than one GuildMemberEdit with the
 	// whole list: an edit replaces roles, and would race whatever another
 	// bot is restoring at the same moment. One failing does not stop the rest.
 	for _, roleID := range roleIDs {
-		if slices.Contains(member.Roles, roleID) {
+		if slices.Contains(core.IDStrings(member.RoleIDs), roleID) {
 			continue
 		}
-		if err := ops.GuildMemberRoleAdd(guildID, userID, roleID, discordgo.WithAuditLogReason("join-role script")); err != nil {
+		if err := ops.AddMemberRole(core.ID(guildID), core.ID(userID), core.ID(roleID), rest.WithReason("join-role script")); err != nil {
 			p.log.Error("roles: join-role: add role", "guild", guildID, "user", userID, "role", roleID, "err", err)
 			continue
 		}
@@ -131,13 +132,13 @@ func (p *Plugin) joinRoleLine(guildID string) string {
 // joinRoleShape is what of a join role is worth reporting a change to.
 type joinRoleShape struct {
 	name        string
-	permissions int64
+	permissions discord.Permissions
 	// manageable is whether merlin can give the role out at all.
 	manageable bool
 }
 
-func (p *Plugin) shapeOf(guildID string, r *discordgo.Role) joinRoleShape {
-	return joinRoleShape{name: r.Name, permissions: r.Permissions, manageable: p.perms.CanManageRole(guildID, r.ID) == nil}
+func (p *Plugin) shapeOf(guildID string, r discord.Role) joinRoleShape {
+	return joinRoleShape{name: r.Name, permissions: r.Permissions, manageable: p.perms.CanManageRole(guildID, r.ID.String()) == nil}
 }
 
 // watchJoinRoles records the current shape of any join role in guildID not
@@ -153,7 +154,7 @@ func (p *Plugin) watchJoinRoles(guildID string) {
 	if len(ids) == 0 {
 		return
 	}
-	roles, err := p.ops(guildID).GuildRoles(guildID)
+	roles, err := p.ops(guildID).GetRoles(core.ID(guildID))
 	if err != nil {
 		p.log.Error("roles: join-role: read roles to watch", "guild", guildID, "err", err)
 		return
@@ -161,20 +162,20 @@ func (p *Plugin) watchJoinRoles(guildID string) {
 	p.joinRoleMu.Lock()
 	defer p.joinRoleMu.Unlock()
 	for _, r := range roles {
-		key := guildID + ":" + r.ID
-		if _, seen := p.joinRoleSeen[key]; !seen && slices.Contains(ids, r.ID) {
+		key := guildID + ":" + r.ID.String()
+		if _, seen := p.joinRoleSeen[key]; !seen && slices.Contains(ids, r.ID.String()) {
 			p.joinRoleSeen[key] = p.shapeOf(guildID, r)
 		}
 	}
 }
 
 // joinRoleUpdated reports an edit to one of guildID's join roles.
-func (p *Plugin) joinRoleUpdated(ctx context.Context, guildID string, role *discordgo.Role) {
-	if role == nil || !slices.Contains(p.joinRoles(guildID), role.ID) {
+func (p *Plugin) joinRoleUpdated(ctx context.Context, guildID string, role discord.Role) {
+	if !slices.Contains(p.joinRoles(guildID), role.ID.String()) {
 		return
 	}
 	now := p.shapeOf(guildID, role)
-	key := guildID + ":" + role.ID
+	key := guildID + ":" + role.ID.String()
 	p.joinRoleMu.Lock()
 	before, known := p.joinRoleSeen[key]
 	p.joinRoleSeen[key] = now
@@ -205,7 +206,7 @@ func (p *Plugin) joinRoleUpdated(ctx context.Context, guildID string, role *disc
 		}
 	}
 	p.auditJoinRole(ctx, guildID, "roles.join_role_changed",
-		core.MentionRole(role.ID)+" is given to every new member.\n"+strings.Join(lines, "\n"))
+		core.MentionRole(role.ID.String())+" is given to every new member.\n"+strings.Join(lines, "\n"))
 }
 
 // joinRoleDeleted reports the deletion of one of guildID's join roles. Runs
@@ -237,37 +238,37 @@ func (p *Plugin) auditJoinRole(ctx context.Context, guildID, action, detail stri
 // permBits names the permissions a join role plausibly carries. Anything
 // else is still reported, as a count.
 var permBits = []struct {
-	bit  int64
+	bit  discord.Permissions
 	name string
 }{
-	{discordgo.PermissionAdministrator, "Administrator"},
-	{discordgo.PermissionViewChannel, "View Channels"},
-	{discordgo.PermissionSendMessages, "Send Messages"},
-	{discordgo.PermissionSendMessagesInThreads, "Send Messages in Threads"},
-	{discordgo.PermissionCreatePublicThreads, "Create Public Threads"},
-	{discordgo.PermissionEmbedLinks, "Embed Links"},
-	{discordgo.PermissionAttachFiles, "Attach Files"},
-	{discordgo.PermissionAddReactions, "Add Reactions"},
-	{discordgo.PermissionUseExternalEmojis, "Use External Emoji"},
-	{discordgo.PermissionUseExternalStickers, "Use External Stickers"},
-	{discordgo.PermissionReadMessageHistory, "Read Message History"},
-	{discordgo.PermissionSendVoiceMessages, "Send Voice Messages"},
-	{discordgo.PermissionSendPolls, "Create Polls"},
-	{discordgo.PermissionUseApplicationCommands, "Use Application Commands"},
-	{discordgo.PermissionUseExternalApps, "Use External Apps"},
-	{discordgo.PermissionVoiceConnect, "Connect"},
-	{discordgo.PermissionVoiceSpeak, "Speak"},
-	{discordgo.PermissionVoiceStreamVideo, "Video"},
-	{discordgo.PermissionVoiceUseVAD, "Use Voice Activity"},
-	{discordgo.PermissionUseSoundboard, "Use Soundboard"},
-	{discordgo.PermissionUseEmbeddedActivities, "Use Activities"},
-	{discordgo.PermissionChangeNickname, "Change Nickname"},
-	{discordgo.PermissionCreateInstantInvite, "Create Invite"},
-	{discordgo.PermissionMentionEveryone, "Mention @everyone"},
-	{discordgo.PermissionManageMessages, "Manage Messages"},
+	{discord.PermissionAdministrator, "Administrator"},
+	{discord.PermissionViewChannel, "View Channels"},
+	{discord.PermissionSendMessages, "Send Messages"},
+	{discord.PermissionSendMessagesInThreads, "Send Messages in Threads"},
+	{discord.PermissionCreatePublicThreads, "Create Public Threads"},
+	{discord.PermissionEmbedLinks, "Embed Links"},
+	{discord.PermissionAttachFiles, "Attach Files"},
+	{discord.PermissionAddReactions, "Add Reactions"},
+	{discord.PermissionUseExternalEmojis, "Use External Emoji"},
+	{discord.PermissionUseExternalStickers, "Use External Stickers"},
+	{discord.PermissionReadMessageHistory, "Read Message History"},
+	{discord.PermissionSendVoiceMessages, "Send Voice Messages"},
+	{discord.PermissionSendPolls, "Create Polls"},
+	{discord.PermissionUseApplicationCommands, "Use Application Commands"},
+	{discord.PermissionUseExternalApps, "Use External Apps"},
+	{discord.PermissionConnect, "Connect"},
+	{discord.PermissionSpeak, "Speak"},
+	{discord.PermissionStream, "Video"},
+	{discord.PermissionUseVAD, "Use Voice Activity"},
+	{discord.PermissionUseSoundboard, "Use Soundboard"},
+	{discord.PermissionUseEmbeddedActivities, "Use Activities"},
+	{discord.PermissionChangeNickname, "Change Nickname"},
+	{discord.PermissionCreateInstantInvite, "Create Invite"},
+	{discord.PermissionMentionEveryone, "Mention @everyone"},
+	{discord.PermissionManageMessages, "Manage Messages"},
 }
 
-func permNames(set int64) string {
+func permNames(set discord.Permissions) string {
 	var names []string
 	for _, b := range permBits {
 		if set&b.bit != 0 {

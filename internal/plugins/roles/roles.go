@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/scheduler"
@@ -75,9 +75,9 @@ type Plugin struct {
 	// function rather than a narrow interface for the same reason dryRun is
 	// one: this is the only piece of the gateway cache this plugin reads.
 	voiceChannelOf func(guildID, userID string) (channelID string, ok bool)
-	// session is read for one thing: the bot's own user ID, from its gateway
-	// state, so a role-wide jail never includes the bot (excludeSelfAndBot).
-	session *discordgo.Session
+	// botID is merlin's own user, so a role-wide jail never includes her
+	// (excludeSelfAndBot).
+	botID snowflake.ID
 	// scripts is the on/off switch for this plugin's scripts
 	// (script_eternalrole.go); nil means no scripts ever run. fetch is the
 	// bounded HTTP GET the eternal-role script captures a role icon with,
@@ -148,7 +148,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.sched = deps.Scheduler
 	p.commands = deps.Commands
 	p.bus = deps.Bus
-	p.session = deps.Session
+	p.botID = deps.BotID
 
 	p.registerCommands()
 	return nil
@@ -258,13 +258,13 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	}
 
 	// Prefer a configured marker role if present in settings.
-	rolesList, err := p.ops(guildID).GuildRoles(guildID)
+	rolesList, err := p.ops(guildID).GetRoles(core.ID(guildID))
 	if err != nil {
 		return "", fmt.Errorf("roles: list guild roles: %w", err)
 	}
 	if marker := p.jailChannelConfig.JailMarkerRoleID(guildID); marker != "" {
 		for _, r := range rolesList {
-			if r.ID == marker {
+			if r.ID.String() == marker {
 				p.jailRoleID[guildID] = marker
 				// Deliberately no sync here. The cache above is per process,
 				// not persisted, so this branch is reached on every process
@@ -294,42 +294,38 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	// Melting Pot has a preferred default jail role if it exists.
 	if guildID == meltingPotGuildID {
 		for _, r := range rolesList {
-			if r.ID == meltingPotDefaultJailRoleID {
-				p.jailRoleID[guildID] = r.ID
-				return r.ID, nil
+			if r.ID.String() == meltingPotDefaultJailRoleID {
+				p.jailRoleID[guildID] = r.ID.String()
+				return r.ID.String(), nil
 			}
 		}
 	}
 
 	for _, r := range rolesList {
 		if r.Name == jailRoleName {
-			p.jailRoleID[guildID] = r.ID
-			return r.ID, nil
+			p.jailRoleID[guildID] = r.ID.String()
+			return r.ID.String(), nil
 		}
 	}
 
-	perms := int64(0)
-	hoist := false
-	mentionable := false
-	role, err := p.ops(guildID).GuildRoleCreate(guildID, &discordgo.RoleParams{
+	none := discord.PermissionsNone
+	role, err := p.ops(guildID).CreateRole(core.ID(guildID), discord.RoleCreate{
 		Name:        jailRoleName,
-		Permissions: &perms,
-		Hoist:       &hoist,
-		Mentionable: &mentionable,
+		Permissions: &none,
 	})
 	if err != nil {
 		return "", fmt.Errorf("roles: create jail role: %w", err)
 	}
-	p.jailRoleID[guildID] = role.ID
+	p.jailRoleID[guildID] = role.ID.String()
 
 	// A freshly created jail role starts deny-by-default on every channel
 	// (the allowlist is almost always empty at this point). Otherwise a
 	// mod's very first /roles jail would strip roles but leave every
 	// channel visible, until someone thought to run sync-channels by hand.
-	if err := p.syncAllJailChannelOverwrites(guildID, role.ID); err != nil {
+	if err := p.syncAllJailChannelOverwrites(guildID, role.ID.String()); err != nil {
 		p.log.Error("roles: initial jail channel overwrite sync failed", "guild", guildID, "err", err)
 	}
-	return role.ID, nil
+	return role.ID.String(), nil
 }
 
 // forgetJailRole drops guildID's cached jail role ID so the next

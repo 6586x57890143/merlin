@@ -15,16 +15,16 @@ import (
 // it was armed with.
 func TestTimerForHandDeletedRowIsANoOp(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	p, ft, now := newTimedPlugin(ops, newFakeStore())
-	p.armJailRelease("g1", "u1", fixedNow.Add(time.Minute))
-	p.armGrantRevoke("g1", "u1", "role-x", fixedNow.Add(time.Minute))
+	p.armJailRelease("7000001", "7000102", fixedNow.Add(time.Minute))
+	p.armGrantRevoke("7000001", "7000102", "7000306", fixedNow.Add(time.Minute))
 
 	*now = fixedNow.Add(time.Minute)
 	for _, a := range ft.armed {
 		a.fire()
 	}
-	if len(ops.memberEditCalls["u1"]) != 0 || len(ops.roleRemoveCalls) != 0 {
+	if len(ops.memberEditCalls["7000102"]) != 0 || len(ops.roleRemoveCalls) != 0 {
 		t.Fatal("a timer with no row behind it must touch nobody")
 	}
 }
@@ -34,19 +34,19 @@ func TestTimerForHandDeletedRowIsANoOp(t *testing.T) {
 // the member in.
 func TestTimerLeavesRowThatIsNotYetDue(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	store := newFakeStore()
 	p, _, _ := newTimedPlugin(ops, store)
 	at := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", ReleaseAt: &at})
-	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "u1", RoleID: "role-x", ExpiresAt: &at})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", ReleaseAt: &at})
+	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000306", ExpiresAt: &at})
 
-	p.fireJailRelease("g1", "u1")
-	p.fireGrantRevoke("g1", "u1", "role-x")
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
+	p.fireJailRelease("7000001", "7000102")
+	p.fireGrantRevoke("7000001", "7000102", "7000306")
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("jail released before its date")
 	}
-	if _, ok, _ := store.GetGrant(context.Background(), "g1", "u1", "role-x"); !ok {
+	if _, ok, _ := store.GetGrant(context.Background(), "7000001", "7000102", "7000306"); !ok {
 		t.Fatal("grant revoked before its date")
 	}
 }
@@ -56,16 +56,16 @@ func TestTimerLeavesRowThatIsNotYetDue(t *testing.T) {
 // first sweep after the pause lifts, exactly as dry-run does.
 func TestTimerLeavesRowForSweepWhenPaused(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	ops.memberEditErr = discordguard.ErrPaused
 	store := newFakeStore()
 	p, _, now := newTimedPlugin(ops, store)
 	at := fixedNow.Add(time.Minute)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", ReleaseAt: &at})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", ReleaseAt: &at})
 
 	*now = at
-	p.fireJailRelease("g1", "u1")
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
+	p.fireJailRelease("7000001", "7000102")
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("a paused release must leave the row for the sweep")
 	}
 }
@@ -75,16 +75,16 @@ func TestTimerLeavesRowForSweepWhenPaused(t *testing.T) {
 // retry path.
 func TestTimerDoesNothingWhenTheRowCannotBeRead(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	store := newFakeStore()
 	store.getJailErr = errors.New("db down")
 	store.getGrantErr = errors.New("db down")
 	p, _, now := newTimedPlugin(ops, store)
 	*now = fixedNow.Add(time.Hour)
 
-	p.fireJailRelease("g1", "u1")
-	p.fireGrantRevoke("g1", "u1", "role-x")
-	if len(ops.memberEditCalls["u1"]) != 0 || len(ops.roleRemoveCalls) != 0 {
+	p.fireJailRelease("7000001", "7000102")
+	p.fireGrantRevoke("7000001", "7000102", "7000306")
+	if len(ops.memberEditCalls["7000102"]) != 0 || len(ops.roleRemoveCalls) != 0 {
 		t.Fatal("a timer that cannot read its row must not act")
 	}
 }
@@ -92,16 +92,16 @@ func TestTimerDoesNothingWhenTheRowCannotBeRead(t *testing.T) {
 // TestGrantTimerHonoursDryRun mirrors TestTimerHonoursDryRun for grants.
 func TestGrantTimerHonoursDryRun(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"role-x"})
+	ops.setMember("7000001", "7000102", []string{"7000306"})
 	store := newFakeStore()
 	p, _, now := newTimedPlugin(ops, store)
 	p.dryRun = func(string) bool { return true }
 	at := fixedNow.Add(time.Minute)
-	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "u1", RoleID: "role-x", ExpiresAt: &at})
+	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000306", ExpiresAt: &at})
 
 	*now = at
-	p.fireGrantRevoke("g1", "u1", "role-x")
-	if _, ok, _ := store.GetGrant(context.Background(), "g1", "u1", "role-x"); !ok {
+	p.fireGrantRevoke("7000001", "7000102", "7000306")
+	if _, ok, _ := store.GetGrant(context.Background(), "7000001", "7000102", "7000306"); !ok {
 		t.Fatal("dry-run timer must leave the grant tracked")
 	}
 	if len(ops.roleRemoveCalls) != 0 {
@@ -117,11 +117,11 @@ func TestGrantTimerLeavesRowForSweepOnFailure(t *testing.T) {
 	store := newFakeStore()
 	p, _, now := newTimedPlugin(ops, store)
 	at := fixedNow.Add(time.Minute)
-	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "g1", UserID: "u1", RoleID: "role-x", ExpiresAt: &at})
+	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000306", ExpiresAt: &at})
 
 	*now = at
-	p.fireGrantRevoke("g1", "u1", "role-x")
-	if _, ok, _ := store.GetGrant(context.Background(), "g1", "u1", "role-x"); !ok {
+	p.fireGrantRevoke("7000001", "7000102", "7000306")
+	if _, ok, _ := store.GetGrant(context.Background(), "7000001", "7000102", "7000306"); !ok {
 		t.Fatal("a failed revoke must keep the row for the sweep")
 	}
 }

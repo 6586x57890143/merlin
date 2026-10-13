@@ -46,6 +46,22 @@ func LayoutOf(cs []discordgo.MessageComponent) []discord.LayoutComponent {
 	return m.Components
 }
 
+// Actor is who is acting, as CanModerate reads them: an ID and the roles
+// they hold. Nil means nobody, as for an automatic action.
+type Actor struct {
+	ID      string
+	RoleIDs []string
+}
+
+// Actor is the invoking member as an Actor, nil outside a server.
+func (ix *Ix) Actor() *Actor {
+	m := ix.Member()
+	if m == nil {
+		return nil
+	}
+	return &Actor{ID: ix.UserID, RoleIDs: IDStrings(m.RoleIDs)}
+}
+
 // MemberGo is the invoking member on discordgo's types, for the checks that
 // still take one until they move (Permissions.CanModerate reads its user ID
 // and roles), nil outside a server. Its user ID is Ix.UserID, merlin's key

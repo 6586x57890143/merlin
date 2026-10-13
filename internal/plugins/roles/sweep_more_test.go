@@ -15,24 +15,24 @@ import (
 // retries rather than reading a half-done pass as success.
 func TestSweepCarriesOnPastOneFailingRowAndReportsIt(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "bad", []string{"jail-role"})
-	ops.setMember("g1", "good", []string{"jail-role"})
-	ops.memberFetchErrFor = map[string]error{"bad": transientErr()}
+	ops.setMember("7000001", "7000198", []string{"7000301"})
+	ops.setMember("7000001", "7000199", []string{"7000301"})
+	ops.memberFetchErrFor = map[string]error{"7000198": transientErr()}
 	store := newFakeStore()
 	due := fixedNow.Add(-time.Minute)
-	for _, u := range []string{"bad", "good"} {
-		_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: u, JailRoleID: "jail-role", ReleaseAt: &due})
+	for _, u := range []string{"7000198", "7000199"} {
+		_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: u, JailRoleID: "7000301", ReleaseAt: &due})
 	}
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	err := p.sweep(context.Background(), "g1")
+	err := p.sweep(context.Background(), "7000001")
 	if err == nil {
 		t.Fatal("expected the failing row's error to be returned")
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "good"); ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000199"); ok {
 		t.Fatal("the healthy row must still be released")
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "bad"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000198"); !ok {
 		t.Fatal("the failing row must stay for the next sweep")
 	}
 }
@@ -42,18 +42,18 @@ func TestSweepCarriesOnPastOneFailingRowAndReportsIt(t *testing.T) {
 // job's failure budget or alerts #bird-status. Anything else is passed up.
 func TestSweepJobTreatsPausedAsSuccess(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	store := newFakeStore()
 	due := fixedNow.Add(-time.Minute)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", ReleaseAt: &due})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", ReleaseAt: &due})
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-	job := p.makeSweepJob("g1")
+	job := p.makeSweepJob("7000001")
 
 	ops.memberEditErr = discordguard.ErrPaused
 	if err := job(context.Background()); err != nil {
 		t.Fatalf("a paused guild must read as success, got %v", err)
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Fatal("a paused sweep must leave the row")
 	}
 
@@ -75,7 +75,7 @@ func TestSweepFailsWhenTheDueQueriesFail(t *testing.T) {
 			store := newFakeStore()
 			set(store)
 			p := newTestPlugin(newFakeOps(), store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-			if err := p.sweep(context.Background(), "g1"); err == nil {
+			if err := p.sweep(context.Background(), "7000001"); err == nil {
 				t.Fatal("expected the query failure to be returned")
 			}
 		})
@@ -88,17 +88,17 @@ func TestSweepFailsWhenTheDueQueriesFail(t *testing.T) {
 // because an unrelated query broke.
 func TestSweepStillReleasesWhenTheEvasionCheckFails(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMember("g1", "u1", []string{"jail-role"})
+	ops.setMember("7000001", "7000102", []string{"7000301"})
 	store := newFakeStore()
 	store.activeJailsErr = errors.New("db down")
 	due := fixedNow.Add(-time.Minute)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", ReleaseAt: &due})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", ReleaseAt: &due})
 	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
-	if err := p.sweep(context.Background(), "g1"); err == nil {
+	if err := p.sweep(context.Background(), "7000001"); err == nil {
 		t.Fatal("expected the evasion check's failure to be reported")
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("the due jail must still be released")
 	}
 }

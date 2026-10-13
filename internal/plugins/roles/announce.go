@@ -6,7 +6,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // Telling the channel what just happened, not just the member concerned.
@@ -136,7 +137,7 @@ func (p *Plugin) announceMoved(ctx context.Context, guildID, invokingChannelID s
 // must not silence the announcement everywhere else.
 func (p *Plugin) broadcast(guildID string, invokingChannelID, content string) {
 	for _, chID := range p.announceDestinations(guildID, invokingChannelID) {
-		if _, err := p.ops(guildID).ChannelMessageSendComplex(chID, &discordgo.MessageSend{Content: content}); err != nil {
+		if _, err := p.ops(guildID).CreateMessage(core.ID(chID), discord.MessageCreate{Content: content}); err != nil {
 			p.log.Warn("roles: failed to post channel announcement", "guild", guildID, "channel", chID, "err", err)
 		}
 	}

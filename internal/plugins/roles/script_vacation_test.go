@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -18,16 +18,16 @@ import (
 // words) and that a move between the two keeps the snapshot and follows
 // the marker whichever way it happened.
 
-const island = "island-role"
+const island = "7000323"
 
 // vacationFixture is handlerFixture with the island's role in the guild,
 // configured, and the script on.
 func vacationFixture() (*Plugin, *fakeOps, *fakeStore, *fakeAudit, *fakePerms, *fakeSettings) {
 	p, ops, store, audit, perms, settings := handlerFixture()
-	ops.roles["g1"] = append(ops.roles["g1"], &discordgo.Role{ID: island, Name: "bahamas"})
-	settings.vacationRole["g1"] = island
+	ops.roles["7000001"] = append(ops.roles["7000001"], &frole{ID: island, Name: "bahamas"})
+	settings.vacationRole["7000001"] = island
 	scripts := newFakeScripts()
-	scripts.on["g1:"+scriptVacation] = true
+	scripts.on["7000001:"+scriptVacation] = true
 	p.scripts = scripts
 	return p, ops, store, audit, perms, settings
 }
@@ -43,9 +43,9 @@ func sentTo(ops *fakeOps, channelID string) []string {
 			continue
 		}
 		text := m.data.Content
-		if m.data.Embed != nil {
-			text = m.data.Embed.Title + " " + m.data.Embed.Description
-			for _, f := range m.data.Embed.Fields {
+		if len(m.data.Embeds) > 0 {
+			text = m.data.Embeds[0].Title + " " + m.data.Embeds[0].Description
+			for _, f := range m.data.Embeds[0].Fields {
 				text += " " + f.Value
 			}
 		}
@@ -59,9 +59,9 @@ func TestVacationRefusesWhileScriptOff(t *testing.T) {
 	p.scripts = newFakeScripts()
 	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "7000102"), strArg("duration", "1h")))
 
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok || len(ops.memberEditCalls["u1"]) != 0 {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok || len(ops.memberEditCalls["7000102"]) != 0 {
 		t.Fatal("a refusal must record nothing and edit nobody")
 	}
 	if !rt.said("Vacation is off") {
@@ -74,12 +74,12 @@ func TestVacationRefusesWithoutAnIslandRole(t *testing.T) {
 	settings.vacationRole = map[string]string{}
 	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "7000102"), strArg("duration", "1h")))
 
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok || len(ops.memberEditCalls["u1"]) != 0 {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok || len(ops.memberEditCalls["7000102"]) != 0 {
 		t.Fatal("a refusal must record nothing and edit nobody")
 	}
-	if len(ops.roles["g1"]) != 4 {
+	if len(ops.roles["7000001"]) != 4 {
 		t.Fatal("the island's role is never created by merlin")
 	}
 	if !rt.said("No vacation role") {
@@ -90,13 +90,13 @@ func TestVacationRefusesWithoutAnIslandRole(t *testing.T) {
 // A deleted configured role is cleared rather than reported forever.
 func TestVacationClearsADeletedConfiguredRole(t *testing.T) {
 	p, ops, _, _, _, settings := vacationFixture()
-	ops.deleteRole("g1", island)
+	ops.deleteRole("7000001", island)
 	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "1h")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "7000102"), strArg("duration", "1h")))
 
-	if settings.vacationRole["g1"] != "" || !rt.said("no longer exists") {
-		t.Fatalf("expected the dead role cleared and named, got %q / %v", settings.vacationRole["g1"], rt.bodies)
+	if settings.vacationRole["7000001"] != "" || !rt.said("no longer exists") {
+		t.Fatalf("expected the dead role cleared and named, got %q / %v", settings.vacationRole["7000001"], rt.bodies)
 	}
 }
 
@@ -106,20 +106,20 @@ func TestVacationClearsADeletedConfiguredRole(t *testing.T) {
 // ledger (as a note, never a jail) and the reply.
 func TestVacationIsAJailOnTheIsland(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
-	ops.channel["chan"] = &discordgo.Channel{ID: "chan", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	ops.channel["7000601"] = &fch{ID: "7000601", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
 	rec := &busRecorder{}
 	bus := core.NewEventBus(testLogger())
 	rec.record(bus)
 	p.bus = bus
 	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "2h"), strArg("reason", "sun")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "7000102"), strArg("duration", "2h"), strArg("reason", "sun")))
 
-	row, ok, _ := store.GetJail(context.Background(), "g1", "u1")
-	if !ok || row.JailRoleID != island || !slices.Equal(row.SnapshotRoleIDs, []string{"role-a"}) {
+	row, ok, _ := store.GetJail(context.Background(), "7000001", "7000102")
+	if !ok || row.JailRoleID != island || !slices.Equal(row.SnapshotRoleIDs, []string{"7000302"}) {
 		t.Fatalf("expected a jail row on the island with the snapshot, got %+v", row)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
+	m, _ := ops.GuildMember("7000001", "7000102")
 	if !slices.Equal(m.Roles, []string{island}) {
 		t.Fatalf("expected the member stripped to the island's role, got %v", m.Roles)
 	}
@@ -129,10 +129,10 @@ func TestVacationIsAJailOnTheIsland(t *testing.T) {
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.vacation"}) {
 		t.Fatalf("audit: %v", got)
 	}
-	if dm := sentTo(ops, "dm:u1"); len(dm) != 1 || !strings.Contains(dm[0], "Sent on vacation") {
+	if dm := sentTo(ops, "97000102"); len(dm) != 1 || !strings.Contains(dm[0], "Sent on vacation") {
 		t.Fatalf("expected a vacation DM, got %v", dm)
 	}
-	if ann := sentTo(ops, "chan"); len(ann) != 1 || !strings.Contains(ann[0], "<@u1>") || !strings.Contains(ann[0], "-# reason: sun") {
+	if ann := sentTo(ops, "7000601"); len(ann) != 1 || !strings.Contains(ann[0], "<@7000102>") || !strings.Contains(ann[0], "-# reason: sun") {
 		t.Fatalf("expected a channel announcement naming them and the reason, got %v", ann)
 	}
 	if pl := rec.payloads(); len(pl) != 1 || pl[0].Kind != "note" || !strings.Contains(pl[0].Reason, "vacation") {
@@ -148,28 +148,28 @@ func TestVacationIsAJailOnTheIsland(t *testing.T) {
 // just given is the new end, and merlin says the trip is over.
 func TestJailOnAVacationerMovesThemToJail(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
-	ops.setMember("g1", "u1", []string{island})
+	ops.setMember("7000001", "7000102", []string{island})
 	end := fixedNow.Add(24 * time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: island, SnapshotRoleIDs: []string{"7000302"}, ReleaseAt: &end})
 	rt := handlerSession(t)
 
-	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "3h"), strArg("reason", "sand everywhere")))
+	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "7000102"), strArg("duration", "3h"), strArg("reason", "sand everywhere")))
 
-	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
-	if row.JailRoleID != "jail-role" || !row.ReleaseAt.Equal(fixedNow.Add(3*time.Hour)) || !slices.Equal(row.SnapshotRoleIDs, []string{"role-a"}) {
+	row, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
+	if row.JailRoleID != "7000301" || !row.ReleaseAt.Equal(fixedNow.Add(3*time.Hour)) || !slices.Equal(row.SnapshotRoleIDs, []string{"7000302"}) {
 		t.Fatalf("expected the row moved to jail for 3h with the snapshot intact, got %+v", row)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
-	if !slices.Equal(m.Roles, []string{"jail-role"}) {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if !slices.Equal(m.Roles, []string{"7000301"}) {
 		t.Fatalf("expected the island's role swapped for the nest's, got %v", m.Roles)
 	}
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.transferred"}) {
 		t.Fatalf("audit: %v", got)
 	}
-	if dm := sentTo(ops, "dm:u1"); len(dm) != 1 || !strings.Contains(dm[0], "Moved to jail") || !strings.Contains(dm[0], "sand everywhere") {
+	if dm := sentTo(ops, "97000102"); len(dm) != 1 || !strings.Contains(dm[0], "Moved to jail") || !strings.Contains(dm[0], "sand everywhere") {
 		t.Fatalf("expected the to-jail DM with the reason, got %v", dm)
 	}
-	if ann := sentTo(ops, "chan"); len(ann) != 1 || !strings.Contains(ann[0], "<@u1>") {
+	if ann := sentTo(ops, "7000601"); len(ann) != 1 || !strings.Contains(ann[0], "<@7000102>") {
 		t.Fatalf("expected the move announced, got %v", ann)
 	}
 	if !rt.said("Member moved") || !rt.said("moved to jail") {
@@ -183,28 +183,28 @@ func TestJailOnAVacationerMovesThemToJail(t *testing.T) {
 // swapping the roles by hand and voice the same move a second time.
 func TestCommandTransferIsAnnouncedOnce(t *testing.T) {
 	p, ops, store, audit, _, settings := vacationFixture()
-	settings.announce["g1"] = "chan"
-	ops.setMember("g1", "u1", []string{island})
+	settings.announce["7000001"] = "7000601"
+	ops.setMember("7000001", "7000102", []string{island})
 	end := fixedNow.Add(24 * time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: island, SnapshotRoleIDs: []string{"7000302"}, ReleaseAt: &end})
 	ops.onMemberEdit = func(guildID, userID string, roles []string) {
 		p.HandleMemberUpdate(context.Background(), guildID, userID, roles)
 	}
 	handlerSession(t)
 
-	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "u1"), strArg("duration", "3h")))
+	p.handleJail(context.Background(), rolesInteraction("", "jail", userArg("user", "7000102"), strArg("duration", "3h")))
 
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.transferred"}) {
 		t.Fatalf("one move, one audit entry, got %v", got)
 	}
-	if ann := sentTo(ops, "chan"); len(ann) != 1 {
+	if ann := sentTo(ops, "7000601"); len(ann) != 1 {
 		t.Fatalf("one move, one announcement, got %v", ann)
 	}
-	if dm := sentTo(ops, "dm:u1"); len(dm) != 1 {
+	if dm := sentTo(ops, "97000102"); len(dm) != 1 {
 		t.Fatalf("one move, one DM, got %v", dm)
 	}
-	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
-	if row.JailRoleID != "jail-role" || !row.ReleaseAt.Equal(fixedNow.Add(3*time.Hour)) {
+	row, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
+	if row.JailRoleID != "7000301" || !row.ReleaseAt.Equal(fixedNow.Add(3*time.Hour)) {
 		t.Fatalf("the command's own transfer must still land, got %+v", row)
 	}
 }
@@ -214,35 +214,35 @@ func TestCommandTransferIsAnnouncedOnce(t *testing.T) {
 // inherit: a member-level deny from a hardened jail.
 func TestVacationOnAJailedMemberParolesThemAndClearsTheHardening(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
-	ops.setMember("g1", "u1", []string{"jail-role"})
-	ops.channel["risky"] = &discordgo.Channel{ID: "risky", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
-		PermissionOverwrites: []*discordgo.PermissionOverwrite{
-			{ID: "access-role", Type: discordgo.PermissionOverwriteTypeRole, Allow: int64(discordgo.PermissionViewChannel)},
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	ops.channel["7000606"] = &fch{ID: "7000606", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
+		PermissionOverwrites: []*fow{
+			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
 		}}
-	if err := p.syncMemberJailOverwrites("g1", "u1"); err != nil {
+	if err := p.syncMemberJailOverwrites("7000001", "7000102"); err != nil {
 		t.Fatal(err)
 	}
 	end := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", SnapshotRoleIDs: []string{"7000302"}, ReleaseAt: &end})
 	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "2d")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "7000102"), strArg("duration", "2d")))
 
-	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
-	if row.JailRoleID != island || !row.ReleaseAt.Equal(fixedNow.Add(48*time.Hour)) || !slices.Equal(row.SnapshotRoleIDs, []string{"role-a"}) {
+	row, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
+	if row.JailRoleID != island || !row.ReleaseAt.Equal(fixedNow.Add(48*time.Hour)) || !slices.Equal(row.SnapshotRoleIDs, []string{"7000302"}) {
 		t.Fatalf("expected the row moved to the island for 2d, got %+v", row)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
+	m, _ := ops.GuildMember("7000001", "7000102")
 	if !slices.Equal(m.Roles, []string{island}) {
 		t.Fatalf("expected the nest's role swapped for the island's, got %v", m.Roles)
 	}
-	if _, still := ops.overwrites[overwriteKey{"risky", "u1"}]; still {
+	if _, still := ops.overwrites[overwriteKey{"7000606", "7000102"}]; still {
 		t.Fatal("the jail's member-level deny must not follow them to the beach")
 	}
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.transferred"}) {
 		t.Fatalf("audit: %v", got)
 	}
-	if dm := sentTo(ops, "dm:u1"); len(dm) != 1 || !strings.Contains(dm[0], "Moved to vacation") {
+	if dm := sentTo(ops, "97000102"); len(dm) != 1 || !strings.Contains(dm[0], "Moved to vacation") {
 		t.Fatalf("expected the from-jail DM, got %v", dm)
 	}
 	if !rt.said("moved to vacation") {
@@ -254,14 +254,14 @@ func TestVacationOnAJailedMemberParolesThemAndClearsTheHardening(t *testing.T) {
 // moves the end, exactly as jail on jail does, and is audited as such.
 func TestSameSentenceStillRedates(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
-	ops.setMember("g1", "u1", []string{island})
+	ops.setMember("7000001", "7000102", []string{island})
 	end := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: island, SnapshotRoleIDs: []string{"7000302"}, ReleaseAt: &end})
 	rt := handlerSession(t)
 
-	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "u1"), strArg("duration", "5h")))
+	p.handleVacation(context.Background(), vacationInteraction(userArg("user", "7000102"), strArg("duration", "5h")))
 
-	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
+	row, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
 	if row.JailRoleID != island || !row.ReleaseAt.Equal(fixedNow.Add(5*time.Hour)) {
 		t.Fatalf("expected a re-date on the island, got %+v", row)
 	}
@@ -277,38 +277,38 @@ func TestSameSentenceStillRedates(t *testing.T) {
 // Both directions, and from both the gateway handler and the sweep.
 func TestHandSwapIsRecognised(t *testing.T) {
 	for _, tc := range []struct{ name, from, to string }{
-		{"jail to island", "jail-role", island},
-		{"island to jail", island, "jail-role"},
+		{"jail to island", "7000301", island},
+		{"island to jail", island, "7000301"},
 	} {
 		for _, via := range []string{"member update", "sweep"} {
 			t.Run(tc.name+" via "+via, func(t *testing.T) {
 				p, ops, store, audit, _, settings := vacationFixture()
-				settings.announce["g1"] = "jail-chan"
-				p.jailRoleID["g1"] = "jail-role" // as any earlier /roles jail would have left it
+				settings.announce["7000001"] = "7000624"
+				p.jailRoleID["7000001"] = "7000301" // as any earlier /roles jail would have left it
 				end := fixedNow.Add(time.Hour)
-				_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: tc.from, SnapshotRoleIDs: []string{"role-a"}, JailedAt: fixedNow.Add(-time.Hour), ReleaseAt: &end})
-				ops.setMember("g1", "u1", []string{tc.to, "role-b"})
+				_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: tc.from, SnapshotRoleIDs: []string{"7000302"}, JailedAt: fixedNow.Add(-time.Hour), ReleaseAt: &end})
+				ops.setMember("7000001", "7000102", []string{tc.to, "7000303"})
 
 				if via == "sweep" {
-					if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+					if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 						t.Fatal(err)
 					}
 				} else {
-					p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{tc.to, "role-b"})
+					p.HandleMemberUpdate(context.Background(), "7000001", "7000102", []string{tc.to, "7000303"})
 				}
 
-				row, ok, _ := store.GetJail(context.Background(), "g1", "u1")
-				if !ok || row.JailRoleID != tc.to || !row.ReleaseAt.Equal(end) || !slices.Equal(row.SnapshotRoleIDs, []string{"role-a"}) {
+				row, ok, _ := store.GetJail(context.Background(), "7000001", "7000102")
+				if !ok || row.JailRoleID != tc.to || !row.ReleaseAt.Equal(end) || !slices.Equal(row.SnapshotRoleIDs, []string{"7000302"}) {
 					t.Fatalf("expected the row to follow the marker and keep its end, got %+v ok=%v", row, ok)
 				}
-				m, _ := ops.GuildMember("g1", "u1")
+				m, _ := ops.GuildMember("7000001", "7000102")
 				if !slices.Equal(m.Roles, []string{tc.to}) {
 					t.Fatalf("expected the regranted role stripped along the way, got %v", m.Roles)
 				}
 				if got := auditActions(audit); !slices.Equal(got, []string{"roles.transferred"}) || audit.records[0].actorID != core.ActorSystem {
 					t.Fatalf("audit: %+v", audit.records)
 				}
-				if len(sentTo(ops, "dm:u1")) != 1 || len(sentTo(ops, "jail-chan")) != 1 {
+				if len(sentTo(ops, "97000102")) != 1 || len(sentTo(ops, "7000624")) != 1 {
 					t.Fatalf("expected a DM and one announcement in the configured channel, got %+v", ops.dmSends)
 				}
 			})
@@ -321,13 +321,13 @@ func TestHandSwapIsRecognised(t *testing.T) {
 func TestHandSwapNeedsTheOtherMarker(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
 	end := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: "jail-role", SnapshotRoleIDs: []string{"role-a"}, JailedAt: fixedNow.Add(-time.Hour), ReleaseAt: &end})
-	ops.setMember("g1", "u1", []string{"role-a"})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", SnapshotRoleIDs: []string{"7000302"}, JailedAt: fixedNow.Add(-time.Hour), ReleaseAt: &end})
+	ops.setMember("7000001", "7000102", []string{"7000302"})
 
-	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"role-a"})
+	p.HandleMemberUpdate(context.Background(), "7000001", "7000102", []string{"7000302"})
 
-	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
-	if row.JailRoleID != "jail-role" || len(auditActions(audit)) != 0 || len(ops.memberEditCalls["u1"]) != 0 {
+	row, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
+	if row.JailRoleID != "7000301" || len(auditActions(audit)) != 0 || len(ops.memberEditCalls["7000102"]) != 0 {
 		t.Fatalf("a manual release must be left alone, got %+v / %v", row, auditActions(audit))
 	}
 }
@@ -337,18 +337,18 @@ func TestHandSwapNeedsTheOtherMarker(t *testing.T) {
 // never the member-level channel denies that harden a jail.
 func TestVacationEvasionIsReappliedWithoutHardening(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
-	ops.channel["risky"] = &discordgo.Channel{ID: "risky", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
-		PermissionOverwrites: []*discordgo.PermissionOverwrite{
-			{ID: "access-role", Type: discordgo.PermissionOverwriteTypeRole, Allow: int64(discordgo.PermissionViewChannel)},
+	ops.channel["7000606"] = &fch{ID: "7000606", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
+		PermissionOverwrites: []*fow{
+			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
 		}}
 	end := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, JailedAt: fixedNow.Add(-time.Hour), ReleaseAt: &end})
-	ops.setMemberJoined("g1", "u1", nil, fixedNow.Add(-time.Minute))
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: island, SnapshotRoleIDs: []string{"7000302"}, JailedAt: fixedNow.Add(-time.Hour), ReleaseAt: &end})
+	ops.setMemberJoined("7000001", "7000102", nil, fixedNow.Add(-time.Minute))
 
-	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 		t.Fatal(err)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
+	m, _ := ops.GuildMember("7000001", "7000102")
 	if !slices.Equal(m.Roles, []string{island}) {
 		t.Fatalf("expected the island's role re-applied, got %v", m.Roles)
 	}
@@ -373,24 +373,24 @@ func TestReleaseFromVacationSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.voice = sp
-	ops.setMember("g1", "u1", []string{island})
+	ops.setMember("7000001", "7000102", []string{island})
 	end := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: island, SnapshotRoleIDs: []string{"7000302"}, ReleaseAt: &end})
 	rt := handlerSession(t)
 
-	p.handleRelease(context.Background(), rolesInteraction("", "release", userArg("user", "u1")))
+	p.handleRelease(context.Background(), rolesInteraction("", "release", userArg("user", "7000102")))
 
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected the row gone")
 	}
-	m, _ := ops.GuildMember("g1", "u1")
-	if !slices.Equal(m.Roles, []string{"role-a"}) {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if !slices.Equal(m.Roles, []string{"7000302"}) {
 		t.Fatalf("expected the snapshot restored, got %v", m.Roles)
 	}
 	if len(audit.records) != 1 || !strings.Contains(audit.records[0].newValue, "from=vacation") {
 		t.Fatalf("audit: %+v", audit.records)
 	}
-	if dm := sentTo(ops, "dm:u1"); len(dm) != 1 || !strings.Contains(dm[0], "your vacation in The Melting Pot is over") {
+	if dm := sentTo(ops, "97000102"); len(dm) != 1 || !strings.Contains(dm[0], "your vacation in The Melting Pot is over") {
 		t.Fatalf("expected the vacation-over DM, got %v", dm)
 	}
 	if !rt.said("released from vacation") {
@@ -402,19 +402,19 @@ func TestReleaseFromVacationSaysSo(t *testing.T) {
 // the stricter sentence, so it ends the trip, for the later of the two ends.
 func TestJailAutomaticOnAVacationerMovesThemToJail(t *testing.T) {
 	p, ops, store, _, _, _ := vacationFixture()
-	ops.setMember("g1", "u1", []string{island})
+	ops.setMember("7000001", "7000102", []string{island})
 	end := fixedNow.Add(24 * time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, SnapshotRoleIDs: []string{"role-a"}, ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: island, SnapshotRoleIDs: []string{"7000302"}, ReleaseAt: &end})
 
-	if err := p.JailAutomatic(context.Background(), "g1", "u1", time.Hour, "policy", false); err != nil {
+	if err := p.JailAutomatic(context.Background(), "7000001", "7000102", time.Hour, "policy", false); err != nil {
 		t.Fatal(err)
 	}
-	row, _, _ := store.GetJail(context.Background(), "g1", "u1")
-	if row.JailRoleID != "jail-role" || !row.ReleaseAt.Equal(end) || !slices.Equal(row.SnapshotRoleIDs, []string{"role-a"}) {
+	row, _, _ := store.GetJail(context.Background(), "7000001", "7000102")
+	if row.JailRoleID != "7000301" || !row.ReleaseAt.Equal(end) || !slices.Equal(row.SnapshotRoleIDs, []string{"7000302"}) {
 		t.Fatalf("expected the row in jail until the later end with the snapshot intact, got %+v", row)
 	}
-	m, _ := ops.GuildMember("g1", "u1")
-	if !slices.Equal(m.Roles, []string{"jail-role"}) {
+	m, _ := ops.GuildMember("7000001", "7000102")
+	if !slices.Equal(m.Roles, []string{"7000301"}) {
 		t.Fatalf("got %v", m.Roles)
 	}
 }
@@ -425,38 +425,38 @@ func TestJailAutomaticOnAVacationerMovesThemToJail(t *testing.T) {
 // back; clearing says so.
 func TestVacationRoleConfigureSyncsDenyByDefault(t *testing.T) {
 	p, ops, _, audit, _, settings := vacationFixture()
-	settings.vacationAllowed["g1"] = []string{"beach"}
-	view, send, connect := int64(discordgo.PermissionViewChannel), int64(discordgo.PermissionSendMessages), int64(discordgo.PermissionVoiceConnect)
+	settings.vacationAllowed["7000001"] = []string{"7000607"}
+	view, send, connect := discord.PermissionViewChannel, discord.PermissionSendMessages, discord.PermissionConnect
 	// The beach as the guild built it: reactions on, attachments off. Both
 	// must survive the sync untouched.
-	ops.channel["beach"] = &discordgo.Channel{ID: "beach", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
-		PermissionOverwrites: []*discordgo.PermissionOverwrite{{ID: "r-new", Type: discordgo.PermissionOverwriteTypeRole,
-			Allow: int64(discordgo.PermissionAddReactions), Deny: int64(discordgo.PermissionAttachFiles)}}}
-	ops.channel["beach-vc"] = &discordgo.Channel{ID: "beach-vc", GuildID: "g1", Type: discordgo.ChannelTypeGuildVoice}
-	ops.channel["office"] = &discordgo.Channel{ID: "office", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
-		PermissionOverwrites: []*discordgo.PermissionOverwrite{{ID: "r-new", Type: discordgo.PermissionOverwriteTypeRole, Allow: send}}}
-	p.vacationRoleID["g1"] = island // a stale cache from before the change
+	ops.channel["7000607"] = &fch{ID: "7000607", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
+		PermissionOverwrites: []*fow{{ID: "7000310", Type: discord.PermissionOverwriteTypeRole,
+			Allow: discord.PermissionAddReactions, Deny: discord.PermissionAttachFiles}}}
+	ops.channel["7000608"] = &fch{ID: "7000608", GuildID: "7000001", Type: discord.ChannelTypeGuildVoice}
+	ops.channel["7000617"] = &fch{ID: "7000617", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
+		PermissionOverwrites: []*fow{{ID: "7000310", Type: discord.PermissionOverwriteTypeRole, Allow: send}}}
+	p.vacationRoleID["7000001"] = island // a stale cache from before the change
 	rt := handlerSession(t)
 
-	set(p, panelJail+"vacrole", nil, "r-new")
+	set(p, panelJail+"vacrole", nil, "7000310")
 
-	if settings.vacationRole["g1"] != "r-new" {
-		t.Fatalf("expected the role saved, got %q", settings.vacationRole["g1"])
+	if settings.vacationRole["7000001"] != "7000310" {
+		t.Fatalf("expected the role saved, got %q", settings.vacationRole["7000001"])
 	}
-	if _, cached := p.vacationRoleID["g1"]; cached {
+	if _, cached := p.vacationRoleID["7000001"]; cached {
 		t.Fatal("the cache must be dropped when the role changes")
 	}
-	beach := ops.overwrites[overwriteKey{"beach", "r-new"}]
-	if beach.allow != view|send|int64(discordgo.PermissionAddReactions) || beach.deny != restrictedBits|int64(discordgo.PermissionAttachFiles) {
+	beach := ops.overwrites[overwriteKey{"7000607", "7000310"}]
+	if beach.allow != view|send|discord.PermissionAddReactions || beach.deny != restrictedBits|discord.PermissionAttachFiles {
 		t.Fatalf("the beach should be visible with the guild's own bits kept, got %+v", beach)
 	}
-	if vc := ops.overwrites[overwriteKey{"beach-vc", "r-new"}]; vc.allow != 0 || vc.deny != view|connect {
+	if vc := ops.overwrites[overwriteKey{"7000608", "7000310"}]; vc.allow != 0 || vc.deny != view|connect {
 		t.Fatalf("an unlisted voice room is hidden, got %+v", vc)
 	}
-	if office := ops.overwrites[overwriteKey{"office", "r-new"}]; office.allow != send || office.deny != view {
+	if office := ops.overwrites[overwriteKey{"7000617", "7000310"}]; office.allow != send || office.deny != view {
 		t.Fatalf("an unlisted text room keeps the guild's bits and loses only View, got %+v", office)
 	}
-	if !rt.said("<#beach>") || !rt.said("<#office>") || !rt.said("everything else on each channel") {
+	if !rt.said("<#7000607>") || !rt.said("<#7000617>") || !rt.said("everything else on each channel") {
 		t.Fatalf("expected the read-back, got %v", rt.bodies)
 	}
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.configure_jail_channels"}) {
@@ -464,15 +464,15 @@ func TestVacationRoleConfigureSyncsDenyByDefault(t *testing.T) {
 	}
 
 	set(p, panelJail+"vacrole", nil)
-	if settings.vacationRole["g1"] != "" || !rt.said("Vacation role cleared") {
-		t.Fatalf("expected the role cleared, got %q / %v", settings.vacationRole["g1"], rt.bodies)
+	if settings.vacationRole["7000001"] != "" || !rt.said("Vacation role cleared") {
+		t.Fatalf("expected the role cleared, got %q / %v", settings.vacationRole["7000001"], rt.bodies)
 	}
 }
 
 func TestVacationRoleConfigureWithNoOverwritesSaysSo(t *testing.T) {
 	p, _, _, _, _, _ := vacationFixture()
 	rt := handlerSession(t)
-	set(p, panelJail+"vacrole", nil, "r-new")
+	set(p, panelJail+"vacrole", nil, "7000310")
 	if !rt.said("no channel overwrites of its own yet") {
 		t.Fatalf("got %v", rt.bodies)
 	}
@@ -485,13 +485,13 @@ func TestMeltingPotHasAnIslandByDefault(t *testing.T) {
 	if p.configuredVacationRole(meltingPotGuildID) != meltingPotDefaultVacationRoleID {
 		t.Fatal("the Melting Pot's island should be the default there")
 	}
-	if p.configuredVacationRole("elsewhere") != "" {
+	if p.configuredVacationRole("7000117") != "" {
 		t.Fatal("no other guild gets a default")
 	}
-	if p.sentenceFor(meltingPotGuildID, meltingPotDefaultVacationRoleID) != vacationSentence || p.sentenceFor("g1", "jail-role") != jailSentence {
+	if p.sentenceFor(meltingPotGuildID, meltingPotDefaultVacationRoleID) != vacationSentence || p.sentenceFor("7000001", "7000301") != jailSentence {
 		t.Fatal("sentenceFor should read the marker")
 	}
-	if _, ok := p.counterpartMarker("nowhere", "jail-role"); ok {
+	if _, ok := p.counterpartMarker("7000628", "7000301"); ok {
 		t.Fatal("no island, no counterpart")
 	}
 }
@@ -518,9 +518,9 @@ func TestScriptsListAndEnableShowTheIsland(t *testing.T) {
 func TestListSaysOnVacation(t *testing.T) {
 	p, _, store, _, _, _ := vacationFixture()
 	end := fixedNow.Add(time.Hour)
-	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "g1", UserID: "u1", JailRoleID: island, ReleaseAt: &end})
+	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: island, ReleaseAt: &end})
 	rt := handlerSession(t)
-	p.handleList(context.Background(), rolesInteraction("", "list", userArg("user", "u1")))
+	p.handleList(context.Background(), rolesInteraction("", "list", userArg("user", "7000102")))
 	if !rt.said("On vacation") {
 		t.Fatalf("got %v", rt.bodies)
 	}
@@ -530,15 +530,15 @@ func TestListSaysOnVacation(t *testing.T) {
 // the cache and nothing more; it is never recreated.
 func TestRoleDeletedDropsTheIslandCache(t *testing.T) {
 	p, ops, _, _, _, _ := vacationFixture()
-	if _, err := p.resolveVacationRole("g1"); err != nil {
+	if _, err := p.resolveVacationRole("7000001"); err != nil {
 		t.Fatal(err)
 	}
-	before := len(ops.roles["g1"])
-	p.HandleRoleDeleted(context.Background(), "g1", island)
-	if _, cached := p.vacationRoleID["g1"]; cached {
+	before := len(ops.roles["7000001"])
+	p.HandleRoleDeleted(context.Background(), "7000001", island)
+	if _, cached := p.vacationRoleID["7000001"]; cached {
 		t.Fatal("cache should be dropped")
 	}
-	if len(ops.roles["g1"]) != before {
+	if len(ops.roles["7000001"]) != before {
 		t.Fatal("nothing should be created")
 	}
 }
@@ -548,16 +548,16 @@ func TestRoleDeletedDropsTheIslandCache(t *testing.T) {
 // a line in the guild's audit log), and unlisting hides it again.
 func TestVacationAllowlistIsOneWriteAndAuditQuiet(t *testing.T) {
 	p, ops, _, audit, _, settings := vacationFixture()
-	view, send := int64(discordgo.PermissionViewChannel), int64(discordgo.PermissionSendMessages)
-	ops.channel["beach"] = &discordgo.Channel{ID: "beach", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
-	ops.channel["office"] = &discordgo.Channel{ID: "office", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	view, send := discord.PermissionViewChannel, discord.PermissionSendMessages
+	ops.channel["7000607"] = &fch{ID: "7000607", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
+	ops.channel["7000617"] = &fch{ID: "7000617", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
 	rt := handlerSession(t)
 
-	set(p, panelJail+"vacallow", nil, "beach")
-	if !slices.Equal(settings.vacationAllowed["g1"], []string{"beach"}) || !rt.said("Channel allowed") {
-		t.Fatalf("expected the channel listed, got %v / %v", settings.vacationAllowed["g1"], rt.bodies)
+	set(p, panelJail+"vacallow", nil, "7000607")
+	if !slices.Equal(settings.vacationAllowed["7000001"], []string{"7000607"}) || !rt.said("Channel allowed") {
+		t.Fatalf("expected the channel listed, got %v / %v", settings.vacationAllowed["7000001"], rt.bodies)
 	}
-	if ow := ops.overwrites[overwriteKey{"beach", island}]; ow.allow != view|send || ow.deny != restrictedBits {
+	if ow := ops.overwrites[overwriteKey{"7000607", island}]; ow.allow != view|send || ow.deny != restrictedBits {
 		t.Fatalf("expected view+send with the restricted bits denied, got %+v", ow)
 	}
 	if ops.permSetCalls != 1 {
@@ -569,22 +569,22 @@ func TestVacationAllowlistIsOneWriteAndAuditQuiet(t *testing.T) {
 
 	// A full sync now writes only the office (never touched) and nothing
 	// for the beach, which already matches.
-	if err := p.syncAllVacationOverwrites("g1"); err != nil {
+	if err := p.syncAllVacationOverwrites("7000001"); err != nil {
 		t.Fatal(err)
 	}
 	if ops.permSetCalls != 2 {
 		t.Fatalf("a sync that changes one channel writes one channel, got %d writes", ops.permSetCalls)
 	}
-	if err := p.syncAllVacationOverwrites("g1"); err != nil {
+	if err := p.syncAllVacationOverwrites("7000001"); err != nil {
 		t.Fatal(err)
 	}
 	if ops.permSetCalls != 2 {
 		t.Fatalf("a sync that changes nothing writes nothing, got %d writes", ops.permSetCalls)
 	}
 
-	set(p, panelJail+"vacallow", []string{"beach"})
-	if ow := ops.overwrites[overwriteKey{"beach", island}]; ow.allow != send || ow.deny&view == 0 || len(settings.vacationAllowed["g1"]) != 0 {
-		t.Fatalf("expected the beach hidden again with only View moved, got %+v / %v", ow, settings.vacationAllowed["g1"])
+	set(p, panelJail+"vacallow", []string{"7000607"})
+	if ow := ops.overwrites[overwriteKey{"7000607", island}]; ow.allow != send || ow.deny&view == 0 || len(settings.vacationAllowed["7000001"]) != 0 {
+		t.Fatalf("expected the beach hidden again with only View moved, got %+v / %v", ow, settings.vacationAllowed["7000001"])
 	}
 	if !rt.said("Channel hidden") {
 		t.Fatalf("got %v", rt.bodies)
@@ -597,18 +597,18 @@ func TestVacationAllowlistIsOneWriteAndAuditQuiet(t *testing.T) {
 func TestVacationSyncNeedsARole(t *testing.T) {
 	p, ops, _, _, _, settings := vacationFixture()
 	settings.vacationRole = map[string]string{}
-	ops.channel["beach"] = &discordgo.Channel{ID: "beach", GuildID: "g1", Type: discordgo.ChannelTypeGuildText}
+	ops.channel["7000607"] = &fch{ID: "7000607", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
 	rt := handlerSession(t)
 
-	set(p, panelJail+"vacallow", nil, "beach")
+	set(p, panelJail+"vacallow", nil, "7000607")
 	if ops.permSetCalls != 0 || !rt.said("Channel allowed") {
 		t.Fatalf("no role, nothing to write; got %d writes / %v", ops.permSetCalls, rt.bodies)
 	}
 
-	settings.vacationRole["g1"] = island
+	settings.vacationRole["7000001"] = island
 	p.scripts = newFakeScripts()
 	set(p, panelScripts+"on:"+scriptVacation, nil)
-	if ow, ok := ops.overwrites[overwriteKey{"beach", island}]; !ok || ow.allow&int64(discordgo.PermissionViewChannel) == 0 {
+	if ow, ok := ops.overwrites[overwriteKey{"7000607", island}]; !ok || ow.allow&discord.PermissionViewChannel == 0 {
 		t.Fatalf("enabling the script should sync the island, got %+v ok=%v", ow, ok)
 	}
 }
@@ -620,11 +620,11 @@ func TestMeltingPotBeachIsTheDefaultAllowlist(t *testing.T) {
 	if got := p.vacationAllowlist(meltingPotGuildID); !slices.Equal(got, []string{meltingPotDefaultVacationChannelID}) {
 		t.Fatalf("got %v", got)
 	}
-	settings.vacationAllowed[meltingPotGuildID] = []string{"other"}
-	if got := p.vacationAllowlist(meltingPotGuildID); !slices.Equal(got, []string{"other"}) {
+	settings.vacationAllowed[meltingPotGuildID] = []string{"7000340"}
+	if got := p.vacationAllowlist(meltingPotGuildID); !slices.Equal(got, []string{"7000340"}) {
 		t.Fatalf("a configured list replaces the default, got %v", got)
 	}
-	if got := p.vacationAllowlist("elsewhere"); got != nil {
+	if got := p.vacationAllowlist("7000117"); got != nil {
 		t.Fatalf("no default elsewhere, got %v", got)
 	}
 }
@@ -633,10 +633,10 @@ func TestMeltingPotBeachIsTheDefaultAllowlist(t *testing.T) {
 // read side by side says which is which.
 func TestListChannelsShowsTheVacationAllowlist(t *testing.T) {
 	p, _, _, _, _, settings := vacationFixture()
-	settings.vacationAllowed["g1"] = []string{"beach"}
+	settings.vacationAllowed["7000001"] = []string{"7000607"}
 	rt := handlerSession(t)
 	showPage(p, "vacation")
-	if !rt.said("Visible on vacation") || !rt.said("Now: <#beach>") {
+	if !rt.said("Visible on vacation") || !rt.said("Now: <#7000607>") {
 		t.Fatalf("got %v", rt.bodies)
 	}
 }

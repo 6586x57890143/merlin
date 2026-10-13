@@ -103,3 +103,15 @@ func TestEmptyOverwritesAreSent(t *testing.T) {
 		t.Fatalf("sent %v", w.requests)
 	}
 }
+
+// Disconnecting sends channel_id null, the one value disgo's MemberUpdate
+// cannot carry.
+func TestDisconnectSendsNull(t *testing.T) {
+	g, w := restGuard(fakeGate{}, `{"user":{"id":"3","username":"u"},"roles":[],"joined_at":"2026-01-01T00:00:00Z"}`)
+	if err := g.For("100").DisconnectMember(100, 3); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.requests) != 1 || !strings.Contains(w.requests[0], `PATCH`) || !strings.Contains(w.requests[0], `{"channel_id":null}`) {
+		t.Fatalf("sent %v", w.requests)
+	}
+}

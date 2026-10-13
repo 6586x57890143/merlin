@@ -15,9 +15,9 @@ var jailedAt = fixedNow.Add(-2 * time.Hour)
 func activeJail(userID string, snapshot []string) JailRecord {
 	releaseAt := fixedNow.Add(time.Hour)
 	return JailRecord{
-		GuildID: "g1", UserID: userID, SnapshotRoleIDs: snapshot,
-		JailRoleID: "jail-role", JailedAt: jailedAt, ReleaseAt: &releaseAt,
-		JailedBy: "mod1", Reason: "test",
+		GuildID: "7000001", UserID: userID, SnapshotRoleIDs: snapshot,
+		JailRoleID: "7000301", JailedAt: jailedAt, ReleaseAt: &releaseAt,
+		JailedBy: "7000112", Reason: "test",
 	}
 }
 
@@ -33,23 +33,23 @@ func newEvasionPlugin(t *testing.T, ops *fakeOps, store *fakeStore) *Plugin {
 func TestSweepReJailsMemberWhoLeftAndRejoined(t *testing.T) {
 	ops := newFakeOps()
 	// Back in the guild, no roles at all, joined *after* being jailed.
-	ops.setMemberJoined("g1", "u1", nil, fixedNow.Add(-time.Minute))
+	ops.setMemberJoined("7000001", "7000102", nil, fixedNow.Add(-time.Minute))
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a", "role-b"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302", "7000303"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	if err := p.sweep(context.Background(), "g1"); err != nil {
+	if err := p.sweep(context.Background(), "7000001"); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 
-	member, err := ops.GuildMember("g1", "u1")
+	member, err := ops.GuildMember("7000001", "7000102")
 	if err != nil {
 		t.Fatalf("GuildMember: %v", err)
 	}
-	if !slices.Contains(member.Roles, "jail-role") {
+	if !slices.Contains(member.Roles, "7000301") {
 		t.Errorf("member escaped their jail by rejoining; roles = %v, want the jail marker back", member.Roles)
 	}
 }
@@ -60,31 +60,31 @@ func TestSweepReJailsMemberWhoLeftAndRejoined(t *testing.T) {
 // exactly the way the concurrent-jail race used to destroy it.
 func TestReJailPreservesSnapshotAndReleaseTime(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", nil, fixedNow.Add(-time.Minute))
+	ops.setMemberJoined("7000001", "7000102", nil, fixedNow.Add(-time.Minute))
 
 	store := newFakeStore()
-	original := activeJail("u1", []string{"role-a", "role-b"})
+	original := activeJail("7000102", []string{"7000302", "7000303"})
 	if err := store.InsertJail(context.Background(), original); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 		t.Fatalf("reapplyEvadedJails: %v", err)
 	}
 
-	rec, ok, err := store.GetJail(context.Background(), "g1", "u1")
+	rec, ok, err := store.GetJail(context.Background(), "7000001", "7000102")
 	if err != nil || !ok {
 		t.Fatalf("GetJail: %v (found=%v)", err, ok)
 	}
-	if !slices.Equal(rec.SnapshotRoleIDs, []string{"role-a", "role-b"}) {
+	if !slices.Equal(rec.SnapshotRoleIDs, []string{"7000302", "7000303"}) {
 		t.Errorf("snapshot is %v, want [role-a role-b]; the member's real roles are now unrecoverable", rec.SnapshotRoleIDs)
 	}
 	// Leaving the server neither serves the sentence nor extends it.
 	if !rec.ReleaseAt.Equal(*original.ReleaseAt) {
 		t.Errorf("ReleaseAt moved from %v to %v", *original.ReleaseAt, *rec.ReleaseAt)
 	}
-	if rec.JailedBy != "mod1" || rec.Reason != "test" {
+	if rec.JailedBy != "7000112" || rec.Reason != "test" {
 		t.Errorf("re-apply rewrote the record's provenance: %+v", rec)
 	}
 }
@@ -96,23 +96,23 @@ func TestReJailPreservesSnapshotAndReleaseTime(t *testing.T) {
 func TestSweepDoesNotFightAManualRelease(t *testing.T) {
 	ops := newFakeOps()
 	// Marker gone, but they have been in the guild since long before the jail.
-	ops.setMemberJoined("g1", "u1", []string{"role-a"}, jailedAt.Add(-24*time.Hour))
+	ops.setMemberJoined("7000001", "7000102", []string{"7000302"}, jailedAt.Add(-24*time.Hour))
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 		t.Fatalf("reapplyEvadedJails: %v", err)
 	}
 
-	member, err := ops.GuildMember("g1", "u1")
+	member, err := ops.GuildMember("7000001", "7000102")
 	if err != nil {
 		t.Fatalf("GuildMember: %v", err)
 	}
-	if slices.Contains(member.Roles, "jail-role") {
+	if slices.Contains(member.Roles, "7000301") {
 		t.Error("re-jailed a member a mod had deliberately released by hand")
 	}
 }
@@ -121,19 +121,19 @@ func TestSweepDoesNotFightAManualRelease(t *testing.T) {
 // pointless role edit, no audit noise, once a minute, forever.
 func TestSweepLeavesAnOrdinaryJailAlone(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", []string{"jail-role"}, jailedAt.Add(-24*time.Hour))
+	ops.setMemberJoined("7000001", "7000102", []string{"7000301"}, jailedAt.Add(-24*time.Hour))
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 		t.Fatalf("reapplyEvadedJails: %v", err)
 	}
 
-	if calls := ops.memberEditCalls["u1"]; len(calls) != 0 {
+	if calls := ops.memberEditCalls["7000102"]; len(calls) != 0 {
 		t.Errorf("edited a correctly-jailed member's roles: %v", calls)
 	}
 }
@@ -169,15 +169,15 @@ func TestRejoinDetectionToleratesClockSkew(t *testing.T) {
 func TestEvasionCheckKeepsRecordForAbsentMember(t *testing.T) {
 	ops := newFakeOps() // no member registered: Discord reports Unknown Member
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 		t.Fatalf("an absent member is not an error: %v", err)
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Error("dropped the jail record for a member who merely left; they would return unjailed")
 	}
 }
@@ -190,15 +190,15 @@ func TestEvasionCheckRetriesOnTransientFailure(t *testing.T) {
 	ops.memberFetchErr = transientErr()
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	if err := p.reapplyEvadedJails(context.Background(), "g1"); err == nil {
+	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err == nil {
 		t.Error("a failed member fetch must be reported, not swallowed")
 	}
-	if _, ok, _ := store.GetJail(context.Background(), "g1", "u1"); !ok {
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); !ok {
 		t.Error("a transient failure dropped the jail record")
 	}
 }
@@ -207,21 +207,21 @@ func TestEvasionCheckRetriesOnTransientFailure(t *testing.T) {
 // immediately instead of on the next sweep, and must reach the same outcome.
 func TestHandleMemberJoinReJailsImmediately(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", nil, fixedNow.Add(-time.Minute))
+	ops.setMemberJoined("7000001", "7000102", nil, fixedNow.Add(-time.Minute))
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	p.HandleMemberJoin(context.Background(), "g1", "u1")
+	p.HandleMemberJoin(context.Background(), "7000001", "7000102")
 
-	member, err := ops.GuildMember("g1", "u1")
+	member, err := ops.GuildMember("7000001", "7000102")
 	if err != nil {
 		t.Fatalf("GuildMember: %v", err)
 	}
-	if !slices.Contains(member.Roles, "jail-role") {
+	if !slices.Contains(member.Roles, "7000301") {
 		t.Errorf("rejoin handler did not re-apply the jail; roles = %v", member.Roles)
 	}
 }
@@ -233,25 +233,25 @@ func TestHandleMemberJoinReJailsImmediately(t *testing.T) {
 // strip again.
 func TestHandleMemberUpdateStripsRegrantedRoles(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", []string{"jail-role", "onboarding-role"}, jailedAt.Add(-24*time.Hour))
+	ops.setMemberJoined("7000001", "7000102", []string{"7000301", "7000318"}, jailedAt.Add(-24*time.Hour))
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	audit := newFakeAudit()
 	p := newTestPlugin(ops, store, newFakeSettings(), audit, newFakePerms(), newFakeScheduler())
-	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"jail-role", "onboarding-role"})
+	p.HandleMemberUpdate(context.Background(), "7000001", "7000102", []string{"7000301", "7000318"})
 
-	member, err := ops.GuildMember("g1", "u1")
+	member, err := ops.GuildMember("7000001", "7000102")
 	if err != nil {
 		t.Fatalf("GuildMember: %v", err)
 	}
-	if slices.Contains(member.Roles, "onboarding-role") {
+	if slices.Contains(member.Roles, "7000318") {
 		t.Errorf("regranted role survived the reassertion; roles = %v", member.Roles)
 	}
-	if !slices.Contains(member.Roles, "jail-role") {
+	if !slices.Contains(member.Roles, "7000301") {
 		t.Errorf("reassertion dropped the jail marker itself; roles = %v", member.Roles)
 	}
 
@@ -272,21 +272,21 @@ func TestHandleMemberUpdateStripsRegrantedRoles(t *testing.T) {
 // HandleMemberJoin already guards this same window for the rejoin path.
 func TestHandleMemberUpdateIgnoresAnExpiredJail(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", []string{"jail-role", "onboarding-role"}, jailedAt.Add(-24*time.Hour))
+	ops.setMemberJoined("7000001", "7000102", []string{"7000301", "7000318"}, jailedAt.Add(-24*time.Hour))
 
 	store := newFakeStore()
 	expired := fixedNow.Add(-time.Minute)
 	if err := store.InsertJail(context.Background(), JailRecord{
-		GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a"},
-		JailRoleID: "jail-role", JailedAt: jailedAt, ReleaseAt: &expired,
+		GuildID: "7000001", UserID: "7000102", SnapshotRoleIDs: []string{"7000302"},
+		JailRoleID: "7000301", JailedAt: jailedAt, ReleaseAt: &expired,
 	}); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"jail-role", "onboarding-role"})
+	p.HandleMemberUpdate(context.Background(), "7000001", "7000102", []string{"7000301", "7000318"})
 
-	if calls := ops.memberEditCalls["u1"]; len(calls) != 0 {
+	if calls := ops.memberEditCalls["7000102"]; len(calls) != 0 {
 		t.Errorf("re-stripped roles for a member whose jail had already expired: %v", calls)
 	}
 }
@@ -296,17 +296,17 @@ func TestHandleMemberUpdateIgnoresAnExpiredJail(t *testing.T) {
 // that by re-jailing on a guess.
 func TestHandleMemberUpdateNoOpWhenMarkerAbsent(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", []string{"some-other-role"}, jailedAt.Add(-24*time.Hour))
+	ops.setMemberJoined("7000001", "7000102", []string{"7000327"}, jailedAt.Add(-24*time.Hour))
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"some-other-role"})
+	p.HandleMemberUpdate(context.Background(), "7000001", "7000102", []string{"7000327"})
 
-	if calls := ops.memberEditCalls["u1"]; len(calls) != 0 {
+	if calls := ops.memberEditCalls["7000102"]; len(calls) != 0 {
 		t.Errorf("edited roles for a member without the jail marker: %v", calls)
 	}
 }
@@ -316,17 +316,17 @@ func TestHandleMemberUpdateNoOpWhenMarkerAbsent(t *testing.T) {
 // prior edit. Issuing another edit here would be a self-triggering loop.
 func TestHandleMemberUpdateNoOpWhenRolesAlreadyMatch(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", []string{"jail-role"}, jailedAt.Add(-24*time.Hour))
+	ops.setMemberJoined("7000001", "7000102", []string{"7000301"}, jailedAt.Add(-24*time.Hour))
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	p.HandleMemberUpdate(context.Background(), "g1", "u1", []string{"jail-role"})
+	p.HandleMemberUpdate(context.Background(), "7000001", "7000102", []string{"7000301"})
 
-	if calls := ops.memberEditCalls["u1"]; len(calls) != 0 {
+	if calls := ops.memberEditCalls["7000102"]; len(calls) != 0 {
 		t.Errorf("issued a spurious edit for a member already matching the jail's expected roles: %v", calls)
 	}
 	if len(ops.voiceKickCalls) != 0 {
@@ -339,24 +339,24 @@ func TestHandleMemberUpdateNoOpWhenRolesAlreadyMatch(t *testing.T) {
 // only the REST member fetch it already makes.
 func TestSweepCatchesRegrantedRolesViaREST(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", []string{"jail-role", "onboarding-role"}, jailedAt.Add(-24*time.Hour))
+	ops.setMemberJoined("7000001", "7000102", []string{"7000301", "7000318"}, jailedAt.Add(-24*time.Hour))
 
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("u1", []string{"role-a"})); err != nil {
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	audit := newFakeAudit()
 	p := newTestPlugin(ops, store, newFakeSettings(), audit, newFakePerms(), newFakeScheduler())
-	if err := p.reapplyEvadedJails(context.Background(), "g1"); err != nil {
+	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 		t.Fatalf("reapplyEvadedJails: %v", err)
 	}
 
-	member, err := ops.GuildMember("g1", "u1")
+	member, err := ops.GuildMember("7000001", "7000102")
 	if err != nil {
 		t.Fatalf("GuildMember: %v", err)
 	}
-	if slices.Contains(member.Roles, "onboarding-role") {
+	if slices.Contains(member.Roles, "7000318") {
 		t.Errorf("sweep backstop failed to strip a regranted role; roles = %v", member.Roles)
 	}
 	for _, rec := range audit.records {
@@ -370,25 +370,25 @@ func TestSweepCatchesRegrantedRolesViaREST(t *testing.T) {
 // must not re-jail them: the ordinary sweep closes the record out instead.
 func TestHandleMemberJoinIgnoresAnExpiredJail(t *testing.T) {
 	ops := newFakeOps()
-	ops.setMemberJoined("g1", "u1", nil, fixedNow.Add(-time.Minute))
+	ops.setMemberJoined("7000001", "7000102", nil, fixedNow.Add(-time.Minute))
 
 	store := newFakeStore()
 	expired := fixedNow.Add(-time.Minute)
 	if err := store.InsertJail(context.Background(), JailRecord{
-		GuildID: "g1", UserID: "u1", SnapshotRoleIDs: []string{"role-a"},
-		JailRoleID: "jail-role", JailedAt: jailedAt, ReleaseAt: &expired,
+		GuildID: "7000001", UserID: "7000102", SnapshotRoleIDs: []string{"7000302"},
+		JailRoleID: "7000301", JailedAt: jailedAt, ReleaseAt: &expired,
 	}); err != nil {
 		t.Fatalf("InsertJail: %v", err)
 	}
 
 	p := newEvasionPlugin(t, ops, store)
-	p.HandleMemberJoin(context.Background(), "g1", "u1")
+	p.HandleMemberJoin(context.Background(), "7000001", "7000102")
 
-	member, err := ops.GuildMember("g1", "u1")
+	member, err := ops.GuildMember("7000001", "7000102")
 	if err != nil {
 		t.Fatalf("GuildMember: %v", err)
 	}
-	if slices.Contains(member.Roles, "jail-role") {
+	if slices.Contains(member.Roles, "7000301") {
 		t.Error("re-jailed a member whose sentence had already expired")
 	}
 }

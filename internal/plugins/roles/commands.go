@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -202,7 +203,7 @@ func (p *Plugin) handleList(ctx context.Context, ix *core.Ix) {
 		// they join, and a column saying "pending" would still say it.
 		// Anything other than a clean Unknown Member is left alone: a rate
 		// limit is not evidence that somebody is absent.
-		if _, err := p.ops(ix.GuildID).GuildMember(ix.GuildID, userID); core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
+		if _, err := p.ops(ix.GuildID).GetMember(core.ID(ix.GuildID), core.ID(userID)); core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownMember)) {
 			state += " (not in the server; applies on arrival)"
 		}
 		lines = append(lines, fmt.Sprintf("**%s:** released at %s", state, release))

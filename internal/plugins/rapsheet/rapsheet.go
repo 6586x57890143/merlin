@@ -66,7 +66,7 @@ type OpsProvider func(guildID string) DiscordOps
 // the bootstrap carve-out, and AuthorizeIx for the one button whose real bar
 // is higher than the component's registered tier (applying a ban).
 type Ranker interface {
-	CanModerate(guildID string, actor *discordgo.Member, targetUserID string, targetRoleIDs []string) error
+	CanModerate(guildID string, actor *core.Actor, targetUserID string, targetRoleIDs []string) error
 	IsBootstrapAdmin(userID string) bool
 	AuthorizeIx(ix *core.Ix, spec core.PermSpec) error
 }

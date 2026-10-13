@@ -682,13 +682,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// re-checks every minute regardless), and the join-role script, which
 	// reports an edit to a role every new member is given.
 	typed = append(typed, bot.NewListenerFunc(func(e *events.RoleUpdate) {
-		ru := &discordgo.GuildRoleUpdate{GuildRole: &discordgo.GuildRole{GuildID: e.GuildID.String(), Role: legacy[discordgo.Role](e.Role)}}
-		if ru.GuildRole == nil {
-			return
-		}
 		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		rolesPlugin.HandleRoleUpdated(guildCtx, ru.GuildID, ru.Role)
+		rolesPlugin.HandleRoleUpdated(guildCtx, e.GuildID.String(), e.Role)
 	}))
 
 	// Discord sends the same event for "this guild is temporarily

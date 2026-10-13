@@ -2,7 +2,6 @@ package roles
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -119,7 +119,7 @@ func (p *Plugin) enforceEternalRole(ctx context.Context, rec EternalRoleRecord) 
 	}
 
 	ops := p.ops(rec.GuildID)
-	rolesList, err := ops.GuildRoles(rec.GuildID)
+	rolesList, err := ops.GetRoles(core.ID(rec.GuildID))
 	if err != nil {
 		return fmt.Errorf("list roles: %w", err)
 	}
@@ -135,31 +135,31 @@ func (p *Plugin) enforceEternalRole(ctx context.Context, rec EternalRoleRecord) 
 		}
 	}
 
-	member, err := ops.GuildMember(rec.GuildID, rec.UserID)
+	member, err := ops.GetMember(core.ID(rec.GuildID), core.ID(rec.UserID))
 	if err != nil {
-		if core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownMember) {
+		if core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownMember)) {
 			return nil // not in the guild; HandleMemberJoin or the next sweep
 		}
 		return fmt.Errorf("fetch member: %w", err)
 	}
-	if slices.Contains(member.Roles, role.ID) {
+	if slices.Contains(member.RoleIDs, role.ID) {
 		return nil
 	}
-	if err := ops.GuildMemberRoleAdd(rec.GuildID, rec.UserID, role.ID); err != nil {
+	if err := ops.AddMemberRole(core.ID(rec.GuildID), core.ID(rec.UserID), role.ID); err != nil {
 		return fmt.Errorf("re-add role: %w", err)
 	}
 	p.log.Warn("roles: eternal-role: role re-added", "guild", rec.GuildID, "user", rec.UserID, "role", role.ID)
-	p.auditEternal(ctx, rec.GuildID, "roles.eternal_reassigned", core.MentionRole(role.ID),
+	p.auditEternal(ctx, rec.GuildID, "roles.eternal_reassigned", core.MentionRole(role.ID.String()),
 		fmt.Sprintf("%s had lost it; given back", core.MentionUser(rec.UserID)))
 	return nil
 }
 
-func findRole(list []*discordgo.Role, id string) *discordgo.Role {
-	i := slices.IndexFunc(list, func(r *discordgo.Role) bool { return r.ID == id })
+func findRole(list []discord.Role, id string) *discord.Role {
+	i := slices.IndexFunc(list, func(r discord.Role) bool { return r.ID.String() == id })
 	if i < 0 {
 		return nil
 	}
-	return list[i]
+	return &list[i]
 }
 
 // addEternalRole defines a new eternal role by capturing roleID as it is
@@ -178,7 +178,7 @@ func (p *Plugin) addEternalRole(ctx context.Context, guildID, userID, roleID, ac
 			return EternalRoleRecord{}, errEternalExists
 		}
 	}
-	rolesList, err := p.ops(guildID).GuildRoles(guildID)
+	rolesList, err := p.ops(guildID).GetRoles(core.ID(guildID))
 	if err != nil {
 		return EternalRoleRecord{}, fmt.Errorf("list roles: %w", err)
 	}
@@ -191,13 +191,13 @@ func (p *Plugin) addEternalRole(ctx context.Context, guildID, userID, roleID, ac
 	}
 
 	rec := EternalRoleRecord{
-		GuildID: guildID, UserID: userID, OriginRoleID: roleID, RoleID: live.ID,
+		GuildID: guildID, UserID: userID, OriginRoleID: roleID, RoleID: live.ID.String(),
 		Name: live.Name, Color: live.Color, Hoist: live.Hoist, Mentionable: live.Mentionable,
-		Permissions: live.Permissions, UnicodeEmoji: live.UnicodeEmoji, IconHash: live.Icon,
+		Permissions: int64(live.Permissions), UnicodeEmoji: deref(live.Emoji), IconHash: deref(live.Icon),
 		CapturedAt: p.now(),
 	}
-	if live.Icon != "" {
-		icon, err := p.fetch(ctx, live.IconURL("1024"))
+	if url := live.IconURL(discord.WithSize(1024)); url != nil {
+		icon, err := p.fetch(ctx, *url)
 		if err != nil {
 			p.log.Error("roles: eternal-role: icon not captured", "guild", guildID, "role", live.ID, "err", err)
 		} else {
@@ -207,7 +207,7 @@ func (p *Plugin) addEternalRole(ctx context.Context, guildID, userID, roleID, ac
 	if err := p.store.PutEternalRole(ctx, rec); err != nil {
 		return EternalRoleRecord{}, fmt.Errorf("store copy: %w", err)
 	}
-	if err := p.audit.Record(ctx, guildID, actor, "roles.eternal_added", core.MentionRole(live.ID),
+	if err := p.audit.Record(ctx, guildID, actor, "roles.eternal_added", core.MentionRole(live.ID.String()),
 		fmt.Sprintf("now an eternal role of %s", core.MentionUser(userID))); err != nil {
 		p.log.Error("roles: eternal-role: audit failed", "guild", guildID, "err", err)
 	}
@@ -217,37 +217,41 @@ func (p *Plugin) addEternalRole(ctx context.Context, guildID, userID, roleID, ac
 // eternalRoleDiverged reports whether live no longer matches the copy.
 // Position is deliberately not compared: it shifts whenever any other role
 // is reordered, and a role that has merely moved is still the same role.
-func eternalRoleDiverged(live *discordgo.Role, rec EternalRoleRecord) bool {
+func eternalRoleDiverged(live *discord.Role, rec EternalRoleRecord) bool {
 	return live.Name != rec.Name || live.Color != rec.Color || live.Hoist != rec.Hoist ||
-		live.Mentionable != rec.Mentionable || live.Permissions != rec.Permissions ||
-		live.UnicodeEmoji != rec.UnicodeEmoji || live.Icon != rec.IconHash
+		live.Mentionable != rec.Mentionable || int64(live.Permissions) != rec.Permissions ||
+		deref(live.Emoji) != rec.UnicodeEmoji || deref(live.Icon) != rec.IconHash
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // recreateEternalRole creates a fresh role from the copy and retargets the
 // copy to it. above is the edited role to sit directly over, or nil when the
 // old one is gone. The icon hash is re-read from what Discord created, since
 // Discord's hash of the re-upload is the comparison key from now on.
-func (p *Plugin) recreateEternalRole(ctx context.Context, rec *EternalRoleRecord, above *discordgo.Role) (*discordgo.Role, error) {
+func (p *Plugin) recreateEternalRole(ctx context.Context, rec *EternalRoleRecord, above *discord.Role) (*discord.Role, error) {
 	ops := p.ops(rec.GuildID)
-	params := &discordgo.RoleParams{
-		Name: rec.Name, Color: &rec.Color, Hoist: &rec.Hoist, Mentionable: &rec.Mentionable,
-		Permissions: &rec.Permissions,
-	}
-	if rec.UnicodeEmoji != "" {
-		params.UnicodeEmoji = &rec.UnicodeEmoji
+	perms := discord.Permissions(rec.Permissions)
+	params := discord.RoleCreate{
+		Name: rec.Name, Color: rec.Color, Hoist: rec.Hoist, Mentionable: rec.Mentionable,
+		Permissions: &perms, Emoji: rec.UnicodeEmoji,
 	}
 	if len(rec.Icon) > 0 {
-		icon := "data:image/png;base64," + base64.StdEncoding.EncodeToString(rec.Icon)
-		params.Icon = &icon
+		params.Icon = discord.NewIconRaw(discord.IconTypePNG, rec.Icon)
 	}
-	role, err := ops.GuildRoleCreate(rec.GuildID, params)
-	if err != nil && (params.Icon != nil || params.UnicodeEmoji != nil) {
+	role, err := ops.CreateRole(core.ID(rec.GuildID), params)
+	if err != nil && (params.Icon != nil || params.Emoji != "") {
 		// Icons and emoji need the guild's ROLE_ICONS feature, which comes
 		// and goes with boost level. A role without its picture is still the
 		// role; no role at all is the failure this script exists to prevent.
 		p.log.Warn("roles: eternal-role: create with icon failed, retrying without", "guild", rec.GuildID, "err", err)
-		params.Icon, params.UnicodeEmoji = nil, nil
-		role, err = ops.GuildRoleCreate(rec.GuildID, params)
+		params.Icon, params.Emoji = nil, ""
+		role, err = ops.CreateRole(core.ID(rec.GuildID), params)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("recreate role: %w", err)
@@ -255,23 +259,24 @@ func (p *Plugin) recreateEternalRole(ctx context.Context, rec *EternalRoleRecord
 
 	reason := "it had been deleted"
 	if above != nil {
-		reason = fmt.Sprintf("%s had been changed", core.MentionRole(above.ID))
+		reason = fmt.Sprintf("%s had been changed", core.MentionRole(above.ID.String()))
 		// Non-fatal, like rotation.restorePosition: the role exists and is
 		// about to be assigned, and an error here would have the sweep
 		// create a second one.
-		if _, err := ops.GuildRoleReorder(rec.GuildID, []*discordgo.Role{{ID: role.ID, Position: above.Position + 1}}); err != nil {
+		position := above.Position + 1
+		if _, err := ops.UpdateRolePositions(core.ID(rec.GuildID), []discord.RolePositionUpdate{{ID: role.ID, Position: &position}}); err != nil {
 			p.log.Warn("roles: eternal-role: could not place recreated role above the changed one", "guild", rec.GuildID, "role", role.ID, "err", err)
 		}
 	}
 
 	old := rec.RoleID
-	rec.RoleID, rec.IconHash = role.ID, role.Icon
+	rec.RoleID, rec.IconHash = role.ID.String(), deref(role.Icon)
 	if err := p.store.PutEternalRole(ctx, *rec); err != nil {
 		return nil, fmt.Errorf("retarget copy: %w", err)
 	}
 	p.log.Warn("roles: eternal-role: role recreated", "guild", rec.GuildID, "user", rec.UserID, "old", old, "new", role.ID)
 	p.auditEternal(ctx, rec.GuildID, "roles.eternal_recreated", core.MentionRole(old),
-		fmt.Sprintf("%s recreated for %s: %s", core.MentionRole(role.ID), core.MentionUser(rec.UserID), reason))
+		fmt.Sprintf("%s recreated for %s: %s", core.MentionRole(role.ID.String()), core.MentionUser(rec.UserID), reason))
 	return role, nil
 }
 
@@ -284,7 +289,7 @@ func (p *Plugin) auditEternal(ctx context.Context, guildID, action, oldValue, ne
 // HandleRoleUpdated reacts to any role edit in guildID by reporting it if
 // it is a join role, and by re-checking the eternal roles there (latency
 // only for those; the sweep is the mechanism).
-func (p *Plugin) HandleRoleUpdated(ctx context.Context, guildID string, role *discordgo.Role) {
+func (p *Plugin) HandleRoleUpdated(ctx context.Context, guildID string, role discord.Role) {
 	p.joinRoleUpdated(ctx, guildID, role)
 	if err := p.enforceEternalRoles(ctx, guildID); err != nil {
 		p.log.Error("roles: eternal-role: enforce on role update", "guild", guildID, "err", err)
@@ -316,14 +321,14 @@ func (p *Plugin) canDefineEternal(guildID, userID string) (bool, error) {
 	if p.perms != nil && p.perms.IsBootstrapAdmin(userID) {
 		return true, nil
 	}
-	guild, err := p.ops(guildID).Guild(guildID)
+	guild, err := p.ops(guildID).GetGuild(core.ID(guildID))
 	if err != nil {
 		return false, fmt.Errorf("could not read this server to check who owns it: %w", err)
 	}
 	if guild == nil {
 		return false, fmt.Errorf("this server could not be read, so ownership cannot be confirmed")
 	}
-	return guild.OwnerID == userID, nil
+	return guild.OwnerID.String() == userID, nil
 }
 
 // eternalRolesLine renders a guild's definitions for /roles scripts list.
