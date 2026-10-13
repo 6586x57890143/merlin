@@ -59,29 +59,22 @@ requested. `GUILD_MESSAGES` delivers message events with no text in them (that
 needs `MESSAGE_CONTENT`, below); `/statistics` counts who posted where, by the
 hour, from those.
 
-`GUILD_MEMBERS` is privileged, so if you're self-hosting you need to tick
-**Server Members Intent** under Bot in the Discord Developer Portal. The bot
-asks for it by default. If the toggle is off, Discord silently refuses the
-gateway connection, so the bot gives up at startup and tells you which toggle to
-flip rather than sitting there reconnecting forever.
+`GUILD_MEMBERS` and `MESSAGE_CONTENT` are privileged: each is a toggle under
+Bot in the Discord Developer Portal (**Server Members Intent**, **Message
+Content Intent**). merlin reads those toggles when she starts and asks for
+exactly what they grant, so Discord never refuses her connection over an
+intent, and switching one later restarts her onto it within ten minutes.
 
-What the intent buys you: a jailed member who rejoins gets re-jailed instantly
-instead of within a minute, and roles that a server's Onboarding flow hands back
-to a jailed member get stripped again right away. Both of those work without it,
-just a minute slower. If you can't enable it, set
-`MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1` and live with the sweep.
+What `GUILD_MEMBERS` buys you: a jailed member who rejoins gets re-jailed
+instantly instead of within a minute, and roles that a server's Onboarding
+flow hands back to a jailed member get stripped again right away. Both of
+those work without it, just a minute slower.
 
-`MESSAGE_CONTENT` is privileged too, and is **off unless you ask for it**:
-`MERLIN_ENABLE_MESSAGE_CONTENT_INTENT=1` plus **Message Content Intent** ticked
-in the same Developer Portal page. It's the opposite default from the one above
-because it's a far larger ask (every message in every server, and Discord
-reviews it above 100 guilds), and nothing but `/aimod` reads it. Without it that
-plugin registers its commands, scans nothing, and says so in `/aimod status`
-rather than looking like it's working.
-
-Same failure mode as the other one if the portal toggle is missing: Discord
-refuses the connection and the bot exits at startup naming both toggles instead
-of reconnect-looping.
+`MESSAGE_CONTENT` is the far larger ask (every message in every server, and
+Discord reviews it above 100 guilds), and nothing but `/aimod` reads it. Leave
+it off unless you run AI moderation. Without it that plugin registers its
+commands, scans nothing, and says so in `/aimod status` rather than looking
+like it's working.
 
 ## First run
 

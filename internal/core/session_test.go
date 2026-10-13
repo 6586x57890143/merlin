@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/gateway"
 )
 
@@ -26,13 +27,33 @@ func TestNewSessionKnowsTheBotFromItsToken(t *testing.T) {
 	}
 }
 
+// A portal toggle counts whether it is the full flag or the _LIMITED one a
+// bot under 100 servers gets, and an untouched toggle grants nothing.
+func TestGrantedReadsThePortalToggles(t *testing.T) {
+	for _, c := range []struct {
+		flags discord.ApplicationFlags
+		want  Intents
+	}{
+		{0, Intents{}},
+		{discord.ApplicationFlagGatewayGuildMemberLimited, Intents{Members: true}},
+		{discord.ApplicationFlagGatewayGuildMembers, Intents{Members: true}},
+		{discord.ApplicationFlagGatewayMessageContentLimited, Intents{MessageContent: true}},
+		{discord.ApplicationFlagGatewayMessageContent | discord.ApplicationFlagGatewayGuildMembers, Intents{Members: true, MessageContent: true}},
+		{discord.ApplicationFlagGatewayPresence, Intents{}},
+	} {
+		if got := Granted(c.flags); got != c.want {
+			t.Errorf("Granted(%b) = %+v, want %+v", c.flags, got, c.want)
+		}
+	}
+}
+
 // A connection Discord refuses fails startup, naming the toggles.
 func TestOpenGatewayFailsWithAnActionableError(t *testing.T) {
 	err := openWithin(context.Background(), func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}, 10*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "Server Members Intent") || !errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || !strings.Contains(err.Error(), "Developer Portal") || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v", err)
 	}
 	if err := openWithin(context.Background(), func(context.Context) error { return nil }, time.Second); err != nil {
