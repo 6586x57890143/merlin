@@ -6,12 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
 
@@ -155,58 +153,6 @@ func TestIxReadsSelectsAndForms(t *testing.T) {
 	}
 }
 
-// wire is what x marshals to, with every false, zero and empty value
-// dropped: Discord reads an absent field as its zero value, and the two
-// libraries differ only in which zero values they bother to write.
-func wireOf(t *testing.T, x any) any {
-	t.Helper()
-	raw, err := json.Marshal(x)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		t.Fatal(err)
-	}
-	return prune(v)
-}
-
-func prune(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		for k, e := range x {
-			if e = prune(e); e == nil {
-				delete(x, k)
-			} else {
-				x[k] = e
-			}
-		}
-		if len(x) == 0 {
-			return nil
-		}
-	case []any:
-		for n := range x {
-			x[n] = prune(x[n])
-		}
-		if len(x) == 0 {
-			return nil
-		}
-	case bool:
-		if !x {
-			return nil
-		}
-	case float64:
-		if x == 0 {
-			return nil
-		}
-	case string:
-		if x == "" {
-			return nil
-		}
-	}
-	return v
-}
-
 func names[F any](files []F, name func(F) string) []string {
 	var out []string
 	for _, f := range files {
@@ -215,48 +161,42 @@ func names[F any](files []F, name func(F) string) []string {
 	return out
 }
 
-// A plugin moved onto the disgo builders must look exactly as it did.
-func TestDisgoBuildersMatchTheDiscordgoOnes(t *testing.T) {
-	inline := true
-	for _, c := range []struct {
-		name     string
-		old, new any
-		oldFiles []string
-		newFiles []string
-	}{
-		{"embed", core.NewEmbed(core.ColorSuccess, "t", "d", &discordgo.MessageEmbedField{Name: "n", Value: "v", Inline: true}),
-			core.Embed(core.ColorSuccess, "t", "d", discord.EmbedField{Name: "n", Value: "v", Inline: &inline}), nil, nil},
-		{"landmark", core.NewLandmarkEmbed(core.ColorInfo, "t", "d"), core.LandmarkEmbed(core.ColorInfo, "t", "d"), nil, nil},
-		{"error embed", core.NewEmbed(core.ColorError, "t", "d"), core.Embed(core.ColorError, "t", "d"), nil, nil},
-	} {
-		if o, n := wireOf(t, c.old), wireOf(t, c.new); !reflect.DeepEqual(o, n) {
-			t.Errorf("%s:\n discordgo %v\n disgo     %v", c.name, o, n)
-		}
-	}
-	for _, color := range []int{core.ColorSuccess, core.ColorError, core.ColorWarning, core.ColorInfo, core.ColorPrimary} {
-		o := names(core.EmbedFiles(core.NewEmbed(color, "t", "d")), func(f *discordgo.File) string { return f.Name })
-		n := names(core.EmbedUploads(core.Embed(color, "t", "d")), func(f *discord.File) string { return f.Name })
-		if !slices.Equal(o, n) {
-			t.Errorf("colour %x uploads: discordgo %v, disgo %v", color, o, n)
-		}
-	}
-
-	old := core.Panel{Color: core.ColorSuccess, Title: "settings", Line: "what this is", Note: "✓ saved", Footer: "bye", Body: []discordgo.MessageComponent{
-		core.Text("hello"), core.Gap(),
-		core.Row(discordgo.Button{Label: "go", Style: discordgo.PrimaryButton, CustomID: "go"}),
-	}}
-	pn := old
-	pn.Body = nil
-	pn.Parts = []discord.ContainerSubComponent{
+// The embed and panel builders draw exactly what the discordgo ones did:
+// these are those payloads and uploads, byte for byte.
+func TestBuildersDrawWhatTheyAlwaysDrew(t *testing.T) {
+	pn := core.Panel{Color: core.ColorSuccess, Title: "settings", Line: "what this is", Note: "✓ saved", Footer: "bye", Parts: []discord.ContainerSubComponent{
 		discord.TextDisplayComponent{Content: "hello"}, discord.SeparatorComponent{},
 		discord.ActionRowComponent{Components: []discord.InteractiveComponent{discord.ButtonComponent{Label: "go", Style: discord.ButtonStylePrimary, CustomID: "go"}}},
+	}}
+	for _, c := range []struct {
+		name string
+		got  any
+		want string
+	}{
+		{"embed", core.Embed(core.ColorSuccess, "t", "d", discord.EmbedField{Name: "n", Value: "v", Inline: core.Inline()}),
+			`{"title":"t","description":"d","color":8162138,"image":{"url":"attachment://merlin_rule.png"},"thumbnail":{"url":"attachment://merlin_ok.png"},"fields":[{"name":"n","value":"v","inline":true}]}`},
+		{"landmark", core.LandmarkEmbed(core.ColorInfo, "t", "d"),
+			`{"title":"t","description":"d","color":8027576,"image":{"url":"attachment://merlin_banner.png"}}`},
+		{"error embed", core.Embed(core.ColorError, "t", "d"),
+			`{"title":"t","description":"d","color":11031092,"image":{"url":"attachment://merlin_rule.png"},"thumbnail":{"url":"attachment://merlin_error.png"}}`},
+		{"panel", pn.Layout(),
+			`[{"type":17,"accent_color":8162138,"components":[{"type":9,"components":[{"type":10,"content":"## settings\n-# what this is"}],"accessory":{"type":11,"media":{"url":"attachment://merlin_ok.png","flags":0}}},{"type":12,"items":[{"media":{"url":"attachment://merlin_rule.png","flags":0}}]},{"type":10,"content":"✓ saved"},{"type":10,"content":"hello"},{"type":14},{"type":1,"components":[{"type":2,"style":1,"label":"go","custom_id":"go"}]},{"type":10,"content":"-# bye"}]}]`},
+	} {
+		raw, err := json.Marshal(c.got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != c.want {
+			t.Errorf("%s:\n got  %s\n want %s", c.name, raw, c.want)
+		}
 	}
-	if o, n := wireOf(t, old.Components()), wireOf(t, pn.Layout()); !reflect.DeepEqual(o, n) {
-		t.Errorf("panel:\n discordgo %v\n disgo     %v", o, n)
+	name := func(f *discord.File) string { return f.Name }
+	if got := names(pn.Uploads(), name); !slices.Equal(got, []string{"merlin_rule.png", "merlin_ok.png"}) {
+		t.Errorf("panel uploads %v", got)
 	}
-	o := names(old.Files(), func(f *discordgo.File) string { return f.Name })
-	n := names(pn.Uploads(), func(f *discord.File) string { return f.Name })
-	if !slices.Equal(o, n) {
-		t.Errorf("panel uploads: discordgo %v, disgo %v", o, n)
+	for color, mood := range map[int]string{core.ColorSuccess: "ok", core.ColorError: "error", core.ColorWarning: "warn", core.ColorInfo: "info", core.ColorPrimary: "notice"} {
+		if got := names(core.EmbedUploads(core.Embed(color, "t", "d")), name); !slices.Equal(got, []string{"merlin_" + mood + ".png", "merlin_rule.png"}) {
+			t.Errorf("colour %x uploads %v", color, got)
+		}
 	}
 }

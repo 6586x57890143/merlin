@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // captureTransport records the body of every Discord request, so a test can
@@ -27,9 +27,9 @@ func (c *captureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-func TestNewEmbedSetsFields(t *testing.T) {
-	f := &discordgo.MessageEmbedField{Name: "k", Value: "v"}
-	e := NewEmbed(ColorSuccess, "Title", "Description", f)
+func TestEmbedSetsFields(t *testing.T) {
+	f := discord.EmbedField{Name: "k", Value: "v"}
+	e := Embed(ColorSuccess, "Title", "Description", f)
 
 	if e.Title != "Title" || e.Description != "Description" || e.Color != ColorSuccess {
 		t.Fatalf("unexpected embed: %+v", e)
@@ -43,18 +43,18 @@ func TestNewEmbedSetsFields(t *testing.T) {
 // "merlin, today at 14:32" line immediately under the one Discord already
 // puts above every message the bot sends, saying nothing new in a smaller
 // font. This asserts on their absence because the natural instinct when
-// adding a field to NewEmbed is to put the brand mark back.
-func TestNewEmbedHasNoRedundantFooterOrTimestamp(t *testing.T) {
-	for name, e := range map[string]*discordgo.MessageEmbed{
-		"ok":       NewEmbed(ColorSuccess, "t", "d"),
-		"error":    NewEmbed(ColorError, "t", "d"),
-		"landmark": NewLandmarkEmbed(ColorInfo, "t", "d"),
+// adding a field to Embed is to put the brand mark back.
+func TestEmbedHasNoRedundantFooterOrTimestamp(t *testing.T) {
+	for name, e := range map[string]discord.Embed{
+		"ok":       Embed(ColorSuccess, "t", "d"),
+		"error":    Embed(ColorError, "t", "d"),
+		"landmark": LandmarkEmbed(ColorInfo, "t", "d"),
 	} {
 		if e.Footer != nil {
 			t.Errorf("%s: footer is back: %+v", name, e.Footer)
 		}
-		if e.Timestamp != "" {
-			t.Errorf("%s: timestamp is back: %q", name, e.Timestamp)
+		if e.Timestamp != nil {
+			t.Errorf("%s: timestamp is back: %v", name, e.Timestamp)
 		}
 	}
 }
@@ -62,18 +62,18 @@ func TestNewEmbedHasNoRedundantFooterOrTimestamp(t *testing.T) {
 // Nothing points at the avatar any more, so nothing should upload it. This
 // is bytes on every single response, and an attachment nobody references
 // also shows up in Discord's own attachment list on the message.
-func TestEmbedFilesSkipsTheUnreferencedAvatar(t *testing.T) {
-	for _, f := range EmbedFiles(NewEmbed(ColorSuccess, "t", "d")) {
+func TestEmbedUploadsSkipsTheUnreferencedAvatar(t *testing.T) {
+	for _, f := range EmbedUploads(Embed(ColorSuccess, "t", "d")) {
 		if f.Name == avatarAttachmentName {
 			t.Error("the avatar is uploaded despite nothing in the embed referencing it")
 		}
 	}
 	// But an embed that does reference it still gets it, which is what keeps
 	// this from being a rule that silently breaks a future footer.
-	e := NewEmbed(ColorSuccess, "t", "d")
-	e.Footer = &discordgo.MessageEmbedFooter{Text: "x", IconURL: avatarAttachmentURL}
+	e := Embed(ColorSuccess, "t", "d")
+	e.Footer = &discord.EmbedFooter{Text: "x", IconURL: avatarAttachmentURL}
 	var found bool
-	for _, f := range EmbedFiles(e) {
+	for _, f := range EmbedUploads(e) {
 		if f.Name == avatarAttachmentName {
 			found = true
 		}
@@ -83,8 +83,8 @@ func TestEmbedFilesSkipsTheUnreferencedAvatar(t *testing.T) {
 	}
 }
 
-func TestNewEmbedWithNoFields(t *testing.T) {
-	e := NewEmbed(ColorError, "Oops", "failed")
+func TestEmbedWithNoFields(t *testing.T) {
+	e := Embed(ColorError, "Oops", "failed")
 	if len(e.Fields) != 0 {
 		t.Fatalf("expected no fields, got %+v", e.Fields)
 	}
@@ -130,19 +130,19 @@ func TestTruncateEmbedFieldCutsOnRuneBoundary(t *testing.T) {
 // which Discord renders as a broken frame to the whole channel.
 func TestEveryMoodHasAnAsset(t *testing.T) {
 	for _, m := range []Mood{MoodOK, MoodError, MoodWarn, MoodInfo, MoodNotice, MoodIdle, MoodTipJarEmpty, MoodTipJarLow, MoodTipJarFull} {
-		f := moodFile(m)
-		if f == nil {
+		a, ok := moodAssets[m]
+		if !ok {
 			t.Errorf("mood %d has no file", m)
 			continue
 		}
-		if f.Name == "" || f.Reader == nil {
+		if a.name == "" || len(a.png) == 0 {
 			t.Errorf("mood %d has an empty asset", m)
 		}
-		if url := moodAttachmentURL(m); url != "attachment://"+f.Name {
-			t.Errorf("mood %d URL %q does not match its file %q", m, url, f.Name)
+		if url := moodAttachmentURL(m); url != "attachment://"+a.name {
+			t.Errorf("mood %d URL %q does not match its file %q", m, url, a.name)
 		}
 	}
-	if moodFile(MoodNone) != nil {
+	if _, ok := moodAssets[MoodNone]; ok || moodAttachmentURL(MoodNone) != "" {
 		t.Error("MoodNone should have no file")
 	}
 }
@@ -166,25 +166,25 @@ func TestColorsMapToTheRightMood(t *testing.T) {
 
 // The invariant that actually protects the channel: whatever an embed
 // references by attachment:// must be in the files that go with it.
-func TestEmbedFilesCoversEveryReference(t *testing.T) {
-	for name, embed := range map[string]*discordgo.MessageEmbed{
-		"ok":       NewEmbed(ColorSuccess, "t", "d"),
-		"error":    NewEmbed(ColorError, "t", "d"),
-		"warn":     NewEmbed(ColorWarning, "t", "d"),
-		"info":     NewEmbed(ColorInfo, "t", "d"),
-		"notice":   NewEmbed(ColorPrimary, "t", "d"),
-		"idle":     WithMood(NewEmbed(ColorWarning, "t", "d"), MoodIdle),
-		"tipjar":   WithMood(NewEmbed(ColorSuccess, "t", "d"), MoodTipJarFull),
-		"landmark": NewLandmarkEmbed(ColorInfo, "t", "d"),
+func TestEmbedUploadsCoversEveryReference(t *testing.T) {
+	for name, embed := range map[string]discord.Embed{
+		"ok":       Embed(ColorSuccess, "t", "d"),
+		"error":    Embed(ColorError, "t", "d"),
+		"warn":     Embed(ColorWarning, "t", "d"),
+		"info":     Embed(ColorInfo, "t", "d"),
+		"notice":   Embed(ColorPrimary, "t", "d"),
+		"idle":     withMood(Embed(ColorWarning, "t", "d"), MoodIdle),
+		"tipjar":   withMood(Embed(ColorSuccess, "t", "d"), MoodTipJarFull),
+		"landmark": LandmarkEmbed(ColorInfo, "t", "d"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			attached := map[string]bool{}
-			for _, f := range EmbedFiles(embed) {
+			for _, f := range EmbedUploads(embed) {
 				attached[f.Name] = true
 			}
 			for _, url := range referencedAttachments(embed) {
 				if !attached[strings.TrimPrefix(url, "attachment://")] {
-					t.Errorf("embed references %q but EmbedFiles does not include it", url)
+					t.Errorf("embed references %q but EmbedUploads does not include it", url)
 				}
 			}
 		})
@@ -194,7 +194,7 @@ func TestEmbedFilesCoversEveryReference(t *testing.T) {
 // A landmark embed carries the banner instead of a mood thumbnail: with
 // both it reads as cluttered.
 func TestLandmarkEmbedHasNoMoodThumbnail(t *testing.T) {
-	e := NewLandmarkEmbed(ColorInfo, "t", "d")
+	e := LandmarkEmbed(ColorInfo, "t", "d")
 	if e.Thumbnail != nil {
 		t.Errorf("landmark embed carries a thumbnail as well as its banner: %+v", e.Thumbnail)
 	}
@@ -203,7 +203,12 @@ func TestLandmarkEmbedHasNoMoodThumbnail(t *testing.T) {
 	}
 }
 
-func referencedAttachments(e *discordgo.MessageEmbed) []string {
+func withMood(e discord.Embed, m Mood) discord.Embed {
+	SetMood(&e, m)
+	return e
+}
+
+func referencedAttachments(e discord.Embed) []string {
 	var out []string
 	add := func(u string) {
 		if strings.HasPrefix(u, "attachment://") {
@@ -225,12 +230,12 @@ func referencedAttachments(e *discordgo.MessageEmbed) []string {
 // The separator is what pins every embed to one width, and an image URL with
 // no matching upload renders as a broken frame, so both halves are asserted.
 func TestEveryEmbedCarriesTheRuleItReferences(t *testing.T) {
-	e := NewEmbed(ColorInfo, "t", "d")
+	e := Embed(ColorInfo, "t", "d")
 	if e.Image == nil || e.Image.URL != ruleAttachmentURL {
-		t.Fatalf("NewEmbed image = %+v, want the separator", e.Image)
+		t.Fatalf("Embed image = %+v, want the separator", e.Image)
 	}
 	var found bool
-	for _, f := range EmbedFiles(e) {
+	for _, f := range EmbedUploads(e) {
 		if f.Name == ruleAttachmentName {
 			found = true
 		}
@@ -238,7 +243,7 @@ func TestEveryEmbedCarriesTheRuleItReferences(t *testing.T) {
 	if !found {
 		t.Error("the separator is referenced but not uploaded")
 	}
-	if l := NewLandmarkEmbed(ColorInfo, "t", "d"); l.Image.URL != bannerAttachmentURL {
+	if l := LandmarkEmbed(ColorInfo, "t", "d"); l.Image.URL != bannerAttachmentURL {
 		t.Errorf("a landmark embed should show the banner, got %q", l.Image.URL)
 	}
 }

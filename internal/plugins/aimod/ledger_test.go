@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -79,7 +77,7 @@ func TestUndoReversesTheSanctionRowTooAndPublishes(t *testing.T) {
 	store := newFakeStore()
 	store.setConfig(enforcingConfig())
 	ops := newFakeOps()
-	ops.members["u1"] = &discordgo.Member{User: &discordgo.User{ID: "u1", Username: "someguy"}}
+	ops.members["u1"] = Member{Name: "someguy"}
 	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 	bus := core.NewEventBus(testLogger())
 	rec := &busRecorder{}
@@ -173,7 +171,7 @@ func TestUndoReleasesTheJailOnlyWhenNoOtherSanctionStands(t *testing.T) {
 	store := newFakeStore()
 	store.setConfig(enforcingConfig())
 	ops := newFakeOps()
-	ops.members["u1"] = &discordgo.Member{User: &discordgo.User{ID: "u1", Username: "someguy"}}
+	ops.members["u1"] = Member{Name: "someguy"}
 	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 	jailer := &fakeJailer{}
 	p.jailer = jailer

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
@@ -134,7 +133,7 @@ func NewPermissions(state cache.Caches, settings GuildAuthData, bootstrapAdminUs
 	return &Permissions{state: state, settings: settings, bootstrapID: bootstrapAdminUserID}
 }
 
-// Authorize checks spec against the invoking member. Discord's own
+// Authorize checks spec against the member invoking ix. Discord's own
 // default_member_permissions is intentionally NOT re-checked here. For
 // Mod/Admin-tier commands it's registered as unset (visible to @everyone at
 // the Discord layer) precisely so a whitelisted non-mod user, or a mod role
@@ -171,25 +170,7 @@ func NewPermissions(state cache.Caches, settings GuildAuthData, bootstrapAdminUs
 //     ours.
 //  3. Allow: independent of tier, so a specific role/user can be granted
 //     exactly one action without becoming a full mod or admin.
-func (p *Permissions) Authorize(i *discordgo.InteractionCreate, spec PermSpec) error {
-	member := i.Member
-	if member != nil && member.User == nil {
-		// Discord always populates Member.User on a real interaction. If it
-		// somehow isn't there we have no identity to authorize, so refuse
-		// rather than nil-deref our way through a security check.
-		return ErrForbidden{Reason: "member has no user identity"}
-	}
-	var who *invoker
-	if member != nil {
-		who = &invoker{userID: member.User.ID, roles: member.Roles, administrator: member.Permissions&discordgo.PermissionAdministrator != 0}
-	}
-	return p.authorize(i.GuildID, who, spec)
-}
-
-// AuthorizeIx is Authorize for an interaction decoded by disgo. Both build
-// the same invoker and share one decision, so a plugin moved to disgo is
-// checked by exactly the code that checked it before.
-func (p *Permissions) AuthorizeIx(ix *Ix, spec PermSpec) error {
+func (p *Permissions) Authorize(ix *Ix, spec PermSpec) error {
 	var who *invoker
 	if m := ix.Member(); m != nil {
 		if m.User.ID == 0 {
@@ -204,9 +185,9 @@ func (p *Permissions) AuthorizeIx(ix *Ix, spec PermSpec) error {
 	return p.authorize(ix.GuildID, who, spec)
 }
 
-// AllowsIx is Allows for an Ix.
-func (p *Permissions) AllowsIx(ix *Ix, spec PermSpec) bool {
-	return p != nil && p.AuthorizeIx(ix, spec) == nil
+// Allows is whether Authorize would let ix through spec.
+func (p *Permissions) Allows(ix *Ix, spec PermSpec) bool {
+	return p != nil && p.Authorize(ix, spec) == nil
 }
 
 // invoker is the three facts about a member Authorize reads, however the
@@ -445,4 +426,20 @@ func hasAnyRole(memberRoles, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// Actor is who is acting, as CanModerate reads them: an ID and the roles
+// they hold. Nil means nobody, as for an automatic action.
+type Actor struct {
+	ID      string
+	RoleIDs []string
+}
+
+// Actor is the invoking member as an Actor, nil outside a server.
+func (ix *Ix) Actor() *Actor {
+	m := ix.Member()
+	if m == nil {
+		return nil
+	}
+	return &Actor{ID: ix.UserID, RoleIDs: IDStrings(m.RoleIDs)}
 }

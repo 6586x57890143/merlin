@@ -111,7 +111,7 @@ func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 // whenever a role becomes (or already is) a mod role, from here and from
 // the setup wizard, so mods can actually see the moderation trail they're
 // meant to have access to; the channels themselves only deny @everyone by
-// default (see core.DenyEveryoneExceptBot), they don't proactively grant mod
+// default (see core.DenyEveryone), they don't proactively grant mod
 // roles, since a mod role may not exist yet at channel-creation time.
 func (p *Plugin) grantModRoleChannelAccess(guildID, roleID string) {
 	p.grantRolesChannelAccess(guildID, []string{roleID})

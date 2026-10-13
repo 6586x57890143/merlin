@@ -9,9 +9,9 @@ import (
 	"github.com/disgoorg/disgo/discord"
 )
 
-// HandleMessage and HandleVoiceState read Discord's JSON as the discordgo
-// fixtures elsewhere are read: who, where, when, by which name, and that a
-// mute is not a move.
+// HandleMessage and HandleVoiceState read Discord's JSON into the post and
+// move the other tests build directly: who, where, when, by which name, and
+// that a mute is not a move.
 func TestIntakeReadsDiscordsJSON(t *testing.T) {
 	store := newFakeStore()
 	p := newTestPlugin(store, &fakeSource{})

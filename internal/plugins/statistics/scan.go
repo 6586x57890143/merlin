@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 	snow "github.com/disgoorg/snowflake/v2"
@@ -216,10 +215,6 @@ func page(ctx context.Context, src messageSource, channelID, before string, tick
 func transient(err error) bool {
 	if re, ok := errors.AsType[*rest.Error](err); ok && re.Response != nil {
 		return re.Response.StatusCode >= 500
-	}
-	var rerr *discordgo.RESTError
-	if errors.As(err, &rerr) && rerr.Response != nil {
-		return rerr.Response.StatusCode >= 500
 	}
 	return true
 }

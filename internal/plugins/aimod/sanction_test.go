@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // sanctionFor decides how long a real person loses access to a community
@@ -251,13 +251,13 @@ func TestTimeoutIsClampedToDiscordsCeiling(t *testing.T) {
 func TestTimeoutRefusesStaffAndOwner(t *testing.T) {
 	ops := newFakeOps()
 	ops.guild.OwnerID = "owner"
-	ops.guild.Roles = []*discordgo.Role{
-		{ID: "r-mod", Permissions: discordgo.PermissionManageMessages},
-		{ID: "r-member", Permissions: 0},
+	ops.guild.RolePerms = map[string]discord.Permissions{
+		"r-mod":    discord.PermissionManageMessages,
+		"r-member": 0,
 	}
-	ops.members["mod"] = &discordgo.Member{User: &discordgo.User{ID: "mod"}, Roles: []string{"r-mod"}}
-	ops.members["member"] = &discordgo.Member{User: &discordgo.User{ID: "member"}, Roles: []string{"r-member"}}
-	ops.members["ghost"] = &discordgo.Member{User: &discordgo.User{ID: "ghost"}, Roles: []string{"r-vanished"}}
+	ops.members["mod"] = Member{RoleIDs: []string{"r-mod"}}
+	ops.members["member"] = Member{RoleIDs: []string{"r-member"}}
+	ops.members["ghost"] = Member{RoleIDs: []string{"r-vanished"}}
 
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
 
@@ -281,8 +281,8 @@ func TestTimeoutRefusesStaffAndOwner(t *testing.T) {
 func TestConsentWaivesTheStaffRefusalButNotTheOwner(t *testing.T) {
 	ops := newFakeOps()
 	ops.guild.OwnerID = "owner"
-	ops.guild.Roles = []*discordgo.Role{{ID: "r-mod", Permissions: discordgo.PermissionManageMessages}}
-	ops.members["mod"] = &discordgo.Member{User: &discordgo.User{ID: "mod"}, Roles: []string{"r-mod"}}
+	ops.guild.RolePerms = map[string]discord.Permissions{"r-mod": discord.PermissionManageMessages}
+	ops.members["mod"] = Member{RoleIDs: []string{"r-mod"}}
 
 	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
 

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 )
 
 const (
@@ -250,7 +250,7 @@ func TestEternalRoleDoesNothingWhileOff(t *testing.T) {
 
 func TestEternalRoleMemberGoneIsNotAnError(t *testing.T) {
 	f := newEternalFixture(t)
-	f.ops.memberFetchErr = &discordgo.RESTError{Message: &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownMember}}
+	f.ops.memberFetchErr = &rest.Error{Code: rest.JSONErrorCodeUnknownMember}
 	f.enforce(t)
 
 	f.ops.memberFetchErr = errors.New("502")

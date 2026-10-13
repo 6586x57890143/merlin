@@ -13,8 +13,6 @@ import (
 	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/disgoorg/disgo/discord"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
@@ -592,21 +590,20 @@ type fakeOps struct {
 	webhooks  int
 	deleteErr error
 
-	// The fixtures are discordgo's, whose IDs ("u1", "owner") need not be
-	// snowflakes; each read hands back aimod's view of them, as GuardOps
-	// does of disgo's.
-	guild      *discordgo.Guild
+	// Held as aimod reads them, so fixture IDs ("u1", "owner") need not be
+	// snowflakes.
+	guild      Guild
 	guildErr   error
-	members    map[string]*discordgo.Member
-	history    []*discordgo.Message
+	members    map[string]Member
+	history    []Line
 	historyErr error
 }
 
 func newFakeOps() *fakeOps {
 	return &fakeOps{
 		timeouts: make(map[string]time.Duration),
-		members:  make(map[string]*discordgo.Member),
-		guild:    &discordgo.Guild{ID: "g1", Name: "Test Guild", OwnerID: "owner"},
+		members:  make(map[string]Member),
+		guild:    Guild{Name: "Test Guild", OwnerID: "owner", RolePerms: map[string]discord.Permissions{}},
 	}
 }
 
@@ -623,18 +620,7 @@ func (f *fakeOps) DeleteMessage(_, messageID string) error {
 func (f *fakeOps) History(string, string, int) ([]Line, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]Line, 0, len(f.history))
-	for _, m := range f.history {
-		if m == nil {
-			continue
-		}
-		l := Line{Content: m.Content}
-		if m.Author != nil {
-			l.AuthorID = m.Author.ID
-		}
-		out = append(out, l)
-	}
-	return out, f.historyErr
+	return append([]Line(nil), f.history...), f.historyErr
 }
 
 func (f *fakeOps) Webhooks(string) ([]Hook, error) { return nil, nil }
@@ -659,18 +645,10 @@ func (f *fakeOps) PostAs(_ Hook, m discord.WebhookMessageCreate, wait bool) (str
 func (f *fakeOps) Member(_, userID string) (Member, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	m, ok := f.members[userID]
-	if !ok {
-		return Member{Name: "member" + userID}, nil
+	if m, ok := f.members[userID]; ok {
+		return m, nil
 	}
-	out := Member{RoleIDs: m.Roles, Name: m.Nick}
-	if out.Name == "" && m.User != nil {
-		out.Name = m.User.GlobalName
-		if out.Name == "" {
-			out.Name = m.User.Username
-		}
-	}
-	return out, nil
+	return Member{Name: "member" + userID}, nil
 }
 
 func (f *fakeOps) TimeoutMember(_, userID string, until *time.Time) error {
@@ -690,11 +668,7 @@ func (f *fakeOps) Guild(string) (Guild, error) {
 	if f.guildErr != nil {
 		return Guild{}, f.guildErr
 	}
-	g := Guild{Name: f.guild.Name, OwnerID: f.guild.OwnerID, RolePerms: map[string]discord.Permissions{}}
-	for _, r := range f.guild.Roles {
-		g.RolePerms[r.ID] = discord.Permissions(r.Permissions)
-	}
-	return g, nil
+	return f.guild, nil
 }
 
 func (f *fakeOps) DM(_ string, m discord.MessageCreate) error {
@@ -801,9 +775,9 @@ func (f fakePrivilege) IsBootstrapAdmin(userID string) bool {
 	return f.bootstrapID != "" && userID == f.bootstrapID
 }
 
-// AuthorizeIx passes the bootstrap identity and nobody else, which is all the
+// Authorize passes the bootstrap identity and nobody else, which is all the
 // tests need to tell a moderator from a member.
-func (f fakePrivilege) AuthorizeIx(ix *core.Ix, _ core.PermSpec) error {
+func (f fakePrivilege) Authorize(ix *core.Ix, _ core.PermSpec) error {
 	if ix.Member() != nil && f.IsBootstrapAdmin(ix.UserID) {
 		return nil
 	}
