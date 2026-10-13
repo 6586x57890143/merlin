@@ -33,7 +33,7 @@ func (p *Plugin) handleSettings(ctx context.Context, ix *core.Ix) {
 }
 
 func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel {
-	can := p.commands.Perms().AllowsIx(ix, configureSpec)
+	can := p.commands.Perms().Allows(ix, configureSpec)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Contests", Plugin: p.Name(), Note: note,
 		Line:   "Art contests: entries in a forum, a gallery, a vote",
 		Footer: "Running one stays commands: /contest new, advance, cancel, status. Every change here is audited."}

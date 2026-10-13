@@ -11,6 +11,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/discordguard"
 )
@@ -24,9 +25,9 @@ func discordguardDryRun() error {
 }
 
 func unknownMessageError() error {
-	return &discordgo.RESTError{
+	return &rest.Error{
 		Response: &http.Response{StatusCode: http.StatusNotFound},
-		Message:  &discordgo.APIErrorMessage{Code: discordgo.ErrCodeUnknownMessage, Message: "Unknown Message"},
+		Code:     rest.JSONErrorCodeUnknownMessage, Message: "Unknown Message",
 	}
 }
 
