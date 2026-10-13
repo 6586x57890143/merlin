@@ -155,8 +155,8 @@ func formatRetention(hours *int) string {
 	return core.FormatDuration(time.Duration(*hours) * time.Hour)
 }
 
-func (p *Plugin) auditConfigChange(ctx context.Context, i *discordgo.InteractionCreate, action, oldValue, newValue string) {
-	if err := p.audit.Record(ctx, i.GuildID, i.Member.User.ID, action, oldValue, newValue); err != nil {
+func (p *Plugin) auditConfigChange(ctx context.Context, ix *core.Ix, action, oldValue, newValue string) {
+	if err := p.audit.Record(ctx, ix.GuildID, ix.UserID, action, oldValue, newValue); err != nil {
 		p.log.Error("rotation: audit record failed", "action", action, "err", err)
 	}
 }

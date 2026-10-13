@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
@@ -36,47 +38,47 @@ func (p *Plugin) registerCommands() {
 		Name:        "rotation",
 		Description: "Rotating channels: which ones, how often, and how long archives are kept",
 	})
-	p.commands.Handle("rotation", "", viewSpec, p.handleOpen)
-	p.commands.HandleComponent(p.Name(), panelView, viewSpec, p.handleView)
-	p.commands.HandleComponent(p.Name(), panelStruct, structSpec, p.handleSet)
-	p.commands.HandleComponent(p.Name(), panelAdjust, adjustSpec, p.handleSet)
-	p.commands.HandleModal(p.Name(), formStruct, structSpec, p.handleForm)
-	p.commands.HandleModal(p.Name(), formAdjust, adjustSpec, p.handleForm)
+	p.commands.HandleIx("rotation", "", viewSpec, p.handleOpen)
+	p.commands.HandleComponentIx(p.Name(), panelView, viewSpec, p.handleView)
+	p.commands.HandleComponentIx(p.Name(), panelStruct, structSpec, p.handleSet)
+	p.commands.HandleComponentIx(p.Name(), panelAdjust, adjustSpec, p.handleSet)
+	p.commands.HandleModalIx(p.Name(), formStruct, structSpec, p.handleForm)
+	p.commands.HandleModalIx(p.Name(), formAdjust, adjustSpec, p.handleForm)
 }
 
-func (p *Plugin) handleOpen(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.RespondPanel(s, i, p.panel(ctx, i, "", "")); err != nil {
+func (p *Plugin) handleOpen(ctx context.Context, ix *core.Ix) {
+	if err := ix.RespondPanel(p.panel(ctx, ix, "", "")); err != nil {
 		p.log.Error("rotation: panel response failed", "err", err)
 	}
 }
 
 // handleView is the channel picker (rotation:panel:view:ch) and the back
 // button (rotation:panel:view:home).
-func (p *Plugin) handleView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleView(ctx context.Context, ix *core.Ix, customID string) {
 	channelID := ""
 	if strings.TrimPrefix(customID, panelView) == "ch" {
-		channelID = core.FirstValue(i)
+		channelID = ix.FirstValue()
 	}
-	p.redraw(ctx, s, i, channelID, "")
+	p.redraw(ctx, ix, channelID, "")
 }
 
-func (p *Plugin) redraw(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, channelID, note string) {
-	if err := core.UpdatePanel(s, i, p.panel(ctx, i, channelID, note)); err != nil {
+func (p *Plugin) redraw(ctx context.Context, ix *core.Ix, channelID, note string) {
+	if err := ix.UpdatePanel(p.panel(ctx, ix, channelID, note)); err != nil {
 		p.log.Error("rotation: panel update failed", "err", err)
 	}
 }
 
 // panel is the list of rotating channels, or with channelID, that one
 // channel's settings.
-func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, channelID, note string) core.Panel {
+func (p *Plugin) panel(ctx context.Context, ix *core.Ix, channelID, note string) core.Panel {
 	perms := p.commands.Perms()
-	canStruct, canAdjust := perms.Allows(i, structSpec), perms.Allows(i, adjustSpec)
+	canStruct, canAdjust := perms.AllowsIx(ix, structSpec), perms.AllowsIx(ix, adjustSpec)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Rotation", Plugin: p.Name(), Note: note,
 		Line:   "Channels that are replaced on a schedule, their old copy archived",
 		Footer: "Every change is written to the audit log. Deleting an archive has no undo."}
 
 	if channelID == "" {
-		channels := p.settings.RotationChannels(i.GuildID)
+		channels := p.settings.RotationChannels(ix.GuildID)
 		list := "Nothing rotates here yet. Pick a channel below to start."
 		if len(channels) > 0 {
 			var b strings.Builder
@@ -86,22 +88,22 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, chan
 			}
 			list = strings.TrimSuffix(b.String(), "\n")
 		}
-		pn.Body = []discordgo.MessageComponent{
-			core.Text(list),
-			core.Row(core.ChannelSelect(panelView+"ch", "Pick a channel to rotate or edit", "", false, discordgo.ChannelTypeGuildText)),
-			core.Gap(),
-			core.Text("**Archive readers** can read every archived channel, on top of mods. Read-only: no posting, reactions or threads."),
-			core.Row(core.EntitySelect(discordgo.RoleSelectMenu, panelStruct+"readers", "Roles that can read archives", p.settings.ArchiveViewerRoleIDs(i.GuildID), core.MaxSelectValues, !canStruct)),
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text(list),
+			ui.Row(ui.ChannelSelect(panelView+"ch", "Pick a channel to rotate or edit", "", false, discord.ChannelTypeGuildText)),
+			ui.Gap(),
+			ui.Text("**Archive readers** can read every archived channel, on top of mods. Read-only: no posting, reactions or threads."),
+			ui.Row(ui.RoleSelect(panelStruct+"readers", "Roles that can read archives", p.settings.ArchiveViewerRoleIDs(ix.GuildID), ui.MaxSelectValues, !canStruct)),
 		}
 		return pn
 	}
 
-	back := core.Row(core.Button("◀ All channels", panelView+"home", discordgo.SecondaryButton, false))
-	rc, rotating := p.settings.RotationChannel(i.GuildID, channelID)
+	back := ui.Row(ui.Button("◀ All channels", panelView+"home", discord.ButtonStyleSecondary, false))
+	rc, rotating := p.settings.RotationChannel(ix.GuildID, channelID)
 	if !rotating {
-		pn.Body = []discordgo.MessageComponent{
-			core.Text(fmt.Sprintf("<#%s> doesn't rotate. Starting it asks how often, how long archives are kept, and how long before each rotation the channel is warned.", channelID)),
-			core.Row(core.Button("Start rotating", panelStruct+"add:"+channelID, discordgo.PrimaryButton, !canStruct)),
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text(fmt.Sprintf("<#%s> doesn't rotate. Starting it asks how often, how long archives are kept, and how long before each rotation the channel is warned.", channelID)),
+			ui.Row(ui.Button("Start rotating", panelStruct+"add:"+channelID, discord.ButtonStylePrimary, !canStruct)),
 			back,
 		}
 		return pn
@@ -123,28 +125,28 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, chan
 		{"tells", disclosureLabel(rc.Disclosure)},
 		{"sticky", sticky},
 	})
-	stickyBtn := core.Button("Sticky on", panelAdjust+"stickyon:"+channelID, discordgo.SecondaryButton, !canAdjust || len(rc.StickyMessages) == 0)
+	stickyBtn := ui.Button("Sticky on", panelAdjust+"stickyon:"+channelID, discord.ButtonStyleSecondary, !canAdjust || len(rc.StickyMessages) == 0)
 	if rc.StickyEnabled {
-		stickyBtn = core.Button("Sticky off", panelAdjust+"stickyoff:"+channelID, discordgo.SecondaryButton, !canAdjust)
+		stickyBtn = ui.Button("Sticky off", panelAdjust+"stickyoff:"+channelID, discord.ButtonStyleSecondary, !canAdjust)
 	}
-	var disclosure []discordgo.SelectMenuOption
+	var disclosure []discord.StringSelectMenuOption
 	for _, d := range []settings.Disclosure{settings.DisclosureFull, settings.DisclosureCadence, settings.DisclosureRetention, settings.DisclosureGeneric} {
-		disclosure = append(disclosure, discordgo.SelectMenuOption{Label: "Tells " + disclosureLabel(d), Value: string(d), Default: d == rc.Disclosure.Resolve()})
+		disclosure = append(disclosure, discord.StringSelectMenuOption{Label: "Tells " + disclosureLabel(d), Value: string(d), Default: d == rc.Disclosure.Resolve()})
 	}
-	pn.Body = []discordgo.MessageComponent{
-		core.Text(fmt.Sprintf("<#%s>\n%s\n-# Archived into <#%s> (%s).", channelID, grid, rc.ArchiveCategoryID, visibilityLabel(rc.ArchiveVisibility))),
-		core.Row(
-			core.Button("Edit timings", panelAdjust+"timing:"+channelID, discordgo.PrimaryButton, !canAdjust),
-			core.Button("Sticky messages", panelAdjust+"sticky:"+channelID, discordgo.SecondaryButton, !canAdjust),
+	pn.Parts = []discord.ContainerSubComponent{
+		ui.Text(fmt.Sprintf("<#%s>\n%s\n-# Archived into <#%s> (%s).", channelID, grid, rc.ArchiveCategoryID, visibilityLabel(rc.ArchiveVisibility))),
+		ui.Row(
+			ui.Button("Edit timings", panelAdjust+"timing:"+channelID, discord.ButtonStylePrimary, !canAdjust),
+			ui.Button("Sticky messages", panelAdjust+"sticky:"+channelID, discord.ButtonStyleSecondary, !canAdjust),
 			stickyBtn,
-			core.Button("Stop rotating", panelStruct+"remove:"+channelID, discordgo.DangerButton, !canStruct),
+			ui.Button("Stop rotating", panelStruct+"remove:"+channelID, discord.ButtonStyleDanger, !canStruct),
 		),
-		core.Row(core.StringSelect(panelAdjust+"disclosure:"+channelID, "What the channel is told", disclosure, false, !canAdjust)),
-		core.Row(core.ChannelSelect(panelAdjust+"category:"+channelID, "Archive category", rc.ArchiveCategoryID, !canAdjust, discordgo.ChannelTypeGuildCategory)),
+		ui.Row(ui.StringSelect(panelAdjust+"disclosure:"+channelID, "What the channel is told", disclosure, false, !canAdjust)),
+		ui.Row(ui.ChannelSelect(panelAdjust+"category:"+channelID, "Archive category", rc.ArchiveCategoryID, !canAdjust, discord.ChannelTypeGuildCategory)),
 		back,
 	}
 	if note := genericDisclosureNote(rc); note != "" {
-		pn.Body = append([]discordgo.MessageComponent{core.Text("-# " + strings.TrimSpace(note))}, pn.Body...)
+		pn.Parts = append([]discord.ContainerSubComponent{ui.Text("-# " + strings.TrimSpace(note))}, pn.Parts...)
 	}
 	return pn
 }
@@ -158,28 +160,28 @@ func retentionText(hours *int) string {
 
 // handleSet is every button and select that changes something. The channel
 // it acts on rides in the CustomID after the verb.
-func (p *Plugin) handleSet(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleSet(ctx context.Context, ix *core.Ix, customID string) {
 	rest := strings.TrimPrefix(strings.TrimPrefix(customID, panelStruct), panelAdjust)
 	verb, channelID, _ := strings.Cut(rest, ":")
 	switch verb {
 	case "readers":
-		p.applyReaders(ctx, s, i)
+		p.applyReaders(ctx, ix)
 	case "add":
-		p.openForm(s, i, formStruct+"add:"+channelID, "Start rotating", settings.RotationChannel{IntervalMinutes: 24 * 60, NoticeLeadMinutes: defaultNoticeLeadMinutes}, false)
+		p.openForm(ix, formStruct+"add:"+channelID, "Start rotating", settings.RotationChannel{IntervalMinutes: 24 * 60, NoticeLeadMinutes: defaultNoticeLeadMinutes}, false)
 	case "timing":
-		if rc, ok := p.settings.RotationChannel(i.GuildID, channelID); ok {
-			p.openForm(s, i, formAdjust+"timing:"+channelID, "Timings", rc, false)
+		if rc, ok := p.settings.RotationChannel(ix.GuildID, channelID); ok {
+			p.openForm(ix, formAdjust+"timing:"+channelID, "Timings", rc, false)
 			return
 		}
-		p.redraw(ctx, s, i, channelID, "✗ That channel isn't configured to rotate anymore.")
+		p.redraw(ctx, ix, channelID, "✗ That channel isn't configured to rotate anymore.")
 	case "sticky":
-		if rc, ok := p.settings.RotationChannel(i.GuildID, channelID); ok {
-			p.openForm(s, i, formAdjust+"sticky:"+channelID, "Sticky messages", rc, true)
+		if rc, ok := p.settings.RotationChannel(ix.GuildID, channelID); ok {
+			p.openForm(ix, formAdjust+"sticky:"+channelID, "Sticky messages", rc, true)
 			return
 		}
-		p.redraw(ctx, s, i, channelID, "✗ That channel isn't configured to rotate anymore.")
+		p.redraw(ctx, ix, channelID, "✗ That channel isn't configured to rotate anymore.")
 	case "stickyon", "stickyoff":
-		p.redraw(ctx, s, i, channelID, p.editChannel(ctx, i, channelID, "rotation.sticky", func(rc *settings.RotationChannel) error {
+		p.redraw(ctx, ix, channelID, p.editChannel(ctx, ix, channelID, "rotation.sticky", func(rc *settings.RotationChannel) error {
 			rc.StickyEnabled = verb == "stickyon"
 			if rc.StickyEnabled && len(rc.StickyMessages) == 0 {
 				return fmt.Errorf("there are no sticky messages yet; set some first")
@@ -187,52 +189,52 @@ func (p *Plugin) handleSet(ctx context.Context, s *discordgo.Session, i *discord
 			return nil
 		}))
 	case "disclosure":
-		p.redraw(ctx, s, i, channelID, p.editChannel(ctx, i, channelID, "rotation.edit", func(rc *settings.RotationChannel) error {
-			rc.Disclosure = settings.Disclosure(core.FirstValue(i))
+		p.redraw(ctx, ix, channelID, p.editChannel(ctx, ix, channelID, "rotation.edit", func(rc *settings.RotationChannel) error {
+			rc.Disclosure = settings.Disclosure(ix.FirstValue())
 			return nil
 		}))
 	case "category":
-		p.redraw(ctx, s, i, channelID, p.editChannel(ctx, i, channelID, "rotation.edit", func(rc *settings.RotationChannel) error {
+		p.redraw(ctx, ix, channelID, p.editChannel(ctx, ix, channelID, "rotation.edit", func(rc *settings.RotationChannel) error {
 			// Editable rather than add-only, because the alternative was
 			// remove and re-add: that mints a fresh row ID, and the sweep
 			// re-derives each archive's deadline through rotation_id
 			// (migration 0013), so every existing archive would fall back to
 			// its frozen delete_after.
-			rc.ArchiveCategoryID = core.FirstValue(i)
-			p.hideArchiveCategory(i.GuildID, rc.ArchiveCategoryID)
+			rc.ArchiveCategoryID = ix.FirstValue()
+			p.hideArchiveCategory(ix.GuildID, rc.ArchiveCategoryID)
 			return nil
 		}))
 	case "remove":
 		// Two presses: stopping rotation leaves the archives, but undoing it
 		// mints a new row, which detaches every existing archive from the
 		// channel's live retention setting (see "category" above).
-		pn := p.panel(ctx, i, channelID, fmt.Sprintf("! Stop rotating <#%s>? Its archives stay where they are.", channelID))
-		pn.Body = append([]discordgo.MessageComponent{core.Row(core.Button("Yes, stop rotating", panelStruct+"removeyes:"+channelID, discordgo.DangerButton, false))}, pn.Body...)
-		if err := core.UpdatePanel(s, i, pn); err != nil {
+		pn := p.panel(ctx, ix, channelID, fmt.Sprintf("! Stop rotating <#%s>? Its archives stay where they are.", channelID))
+		pn.Parts = append([]discord.ContainerSubComponent{ui.Row(ui.Button("Yes, stop rotating", panelStruct+"removeyes:"+channelID, discord.ButtonStyleDanger, false))}, pn.Parts...)
+		if err := ix.UpdatePanel(pn); err != nil {
 			p.log.Error("rotation: panel update failed", "err", err)
 		}
 	case "removeyes":
-		p.redraw(ctx, s, i, channelID, p.remove(ctx, i, channelID))
+		p.redraw(ctx, ix, channelID, p.remove(ctx, ix, channelID))
 	default:
-		p.redraw(ctx, s, i, "", "✗ That control is out of date. Run `/rotation` again.")
+		p.redraw(ctx, ix, "", "✗ That control is out of date. Run `/rotation` again.")
 	}
 }
 
 // openForm asks for a channel's timings, or its sticky messages, prefilled
 // with what it has now. A blank retention means forever, which is also how
 // it reads when the form opens on a channel that keeps archives forever.
-func (p *Plugin) openForm(s *discordgo.Session, i *discordgo.InteractionCreate, customID, title string, rc settings.RotationChannel, sticky bool) {
-	fields := []discordgo.MessageComponent{
-		core.Field("interval", "How often it rotates (at least 1h)", core.FormatDuration(time.Duration(rc.IntervalMinutes)*time.Minute), "3d, 24h or 90m", false, true),
-		core.Field("retention", "Keep archives this long, then DELETE them", retentionInput(rc.RetentionHours), "30d or 72h; leave blank to keep forever", false, false),
-		core.Field("notice", "Warn the channel this long before", formatNoticeLead(rc.NoticeLeadMinutes), "10m or 1h; off for no warning", false, true),
+func (p *Plugin) openForm(ix *core.Ix, customID, title string, rc settings.RotationChannel, sticky bool) {
+	fields := []discord.LayoutComponent{
+		ui.Field("interval", "How often it rotates (at least 1h)", core.FormatDuration(time.Duration(rc.IntervalMinutes)*time.Minute), "3d, 24h or 90m", false, true),
+		ui.Field("retention", "Keep archives this long, then DELETE them", retentionInput(rc.RetentionHours), "30d or 72h; leave blank to keep forever", false, false),
+		ui.Field("notice", "Warn the channel this long before", formatNoticeLead(rc.NoticeLeadMinutes), "10m or 1h; off for no warning", false, true),
 	}
 	if sticky {
-		fields = []discordgo.MessageComponent{
-			core.Field("messages", "Reposted and pinned after each rotation", strings.Join(rc.StickyMessages, "\n"), "One message per line", true, false),
+		fields = []discord.LayoutComponent{
+			ui.Field("messages", "Reposted and pinned after each rotation", strings.Join(rc.StickyMessages, "\n"), "One message per line", true, false),
 		}
 	}
-	if err := core.OpenModal(s, i, customID, title, fields...); err != nil {
+	if err := ix.OpenModal(customID, title, fields...); err != nil {
 		p.log.Error("rotation: open form failed", "err", err)
 	}
 }
@@ -246,28 +248,28 @@ func retentionInput(hours *int) string {
 
 // handleForm is the timings form, for a new channel or an existing one, and
 // the sticky messages form.
-func (p *Plugin) handleForm(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleForm(ctx context.Context, ix *core.Ix, customID string) {
 	rest := strings.TrimPrefix(strings.TrimPrefix(customID, formStruct), formAdjust)
 	verb, channelID, _ := strings.Cut(rest, ":")
-	v := core.ModalValues(i)
+	v := ix.ModalValues()
 	switch verb {
 	case "add":
 		// Finding or creating the archive category is REST work that can
 		// outrun Discord's 3 seconds.
-		if err := core.DeferPanelUpdate(s, i); err != nil {
+		if err := ix.DeferPanelUpdate(); err != nil {
 			p.log.Error("rotation: defer failed", "err", err)
 			return
 		}
-		note := p.add(ctx, i, channelID, v)
-		if err := core.FollowUpPanel(s, i, p.panel(ctx, i, channelID, note)); err != nil {
+		note := p.add(ctx, ix, channelID, v)
+		if err := ix.FollowUpPanel(p.panel(ctx, ix, channelID, note)); err != nil {
 			p.log.Error("rotation: panel follow-up failed", "err", err)
 		}
 	case "timing":
-		p.redraw(ctx, s, i, channelID, p.editChannel(ctx, i, channelID, "rotation.edit", func(rc *settings.RotationChannel) error {
+		p.redraw(ctx, ix, channelID, p.editChannel(ctx, ix, channelID, "rotation.edit", func(rc *settings.RotationChannel) error {
 			return applyTimings(rc, v)
 		}))
 	case "sticky":
-		p.redraw(ctx, s, i, channelID, p.editChannel(ctx, i, channelID, "rotation.sticky", func(rc *settings.RotationChannel) error {
+		p.redraw(ctx, ix, channelID, p.editChannel(ctx, ix, channelID, "rotation.sticky", func(rc *settings.RotationChannel) error {
 			var msgs []string
 			for line := range strings.SplitSeq(v["messages"], "\n") {
 				if t := strings.TrimSpace(line); t != "" {
@@ -279,7 +281,7 @@ func (p *Plugin) handleForm(ctx context.Context, s *discordgo.Session, i *discor
 			return nil
 		}))
 	default:
-		p.redraw(ctx, s, i, "", "✗ That form is out of date. Run `/rotation` again.")
+		p.redraw(ctx, ix, "", "✗ That form is out of date. Run `/rotation` again.")
 	}
 }
 
@@ -307,18 +309,18 @@ func applyTimings(rc *settings.RotationChannel, v map[string]string) error {
 	return nil
 }
 
-func (p *Plugin) add(ctx context.Context, i *discordgo.InteractionCreate, channelID string, v map[string]string) string {
-	if _, exists := p.settings.RotationChannel(i.GuildID, channelID); exists {
+func (p *Plugin) add(ctx context.Context, ix *core.Ix, channelID string, v map[string]string) string {
+	if _, exists := p.settings.RotationChannel(ix.GuildID, channelID); exists {
 		return "✗ That channel already rotates."
 	}
-	rc := settings.RotationChannel{GuildID: i.GuildID, ChannelID: channelID, ArchiveVisibility: "mod_only", Disclosure: settings.DisclosureFull}
+	rc := settings.RotationChannel{GuildID: ix.GuildID, ChannelID: channelID, ArchiveVisibility: "mod_only", Disclosure: settings.DisclosureFull}
 	if err := applyTimings(&rc, v); err != nil {
 		return "✗ " + err.Error()
 	}
 	if err := ValidateChannel(rc); err != nil {
 		return "✗ " + err.Error()
 	}
-	category, err := p.resolveArchiveCategory(i.GuildID, "")
+	category, err := p.resolveArchiveCategory(ix.GuildID, "")
 	if err != nil {
 		return fmt.Sprintf("✗ Couldn't find or create the archive category: %v", err)
 	}
@@ -329,15 +331,15 @@ func (p *Plugin) add(ctx context.Context, i *discordgo.InteractionCreate, channe
 	// Saving already published EventConfigChanged, which reconciled and
 	// registered the job with no run history, so it would fire on the next
 	// tick. A channel somebody just added waits a full interval instead.
-	p.deferFirstRotation(ctx, i.GuildID, channelID)
-	p.auditConfigChange(ctx, i, "rotation.add", "", fmt.Sprintf("channel=<#%s> %s", channelID, rotationSummary(rc)))
+	p.deferFirstRotation(ctx, ix.GuildID, channelID)
+	p.auditConfigChange(ctx, ix, "rotation.add", "", fmt.Sprintf("channel=<#%s> %s", channelID, rotationSummary(rc)))
 	return fmt.Sprintf("✓ <#%s> rotates every %s.", channelID, humanDuration(time.Duration(rc.IntervalMinutes)*time.Minute))
 }
 
 // editChannel is a read-modify-write of one channel's settings, validated as
 // a whole, audited with the before and after the subcommands wrote.
-func (p *Plugin) editChannel(ctx context.Context, i *discordgo.InteractionCreate, channelID, action string, change func(*settings.RotationChannel) error) string {
-	rc, exists := p.settings.RotationChannel(i.GuildID, channelID)
+func (p *Plugin) editChannel(ctx context.Context, ix *core.Ix, channelID, action string, change func(*settings.RotationChannel) error) string {
+	rc, exists := p.settings.RotationChannel(ix.GuildID, channelID)
 	if !exists {
 		return "✗ That channel isn't configured to rotate anymore."
 	}
@@ -352,59 +354,59 @@ func (p *Plugin) editChannel(ctx context.Context, i *discordgo.InteractionCreate
 		return fmt.Sprintf("✗ Couldn't save: %v", err)
 	}
 	if action == "rotation.sticky" {
-		p.auditConfigChange(ctx, i, action, "", fmt.Sprintf("channel=<#%s> enabled=%v messages=%d", channelID, rc.StickyEnabled, len(rc.StickyMessages)))
+		p.auditConfigChange(ctx, ix, action, "", fmt.Sprintf("channel=<#%s> enabled=%v messages=%d", channelID, rc.StickyEnabled, len(rc.StickyMessages)))
 	} else {
-		p.auditConfigChange(ctx, i, action, before, rotationSummary(rc))
+		p.auditConfigChange(ctx, ix, action, before, rotationSummary(rc))
 	}
 	return "✓ Saved." + strings.ReplaceAll(genericDisclosureNote(rc), "\n\n", " ")
 }
 
-func (p *Plugin) remove(ctx context.Context, i *discordgo.InteractionCreate, channelID string) string {
-	if _, exists := p.settings.RotationChannel(i.GuildID, channelID); !exists {
+func (p *Plugin) remove(ctx context.Context, ix *core.Ix, channelID string) string {
+	if _, exists := p.settings.RotationChannel(ix.GuildID, channelID); !exists {
 		return "✗ That channel isn't configured to rotate."
 	}
-	if err := p.settings.RemoveRotationChannel(ctx, i.GuildID, channelID); err != nil {
+	if err := p.settings.RemoveRotationChannel(ctx, ix.GuildID, channelID); err != nil {
 		return fmt.Sprintf("✗ Couldn't remove: %v", err)
 	}
-	p.auditConfigChange(ctx, i, "rotation.remove", fmt.Sprintf("channel=<#%s>", channelID), "")
+	p.auditConfigChange(ctx, ix, "rotation.remove", fmt.Sprintf("channel=<#%s>", channelID), "")
 	return fmt.Sprintf("✓ <#%s> no longer rotates. Its archives are untouched.", channelID)
 }
 
 // applyReaders saves who may read archives, then resyncs every archive
 // category so the change shows at once rather than at the next rotation.
 // The resync walks the guild's channels, so the click is deferred first.
-func (p *Plugin) applyReaders(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	added, removed := core.SelectDiff(i, panelStruct+"readers")
-	if err := core.DeferPanelUpdate(s, i); err != nil {
+func (p *Plugin) applyReaders(ctx context.Context, ix *core.Ix) {
+	added, removed := ix.SelectDiff(panelStruct + "readers")
+	if err := ix.DeferPanelUpdate(); err != nil {
 		p.log.Error("rotation: defer failed", "err", err)
 		return
 	}
 	note := ""
 	for _, id := range added {
-		if err := p.settings.AddArchiveViewerRole(ctx, i.GuildID, id); err != nil {
+		if err := p.settings.AddArchiveViewerRole(ctx, ix.GuildID, id); err != nil {
 			note = fmt.Sprintf("✗ Couldn't save: %v", err)
 			break
 		}
-		p.auditConfigChange(ctx, i, "rotation.archive_role_allowed", "", "role="+core.MentionRole(id))
+		p.auditConfigChange(ctx, ix, "rotation.archive_role_allowed", "", "role="+core.MentionRole(id))
 	}
 	for _, id := range removed {
 		if note != "" {
 			break
 		}
-		if err := p.settings.RemoveArchiveViewerRole(ctx, i.GuildID, id); err != nil {
+		if err := p.settings.RemoveArchiveViewerRole(ctx, ix.GuildID, id); err != nil {
 			note = fmt.Sprintf("✗ Couldn't save: %v", err)
 			break
 		}
-		p.auditConfigChange(ctx, i, "rotation.archive_role_removed", "", "role="+core.MentionRole(id))
+		p.auditConfigChange(ctx, ix, "rotation.archive_role_removed", "", "role="+core.MentionRole(id))
 	}
 	if note == "" && len(added)+len(removed) > 0 {
 		note = "✓ Archive readers updated."
-		if err := p.syncAllArchivePermissions(ctx, i.GuildID); err != nil {
+		if err := p.syncAllArchivePermissions(ctx, ix.GuildID); err != nil {
 			// Saved either way, and the hourly sweep retries the sync.
 			note = fmt.Sprintf("! Saved, but the resync hit errors; the hourly sweep will retry: %v", err)
 		}
 	}
-	if err := core.FollowUpPanel(s, i, p.panel(ctx, i, "", note)); err != nil {
+	if err := ix.FollowUpPanel(p.panel(ctx, ix, "", note)); err != nil {
 		p.log.Error("rotation: panel follow-up failed", "err", err)
 	}
 }
