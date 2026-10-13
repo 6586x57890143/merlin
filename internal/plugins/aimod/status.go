@@ -139,7 +139,7 @@ func (p *Plugin) statusPages(ctx context.Context, guildID string) ([]statusPage,
 		worse(core.ColorError)
 		body.WriteString("**Nothing is being scanned.** This bot was started without Discord's Message Content intent, " +
 			"so it cannot read messages at all. The operator needs to tick \"Message Content Intent\" in the Discord " +
-			"Developer Portal and set `MERLIN_ENABLE_MESSAGE_CONTENT_INTENT=1`.")
+			"Developer Portal and restart merlin.")
 	case cfg.Mode == ModeOff:
 		worse(core.ColorWarning)
 		body.WriteString("**Off.** Nothing is being scanned. Set the mode to flag on `/aimod settings` to start watching without acting.")

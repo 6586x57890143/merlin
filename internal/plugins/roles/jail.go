@@ -647,8 +647,8 @@ func releaseAtText(rec JailRecord) string {
 
 // HandleMemberJoin re-applies a still-active jail the moment a member rejoins,
 // rather than waiting for the next sweep. Only ever called while the
-// GUILD_MEMBERS intent is in effect (on by default,
-// MERLIN_DISABLE_GUILD_MEMBERS_INTENT opts out). Without it Discord never
+// GUILD_MEMBERS intent is in effect (whenever the Developer Portal grants
+// it). Without it Discord never
 // sends the event, and the sweep above remains the sole mechanism.
 func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 	defer p.memberChanged(ctx, guildID, userID)

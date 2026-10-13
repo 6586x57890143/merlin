@@ -14,10 +14,12 @@ import (
 	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/gateway"
+	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 )
 
-// Intents is which privileged gateway intents this process asks Discord for.
+// Intents is which privileged gateway intents this process identifies with:
+// the ones the Developer Portal has granted (Granted).
 //
 // A struct rather than two positional bools, because the call site is one
 // line in main.go and "NewSession(token, true, false)" is unreadable at
@@ -85,16 +87,16 @@ func SelfID(token string) (snowflake.ID, error) {
 // its commands and scans nothing, and says so in /aimod status rather than
 // appearing to work. It is the larger of the two asks by a wide margin (it
 // is every message in every server, and Discord reviews it above 100
-// guilds), which is why it is off unless MERLIN_ENABLE_MESSAGE_CONTENT_INTENT
-// says otherwise while GUILD_MEMBERS below is on unless told not to.
+// guilds); its portal toggle is the opt-in, and nothing else reads it.
 //
 // intents.Members controls GUILD_MEMBERS, which is what lets the roles plugin
 // react to a rejoin the instant it happens rather than on the next sweep
 // (roles.reapplyEvadedJails remains the fallback either way; the intent
 // narrows the window, it does not create the protection). It is privileged:
-// a Developer Portal toggle below 100 guilds, Discord approval above. If the
-// portal has not granted it, Discord rejects the connection outright, which
-// OpenGateway reports.
+// a Developer Portal toggle below 100 guilds, Discord approval above.
+//
+// Both come from Granted, so merlin never asks for one the portal has not
+// switched on, which is what Discord answers with close code 4014.
 func GatewayIntents(intents Intents) gateway.Intents {
 	want := gateway.IntentGuilds | gateway.IntentGuildVoiceStates | gateway.IntentGuildMessages | gateway.IntentGuildModeration
 	if intents.Members {
@@ -133,6 +135,26 @@ func NewGateway(token string, intents Intents, log *slog.Logger, listeners ...bo
 	)
 }
 
+// Granted is the privileged intents the Developer Portal has switched on,
+// read from the application's flags. The _LIMITED flags are what a bot
+// under 100 servers gets for the same toggle, so they count. skua's
+// internal/intents, for the two merlin can use.
+func Granted(flags discord.ApplicationFlags) Intents {
+	return Intents{
+		Members:        flags&(discord.ApplicationFlagGatewayGuildMembers|discord.ApplicationFlagGatewayGuildMemberLimited) != 0,
+		MessageContent: flags&(discord.ApplicationFlagGatewayMessageContent|discord.ApplicationFlagGatewayMessageContentLimited) != 0,
+	}
+}
+
+// Probe reads what the Developer Portal grants merlin now.
+func Probe(r rest.Rest) (Intents, error) {
+	app, err := r.GetCurrentApplication()
+	if err != nil {
+		return Intents{}, fmt.Errorf("core: reading the application's intents: %w", err)
+	}
+	return Granted(app.Flags), nil
+}
+
 // readyTimeout bounds how long OpenGateway waits for Discord's READY.
 // Generous relative to a healthy connect (a second or two) because the cost
 // of being wrong in the impatient direction is a crash loop on a slow
@@ -141,12 +163,12 @@ const readyTimeout = 45 * time.Second
 
 // OpenGateway connects and waits for Discord to accept the identify.
 //
-// When the gateway rejects it (close code 4014, "disallowed intents": the
-// bot asked for a privileged intent its application has not been granted)
-// the process would otherwise look healthy and hold no connection: jails
-// never released, rotations never fired. A bot that cannot connect has
-// nothing useful to do, so the error is meant to be fatal at startup, with
-// the usual cause named.
+// Intents come from Granted, so close code 4014 ("disallowed intents")
+// should not happen; this is the backstop for a toggle switched off in the
+// moment between the probe and the identify, or a connection that fails for
+// any other reason. A bot that cannot connect has nothing useful to do, so
+// the error is fatal at startup rather than a process that looks healthy and
+// holds no connection.
 func OpenGateway(ctx context.Context, c *bot.Client) error {
 	return openWithin(ctx, c.OpenGateway, readyTimeout)
 }
@@ -155,14 +177,9 @@ func openWithin(ctx context.Context, open func(context.Context) error, timeout t
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := open(ctx); err != nil {
-		// Both privileged intents are named: an operator who has just
-		// enabled one and hit 4014 would otherwise be sent to check a toggle
-		// that was already correct.
 		return fmt.Errorf("no READY from Discord within %s (%w): the gateway is refusing this connection. "+
-			"The usual cause is a privileged intent the application has not been granted. Under Bot in the "+
-			"Discord Developer Portal, enable \"Server Members Intent\" (or set "+
-			"MERLIN_DISABLE_GUILD_MEMBERS_INTENT=1 to run without it) and, if "+
-			"MERLIN_ENABLE_MESSAGE_CONTENT_INTENT is set, \"Message Content Intent\" as well", timeout, err)
+			"If a privileged intent was switched off in the Developer Portal just now, restart merlin and "+
+			"she identifies without it", timeout, err)
 	}
 	return nil
 }

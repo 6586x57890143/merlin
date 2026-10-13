@@ -127,13 +127,6 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	if err != nil {
 		return err
 	}
-	gw, err := core.NewGateway(cfg.Discord.Token, core.Intents{
-		Members:        cfg.GuildMembersIntent,
-		MessageContent: cfg.MessageContentIntent,
-	}, log)
-	if err != nil {
-		return err
-	}
 	// The link to cygnet, the fleet's hub, only where it is configured.
 	// Every request Discord refuses for want of a permission is reported
 	// to her, whichever plugin made it, so she can grant it. Outside that,
@@ -142,6 +135,21 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// either.
 	hub := fleet.Dial(os.Getenv("MERLIN_CYGNET_URL"), os.Getenv("MERLIN_CYGNET_TOKEN"), log)
 	session.Client = &http.Client{Timeout: 20 * time.Second, Transport: obs.Transport(hub.Transport(nil, log), obs.Default)}
+	// disgo's REST, through the same transport: interaction replies and the
+	// intent probe.
+	ixRest := core.NewRest(cfg.Discord.Token, session.Client)
+	// The privileged intents are read from the Developer Portal, not
+	// configured: merlin identifies with exactly what is granted, so Discord
+	// never refuses her connection over one.
+	granted, err := core.Probe(ixRest)
+	if err != nil {
+		return err
+	}
+	log.Info("gateway intents from the Developer Portal", "members", granted.Members, "message_content", granted.MessageContent)
+	gw, err := core.NewGateway(cfg.Discord.Token, granted, log)
+	if err != nil {
+		return err
+	}
 	if addr := os.Getenv("MERLIN_DEBUG_ADDR"); addr != "" {
 		if err := obs.Serve(addr); err != nil {
 			log.Error("debug listener", "err", err)
@@ -168,7 +176,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 
 	// Plugins moved to disgo answer through their own REST client (core.Ix);
 	// the rest still answer through the session.
-	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker).WithRest(core.NewRest(cfg.Discord.Token, session.Client))
+	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker).WithRest(ixRest)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	journal := discordguard.NewPostgresJournal(db.Pool)
 	auditWriter := audit.New(db.Pool, session, settingsStore)
@@ -243,7 +251,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		func(guildID string) aimod.DiscordOps { return guard.For(guildID) },
 		cfg.SecretKey,
 		speaker,
-		cfg.MessageContentIntent,
+		granted.MessageContent,
 	)
 	if err != nil {
 		return fmt.Errorf("start ai moderation: %w", err)
@@ -468,8 +476,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// actually requested, so the handler's presence always matches reality:
 	// without GUILD_MEMBERS Discord never sends this event, and reapplyEvadedJails
 	// on the one-minute sweep is the whole protection instead of the backstop.
-	if cfg.GuildMembersIntent {
-		log.Info("GUILD_MEMBERS intent requested: jails re-apply the moment an evader rejoins")
+	if granted.Members {
+		log.Info("GUILD_MEMBERS granted: jails re-apply the moment an evader rejoins")
 		typed = append(typed, bot.NewListenerFunc(func(e *events.GuildMemberJoin) {
 			ma := &discordgo.GuildMemberAdd{Member: legacy[discordgo.Member](e.Member)}
 			if ma.Member != nil {
@@ -515,7 +523,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			rolesPlugin.HandleMemberUpdate(updateCtx, mu.GuildID, mu.User.ID, mu.Roles)
 		}))
 	} else {
-		log.Warn("GUILD_MEMBERS intent disabled by MERLIN_DISABLE_GUILD_MEMBERS_INTENT: " +
+		log.Warn("GUILD_MEMBERS not granted in the Developer Portal: " +
 			"a jailed member who rejoins keeps full access until the next sweep, and roles regranted by " +
 			"a guild's Onboarding/Membership Screening flow after a jail aren't stripped again until then either")
 	}
@@ -539,8 +547,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// MESSAGE_CONTENT Discord delivers no content to read, and a handler that
 	// ran anyway would scan a stream of empty strings and report a healthy,
 	// entirely useless filter.
-	if cfg.MessageContentIntent {
-		log.Info("MESSAGE_CONTENT intent requested: AI moderation can read messages")
+	if granted.MessageContent {
+		log.Info("MESSAGE_CONTENT granted: AI moderation can read messages")
 		// Returns immediately; the paid work happens on aimod's own batch
 		// timer, so a busy server's messages never pile up goroutines
 		// waiting on a model.
@@ -550,8 +558,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// cleared, then edit it into whatever you like. Nothing looked again.
 		onEdit = append(onEdit, aimodPlugin.HandleMessageEdit)
 	} else {
-		log.Info("MESSAGE_CONTENT intent not requested: AI moderation will scan nothing. " +
-			"Set MERLIN_ENABLE_MESSAGE_CONTENT_INTENT=1 and enable Message Content Intent in the Developer Portal.")
+		log.Info("MESSAGE_CONTENT not granted: AI moderation will scan nothing. " +
+			"Enable Message Content Intent in the Developer Portal to use it.")
 	}
 
 	// A channel disappearing under a rotation config is otherwise only
@@ -704,12 +712,22 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	bus.Publish(ctx, core.Event{Type: core.EventReady})
 	log.Info("merlin is running")
 
-	<-ctx.Done()
+	// A portal toggle switched since boot restarts merlin onto it: what she
+	// identified with is fixed for the connection's life, and the restart
+	// policy brings her back.
+	changed := make(chan struct{})
+	go watchIntents(ctx, ixRest, granted, intentsEvery, changed, log)
+	var exit error
+	select {
+	case <-ctx.Done():
+	case <-changed:
+		exit = errIntentsChanged
+	}
 	log.Info("shutting down")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	registry.ShutdownAll(shutdownCtx)
 
-	return nil
+	return exit
 }

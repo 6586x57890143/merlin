@@ -56,18 +56,8 @@ func (l *Loader) reload() error {
 	next.Database.DSN = os.Getenv("DATABASE_URL")
 	next.BootstrapAdminUserID = os.Getenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID")
 	next.PauseAllWrites = isTruthy(os.Getenv("MERLIN_PAUSE_ALL_WRITES"))
-	// Opt-out rather than opt-in: see GlobalConfig.GuildMembersIntent. The
-	// superseded MERLIN_ENABLE_GUILD_MEMBERS_INTENT is deliberately not read
-	// any more: an existing .env that sets it now gets the behavior it was
-	// asking for regardless, and one that doesn't gets it too, which was the
-	// entire point of changing the default.
-	next.GuildMembersIntent = !isTruthy(os.Getenv("MERLIN_DISABLE_GUILD_MEMBERS_INTENT"))
-	// Opt-in, unlike the intent above. See GlobalConfig.OnboardingDM for why
-	// the defaults point in opposite directions.
+	// Opt-in. See GlobalConfig.OnboardingDM.
 	next.OnboardingDM = isTruthy(os.Getenv("MERLIN_ENABLE_ONBOARDING_DM"))
-	// Opt-in, like the onboarding DM and unlike the members intent. See
-	// GlobalConfig.MessageContentIntent for why the defaults differ.
-	next.MessageContentIntent = isTruthy(os.Getenv("MERLIN_ENABLE_MESSAGE_CONTENT_INTENT"))
 	next.SecretKey = os.Getenv("MERLIN_SECRET_KEY")
 	next.FundingRPCURLs, next.FundingContracts = fundingOverrides()
 	next.ContestWorkerURL = os.Getenv("MERLIN_CONTEST_WORKER_URL")
