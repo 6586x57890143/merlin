@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
@@ -119,25 +118,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
-	// REST still goes out through discordgo; the gateway, and its cache,
-	// are disgo's. Built here, unopened, because Permissions and plugins
-	// read the cache; listeners are added below once there is something
-	// to deliver to.
-	session, err := core.NewSession(cfg.Discord.Token)
-	if err != nil {
-		return err
-	}
 	// The link to cygnet, the fleet's hub, only where it is configured.
 	// Every request Discord refuses for want of a permission is reported
 	// to her, whichever plugin made it, so she can grant it. Outside that,
 	// every REST call is timed by route for /perf, so the two wrap the one
-	// client and nothing that sends through this session goes unseen by
-	// either.
+	// client and nothing merlin sends goes unseen by either.
 	hub := fleet.Dial(os.Getenv("MERLIN_CYGNET_URL"), os.Getenv("MERLIN_CYGNET_TOKEN"), log)
-	session.Client = &http.Client{Timeout: 20 * time.Second, Transport: obs.Transport(hub.Transport(nil, log), obs.Default)}
-	// disgo's REST, through the same transport: interaction replies and the
-	// intent probe.
-	ixRest := core.NewRest(cfg.Discord.Token, session.Client)
+	httpClient := &http.Client{Timeout: 20 * time.Second, Transport: obs.Transport(hub.Transport(nil, log), obs.Default)}
+	// Every REST call merlin makes goes through this one client.
+	restClient := core.NewRest(cfg.Discord.Token, httpClient)
 	// The privileged intents are read from the Developer Portal, not
 	// configured: merlin identifies with exactly what is granted, so Discord
 	// never refuses her connection over one.
@@ -145,7 +134,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	if err != nil {
 		return fmt.Errorf("DISCORD_APP_ID: %w", err)
 	}
-	granted, err := core.Probe(ixRest)
+	granted, err := core.Probe(restClient)
 	if err != nil {
 		return err
 	}
@@ -178,12 +167,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return fmt.Errorf("load voice catalog: %w", err)
 	}
 
-	// Plugins moved to disgo answer through their own REST client (core.Ix);
-	// the rest still answer through the session.
-	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker).WithRest(ixRest)
+	// One dispatcher for every interaction, answered through restClient.
+	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker).WithRest(restClient)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	journal := discordguard.NewPostgresJournal(db.Pool)
-	auditWriter := audit.New(db.Pool, ixRest, settingsStore)
+	auditWriter := audit.New(db.Pool, restClient, settingsStore)
 	// audit_log, action_journal and aimod's stored evidence all grow forever
 	// otherwise. Housekeeping, not a Scheduler job: none of these tables is
 	// per guild, and missing a tick just means the next one prunes the same
@@ -197,8 +185,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return err
 	}
 	deps := core.Deps{
-		Session:   session,
-		Rest:      ixRest,
+		Rest:      restClient,
 		BotID:     botID,
 		Bus:       bus,
 		Config:    cfgLoader,
@@ -214,7 +201,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// /config pause (or MERLIN_PAUSE_ALL_WRITES) can stop the bot mutating
 	// anything without a redeploy. Bound per guild at each call site because
 	// most of those calls are channel-scoped and carry no guild themselves.
-	guard := discordguard.New(ixRest, settingsStore, log, cfg.PauseAllWrites).WithJournal(journal)
+	guard := discordguard.New(restClient, settingsStore, log, cfg.PauseAllWrites).WithJournal(journal)
 	if cfg.PauseAllWrites {
 		log.Warn("MERLIN_PAUSE_ALL_WRITES is set: every destructive Discord action is refused process-wide")
 	}
@@ -373,12 +360,12 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		}
 		perms := core.Install(guilds, permissioned, settingsStore)
 		hub.Describe(cfg.Discord.AppID, uint64(core.GatewayIntents(granted)), uint64(perms), commands.Tiers())
-		app, err := ixRest.GetCurrentApplication()
+		app, err := restClient.GetCurrentApplication()
 		if err != nil {
 			log.Warn("reading the install settings", "err", err)
 			return
 		}
-		if wrote, err := core.SyncInstall(ixRest, app, perms); err != nil {
+		if wrote, err := core.SyncInstall(restClient, app, perms); err != nil {
 			log.Warn("updating the install settings", "err", err)
 		} else if wrote {
 			log.Info("install settings updated", "permissions", perms)
@@ -398,7 +385,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// when nothing changed, and until it lands every icon goes as text or an
 	// attachment, so nothing waits on it.
 	go func() {
-		if err := core.SyncEmoji(ixRest, appID); err != nil {
+		if err := core.SyncEmoji(restClient, appID); err != nil {
 			log.Warn("sync plugin icons", "err", err)
 		}
 	}()
@@ -412,7 +399,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// handler covers "known at startup" and "joined while running" the same
 	// way, with no restart required for the latter.
 	var typed []bot.EventListener
-	guildUp := func(gc *discordgo.GuildCreate) {
+	guildUp := func(g discord.GatewayGuild) {
+		gid := g.ID.String()
 		defer install.poke()
 		guildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -433,40 +421,38 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// So: queue the guild for retry, and go on to do everything that does
 		// not actually need settings. The roles sweep needs none of it.
 		settingsLoaded := true
-		if err := settingsStore.Refresh(guildCtx, gc.ID); err != nil {
+		if err := settingsStore.Refresh(guildCtx, gid); err != nil {
 			log.Error("refresh settings for guild, continuing on fail-closed defaults",
-				"guild", gc.ID, "err", err)
-			settingsStore.MarkStale(gc.ID)
+				"guild", gid, "err", err)
+			settingsStore.MarkStale(gid)
 			settingsLoaded = false
 		}
 		commandsRegistered := true
-		if err := commands.RegisterGuild(appID, snowflake.MustParse(gc.ID)); err != nil {
-			log.Error("register commands for guild", "guild", gc.ID, "err", err)
+		if err := commands.RegisterGuild(appID, g.ID); err != nil {
+			log.Error("register commands for guild", "guild", gid, "err", err)
 			commandsRegistered = false
 		}
-		rolesPlugin.SyncGuild(gc.ID)
+		rolesPlugin.SyncGuild(gid)
 		// Reads aimod's own store rather than internal/settings, so unlike
 		// rotation below it does not wait on settingsLoaded: a guild whose
 		// settings refresh failed still gets its weekly calibration review.
-		aimodPlugin.SyncGuild(guildCtx, gc.ID)
+		aimodPlugin.SyncGuild(guildCtx, gid)
 		// Reads its own tables too, so like aimod it does not wait on
 		// settingsLoaded: a guild whose settings refresh failed still gets
 		// its running contest ticked on to the next phase.
-		contestPlugin.SyncGuild(guildCtx, gc.ID)
-		rapsheetPlugin.SyncGuild(guildCtx, gc.ID)
-		statisticsPlugin.SyncGuild(guildCtx, gc.ID)
+		contestPlugin.SyncGuild(guildCtx, gid)
+		rapsheetPlugin.SyncGuild(guildCtx, gid)
+		statisticsPlugin.SyncGuild(guildCtx, gid)
 		// Whoever is in voice as the guild arrives starts their clock now;
 		// GUILD_VOICE_STATES is always requested, so this list is complete.
-		if gid, err := snowflake.Parse(gc.ID); err == nil {
-			statisticsPlugin.SyncVoice(gc.ID, slices.Collect(gw.Caches.VoiceStates(gid)))
-		}
+		statisticsPlugin.SyncVoice(gid, slices.Collect(gw.Caches.VoiceStates(g.ID)))
 		if settingsLoaded {
 			// Rotation, unlike the sweep, derives which jobs should exist from
 			// settings, and reconciling against fail-closed defaults would read as
 			// "this guild rotates nothing" and unregister real work. The
 			// stale-retry loop publishes EventConfigChanged once the guild is
 			// readable again, which is what reconciles it.
-			rotationPlugin.SyncGuild(guildCtx, gc.ID)
+			rotationPlugin.SyncGuild(guildCtx, gid)
 		}
 		if cfg.OnboardingDM && commandsRegistered && settingsLoaded {
 			// Off unless MERLIN_ENABLE_ONBOARDING_DM says otherwise; see
@@ -480,19 +466,16 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			// registration succeeds on a later restart. Same reasoning for
 			// unreadable settings: "unconfigured" can't be told apart from
 			// "couldn't be read", and the nudge only fires once.
-			adminconfigPlugin.NudgeIfUnconfigured(guildCtx, gc)
+			adminconfigPlugin.NudgeIfUnconfigured(guildCtx, g)
 		}
 	}
 	// Ready is a guild the connection came up with, Join one merlin was
-	// added to, Available one back from an outage: discordgo called all
-	// three GuildCreate, and each needs the same wiring.
-	arrived := func(g discord.GatewayGuild) {
-		guildUp(&discordgo.GuildCreate{Guild: &discordgo.Guild{ID: g.ID.String(), OwnerID: g.OwnerID.String(), Name: g.Name}})
-	}
+	// added to, Available one back from an outage: Discord sends each as a
+	// GUILD_CREATE, and each needs the same wiring.
 	typed = append(typed,
-		bot.NewListenerFunc(func(e *events.GuildReady) { arrived(e.Guild) }),
-		bot.NewListenerFunc(func(e *events.GuildJoin) { arrived(e.Guild) }),
-		bot.NewListenerFunc(func(e *events.GuildAvailable) { arrived(e.Guild) }),
+		bot.NewListenerFunc(func(e *events.GuildReady) { guildUp(e.Guild) }),
+		bot.NewListenerFunc(func(e *events.GuildJoin) { guildUp(e.Guild) }),
+		bot.NewListenerFunc(func(e *events.GuildAvailable) { guildUp(e.Guild) }),
 	)
 
 	// The bot was removed from a guild (or the guild was deleted). Without
@@ -544,15 +527,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// this too (bounded to one minute), so it still closes even with the
 		// intent off, just not instantly.
 		typed = append(typed, bot.NewListenerFunc(func(e *events.GuildMemberUpdate) {
-			mu := &discordgo.GuildMemberUpdate{Member: &discordgo.Member{
-				GuildID: e.GuildID.String(), User: &discordgo.User{ID: e.Member.User.ID.String()}, Roles: core.IDStrings(e.Member.RoleIDs),
-			}}
-			if mu.Member == nil || mu.User == nil {
-				return
-			}
 			updateCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			rolesPlugin.HandleMemberUpdate(updateCtx, mu.GuildID, mu.User.ID, mu.Roles)
+			rolesPlugin.HandleMemberUpdate(updateCtx, e.GuildID.String(), e.Member.User.ID.String(), core.IDStrings(e.Member.RoleIDs))
 		}))
 	} else {
 		log.Warn("GUILD_MEMBERS not granted in the Developer Portal: " +
@@ -658,7 +635,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			return
 		}
 		log.Info("pruned deleted role from settings", "guild", rd.GuildID, "role", rd.RoleID, "from", removed)
-		if err := auditWriter.Record(guildCtx, rd.GuildID, session.State.User.ID, "config.role_pruned",
+		if err := auditWriter.Record(guildCtx, rd.GuildID, botID.String(), "config.role_pruned",
 			fmt.Sprintf("role %s referenced by: %s", rd.RoleID, strings.Join(removed, ", ")),
 			"role deleted in Discord, references removed"); err != nil {
 			// Same log-and-continue policy every other audit call site uses:
@@ -734,7 +711,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// identified with is fixed for the connection's life, and the restart
 	// policy brings her back.
 	changed := make(chan struct{})
-	go watchIntents(ctx, ixRest, granted, intentsEvery, changed, log)
+	go watchIntents(ctx, restClient, granted, intentsEvery, changed, log)
 	var exit error
 	select {
 	case <-ctx.Done():

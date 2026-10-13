@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
@@ -301,32 +300,27 @@ func permissionTarget(action, roleID, userID string) string {
 // returns without marking the nudge as sent, so it retries on the next
 // restart. No public fallback, by design, since a private nudge was the
 // whole point.
-func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCreate) {
-	gs := p.settings.GuildSettings(gc.ID)
+func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, g discord.GatewayGuild) {
+	guildID := g.ID.String()
+	gs := p.settings.GuildSettings(guildID)
 	if gs.IsConfigured() || gs.OnboardingNudgeSentAt != nil {
 		return
 	}
-	if gc.OwnerID == "" {
-		p.log.Warn("adminconfig: guild has no owner ID, skipping onboarding nudge", "guild", gc.ID)
+	if g.OwnerID == 0 {
+		p.log.Warn("adminconfig: guild has no owner ID, skipping onboarding nudge", "guild", guildID)
 		return
 	}
-
-	owner, err := snowflake.Parse(gc.OwnerID)
-	if err != nil {
-		p.log.Warn("adminconfig: guild owner ID unreadable, skipping onboarding nudge", "guild", gc.ID, "owner", gc.OwnerID)
-		return
-	}
-	dmChannel, err := p.rest.CreateDMChannel(owner)
+	dmChannel, err := p.rest.CreateDMChannel(g.OwnerID)
 	if err != nil {
 		p.log.Warn("adminconfig: could not open a DM with the guild owner for the onboarding nudge",
-			"guild", gc.ID, "owner", gc.OwnerID, "err", err)
+			"guild", guildID, "owner", g.OwnerID, "err", err)
 		return
 	}
 
 	embed := core.LandmarkEmbed(core.ColorInfo, "Thanks for adding merlin!",
 		fmt.Sprintf("Run **/config setup** in **%s** and I'll walk you through it: an audit-log channel, "+
 			"a status channel, a mod role, and admins, one step at a time. I only ever change what you pick on each "+
-			"step, and it's safe to re-run any time.", gc.Name))
+			"step, and it's safe to re-run any time.", g.Name))
 	_, err = p.rest.CreateMessage(dmChannel.ID(), discord.MessageCreate{
 		Embeds: []discord.Embed{embed},
 		Files:  core.EmbedUploads(embed),
@@ -335,11 +329,11 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 	})
 	if err != nil {
 		p.log.Warn("adminconfig: onboarding DM failed, owner may have DMs closed",
-			"guild", gc.ID, "owner", gc.OwnerID, "err", err)
+			"guild", guildID, "owner", g.OwnerID, "err", err)
 		return
 	}
-	if err := p.settings.MarkOnboardingNudgeSent(ctx, gc.ID); err != nil {
-		p.log.Error("adminconfig: failed to record onboarding nudge sent", "guild", gc.ID, "err", err)
+	if err := p.settings.MarkOnboardingNudgeSent(ctx, guildID); err != nil {
+		p.log.Error("adminconfig: failed to record onboarding nudge sent", "guild", guildID, "err", err)
 	}
 }
 

@@ -65,7 +65,6 @@ func TestIxHandlerAnswersThroughDisgo(t *testing.T) {
 		got = ix
 		ix.RespondOK("done", "it worked")
 	})
-	_, sessionWire := paneltest.Session()
 	rt.HandleRaw(raw(t, command("hi")))
 	if got == nil || got.GuildID != "100" || got.UserID != "11" {
 		t.Fatalf("handler got %+v", got)
@@ -76,8 +75,8 @@ func TestIxHandlerAnswersThroughDisgo(t *testing.T) {
 			t.Errorf("response is missing %s:\n%s", want, body)
 		}
 	}
-	if !wire.Answered() || sessionWire.Answered() {
-		t.Fatal("answered through the wrong client")
+	if !wire.Answered() {
+		t.Fatal("not answered through the router's client")
 	}
 }
 
@@ -85,12 +84,11 @@ func TestIxHandlerIsBehindAuthorize(t *testing.T) {
 	rt, wire := router()
 	ran := false
 	rt.HandleIx("ban", "", core.PermSpec{Tier: core.TierAdmin, Action: "x.ban"}, func(context.Context, *core.Ix) { ran = true })
-	_, sessionWire := paneltest.Session()
 	rt.HandleRaw(raw(t, command("ban")))
 	if ran {
 		t.Fatal("an admin handler ran for a member with no permissions")
 	}
-	if !strings.Contains(wire.All(), "not allowed") || sessionWire.Answered() {
+	if !strings.Contains(wire.All(), "not allowed") {
 		t.Fatalf("the refusal was not sent through the interaction: %s", wire.All())
 	}
 }
