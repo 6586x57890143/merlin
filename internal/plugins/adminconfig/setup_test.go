@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
@@ -13,19 +13,23 @@ import (
 // setupComponentIDs flattens a rendered step's components into the CustomIDs
 // it actually offers, so tests can assert on the controls a step exposes
 // without caring how they're arranged into rows.
-func setupComponentIDs(t *testing.T, components []discordgo.MessageComponent) []string {
+func setupComponentIDs(t *testing.T, components []discord.LayoutComponent) []string {
 	t.Helper()
 	var ids []string
 	for _, row := range components {
-		ar, ok := row.(discordgo.ActionsRow)
+		ar, ok := row.(discord.ActionRowComponent)
 		if !ok {
 			t.Fatalf("component %T is not an ActionsRow; Discord only accepts top-level rows", row)
 		}
 		for _, c := range ar.Components {
 			switch c := c.(type) {
-			case discordgo.Button:
+			case discord.ButtonComponent:
 				ids = append(ids, c.CustomID)
-			case discordgo.SelectMenu:
+			case discord.ChannelSelectMenuComponent:
+				ids = append(ids, c.CustomID)
+			case discord.RoleSelectMenuComponent:
+				ids = append(ids, c.CustomID)
+			case discord.UserSelectMenuComponent:
 				ids = append(ids, c.CustomID)
 			default:
 				t.Fatalf("unexpected component type %T in setup step", c)
@@ -95,12 +99,12 @@ func TestSetupAdminsStepHasNoCreateButton(t *testing.T) {
 func TestSetupEveryStepIsNavigable(t *testing.T) {
 	for step := range setupStepCount {
 		_, components := renderSetupStep(settings.GuildSettings{}, step, "")
-		row, ok := components[len(components)-1].(discordgo.ActionsRow)
+		row, ok := components[len(components)-1].(discord.ActionRowComponent)
 		if !ok || len(row.Components) != 3 {
 			t.Fatalf("step %d: expected a 3-button nav row last, got %#v", step, components[len(components)-1])
 		}
-		back := row.Components[0].(discordgo.Button)
-		next := row.Components[2].(discordgo.Button)
+		back := row.Components[0].(discord.ButtonComponent)
+		next := row.Components[2].(discord.ButtonComponent)
 		if wantDisabled := step == 0; back.Disabled != wantDisabled {
 			t.Errorf("step %d: Back disabled=%v, want %v", step, back.Disabled, wantDisabled)
 		}

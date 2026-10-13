@@ -88,7 +88,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 		Name:        "config",
 		Description: "merlin's settings for this server: admins, mod roles, channels, plugins, permissions",
 	})
-	p.commands.Handle("config", "", readSpec, p.handleConfig)
+	p.commands.HandleIx("config", "", readSpec, p.handleConfig)
 	p.registerPanel()
 	p.registerSetupComponents()
 	return nil
@@ -210,12 +210,12 @@ func mentionsOrNone(roleIDs, userIDs []string) string {
 	return "none"
 }
 
-func (p *Plugin) audit(ctx context.Context, i *discordgo.InteractionCreate, action, oldValue, newValue string) {
+func (p *Plugin) audit(ctx context.Context, ix *core.Ix, action, oldValue, newValue string) {
 	actorID := ""
-	if i.Member != nil && i.Member.User != nil {
-		actorID = i.Member.User.ID
+	if ix.Member() != nil {
+		actorID = ix.UserID
 	}
-	if err := p.auditWriter.Record(ctx, i.GuildID, actorID, action, oldValue, newValue); err != nil {
+	if err := p.auditWriter.Record(ctx, ix.GuildID, actorID, action, oldValue, newValue); err != nil {
 		p.log.Error("adminconfig: audit record failed", "action", action, "err", err)
 	}
 }
