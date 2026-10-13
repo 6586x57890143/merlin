@@ -43,7 +43,7 @@ func TestGuardOpsReadsDiscordIntoAimodsViews(t *testing.T) {
 		"/messages":            `[{"id":"9","channel_id":"2","content":"hi","author":{"id":"4","username":"u"}},{"id":"8","channel_id":"2","content":"","author":{"id":"6","username":"v"}}]`,
 		"/webhooks":            `[{"id":"11","type":1,"name":"merlin","token":"tok","channel_id":"2"},{"id":"12","type":2,"name":"follow","channel_id":"2"}]`,
 	}})))
-	g := discordguard.New(nil, openGate{}, slog.New(slog.NewTextHandler(io.Discard, nil)), false).WithRest(r)
+	g := discordguard.New(r, openGate{}, slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 	ops := GuardOps(g.For("100"))
 
 	m, err := ops.Member("100", "4")

@@ -12,15 +12,8 @@ import (
 )
 
 // The calls below are GuildOps on disgo's REST, named and shaped as disgo
-// has them so they sit beside the discordgo ones until each plugin has
-// moved. Every write goes through the same gate as the discordgo writes:
-// pause, dry-run, the guild's cap for its op, the breaker and the journal.
-
-// WithRest is the disgo client the methods below send through.
-func (g *Guard) WithRest(r rest.Rest) *Guard {
-	g.rest = r
-	return g
-}
+// has them. Reads go straight through; every write passes the gate: pause,
+// dry-run, the guild's cap for its op, the breaker and the journal.
 
 // errNoID is a call naming ID 0, which is what core.ID makes of a stored ID
 // that is not a snowflake. Refused here rather than spent on a 404 that
@@ -156,8 +149,9 @@ func (o *GuildOps) GetUser(userID snowflake.ID) (*discord.User, error) {
 	return o.guard.rest.GetUser(userID)
 }
 
-// CreateDMChannel opens a DM with userID. Not a write anybody sees, so
-// ungated, as UserChannelCreate is.
+// CreateDMChannel opens (or returns the existing) DM with userID. Ungated
+// despite the name: it changes nothing anybody can see and is idempotent.
+// The message that follows is gated, which is where the cost is.
 func (o *GuildOps) CreateDMChannel(userID snowflake.ID) (*discord.DMChannel, error) {
 	if err := known(userID); err != nil {
 		return nil, err
@@ -209,6 +203,9 @@ func (o *GuildOps) PinMessage(channelID, messageID snowflake.ID) error {
 	return gatedErr(o, opMessagePin, channelID, func() error { return o.guard.rest.PinMessage(channelID, messageID) })
 }
 
+// DeleteMessage removes somebody else's message: the one operation that
+// destroys something a member wrote, with no archive behind it. aimod keeps
+// its own copy for the guild's evidence window because this is final.
 func (o *GuildOps) DeleteMessage(channelID, messageID snowflake.ID) error {
 	if err := known(channelID, messageID); err != nil {
 		return err
@@ -217,6 +214,9 @@ func (o *GuildOps) DeleteMessage(channelID, messageID snowflake.ID) error {
 }
 
 // CreateMessage posts m with every mention suppressed, whatever m says.
+// Rotation reposts operator-supplied sticky text every cycle, so a mention
+// in one would otherwise ping on a schedule forever. A caller that needs to
+// ping gets its own method with an allowlist, not an override here.
 func (o *GuildOps) CreateMessage(channelID snowflake.ID, m discord.MessageCreate) (*discord.Message, error) {
 	if err := known(channelID); err != nil {
 		return nil, err
