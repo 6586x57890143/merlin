@@ -27,7 +27,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	})
 	// /ping is intentionally public: TierPublic, the only tier that never
 	// requires an Action, unlike every other command (spec.MD §4a).
-	deps.Commands.Handle("ping", "", core.PermSpec{Tier: core.TierPublic}, p.handlePing)
+	deps.Commands.HandleIx("ping", "", core.PermSpec{Tier: core.TierPublic}, p.handlePing)
 	return nil
 }
 
@@ -43,18 +43,15 @@ func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
 // out of the guild's own message budget. Ephemeral keeps the health check
 // useful (the invoker still learns the bot is alive and responding) and
 // costs the channel nothing.
-func (p *Plugin) handlePing(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	content := p.voice.Line(ctx, i.GuildID, voice.KeyPing, nil)
+func (p *Plugin) handlePing(ctx context.Context, ix *core.Ix) {
+	content := ""
+	if p.voice != nil {
+		content = p.voice.Line(ctx, ix.GuildID, voice.KeyPing, nil)
+	}
 	if content == "" {
 		content = "kik-ong!"
 	}
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: content,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	})
+	_ = ix.RespondText(content)
 }
 
 // Help is this plugin's page in /help.

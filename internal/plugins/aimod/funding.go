@@ -9,8 +9,7 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
-
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // The tip jar. A guild points this at a wallet, members donate USDC to it,
@@ -535,25 +534,25 @@ func (p *Plugin) ownerOrOperator(guildID, userID string) (bool, error) {
 // running this in a channel is usually pointing other people at it. That also
 // makes it the one aimod surface that must carry nothing private, which is
 // why the mod-facing figures stay on /aimod status.
-func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponsePublic(s, i); err != nil {
-		p.log.Error("aimod: defer funding show", "guild", i.GuildID, "err", err)
+func (p *Plugin) handleFundingShow(ctx context.Context, ix *core.Ix) {
+	if err := ix.DeferPublic(); err != nil {
+		p.log.Error("aimod: defer funding show", "guild", ix.GuildID, "err", err)
 		return
 	}
 
-	f, err := p.store.Funding(ctx, i.GuildID)
+	f, err := p.store.Funding(ctx, ix.GuildID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to read the tip jar", err)
+		_ = ix.FollowUpErr("Failed to read the tip jar", err)
 		return
 	}
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to read the configuration", err)
+		_ = ix.FollowUpErr("Failed to read the configuration", err)
 		return
 	}
 
 	color := core.ColorSuccess
-	var fields []*discordgo.MessageEmbedField
+	var fields []discord.EmbedField
 
 	// remaining is nil whenever the balance cannot be known, which is a real
 	// and common case (a key with no limit set on it). The difference between
@@ -562,7 +561,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	spec, sealed := route(cfg)
 	if len(sealed) > 0 {
 		if plain, err := p.sealer.Open(sealed); err == nil {
-			if info, err := p.keyInfo(ctx, i.GuildID, spec, plain); err == nil {
+			if info, err := p.keyInfo(ctx, ix.GuildID, spec, plain); err == nil {
 				remaining, limit = info.LimitRemaining, info.Limit
 			}
 		}
@@ -571,11 +570,11 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	var left time.Duration
 	var haveRunway bool
 	if remaining == nil {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Value: core.TruncateEmbedField(creditUnknown(spec)),
 		})
 	} else {
-		left, haveRunway = p.runway(ctx, i.GuildID, *remaining)
+		left, haveRunway = p.runway(ctx, ix.GuildID, *remaining)
 		value := formatUSD(*remaining) + " left"
 		if limit != nil && *limit > 0 {
 			value = bar(*remaining/(*limit), barWidth) + "\n" + formatUSD(*remaining) + " of " + formatUSD(*limit)
@@ -586,10 +585,10 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		// Why the ceiling is still a big number next to a zero. Without this
 		// the pair reads as a bug rather than as the two different things
 		// they are: a cap somebody set on the key, and money in the account.
-		if p.outOfCredit(i.GuildID) && limit != nil && *limit > 0 {
+		if p.outOfCredit(ix.GuildID) && limit != nil && *limit > 0 {
 			value += "\n" + subtext(formatUSD(*limit)+" is the cap on the key, not money in the account")
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "⛽ Scanning credit", Value: core.TruncateEmbedField(value)})
+		fields = append(fields, discord.EmbedField{Name: "⛽ Scanning credit", Value: core.TruncateEmbedField(value)})
 		switch {
 		case *remaining <= 0:
 			color = core.ColorError
@@ -599,7 +598,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 	}
 
 	if !f.Configured() {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "🫙 Tip jar",
 			Value: "Not set up yet.\n" +
 				subtext("The server owner can point it at a wallet with /aimod funding set-address."),
@@ -617,7 +616,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 			jar += "\n" + subtext(fmt.Sprintf("%s raised from %d %s so far", formatUSD(f.ReceivedUSD), f.Donations,
 				plural(f.Donations, "donation", "donations")))
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "🫙 In the jar",
 			Value: core.TruncateEmbedField(jar),
 		})
@@ -688,13 +687,13 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 		}
 		where += subtext(provenance)
 
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "💸 Send " + family.label + " to",
 			Value: core.TruncateEmbedField(where),
 		})
 	}
 
-	body := p.fundingWords(ctx, i.GuildID, f, remaining, left, haveRunway)
+	body := p.fundingWords(ctx, ix.GuildID, f, remaining, left, haveRunway)
 
 	// A freshly changed payout address leads, and raises the severity rather
 	// than lowering it: a jar that is both nearly empty and just repointed is
@@ -707,12 +706,12 @@ func (p *Plugin) handleFundingShow(ctx context.Context, s *discordgo.Session, i 
 			".** Check with your server owner before sending.\n\n" + body
 	}
 
-	embed := core.NewEmbed(color, "merlin's tip jar", core.TruncateEmbedDescription(body), fields...)
+	embed := core.Embed(color, "merlin's tip jar", core.TruncateEmbedDescription(body), fields...)
 	if m := tipJarMood(remaining, limit, left, haveRunway); m != core.MoodNone {
-		core.WithMood(embed, m)
+		core.SetMood(&embed, m)
 	}
-	if err := core.FollowUpEmbed(s, i, embed); err != nil {
-		p.log.Error("aimod: respond funding show", "guild", i.GuildID, "err", err)
+	if err := ix.FollowUpEmbed(embed); err != nil {
+		p.log.Error("aimod: respond funding show", "guild", ix.GuildID, "err", err)
 	}
 }
 
@@ -765,31 +764,31 @@ func (p *Plugin) fundingWords(ctx context.Context, guildID string, f Funding, re
 }
 
 // handleFundingSetAddress points the jar at a wallet.
-func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("aimod: defer funding set-address", "guild", i.GuildID, "err", err)
+func (p *Plugin) handleFundingSetAddress(ctx context.Context, ix *core.Ix) {
+	if err := ix.Defer(); err != nil {
+		p.log.Error("aimod: defer funding set-address", "guild", ix.GuildID, "err", err)
 		return
 	}
 
 	userID := ""
-	if i.Member != nil && i.Member.User != nil {
-		userID = i.Member.User.ID
+	if ix.Member() != nil {
+		userID = ix.UserID
 	}
-	allowed, err := p.ownerOrOperator(i.GuildID, userID)
+	allowed, err := p.ownerOrOperator(ix.GuildID, userID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Could not check who owns this server", err)
+		_ = ix.FollowUpErr("Could not check who owns this server", err)
 		return
 	}
 	if !allowed {
-		_ = core.FollowUpErr(s, i, "Only the server owner can change this",
+		_ = ix.FollowUpErr("Only the server owner can change this",
 			fmt.Errorf("this is where donated money goes, so it is deliberately not something every admin can repoint"))
 		return
 	}
 
-	address := strings.TrimSpace(core.LeafArgs(i)["address"].StringValue())
+	address := strings.TrimSpace(ix.Args()["address"].String())
 	family := familyFor(address)
 	if family == nil {
-		_ = core.FollowUpErr(s, i, "That is not a wallet address",
+		_ = ix.FollowUpErr("That is not a wallet address",
 			fmt.Errorf("give an EVM address (`0x` and 40 hex characters, read on %s), "+
 				"a TRON one (`T` and 33 more characters, read on %s), "+
 				"or a Solana one (read on %s)",
@@ -797,7 +796,7 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 		return
 	}
 	if p.eth == nil {
-		_ = core.FollowUpErr(s, i, "The funding chain is not configured",
+		_ = ix.FollowUpErr("The funding chain is not configured",
 			fmt.Errorf("no RPC endpoint is wired up"))
 		return
 	}
@@ -810,26 +809,26 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 	// chain's existing holdings as a gift on the next poll.
 	balances, balance, err := p.eth.Balances(ctx, address)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Could not read that wallet", err)
+		_ = ix.FollowUpErr("Could not read that wallet", err)
 		return
 	}
 
-	previous, _ := p.store.Funding(ctx, i.GuildID)
-	if err := p.store.SetFundingAddress(ctx, i.GuildID, address, userID, p.now(), balance, balances); err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to save the address", err)
+	previous, _ := p.store.Funding(ctx, ix.GuildID)
+	if err := p.store.SetFundingAddress(ctx, ix.GuildID, address, userID, p.now(), balance, balances); err != nil {
+		_ = ix.FollowUpErr("Failed to save the address", err)
 		return
 	}
-	p.reconcileFundingJob(i.GuildID, true)
+	p.reconcileFundingJob(ix.GuildID, true)
 
 	detail := "tip jar set to " + address
 	if previous.Configured() && previous.Address != address {
 		detail = "tip jar moved from " + previous.Address + " to " + address
 	}
-	if err := p.auditWriter.Record(ctx, i.GuildID, userID, "aimod.funding_address_changed", "", detail); err != nil {
-		p.log.Error("aimod: audit funding address", "guild", i.GuildID, "err", err)
+	if err := p.auditWriter.Record(ctx, ix.GuildID, userID, "aimod.funding_address_changed", "", detail); err != nil {
+		p.log.Error("aimod: audit funding address", "guild", ix.GuildID, "err", err)
 	}
 
-	_ = core.FollowUpOK(s, i, "Tip jar set",
+	_ = ix.FollowUpOK("Tip jar set",
 		"Donations of "+family.label+" to `"+address+"` show up on `/aimod funding` within "+
 			core.FormatDuration(fundingPollInterval)+". Networks read: "+family.networks+
 			". It currently holds "+formatUSD(balance)+".\n\n"+
@@ -842,21 +841,21 @@ func (p *Plugin) handleFundingSetAddress(ctx context.Context, s *discordgo.Sessi
 // the point: clearing only ever stops donations, it can never redirect them,
 // so it is a kill switch that fails safe. An admin who suspects a bad address
 // can shut the jar immediately without waiting for the owner.
-func (p *Plugin) handleFundingClear(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := p.store.ClearFunding(ctx, i.GuildID); err != nil {
-		core.RespondErr(s, i, "Failed to clear the tip jar", err)
+func (p *Plugin) handleFundingClear(ctx context.Context, ix *core.Ix) {
+	if err := p.store.ClearFunding(ctx, ix.GuildID); err != nil {
+		ix.RespondErr("Failed to clear the tip jar", err)
 		return
 	}
-	p.reconcileFundingJob(i.GuildID, false)
+	p.reconcileFundingJob(ix.GuildID, false)
 
 	actor := ""
-	if i.Member != nil && i.Member.User != nil {
-		actor = i.Member.User.ID
+	if ix.Member() != nil {
+		actor = ix.UserID
 	}
-	if err := p.auditWriter.Record(ctx, i.GuildID, actor, "aimod.funding_cleared", "", "tip jar removed"); err != nil {
-		p.log.Error("aimod: audit funding cleared", "guild", i.GuildID, "err", err)
+	if err := p.auditWriter.Record(ctx, ix.GuildID, actor, "aimod.funding_cleared", "", "tip jar removed"); err != nil {
+		p.log.Error("aimod: audit funding cleared", "guild", ix.GuildID, "err", err)
 	}
 
-	core.RespondOK(s, i, "Tip jar removed",
+	ix.RespondOK("Tip jar removed",
 		"`/aimod funding` no longer shows an address, and the balance poll has stopped.")
 }

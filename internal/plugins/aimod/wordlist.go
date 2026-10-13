@@ -9,8 +9,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -234,7 +232,7 @@ func (p *Plugin) actOnWordList(cfg Config, c candidate) bool {
 	return true
 }
 
-func (p *Plugin) addWord(ctx context.Context, i *discordgo.InteractionCreate, raw, replacement string, nounOnly bool) outcome {
+func (p *Plugin) addWord(ctx context.Context, ix *core.Ix, raw, replacement string, nounOnly bool) outcome {
 	word, err := normalizeWord(raw)
 	if err != nil {
 		return failed("Can't list that", err)
@@ -249,7 +247,7 @@ func (p *Plugin) addWord(ctx context.Context, i *discordgo.InteractionCreate, ra
 		return failed("Can't list that", fmt.Errorf("the replacement contains the word it replaces"))
 	}
 
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
@@ -263,20 +261,20 @@ func (p *Plugin) addWord(ctx context.Context, i *discordgo.InteractionCreate, ra
 		return failed("Word list full", fmt.Errorf("a server can list at most %d words", maxWordList))
 	}
 	next = append(next, entry)
-	if err := p.store.SetWordList(ctx, i.GuildID, next); err != nil {
+	if err := p.store.SetWordList(ctx, ix.GuildID, next); err != nil {
 		return failed("Failed to update the word list", err)
 	}
 	// Text already judged clean is remembered for dedupeWindow, and that
 	// verdict predates this word.
 	p.dedupe.reset()
-	p.auditConfig(ctx, i, "aimod.word_list", "", "added "+describeWord(entry))
+	p.auditConfig(ctx, ix, "aimod.word_list", "", "added "+describeWord(entry))
 	return outcome{core.ColorSuccess, "Word listed", describeWord(entry) +
 		"\nApplies to new and edited messages from now on. Exempt channels and roles are still exempt."}
 }
 
-func (p *Plugin) removeWord(ctx context.Context, i *discordgo.InteractionCreate, raw string) outcome {
+func (p *Plugin) removeWord(ctx context.Context, ix *core.Ix, raw string) outcome {
 	word := strings.Join(strings.Fields(strings.ToLower(raw)), " ")
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
@@ -289,10 +287,10 @@ func (p *Plugin) removeWord(ctx context.Context, i *discordgo.InteractionCreate,
 	if len(next) == len(cfg.WordList) {
 		return outcome{core.ColorInfo, "No change", fmt.Sprintf("%q isn't on this server's word list.", word)}
 	}
-	if err := p.store.SetWordList(ctx, i.GuildID, next); err != nil {
+	if err := p.store.SetWordList(ctx, ix.GuildID, next); err != nil {
 		return failed("Failed to update the word list", err)
 	}
-	p.auditConfig(ctx, i, "aimod.word_list", "", fmt.Sprintf("removed %q", word))
+	p.auditConfig(ctx, ix, "aimod.word_list", "", fmt.Sprintf("removed %q", word))
 	return outcome{core.ColorSuccess, "Word removed", fmt.Sprintf("%q is no longer on this server's word list.", word)}
 }
 

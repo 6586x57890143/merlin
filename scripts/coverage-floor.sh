@@ -30,13 +30,8 @@ readonly FLOOR=70
 # they had. These are ceilings on regression, not permission to stay: raising
 # one of these means lowering the number here in the same PR, and CI says so
 # when you do. Delete an entry once its package clears FLOOR on its own.
-#
-# ping is a two-function example plugin with no test file. It is listed at 0
-# rather than exempted, so the day it grows real behaviour the floor is what
-# it has to clear.
 baseline() {
   case "$1" in
-    github.com/6586x57890143/merlin/internal/plugins/ping)        echo 0  ;;
     *) echo "" ;;
   esac
 }

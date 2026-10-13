@@ -6,8 +6,10 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 	"github.com/6586x57890143/merlin/internal/settings"
 )
 
@@ -62,14 +64,14 @@ const maxSetupAdminPicks = 5
 // was rendered for someone allowed to see it.
 func (p *Plugin) registerSetupComponents() {
 	spec := core.PermSpec{Tier: core.TierAdmin, Action: actionMutate}
-	p.commands.HandleComponent(p.Name(), setupStepPrefix, spec, p.handleSetupStep)
-	p.commands.HandleComponent(p.Name(), setupAuditLogSelectCustomID, spec, p.handleSetupAuditLogSelect)
-	p.commands.HandleComponent(p.Name(), setupAuditLogCreateCustomID, spec, p.handleSetupAuditLogCreate)
-	p.commands.HandleComponent(p.Name(), setupStatusSelectCustomID, spec, p.handleSetupStatusSelect)
-	p.commands.HandleComponent(p.Name(), setupStatusCreateCustomID, spec, p.handleSetupStatusCreate)
-	p.commands.HandleComponent(p.Name(), setupModRoleSelectCustomID, spec, p.handleSetupModRoleSelect)
-	p.commands.HandleComponent(p.Name(), setupModRoleCreateCustomID, spec, p.handleSetupModRoleCreate)
-	p.commands.HandleComponent(p.Name(), setupAdminsSelectCustomID, spec, p.handleSetupAdminsSelect)
+	p.commands.HandleComponentIx(p.Name(), setupStepPrefix, spec, p.handleSetupStep)
+	p.commands.HandleComponentIx(p.Name(), setupAuditLogSelectCustomID, spec, p.handleSetupAuditLogSelect)
+	p.commands.HandleComponentIx(p.Name(), setupAuditLogCreateCustomID, spec, p.handleSetupAuditLogCreate)
+	p.commands.HandleComponentIx(p.Name(), setupStatusSelectCustomID, spec, p.handleSetupStatusSelect)
+	p.commands.HandleComponentIx(p.Name(), setupStatusCreateCustomID, spec, p.handleSetupStatusCreate)
+	p.commands.HandleComponentIx(p.Name(), setupModRoleSelectCustomID, spec, p.handleSetupModRoleSelect)
+	p.commands.HandleComponentIx(p.Name(), setupModRoleCreateCustomID, spec, p.handleSetupModRoleCreate)
+	p.commands.HandleComponentIx(p.Name(), setupAdminsSelectCustomID, spec, p.handleSetupAdminsSelect)
 }
 
 // handleSetup opens the setup wizard on its first page. The wizard creates
@@ -80,33 +82,29 @@ func (p *Plugin) registerSetupComponents() {
 // wizard session to expire, two admins can drive it at once without
 // clobbering each other, and re-running it later is a perfectly good "how's
 // my setup going" review rather than a first-run-only ritual.
-func (p *Plugin) handleSetup(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	embed, components := renderSetupStep(p.settings.GuildSettings(i.GuildID), setupStepWelcome, "")
-	if err := core.RespondLandmarkEmbedWithComponents(s, i, embed, components); err != nil {
+func (p *Plugin) handleSetup(ctx context.Context, ix *core.Ix) {
+	embed, components := renderSetupStep(p.settings.GuildSettings(ix.GuildID), setupStepWelcome, "")
+	if err := ix.RespondEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("adminconfig: setup response failed", "err", err)
 	}
 }
 
-func (p *Plugin) handleSetupStep(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleSetupStep(ctx context.Context, ix *core.Ix, customID string) {
 	step, err := core.ParsePaginationPage(customID, setupStepPrefix)
 	if err != nil {
 		p.log.Error("adminconfig: parse setup step", "custom_id", customID, "err", err)
 		step = setupStepWelcome
 	}
-	p.updateSetupStep(s, i, step, "")
+	p.updateSetupStep(ix, step, "")
 }
 
 // updateSetupStep re-renders the wizard in place on the message the
 // component interaction arrived on. notice is a one-off line about whatever
 // just happened (or failed), shown above the step's own text and gone again
 // on the next navigation.
-func (p *Plugin) updateSetupStep(s *discordgo.Session, i *discordgo.InteractionCreate, step int, notice string) {
-	embed, components := renderSetupStep(p.settings.GuildSettings(i.GuildID), step, notice)
-	update := core.UpdateEmbedWithComponents
-	if step == setupStepDone {
-		update = core.UpdateLandmarkEmbedWithComponents
-	}
-	if err := update(s, i, embed, components); err != nil {
+func (p *Plugin) updateSetupStep(ix *core.Ix, step int, notice string) {
+	embed, components := renderSetupStep(p.settings.GuildSettings(ix.GuildID), step, notice)
+	if err := ix.UpdateEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("adminconfig: setup step update failed", "step", step, "err", err)
 	}
 }
@@ -115,11 +113,11 @@ func (p *Plugin) updateSetupStep(s *discordgo.Session, i *discordgo.InteractionC
 // guild's current settings (no Plugin state, no wizard session), which is
 // what makes the wizard resumable, concurrently drivable, and testable
 // without a Discord session.
-func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+func renderSetupStep(gs settings.GuildSettings, step int, notice string) (discord.Embed, []discord.LayoutComponent) {
 	step = min(max(step, 0), setupStepCount-1)
 
 	var title, desc string
-	var prompts []discordgo.MessageComponent
+	var prompts []discord.LayoutComponent
 	color := core.ColorInfo
 
 	switch step {
@@ -133,7 +131,7 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 		title = "Audit log channel"
 		desc = fmt.Sprintf("Where I write down config changes, rotations, and moderation actions. Your mod roles get access automatically.\n\nCurrently: **%s**",
 			channelStatusText(gs.AuditLogChannelID))
-		prompts = []discordgo.MessageComponent{
+		prompts = []discord.LayoutComponent{
 			setupChannelSelectRow(setupAuditLogSelectCustomID, "Pick an existing channel for the audit log..."),
 			setupCreateRow("Create #"+birdAuditLogChannelName+" for me", setupAuditLogCreateCustomID),
 		}
@@ -142,7 +140,7 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 		title = "Status channel"
 		desc = fmt.Sprintf("Where I flag operational trouble: a scheduled job failing over and over, a rotation I couldn't finish. Quiet when nothing's wrong.\n\nCurrently: **%s**",
 			channelStatusText(gs.StatusChannelID))
-		prompts = []discordgo.MessageComponent{
+		prompts = []discord.LayoutComponent{
 			setupChannelSelectRow(setupStatusSelectCustomID, "Pick an existing channel for status alerts..."),
 			setupCreateRow("Create #"+birdStatusChannelName+" for me", setupStatusCreateCustomID),
 		}
@@ -152,7 +150,7 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 		desc = fmt.Sprintf("Which role counts as a moderator for mod-tier commands (jailing, releasing, running a rotation early). "+
 			"Most servers already have one, so pick it rather than adding another.\n\nCurrently: **%s**",
 			roleListText(gs.ModRoleIDs))
-		prompts = []discordgo.MessageComponent{
+		prompts = []discord.LayoutComponent{
 			setupRoleSelectRow(setupModRoleSelectCustomID, "Pick an existing role to treat as a mod role..."),
 			setupCreateRow("Create a "+merlinModRoleName+" role for me", setupModRoleCreateCustomID),
 		}
@@ -162,7 +160,7 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 		desc = fmt.Sprintf("Who can change my own configuration: permissions, plugins, rotation settings. "+
 			"Anyone holding Discord's **Administrator** permission already counts, so this list is just for people who should have admin access without it.\n\nCurrently: **%s**",
 			userListText(gs.AdminUserIDs))
-		prompts = []discordgo.MessageComponent{setupUserSelectRow(setupAdminsSelectCustomID, "Pick who should have standing admin access...")}
+		prompts = []discord.LayoutComponent{setupUserSelectRow(setupAdminsSelectCustomID, "Pick who should have standing admin access...")}
 
 	case setupStepDone:
 		color = core.ColorSuccess
@@ -170,9 +168,9 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 		desc = "That's everything worth setting up front. Anything you skipped can be filled in later; `/config setup` picks up exactly where this left off."
 	}
 
-	fields := []*discordgo.MessageEmbedField{{Name: "Setup so far", Value: setupChecklist(gs)}}
+	fields := []discord.EmbedField{{Name: "Setup so far", Value: setupChecklist(gs)}}
 	if step == setupStepDone {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Where to go next", Value: strings.Join([]string{
+		fields = append(fields, discord.EmbedField{Name: "Where to go next", Value: strings.Join([]string{
 			"Assign your mod role to the people who should actually have it.",
 			"`/rotation` to start rotating a channel.",
 			"`/roles settings` to choose what jailed members can still see.",
@@ -183,9 +181,9 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 		desc = notice + "\n\n" + desc
 	}
 
-	newEmbed := core.NewEmbed
+	newEmbed := core.Embed
 	if step == setupStepDone {
-		newEmbed = core.NewLandmarkEmbed
+		newEmbed = core.LandmarkEmbed
 	}
 	return newEmbed(color, title, desc, fields...), append(prompts, setupNavRow(step))
 }
@@ -195,63 +193,33 @@ func renderSetupStep(gs settings.GuildSettings, step int, notice string) (*disco
 // consult, so the target step rides along in the button's own ID) but
 // labelled as steps rather than pages, and always rendered: a wizard whose
 // controls vanished on a single-step view would be a dead end.
-func setupNavRow(step int) discordgo.MessageComponent {
-	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-		discordgo.Button{
-			Label:    "◀ Back",
-			Style:    discordgo.SecondaryButton,
-			CustomID: core.PaginationCustomID(setupStepPrefix, step-1),
-			Disabled: step <= 0,
-		},
-		discordgo.Button{
-			Label:    fmt.Sprintf("Step %d/%d", step+1, setupStepCount),
-			Style:    discordgo.SecondaryButton,
-			CustomID: setupStepPrefix + "noop",
-			Disabled: true,
-		},
-		discordgo.Button{
-			Label:    "Next ▶",
-			Style:    discordgo.PrimaryButton,
-			CustomID: core.PaginationCustomID(setupStepPrefix, step+1),
-			Disabled: step >= setupStepCount-1,
-		},
-	}}
+func setupNavRow(step int) discord.LayoutComponent {
+	return ui.Row(
+		ui.Button("◀ Back", core.PaginationCustomID(setupStepPrefix, step-1), discord.ButtonStyleSecondary, step <= 0),
+		ui.Button(fmt.Sprintf("Step %d/%d", step+1, setupStepCount), setupStepPrefix+"noop", discord.ButtonStyleSecondary, true),
+		ui.Button("Next ▶", core.PaginationCustomID(setupStepPrefix, step+1), discord.ButtonStylePrimary, step >= setupStepCount-1),
+	)
 }
 
 // Each picker gets its own ActionRow because Discord won't let a select menu
 // share a row with anything else.
-func setupChannelSelectRow(customID, placeholder string) discordgo.MessageComponent {
-	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.SelectMenu{
-		MenuType:     discordgo.ChannelSelectMenu,
-		CustomID:     customID,
-		Placeholder:  placeholder,
-		ChannelTypes: []discordgo.ChannelType{discordgo.ChannelTypeGuildText},
-	}}}
+func setupChannelSelectRow(customID, placeholder string) discord.LayoutComponent {
+	return ui.Row(discord.ChannelSelectMenuComponent{
+		CustomID: customID, Placeholder: placeholder, ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildText},
+	})
 }
 
-func setupRoleSelectRow(customID, placeholder string) discordgo.MessageComponent {
-	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.SelectMenu{
-		MenuType:    discordgo.RoleSelectMenu,
-		CustomID:    customID,
-		Placeholder: placeholder,
-	}}}
+func setupRoleSelectRow(customID, placeholder string) discord.LayoutComponent {
+	return ui.Row(discord.RoleSelectMenuComponent{CustomID: customID, Placeholder: placeholder})
 }
 
-func setupUserSelectRow(customID, placeholder string) discordgo.MessageComponent {
+func setupUserSelectRow(customID, placeholder string) discord.LayoutComponent {
 	minValues := 1
-	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.SelectMenu{
-		MenuType:    discordgo.UserSelectMenu,
-		CustomID:    customID,
-		Placeholder: placeholder,
-		MinValues:   &minValues,
-		MaxValues:   maxSetupAdminPicks,
-	}}}
+	return ui.Row(discord.UserSelectMenuComponent{CustomID: customID, Placeholder: placeholder, MinValues: &minValues, MaxValues: maxSetupAdminPicks})
 }
 
-func setupCreateRow(label, customID string) discordgo.MessageComponent {
-	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-		discordgo.Button{Label: label, Style: discordgo.SecondaryButton, CustomID: customID},
-	}}
+func setupCreateRow(label, customID string) discord.LayoutComponent {
+	return ui.Row(ui.Button(label, customID, discord.ButtonStyleSecondary, false))
 }
 
 func setupChecklist(gs settings.GuildSettings) string {
@@ -313,26 +281,26 @@ func mentionListText(ids []string, format, empty string) string {
 // staying put) and holding position with a notice on failure, so a mistyped
 // permission or a Discord error doesn't drop the admin out of setup.
 
-func (p *Plugin) handleSetupAuditLogSelect(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.setupChannelPicked(ctx, s, i, setupStepAuditLog, "Audit log", p.settings.SetAuditLogChannel)
+func (p *Plugin) handleSetupAuditLogSelect(ctx context.Context, ix *core.Ix, customID string) {
+	p.setupChannelPicked(ctx, ix, setupStepAuditLog, "Audit log", p.settings.SetAuditLogChannel)
 }
 
-func (p *Plugin) handleSetupStatusSelect(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.setupChannelPicked(ctx, s, i, setupStepStatus, "Status channel", p.settings.SetStatusChannel)
+func (p *Plugin) handleSetupStatusSelect(ctx context.Context, ix *core.Ix, customID string) {
+	p.setupChannelPicked(ctx, ix, setupStepStatus, "Status channel", p.settings.SetStatusChannel)
 }
 
-func (p *Plugin) setupChannelPicked(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, step int, label string, set func(ctx context.Context, guildID, channelID string) error) {
-	values := i.MessageComponentData().Values
+func (p *Plugin) setupChannelPicked(ctx context.Context, ix *core.Ix, step int, label string, set func(ctx context.Context, guildID, channelID string) error) {
+	values := ix.Values()
 	if len(values) == 0 {
 		return
 	}
 	channelID := values[0]
-	if err := set(ctx, i.GuildID, channelID); err != nil {
-		p.updateSetupStep(s, i, step, fmt.Sprintf("⚠️ Couldn't save that channel: %v", err))
+	if err := set(ctx, ix.GuildID, channelID); err != nil {
+		p.updateSetupStep(ix, step, fmt.Sprintf("⚠️ Couldn't save that channel: %v", err))
 		return
 	}
-	p.grantModRolesChannelAccess(s, i.GuildID)
-	p.audit(ctx, i, "config.setup", "", fmt.Sprintf("%s=<#%s> (existing)", label, channelID))
+	p.grantModRolesChannelAccess(p.session, ix.GuildID)
+	p.audit(ctx, ix, "config.setup", "", fmt.Sprintf("%s=<#%s> (existing)", label, channelID))
 
 	// Picking an existing channel deliberately changes no permissions on it,
 	// unlike the "create it for me" path, which denies @everyone up front.
@@ -344,79 +312,79 @@ func (p *Plugin) setupChannelPicked(ctx context.Context, s *discordgo.Session, i
 	// meant it. A failed lookup says nothing either way, so it stays quiet
 	// rather than crying wolf; /config status re-checks this on every run.
 	notice := fmt.Sprintf("✅ %s is now <#%s>.", label, channelID)
-	if ch, err := s.Channel(channelID); err == nil && everyoneCanRead(ch) {
+	if ch, err := p.session.Channel(channelID); err == nil && everyoneCanRead(ch) {
 		notice += " ⚠️ Everyone can read that channel, so anything recorded there is public."
 	}
-	p.updateSetupStep(s, i, step+1, notice)
+	p.updateSetupStep(ix, step+1, notice)
 }
 
-func (p *Plugin) handleSetupAuditLogCreate(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.setupChannelCreate(ctx, s, i, setupStepAuditLog, "Audit log", birdAuditLogChannelName, p.settings.SetAuditLogChannel)
+func (p *Plugin) handleSetupAuditLogCreate(ctx context.Context, ix *core.Ix, customID string) {
+	p.setupChannelCreate(ctx, ix, setupStepAuditLog, "Audit log", birdAuditLogChannelName, p.settings.SetAuditLogChannel)
 }
 
-func (p *Plugin) handleSetupStatusCreate(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	p.setupChannelCreate(ctx, s, i, setupStepStatus, "Status channel", birdStatusChannelName, p.settings.SetStatusChannel)
+func (p *Plugin) handleSetupStatusCreate(ctx context.Context, ix *core.Ix, customID string) {
+	p.setupChannelCreate(ctx, ix, setupStepStatus, "Status channel", birdStatusChannelName, p.settings.SetStatusChannel)
 }
 
-func (p *Plugin) setupChannelCreate(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, step int, label, channelName string, set func(ctx context.Context, guildID, channelID string) error) {
-	ch, err := s.GuildChannelCreateComplex(i.GuildID, discordgo.GuildChannelCreateData{
+func (p *Plugin) setupChannelCreate(ctx context.Context, ix *core.Ix, step int, label, channelName string, set func(ctx context.Context, guildID, channelID string) error) {
+	ch, err := p.session.GuildChannelCreateComplex(ix.GuildID, discordgo.GuildChannelCreateData{
 		Name:                 channelName,
-		PermissionOverwrites: core.DenyEveryoneExceptBot(nil, i.GuildID, s.State.User.ID, botChannelAllow),
+		PermissionOverwrites: core.DenyEveryoneExceptBot(nil, ix.GuildID, p.session.State.User.ID, botChannelAllow),
 	})
 	if err != nil {
-		p.updateSetupStep(s, i, step, fmt.Sprintf("⚠️ Couldn't create #%s: %v", channelName, err))
+		p.updateSetupStep(ix, step, fmt.Sprintf("⚠️ Couldn't create #%s: %v", channelName, err))
 		return
 	}
-	if err := set(ctx, i.GuildID, ch.ID); err != nil {
-		p.updateSetupStep(s, i, step, fmt.Sprintf("⚠️ #%s was created but I couldn't save it: %v", channelName, err))
+	if err := set(ctx, ix.GuildID, ch.ID); err != nil {
+		p.updateSetupStep(ix, step, fmt.Sprintf("⚠️ #%s was created but I couldn't save it: %v", channelName, err))
 		return
 	}
-	p.grantModRolesChannelAccess(s, i.GuildID)
-	p.audit(ctx, i, "config.setup", "", fmt.Sprintf("%s=<#%s> (created)", label, ch.ID))
-	p.updateSetupStep(s, i, step+1, fmt.Sprintf("✅ Created <#%s> and set it as the %s.", ch.ID, strings.ToLower(label)))
+	p.grantModRolesChannelAccess(p.session, ix.GuildID)
+	p.audit(ctx, ix, "config.setup", "", fmt.Sprintf("%s=<#%s> (created)", label, ch.ID))
+	p.updateSetupStep(ix, step+1, fmt.Sprintf("✅ Created <#%s> and set it as the %s.", ch.ID, strings.ToLower(label)))
 }
 
-func (p *Plugin) handleSetupModRoleSelect(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	values := i.MessageComponentData().Values
+func (p *Plugin) handleSetupModRoleSelect(ctx context.Context, ix *core.Ix, customID string) {
+	values := ix.Values()
 	if len(values) == 0 {
 		return
 	}
-	p.setupAddModRole(ctx, s, i, values[0], fmt.Sprintf("✅ <@&%s> now counts as a mod role.", values[0]))
+	p.setupAddModRole(ctx, ix, values[0], fmt.Sprintf("✅ <@&%s> now counts as a mod role.", values[0]))
 }
 
-func (p *Plugin) handleSetupModRoleCreate(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleSetupModRoleCreate(ctx context.Context, ix *core.Ix, customID string) {
 	mentionable := false
-	role, err := s.GuildRoleCreate(i.GuildID, &discordgo.RoleParams{Name: merlinModRoleName, Mentionable: &mentionable})
+	role, err := p.session.GuildRoleCreate(ix.GuildID, &discordgo.RoleParams{Name: merlinModRoleName, Mentionable: &mentionable})
 	if err != nil {
-		p.updateSetupStep(s, i, setupStepModRole, fmt.Sprintf("⚠️ Couldn't create the %s role: %v", merlinModRoleName, err))
+		p.updateSetupStep(ix, setupStepModRole, fmt.Sprintf("⚠️ Couldn't create the %s role: %v", merlinModRoleName, err))
 		return
 	}
-	p.setupAddModRole(ctx, s, i, role.ID, fmt.Sprintf("✅ Created <@&%s>. Assign it to your moderators.", role.ID))
+	p.setupAddModRole(ctx, ix, role.ID, fmt.Sprintf("✅ Created <@&%s>. Assign it to your moderators.", role.ID))
 }
 
-func (p *Plugin) setupAddModRole(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, roleID, notice string) {
-	if err := p.settings.AddModRole(ctx, i.GuildID, roleID); err != nil {
-		p.updateSetupStep(s, i, setupStepModRole, fmt.Sprintf("⚠️ Couldn't save that mod role: %v", err))
+func (p *Plugin) setupAddModRole(ctx context.Context, ix *core.Ix, roleID, notice string) {
+	if err := p.settings.AddModRole(ctx, ix.GuildID, roleID); err != nil {
+		p.updateSetupStep(ix, setupStepModRole, fmt.Sprintf("⚠️ Couldn't save that mod role: %v", err))
 		return
 	}
-	p.grantModRoleChannelAccess(s, i.GuildID, roleID)
-	p.audit(ctx, i, "config.setup", "", "mod_role="+core.MentionRole(roleID))
-	p.updateSetupStep(s, i, setupStepModRole+1, notice)
+	p.grantModRoleChannelAccess(p.session, ix.GuildID, roleID)
+	p.audit(ctx, ix, "config.setup", "", "mod_role="+core.MentionRole(roleID))
+	p.updateSetupStep(ix, setupStepModRole+1, notice)
 }
 
-func (p *Plugin) handleSetupAdminsSelect(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	values := i.MessageComponentData().Values
+func (p *Plugin) handleSetupAdminsSelect(ctx context.Context, ix *core.Ix, customID string) {
+	values := ix.Values()
 	if len(values) == 0 {
 		return
 	}
 	for _, userID := range values {
-		if err := p.settings.AddAdmin(ctx, i.GuildID, userID); err != nil {
-			p.updateSetupStep(s, i, setupStepAdmins, fmt.Sprintf("⚠️ Couldn't save <@%s> as an admin: %v", userID, err))
+		if err := p.settings.AddAdmin(ctx, ix.GuildID, userID); err != nil {
+			p.updateSetupStep(ix, setupStepAdmins, fmt.Sprintf("⚠️ Couldn't save <@%s> as an admin: %v", userID, err))
 			return
 		}
-		p.audit(ctx, i, "config.setup", "", "admin="+core.MentionUser(userID))
+		p.audit(ctx, ix, "config.setup", "", "admin="+core.MentionUser(userID))
 	}
-	p.updateSetupStep(s, i, setupStepAdmins+1, fmt.Sprintf("✅ Added %s as admin.", mentionListText(values, "<@%s>", "")))
+	p.updateSetupStep(ix, setupStepAdmins+1, fmt.Sprintf("✅ Added %s as admin.", mentionListText(values, "<@%s>", "")))
 }
 
 // grantModRolesChannelAccess re-grants every mod role access to whichever of
@@ -428,7 +396,7 @@ func (p *Plugin) grantModRolesChannelAccess(s *discordgo.Session, guildID string
 	// once and writes only the roles actually missing the grant, so re-running
 	// this on an already-correct guild costs no permission writes and no
 	// Discord audit-log entries.
-	p.grantRolesChannelAccess(s, guildID, p.settings.GuildSettings(guildID).ModRoleIDs)
+	p.grantRolesChannelAccess(p.session, guildID, p.settings.GuildSettings(guildID).ModRoleIDs)
 }
 
 // botChannelAllow is what the bot needs on the audit-log/status channels:

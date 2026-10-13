@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/obs"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -40,22 +42,38 @@ type ComponentHandler func(ctx context.Context, s *discordgo.Session, i *discord
 // channel or in their command history, which is what a prize code needs.
 type ModalHandler func(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string)
 
+// IxCommandHandler, IxAutocompleteHandler, IxComponentHandler and
+// IxModalHandler are the handler kinds above for a plugin on disgo: one Ix
+// in place of the session and the InteractionCreate. The router checks
+// them exactly as it checks the others; see Ix.
+type (
+	IxCommandHandler      func(ctx context.Context, ix *Ix)
+	IxAutocompleteHandler func(ctx context.Context, ix *Ix, focusedOption, focusedValue string) []discord.AutocompleteChoice
+	IxComponentHandler    func(ctx context.Context, ix *Ix, customID string)
+	IxModalHandler        func(ctx context.Context, ix *Ix, customID string)
+)
+
+// Each registration holds one handler of either kind.
 type registeredLeaf struct {
-	spec         PermSpec
-	handler      CommandHandler
-	autocomplete AutocompleteHandler
+	spec           PermSpec
+	handler        CommandHandler
+	ix             IxCommandHandler
+	autocomplete   AutocompleteHandler
+	ixAutocomplete IxAutocompleteHandler
 }
 
 type registeredComponent struct {
 	pluginName string
 	spec       PermSpec
 	handler    ComponentHandler
+	ix         IxComponentHandler
 }
 
 type registeredModal struct {
 	pluginName string
 	spec       PermSpec
 	handler    ModalHandler
+	ix         IxModalHandler
 }
 
 // CommandRouter is the single owner of slash-command registration and
@@ -76,6 +94,9 @@ type CommandRouter struct {
 	// speaker falls back to the plain sentences, so a router built in a
 	// test does not have to care that merlin has a personality.
 	voice voice.Source
+	// rest answers interactions handled as an Ix. Optional until a plugin
+	// registers one: NewIx refuses without it, and the refusal is logged.
+	rest rest.Rest
 
 	topLevel       []*discordgo.ApplicationCommand
 	topLevelPlugin map[string]string // top-level command name -> owning plugin name
@@ -118,6 +139,13 @@ func (r *CommandRouter) say(key voice.Key, plain string) string {
 		return line
 	}
 	return plain
+}
+
+// WithRest gives the router the REST client every Ix answers through
+// (NewRest).
+func (r *CommandRouter) WithRest(c rest.Rest) *CommandRouter {
+	r.rest = c
+	return r
 }
 
 // Perms is the router's permission checker, for a panel drawing a control
@@ -178,6 +206,32 @@ func (r *CommandRouter) Tiers() map[string]PermTier {
 // here, so registration order doesn't matter.
 func (r *CommandRouter) Handle(topLevelName, path string, spec PermSpec, handler CommandHandler) {
 	r.leaves[leafKey(topLevelName, path)] = &registeredLeaf{spec: spec, handler: handler}
+}
+
+// HandleIx is Handle for a leaf whose handler takes an Ix.
+func (r *CommandRouter) HandleIx(topLevelName, path string, spec PermSpec, handler IxCommandHandler) {
+	r.leaves[leafKey(topLevelName, path)] = &registeredLeaf{spec: spec, ix: handler}
+}
+
+// AutocompleteIx is Autocomplete for a handler that takes an Ix. Panics if
+// the leaf does not exist yet, as Autocomplete does.
+func (r *CommandRouter) AutocompleteIx(topLevelName, path string, fn IxAutocompleteHandler) {
+	key := leafKey(topLevelName, path)
+	leaf, ok := r.leaves[key]
+	if !ok {
+		panic(fmt.Sprintf("core: AutocompleteIx registered before Handle for %q", key))
+	}
+	leaf.ixAutocomplete = fn
+}
+
+// HandleComponentIx is HandleComponent for a handler that takes an Ix.
+func (r *CommandRouter) HandleComponentIx(pluginName, prefix string, spec PermSpec, fn IxComponentHandler) {
+	r.components[prefix] = &registeredComponent{pluginName: pluginName, spec: spec, ix: fn}
+}
+
+// HandleModalIx is HandleModal for a handler that takes an Ix.
+func (r *CommandRouter) HandleModalIx(pluginName, prefix string, spec PermSpec, fn IxModalHandler) {
+	r.modals[prefix] = &registeredModal{pluginName: pluginName, spec: spec, ix: fn}
 }
 
 // Autocomplete attaches fn to an already-Handle'd leaf. Panics if the leaf
@@ -437,19 +491,48 @@ func walkOption(opt *discordgo.ApplicationCommandOption, prefix []string, out *[
 	*out = append(*out, strings.Join(segs, "/"))
 }
 
-// HandleInteraction is the single session.AddHandler callback for the whole
-// bot; construct it once (core.NewCommandRouter) and register it once.
+// HandleEvent is the single session.AddHandler callback for the whole bot;
+// construct it once (core.NewCommandRouter) and register it once. It takes
+// discordgo's raw event rather than its InteractionCreate because a plugin
+// on disgo decodes the same interaction from Discord's own JSON, and the
+// raw event is the only place discordgo keeps it. Every other event is
+// ignored.
+func (r *CommandRouter) HandleEvent(s *discordgo.Session, e *discordgo.Event) {
+	if i, ok := e.Struct.(*discordgo.InteractionCreate); ok {
+		r.handle(s, i, e.RawData)
+	}
+}
+
+// HandleInteraction routes one interaction with no raw payload, which a
+// handler on an Ix cannot be reached by: only tests call it.
 func (r *CommandRouter) HandleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	r.handle(s, i, nil)
+}
+
+func (r *CommandRouter) handle(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
-		r.dispatchCommand(s, i)
+		r.dispatchCommand(s, i, raw)
 	case discordgo.InteractionApplicationCommandAutocomplete:
-		r.dispatchAutocomplete(s, i)
+		r.dispatchAutocomplete(s, i, raw)
 	case discordgo.InteractionMessageComponent:
-		r.dispatchComponent(s, i)
+		r.dispatchComponent(s, i, raw)
 	case discordgo.InteractionModalSubmit:
-		r.dispatchModal(s, i)
+		r.dispatchModal(s, i, raw)
 	}
+}
+
+// ix decodes raw for a handler on disgo, answering the member and logging
+// if it cannot. It runs after the gate and Authorize, so a refused member
+// costs no decode.
+func (r *CommandRouter) ix(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) (*Ix, bool) {
+	ix, err := NewIx(raw, r.rest)
+	if err != nil {
+		r.log.Error("interaction for a disgo handler not decoded", "err", err)
+		r.respondEphemeral(s, i, r.say(voice.KeyBroken, "Something went wrong handling that."))
+		return nil, false
+	}
+	return ix, true
 }
 
 // matchComponent finds the registered component whose prefix is the
@@ -473,7 +556,7 @@ func (r *CommandRouter) matchComponent(customID string) *registeredComponent {
 // plugin-enabled + Authorize checks dispatchCommand does: a component
 // interaction is its own fresh interaction, never exempt from either check
 // just because it followed a successful command.
-func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("component handler panicked", "panic", rec)
@@ -507,6 +590,12 @@ func (r *CommandRouter) dispatchComponent(s *discordgo.Session, i *discordgo.Int
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if matched.ix != nil {
+		if ix, ok := r.ix(s, i, raw); ok {
+			timed(matched.pluginName, i, func() { matched.ix(ctx, ix, customID) })
+		}
+		return
+	}
 	timed(matched.pluginName, i, func() { matched.handler(ctx, s, i, customID) })
 }
 
@@ -531,7 +620,7 @@ func (r *CommandRouter) matchModal(customID string) *registeredModal {
 // generic: the two differ only in which map they read, and the checks are the
 // part that must not drift, so having them written out where a reviewer can
 // see them is worth twenty duplicated lines.
-func (r *CommandRouter) dispatchModal(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (r *CommandRouter) dispatchModal(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("modal handler panicked", "panic", rec)
@@ -563,10 +652,16 @@ func (r *CommandRouter) dispatchModal(s *discordgo.Session, i *discordgo.Interac
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if matched.ix != nil {
+		if ix, ok := r.ix(s, i, raw); ok {
+			timed(matched.pluginName, i, func() { matched.ix(ctx, ix, customID) })
+		}
+		return
+	}
 	timed(matched.pluginName, i, func() { matched.handler(ctx, s, i, customID) })
 }
 
-func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("command handler panicked", "panic", rec)
@@ -607,6 +702,12 @@ func (r *CommandRouter) dispatchCommand(s *discordgo.Session, i *discordgo.Inter
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if leaf.ix != nil {
+		if ix, ok := r.ix(s, i, raw); ok {
+			timed(r.topLevelPlugin[data.Name], i, func() { leaf.ix(ctx, ix) })
+		}
+		return
+	}
 	timed(r.topLevelPlugin[data.Name], i, func() { leaf.handler(ctx, s, i) })
 }
 
@@ -622,7 +723,7 @@ func timed(plugin string, i *discordgo.InteractionCreate, fn func()) {
 	obs.Default.Add(plugin, obs.Run, time.Since(start))
 }
 
-func (r *CommandRouter) dispatchAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (r *CommandRouter) dispatchAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate, raw []byte) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.log.Error("autocomplete handler panicked", "panic", rec)
@@ -633,7 +734,7 @@ func (r *CommandRouter) dispatchAutocomplete(s *discordgo.Session, i *discordgo.
 	path, args := resolveLeaf(data)
 	key := leafKey(data.Name, path)
 	leaf, ok := r.leaves[key]
-	if !ok || leaf.autocomplete == nil {
+	if !ok || (leaf.autocomplete == nil && leaf.ixAutocomplete == nil) {
 		return
 	}
 
@@ -657,6 +758,21 @@ func (r *CommandRouter) dispatchAutocomplete(s *discordgo.Session, i *discordgo.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if leaf.ixAutocomplete != nil {
+		// Autocomplete has no way to show a member an error, so a decode
+		// failure is only logged.
+		ix, err := NewIx(raw, r.rest)
+		if err != nil {
+			r.log.Error("autocomplete for a disgo handler not decoded", "err", err)
+			return
+		}
+		choices := leaf.ixAutocomplete(ctx, ix, focusedName, focusedValue)
+		if len(choices) > 25 {
+			choices = choices[:25]
+		}
+		_ = ix.respond(discord.InteractionResponseTypeAutocompleteResult, discord.AutocompleteResult{Choices: choices})
+		return
+	}
 	choices := leaf.autocomplete(ctx, i, focusedName, focusedValue)
 	if len(choices) > 25 {
 		choices = choices[:25]

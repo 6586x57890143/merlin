@@ -7,9 +7,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 )
 
 // /config is one panel. It used to be eighteen subcommands in four groups,
@@ -47,12 +48,12 @@ var (
 )
 
 func (p *Plugin) registerPanel() {
-	p.commands.HandleComponent(p.Name(), panelView, readSpec, p.handlePanelView)
-	p.commands.HandleComponent(p.Name(), panelSet, mutateSpec, p.handlePanelSet)
+	p.commands.HandleComponentIx(p.Name(), panelView, readSpec, p.handlePanelView)
+	p.commands.HandleComponentIx(p.Name(), panelSet, mutateSpec, p.handlePanelSet)
 }
 
-func (p *Plugin) handleConfig(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.RespondPanel(s, i, p.panel(ctx, i, "home", "", "")); err != nil {
+func (p *Plugin) handleConfig(ctx context.Context, ix *core.Ix) {
+	if err := ix.RespondPanel(p.panel(ctx, ix, "home", "", "")); err != nil {
 		p.log.Error("adminconfig: panel response failed", "err", err)
 	}
 }
@@ -60,9 +61,9 @@ func (p *Plugin) handleConfig(ctx context.Context, s *discordgo.Session, i *disc
 // handlePanelView turns pages. Its CustomIDs are config:panel:view:page
 // (the page select), config:panel:view:area (permissions' plugin select) and
 // config:panel:view:action (permissions' action select).
-func (p *Plugin) handlePanelView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handlePanelView(ctx context.Context, ix *core.Ix, customID string) {
 	page, arg := "home", ""
-	v := core.FirstValue(i)
+	v := ix.FirstValue()
 	switch strings.TrimPrefix(customID, panelView) {
 	case "page":
 		page = v
@@ -71,19 +72,19 @@ func (p *Plugin) handlePanelView(ctx context.Context, s *discordgo.Session, i *d
 	case "action":
 		page, arg = "permissions", v
 	}
-	p.redraw(ctx, s, i, page, arg, "")
+	p.redraw(ctx, ix, page, arg, "")
 }
 
-func (p *Plugin) redraw(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, page, arg, note string) {
-	if err := core.UpdatePanel(s, i, p.panel(ctx, i, page, arg, note)); err != nil {
+func (p *Plugin) redraw(ctx context.Context, ix *core.Ix, page, arg, note string) {
+	if err := ix.UpdatePanel(p.panel(ctx, ix, page, arg, note)); err != nil {
 		p.log.Error("adminconfig: panel update failed", "page", page, "err", err)
 	}
 }
 
 // panel draws one page. arg is the permissions page's area or action.
-func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page, arg, note string) core.Panel {
-	can := p.perms.Allows(i, mutateSpec)
-	gs := p.settings.GuildSettings(i.GuildID)
+func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string) core.Panel {
+	can := p.perms.AllowsIx(ix, mutateSpec)
+	gs := p.settings.GuildSettings(ix.GuildID)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Settings", Plugin: p.Name(), Note: note,
 		Footer: "Mods can read this; only admins can change it. Every change is written to the audit log."}
 	if !can {
@@ -93,25 +94,25 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 	switch page {
 	case "access":
 		pn.Line = "Who can change merlin, and who counts as a mod"
-		pn.Body = []discordgo.MessageComponent{
-			core.Text("**Admins** can change merlin's own configuration. Anyone holding Discord's Administrator permission already counts, so this is for people who should have it without that.\n" +
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text("**Admins** can change merlin's own configuration. Anyone holding Discord's Administrator permission already counts, so this is for people who should have it without that.\n" +
 				"-# Now: " + userListText(gs.AdminUserIDs)),
-			core.Row(core.EntitySelect(discordgo.UserSelectMenu, panelSet+"admins", "Pick who has standing admin access", gs.AdminUserIDs, core.MaxSelectValues, !can)),
-			core.Text("**Mod roles** can use mod-tier commands: jailing, releasing, running a rotation early.\n" +
+			ui.Row(ui.UserSelect(panelSet+"admins", "Pick who has standing admin access", gs.AdminUserIDs, core.MaxSelectValues, !can)),
+			ui.Text("**Mod roles** can use mod-tier commands: jailing, releasing, running a rotation early.\n" +
 				"-# Now: " + roleListText(gs.ModRoleIDs)),
-			core.Row(core.EntitySelect(discordgo.RoleSelectMenu, panelSet+"modroles", "Pick which roles count as mod", gs.ModRoleIDs, core.MaxSelectValues, !can)),
+			ui.Row(ui.RoleSelect(panelSet+"modroles", "Pick which roles count as mod", gs.ModRoleIDs, core.MaxSelectValues, !can)),
 		}
 
 	case "channels":
 		audit, _ := p.channelState(gs.AuditLogChannelID)
 		status, _ := p.channelState(gs.StatusChannelID)
 		pn.Line = "Where the audit log and status alerts go"
-		pn.Body = []discordgo.MessageComponent{
-			core.Text("**Audit log**: config changes, rotations and moderation actions. Mod roles are given access.\n-# Now: " + audit),
-			core.Row(core.ChannelSelect(panelSet+"audit", "Pick the audit log channel", gs.AuditLogChannelID, !can, discordgo.ChannelTypeGuildText)),
-			core.Text("**Status channel**: operational trouble, like a job failing over and over. Quiet when nothing is wrong.\n-# Now: " + status),
-			core.Row(core.ChannelSelect(panelSet+"status", "Pick the status channel", gs.StatusChannelID, !can, discordgo.ChannelTypeGuildText)),
-			core.Row(discordgo.Button{Label: "Guided setup", Style: discordgo.SecondaryButton, CustomID: panelSet + "setup", Disabled: !can}),
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text("**Audit log**: config changes, rotations and moderation actions. Mod roles are given access.\n-# Now: " + audit),
+			ui.Row(ui.ChannelSelect(panelSet+"audit", "Pick the audit log channel", gs.AuditLogChannelID, !can, discord.ChannelTypeGuildText)),
+			ui.Text("**Status channel**: operational trouble, like a job failing over and over. Quiet when nothing is wrong.\n-# Now: " + status),
+			ui.Row(ui.ChannelSelect(panelSet+"status", "Pick the status channel", gs.StatusChannelID, !can, discord.ChannelTypeGuildText)),
+			ui.Row(discord.ButtonComponent{Label: "Guided setup", Style: discord.ButtonStyleSecondary, CustomID: panelSet + "setup", Disabled: !can}),
 		}
 		pn.Footer = "Guided setup can create either channel for you, locked to mods."
 
@@ -119,56 +120,47 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 		names := p.commands.Plugins()
 		sort.Strings(names)
 		var rows [][2]string
-		var opts []discordgo.SelectMenuOption
+		var opts []discord.StringSelectMenuOption
 		for _, name := range names {
-			on := p.settings.PluginEnabled(i.GuildID, name)
+			on := p.settings.PluginEnabled(ix.GuildID, name)
 			state := "on"
 			if !on {
 				state = "off"
 			}
 			rows = append(rows, [2]string{name, state})
 			if name != p.Name() {
-				opts = append(opts, discordgo.SelectMenuOption{Label: name, Value: name, Default: on})
+				opts = append(opts, discord.StringSelectMenuOption{Label: name, Value: name, Default: on})
 			}
 		}
 		pn.Line = "Switch a whole plugin on or off here"
-		pn.Body = []discordgo.MessageComponent{
-			core.Text("A plugin that is off answers nobody here, admins included, and its scheduled work stops.\n" + core.Readout(rows)),
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text("A plugin that is off answers nobody here, admins included, and its scheduled work stops.\n" + core.Readout(rows)),
 		}
 		if len(opts) > 0 {
-			pn.Body = append(pn.Body, core.Row(core.StringSelect(panelSet+"plugins", "Pick which plugins are on", opts, true, !can)))
+			pn.Parts = append(pn.Parts, ui.Row(ui.StringSelect(panelSet+"plugins", "Pick which plugins are on", opts, true, !can)))
 		}
 		pn.Footer = p.Name() + " runs this panel, so it stays on."
 
 	case "permissions":
 		pn.Line = "Retier one action, or allow or block someone"
-		pn.Body = p.permissionsBody(i.GuildID, arg, can)
+		pn.Parts = p.permissionsBody(ix.GuildID, arg, can)
 
 	case "safety":
 		pn.Line = "The emergency stop and rehearsal mode"
-		pauseState, pauseBtn := "Acting normally.", discordgo.Button{Label: "Pause", Style: discordgo.DangerButton, CustomID: panelSet + "pause:on", Disabled: !can}
+		pauseState, pauseBtn := "Acting normally.", discord.ButtonComponent{Label: "Pause", Style: discord.ButtonStyleDanger, CustomID: panelSet + "pause:on", Disabled: !can}
 		if gs.WritesPaused {
-			pauseState, pauseBtn = "⛔ **Paused.** Scheduled jobs stay due and resume where they left off.", discordgo.Button{Label: "Resume", Style: discordgo.SuccessButton, CustomID: panelSet + "pause:off", Disabled: !can}
+			pauseState, pauseBtn = "⛔ **Paused.** Scheduled jobs stay due and resume where they left off.", discord.ButtonComponent{Label: "Resume", Style: discord.ButtonStyleSuccess, CustomID: panelSet + "pause:off", Disabled: !can}
 		}
-		dryState, dryBtn := "Acting for real.", discordgo.Button{Label: "Rehearse", Style: discordgo.SecondaryButton, CustomID: panelSet + "dryrun:on", Disabled: !can}
+		dryState, dryBtn := "Acting for real.", discord.ButtonComponent{Label: "Rehearse", Style: discord.ButtonStyleSecondary, CustomID: panelSet + "dryrun:on", Disabled: !can}
 		if gs.WritesDryRun {
-			dryState, dryBtn = "🧪 **Rehearsing.** Nothing is being changed.", discordgo.Button{Label: "Act for real", Style: discordgo.SuccessButton, CustomID: panelSet + "dryrun:off", Disabled: !can}
+			dryState, dryBtn = "🧪 **Rehearsing.** Nothing is being changed.", discord.ButtonComponent{Label: "Act for real", Style: discord.ButtonStyleSuccess, CustomID: panelSet + "dryrun:off", Disabled: !can}
 		}
-		pn.Body = []discordgo.MessageComponent{
-			discordgo.Section{
-				Components: []discordgo.MessageComponent{core.Text("**Pause** refuses every rotation, archive deletion, jail and role change in this server. Reading keeps working.\n-# " + pauseState)},
-				Accessory:  pauseBtn,
-			},
-			discordgo.Section{
-				Components: []discordgo.MessageComponent{core.Text("**Dry-run** writes to the audit log what rotation, sweeps and jails *would* do, and does none of it.\n-# " + dryState)},
-				Accessory:  dryBtn,
-			},
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Switch("**Pause** refuses every rotation, archive deletion, jail and role change in this server. Reading keeps working.\n-# " + pauseState, pauseBtn),
+			ui.Switch("**Dry-run** writes to the audit log what rotation, sweeps and jails *would* do, and does none of it.\n-# " + dryState, dryBtn),
 		}
 		if _, err := os.Stat(p.legacyPath); err == nil {
-			pn.Body = append(pn.Body, discordgo.Section{
-				Components: []discordgo.MessageComponent{core.Text("**Import** seeds this server's settings, once, from the legacy config file on disk.")},
-				Accessory:  discordgo.Button{Label: "Import", Style: discordgo.SecondaryButton, CustomID: panelSet + "import", Disabled: !can},
-			})
+			pn.Parts = append(pn.Parts, ui.Switch("**Import** seeds this server's settings, once, from the legacy config file on disk.", discord.ButtonComponent{Label: "Import", Style: discord.ButtonStyleSecondary, CustomID: panelSet + "import", Disabled: !can}))
 		}
 		if gs.WritesPaused || gs.WritesDryRun {
 			pn.Color, pn.Mood = core.ColorWarning, core.MoodIdle
@@ -176,9 +168,9 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 
 	default:
 		page = "home"
-		body, sev := p.statusReport(ctx, i.GuildID)
+		body, sev := p.statusReport(ctx, ix.GuildID)
 		pn.Line = "This server's settings, and whether merlin is okay"
-		pn.Body = []discordgo.MessageComponent{core.Text(body)}
+		pn.Parts = []discord.ContainerSubComponent{ui.Text(body)}
 		switch sev {
 		case sevError, sevWarn:
 			pn.Color = core.ColorWarning
@@ -187,23 +179,23 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 		}
 	}
 
-	pn.Body = append(pn.Body, core.Gap(), core.Row(pageSelect(page)))
+	pn.Parts = append(pn.Parts, ui.Gap(), ui.Row(pageSelect(page)))
 	return pn
 }
 
-func pageSelect(current string) discordgo.SelectMenu {
-	opts := make([]discordgo.SelectMenuOption, len(panelPages))
+func pageSelect(current string) discord.StringSelectMenuComponent {
+	opts := make([]discord.StringSelectMenuOption, len(panelPages))
 	for n, pg := range panelPages {
-		opts[n] = discordgo.SelectMenuOption{Label: pg.label, Value: pg.key, Description: pg.about, Default: pg.key == current}
+		opts[n] = discord.StringSelectMenuOption{Label: pg.label, Value: pg.key, Description: pg.about, Default: pg.key == current}
 	}
-	return core.StringSelect(panelView+"page", "Go to...", opts, false, false)
+	return ui.StringSelect(panelView+"page", "Go to...", opts, false, false)
 }
 
 // permissionsBody is the permissions page: pick a plugin, then an action,
 // then that action's tier, extra allows and blocks. An area is the part of
 // an action before its dot. Two selects rather than one because there are
 // more actions than a select can hold.
-func (p *Plugin) permissionsBody(guildID, arg string, can bool) []discordgo.MessageComponent {
+func (p *Plugin) permissionsBody(guildID, arg string, can bool) []discord.ContainerSubComponent {
 	actions := p.commands.Actions()
 	sort.Strings(actions)
 	area, action := arg, ""
@@ -220,33 +212,33 @@ func (p *Plugin) permissionsBody(guildID, arg string, can bool) []discordgo.Mess
 		}
 		byArea[ar] = append(byArea[ar], a)
 	}
-	var areaOpts []discordgo.SelectMenuOption
+	var areaOpts []discord.StringSelectMenuOption
 	for _, ar := range areas {
-		areaOpts = append(areaOpts, discordgo.SelectMenuOption{Label: ar, Value: ar, Default: ar == area})
+		areaOpts = append(areaOpts, discord.StringSelectMenuOption{Label: ar, Value: ar, Default: ar == area})
 	}
 
-	body := []discordgo.MessageComponent{}
+	body := []discord.ContainerSubComponent{}
 	if area == "" {
 		lines := permissionOverrideLines(p.settings.Overrides(guildID))
 		summary := "No action has been changed from its default here."
 		if len(lines) > 0 {
 			summary = core.TruncateEmbedField(strings.Join(lines, "\n"))
 		}
-		body = append(body, core.Text("Every command runs as an **action**. Pick one to change who may run it.\n"+summary))
+		body = append(body, ui.Text("Every command runs as an **action**. Pick one to change who may run it.\n"+summary))
 	}
 	if len(areaOpts) > 0 {
-		body = append(body, core.Row(core.StringSelect(panelView+"area", "Pick a plugin", areaOpts, false, false)))
+		body = append(body, ui.Row(ui.StringSelect(panelView+"area", "Pick a plugin", areaOpts, false, false)))
 	}
 	if area == "" {
 		return body
 	}
 
-	var actOpts []discordgo.SelectMenuOption
+	var actOpts []discord.StringSelectMenuOption
 	for _, a := range byArea[area] {
-		actOpts = append(actOpts, discordgo.SelectMenuOption{Label: a, Value: a, Default: a == action})
+		actOpts = append(actOpts, discord.StringSelectMenuOption{Label: a, Value: a, Default: a == action})
 	}
 	if len(actOpts) > 0 {
-		body = append(body, core.Row(core.StringSelect(panelView+"action", "Pick an action", actOpts, false, false)))
+		body = append(body, ui.Row(ui.StringSelect(panelView+"action", "Pick an action", actOpts, false, false)))
 	}
 	if action == "" {
 		return body
@@ -264,26 +256,26 @@ func (p *Plugin) permissionsBody(guildID, arg string, can bool) []discordgo.Mess
 	if tier.IsSet() {
 		requires = "**" + tier.String() + "**"
 	}
-	tierBtn := func(label, key string, on bool) discordgo.Button {
-		style := discordgo.SecondaryButton
+	tierBtn := func(label, key string, on bool) discord.ButtonComponent {
+		style := discord.ButtonStyleSecondary
 		if on {
-			style = discordgo.PrimaryButton
+			style = discord.ButtonStylePrimary
 		}
-		return discordgo.Button{Label: label, Style: style, CustomID: panelSet + "tier:" + key + ":" + action, Disabled: !can || on}
+		return discord.ButtonComponent{Label: label, Style: style, CustomID: panelSet + "tier:" + key + ":" + action, Disabled: !can || on}
 	}
 	return append(body,
-		core.Text(fmt.Sprintf("`%s` requires %s here.", action, requires)),
-		core.Row(
+		ui.Text(fmt.Sprintf("`%s` requires %s here.", action, requires)),
+		ui.Row(
 			tierBtn("Default", "default", !tier.IsSet()),
 			tierBtn("Admins and mods", "mod", tier == core.TierMod),
 			tierBtn("Admins only", "admin", tier == core.TierAdmin),
 		),
-		core.Text("**Also allowed**, whatever their tier:"),
-		core.Row(core.EntitySelect(discordgo.RoleSelectMenu, panelSet+"allow-roles:"+action, "Roles also allowed", allowR, core.MaxSelectValues, !can)),
-		core.Row(core.EntitySelect(discordgo.UserSelectMenu, panelSet+"allow-users:"+action, "Members also allowed", allowU, core.MaxSelectValues, !can)),
-		core.Text("**Blocked**, whatever their tier. A block wins over tier, Administrator and any allow."),
-		core.Row(core.EntitySelect(discordgo.RoleSelectMenu, panelSet+"deny-roles:"+action, "Roles blocked", denyR, core.MaxSelectValues, !can)),
-		core.Row(core.EntitySelect(discordgo.UserSelectMenu, panelSet+"deny-users:"+action, "Members blocked", denyU, core.MaxSelectValues, !can)),
+		ui.Text("**Also allowed**, whatever their tier:"),
+		ui.Row(ui.RoleSelect(panelSet+"allow-roles:"+action, "Roles also allowed", allowR, core.MaxSelectValues, !can)),
+		ui.Row(ui.UserSelect(panelSet+"allow-users:"+action, "Members also allowed", allowU, core.MaxSelectValues, !can)),
+		ui.Text("**Blocked**, whatever their tier. A block wins over tier, Administrator and any allow."),
+		ui.Row(ui.RoleSelect(panelSet+"deny-roles:"+action, "Roles blocked", denyR, core.MaxSelectValues, !can)),
+		ui.Row(ui.UserSelect(panelSet+"deny-users:"+action, "Members blocked", denyU, core.MaxSelectValues, !can)),
 	)
 }
 
@@ -291,70 +283,70 @@ func (p *Plugin) permissionsBody(guildID, arg string, can bool) []discordgo.Mess
 // member's client, so an action or plugin name is checked against what is
 // really registered before it reaches the store, exactly as the
 // autocompleted options it replaces should have been.
-func (p *Plugin) handlePanelSet(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID string) {
 	what, arg, _ := strings.Cut(strings.TrimPrefix(customID, panelSet), ":")
 	switch what {
 	case "admins":
-		p.redraw(ctx, s, i, "access", "", p.applyAdmins(ctx, i))
+		p.redraw(ctx, ix, "access", "", p.applyAdmins(ctx, ix))
 	case "modroles":
-		p.redraw(ctx, s, i, "access", "", p.applyModRoles(ctx, s, i))
+		p.redraw(ctx, ix, "access", "", p.applyModRoles(ctx, ix))
 	case "audit":
-		p.redraw(ctx, s, i, "channels", "", p.applyChannel(ctx, s, i, "Audit log", p.settings.SetAuditLogChannel))
+		p.redraw(ctx, ix, "channels", "", p.applyChannel(ctx, ix, "Audit log", p.settings.SetAuditLogChannel))
 	case "status":
-		p.redraw(ctx, s, i, "channels", "", p.applyChannel(ctx, s, i, "Status channel", p.settings.SetStatusChannel))
+		p.redraw(ctx, ix, "channels", "", p.applyChannel(ctx, ix, "Status channel", p.settings.SetStatusChannel))
 	case "setup":
-		p.handleSetup(ctx, s, i)
+		p.handleSetup(ctx, ix)
 	case "plugins":
-		p.redraw(ctx, s, i, "plugins", "", p.applyPlugins(ctx, i))
+		p.redraw(ctx, ix, "plugins", "", p.applyPlugins(ctx, ix))
 	case "pause":
-		p.redraw(ctx, s, i, "safety", "", p.applyPause(ctx, i, arg == "on"))
+		p.redraw(ctx, ix, "safety", "", p.applyPause(ctx, ix, arg == "on"))
 	case "dryrun":
-		p.redraw(ctx, s, i, "safety", "", p.applyDryRun(ctx, i, arg == "on"))
+		p.redraw(ctx, ix, "safety", "", p.applyDryRun(ctx, ix, arg == "on"))
 	case "import":
-		p.redraw(ctx, s, i, "safety", "", p.applyImport(ctx, i))
+		p.redraw(ctx, ix, "safety", "", p.applyImport(ctx, ix))
 	case "tier":
 		tier, action, _ := strings.Cut(arg, ":")
-		p.redraw(ctx, s, i, "permissions", action, p.applyTier(ctx, i, action, tier))
+		p.redraw(ctx, ix, "permissions", action, p.applyTier(ctx, ix, action, tier))
 	case "allow-roles", "allow-users", "deny-roles", "deny-users":
-		p.redraw(ctx, s, i, "permissions", arg, p.applyOverride(ctx, i, what, arg))
+		p.redraw(ctx, ix, "permissions", arg, p.applyOverride(ctx, ix, what, arg))
 	default:
-		p.redraw(ctx, s, i, "home", "", "✗ That control is out of date. Run `/config` again.")
+		p.redraw(ctx, ix, "home", "", "✗ That control is out of date. Run `/config` again.")
 	}
 }
 
-func (p *Plugin) applyAdmins(ctx context.Context, i *discordgo.InteractionCreate) string {
-	added, removed := core.SelectDiff(i, panelSet+"admins")
+func (p *Plugin) applyAdmins(ctx context.Context, ix *core.Ix) string {
+	added, removed := ix.SelectDiff(panelSet+"admins")
 	for _, id := range added {
-		if err := p.settings.AddAdmin(ctx, i.GuildID, id); err != nil {
+		if err := p.settings.AddAdmin(ctx, ix.GuildID, id); err != nil {
 			return fmt.Sprintf("✗ Couldn't add <@%s> as an admin: %v", id, err)
 		}
-		p.audit(ctx, i, "config.admin_added", "", core.MentionUser(id))
+		p.audit(ctx, ix, "config.admin_added", "", core.MentionUser(id))
 	}
 	for _, id := range removed {
-		if err := p.settings.RemoveAdmin(ctx, i.GuildID, id); err != nil {
+		if err := p.settings.RemoveAdmin(ctx, ix.GuildID, id); err != nil {
 			return fmt.Sprintf("✗ Couldn't remove <@%s> as an admin: %v", id, err)
 		}
-		p.audit(ctx, i, "config.admin_removed", core.MentionUser(id), "")
+		p.audit(ctx, ix, "config.admin_removed", core.MentionUser(id), "")
 	}
 	return changeNote(added, removed, core.MentionUser, "admin")
 }
 
-func (p *Plugin) applyModRoles(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) string {
-	added, removed := core.SelectDiff(i, panelSet+"modroles")
+func (p *Plugin) applyModRoles(ctx context.Context, ix *core.Ix) string {
+	added, removed := ix.SelectDiff(panelSet+"modroles")
 	for _, id := range added {
-		if err := p.settings.AddModRole(ctx, i.GuildID, id); err != nil {
+		if err := p.settings.AddModRole(ctx, ix.GuildID, id); err != nil {
 			return fmt.Sprintf("✗ Couldn't add <@&%s> as a mod role: %v", id, err)
 		}
-		p.audit(ctx, i, "config.mod_role_added", "", core.MentionRole(id))
+		p.audit(ctx, ix, "config.mod_role_added", "", core.MentionRole(id))
 	}
 	if len(added) > 0 {
-		p.grantRolesChannelAccess(s, i.GuildID, added)
+		p.grantRolesChannelAccess(p.session, ix.GuildID, added)
 	}
 	for _, id := range removed {
-		if err := p.settings.RemoveModRole(ctx, i.GuildID, id); err != nil {
+		if err := p.settings.RemoveModRole(ctx, ix.GuildID, id); err != nil {
 			return fmt.Sprintf("✗ Couldn't remove <@&%s> as a mod role: %v", id, err)
 		}
-		p.audit(ctx, i, "config.mod_role_removed", core.MentionRole(id), "")
+		p.audit(ctx, ix, "config.mod_role_removed", core.MentionRole(id), "")
 	}
 	return changeNote(added, removed, core.MentionRole, "mod role")
 }
@@ -378,25 +370,25 @@ func changeNote(added, removed []string, render func(string) string, noun string
 // applyChannel is the wizard's pick step (setupChannelPicked) without the
 // wizard: same setter, same re-grant of mod access, same warning when the
 // channel is one everybody can read.
-func (p *Plugin) applyChannel(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, label string, set func(ctx context.Context, guildID, channelID string) error) string {
-	channelID := core.FirstValue(i)
+func (p *Plugin) applyChannel(ctx context.Context, ix *core.Ix, label string, set func(ctx context.Context, guildID, channelID string) error) string {
+	channelID := ix.FirstValue()
 	if channelID == "" {
 		return ""
 	}
-	if err := set(ctx, i.GuildID, channelID); err != nil {
+	if err := set(ctx, ix.GuildID, channelID); err != nil {
 		return fmt.Sprintf("✗ Couldn't save that channel: %v", err)
 	}
-	p.grantModRolesChannelAccess(s, i.GuildID)
-	p.audit(ctx, i, "config.setup", "", fmt.Sprintf("%s=<#%s> (existing)", label, channelID))
+	p.grantModRolesChannelAccess(p.session, ix.GuildID)
+	p.audit(ctx, ix, "config.setup", "", fmt.Sprintf("%s=<#%s> (existing)", label, channelID))
 	note := fmt.Sprintf("✓ %s is now <#%s>.", label, channelID)
-	if ch, err := s.Channel(channelID); err == nil && everyoneCanRead(ch) {
+	if ch, err := p.session.Channel(channelID); err == nil && everyoneCanRead(ch) {
 		note += " ⚠️ Everyone can read that channel, so anything recorded there is public."
 	}
 	return note
 }
 
-func (p *Plugin) applyPlugins(ctx context.Context, i *discordgo.InteractionCreate) string {
-	added, removed := core.SelectDiff(i, panelSet+"plugins")
+func (p *Plugin) applyPlugins(ctx context.Context, ix *core.Ix) string {
+	added, removed := ix.SelectDiff(panelSet+"plugins")
 	known := map[string]bool{}
 	for _, n := range p.commands.Plugins() {
 		known[n] = true
@@ -405,10 +397,10 @@ func (p *Plugin) applyPlugins(ctx context.Context, i *discordgo.InteractionCreat
 		if !known[name] {
 			return "✗ That plugin isn't running anymore. Run `/config` again."
 		}
-		if err := p.settings.EnablePlugin(ctx, i.GuildID, name); err != nil {
+		if err := p.settings.EnablePlugin(ctx, ix.GuildID, name); err != nil {
 			return fmt.Sprintf("✗ Couldn't switch `%s` on: %v", name, err)
 		}
-		p.audit(ctx, i, "config.plugin_enabled", "", name)
+		p.audit(ctx, ix, "config.plugin_enabled", "", name)
 	}
 	for _, name := range removed {
 		// Never offered, and refused anyway: switching off the plugin that
@@ -417,10 +409,10 @@ func (p *Plugin) applyPlugins(ctx context.Context, i *discordgo.InteractionCreat
 		if name == p.Name() || !known[name] {
 			continue
 		}
-		if err := p.settings.DisablePlugin(ctx, i.GuildID, name); err != nil {
+		if err := p.settings.DisablePlugin(ctx, ix.GuildID, name); err != nil {
 			return fmt.Sprintf("✗ Couldn't switch `%s` off: %v", name, err)
 		}
-		p.audit(ctx, i, "config.plugin_disabled", "", name)
+		p.audit(ctx, ix, "config.plugin_disabled", "", name)
 	}
 	code := func(s string) string { return "`" + s + "`" }
 	var parts []string
@@ -441,11 +433,11 @@ func (p *Plugin) applyPlugins(ctx context.Context, i *discordgo.InteractionCreat
 // pulled the lever can still see what the bot believes is going on. The
 // process-wide equivalent is MERLIN_PAUSE_ALL_WRITES, for when the database
 // itself is the problem.
-func (p *Plugin) applyPause(ctx context.Context, i *discordgo.InteractionCreate, paused bool) string {
-	if err := p.settings.SetWritesPaused(ctx, i.GuildID, paused); err != nil {
+func (p *Plugin) applyPause(ctx context.Context, ix *core.Ix, paused bool) string {
+	if err := p.settings.SetWritesPaused(ctx, ix.GuildID, paused); err != nil {
 		return fmt.Sprintf("✗ Couldn't change the pause: %v", err)
 	}
-	p.audit(ctx, i, "config.writes_paused", "", fmt.Sprint(paused))
+	p.audit(ctx, ix, "config.writes_paused", "", fmt.Sprint(paused))
 	if paused {
 		return "✓ Paused. merlin refuses every destructive action here until you resume."
 	}
@@ -455,23 +447,23 @@ func (p *Plugin) applyPause(ctx context.Context, i *discordgo.InteractionCreate,
 // applyDryRun is rehearsal mode: rotation, sweep and jail make their full
 // decision and write their audit trail but touch nothing in Discord. It
 // exists because what it covers has no undo.
-func (p *Plugin) applyDryRun(ctx context.Context, i *discordgo.InteractionCreate, on bool) string {
-	if err := p.settings.SetWritesDryRun(ctx, i.GuildID, on); err != nil {
+func (p *Plugin) applyDryRun(ctx context.Context, ix *core.Ix, on bool) string {
+	if err := p.settings.SetWritesDryRun(ctx, ix.GuildID, on); err != nil {
 		return fmt.Sprintf("✗ Couldn't change dry-run: %v", err)
 	}
-	p.audit(ctx, i, "config.writes_dry_run", "", fmt.Sprint(on))
+	p.audit(ctx, ix, "config.writes_dry_run", "", fmt.Sprint(on))
 	if on {
 		return "✓ Rehearsing. The audit log shows what *would* have happened."
 	}
 	return "✓ Acting for real again."
 }
 
-func (p *Plugin) applyImport(ctx context.Context, i *discordgo.InteractionCreate) string {
+func (p *Plugin) applyImport(ctx context.Context, ix *core.Ix) string {
 	guilds, err := p.settings.ImportFromLegacyYAML(ctx, p.legacyPath)
 	if err != nil {
 		return fmt.Sprintf("✗ Import failed: %v", err)
 	}
-	p.audit(ctx, i, "config.imported", "", strings.Join(guilds, ", "))
+	p.audit(ctx, ix, "config.imported", "", strings.Join(guilds, ", "))
 	return fmt.Sprintf("✓ Imported settings for %d server(s).", len(guilds))
 }
 
@@ -484,15 +476,15 @@ func (p *Plugin) knownAction(action string) bool {
 	return false
 }
 
-func (p *Plugin) applyTier(ctx context.Context, i *discordgo.InteractionCreate, action, key string) string {
+func (p *Plugin) applyTier(ctx context.Context, ix *core.Ix, action, key string) string {
 	if !p.knownAction(action) {
 		return "✗ That action isn't registered anymore."
 	}
 	if key == "default" {
-		if err := p.settings.ClearActionTier(ctx, i.GuildID, action); err != nil {
+		if err := p.settings.ClearActionTier(ctx, ix.GuildID, action); err != nil {
 			return fmt.Sprintf("✗ Couldn't reset the tier: %v", err)
 		}
-		p.audit(ctx, i, "config.permission_tier_cleared", action, "")
+		p.audit(ctx, ix, "config.permission_tier_cleared", action, "")
 		return fmt.Sprintf("✓ `%s` uses its default tier again.", action)
 	}
 	var tier core.PermTier
@@ -507,21 +499,21 @@ func (p *Plugin) applyTier(ctx context.Context, i *discordgo.InteractionCreate, 
 	if err := validateTierChange(action, tier); err != nil {
 		return "✗ " + err.Error()
 	}
-	if err := p.settings.SetActionTier(ctx, i.GuildID, action, tier); err != nil {
+	if err := p.settings.SetActionTier(ctx, ix.GuildID, action, tier); err != nil {
 		return fmt.Sprintf("✗ Couldn't set the tier: %v", err)
 	}
-	p.audit(ctx, i, "config.permission_tier_set", "", fmt.Sprintf("action=%s tier=%s", action, tier))
+	p.audit(ctx, ix, "config.permission_tier_set", "", fmt.Sprintf("action=%s tier=%s", action, tier))
 	return fmt.Sprintf("✓ `%s` now requires **%s**.", action, tier)
 }
 
 // applyOverride is the four allow/block pickers. Each added or removed role
 // or member is one settings call and one audit line, the same calls and the
 // same lines /config permissions allow and deny wrote one at a time.
-func (p *Plugin) applyOverride(ctx context.Context, i *discordgo.InteractionCreate, what, action string) string {
+func (p *Plugin) applyOverride(ctx context.Context, ix *core.Ix, what, action string) string {
 	if !p.knownAction(action) {
 		return "✗ That action isn't registered anymore."
 	}
-	added, removed := core.SelectDiff(i, panelSet+what+":"+action)
+	added, removed := ix.SelectDiff(panelSet+what+":"+action)
 	roles := strings.HasSuffix(what, "-roles")
 	target := func(id string) (string, string) {
 		if roles {
@@ -537,17 +529,17 @@ func (p *Plugin) applyOverride(ctx context.Context, i *discordgo.InteractionCrea
 	}
 	for _, id := range added {
 		r, u := target(id)
-		if err := set(ctx, i.GuildID, action, r, u); err != nil {
+		if err := set(ctx, ix.GuildID, action, r, u); err != nil {
 			return fmt.Sprintf("✗ Couldn't save that: %v", err)
 		}
-		p.audit(ctx, i, setAudit, "", permissionTarget(action, r, u))
+		p.audit(ctx, ix, setAudit, "", permissionTarget(action, r, u))
 	}
 	for _, id := range removed {
 		r, u := target(id)
-		if err := unset(ctx, i.GuildID, action, r, u); err != nil {
+		if err := unset(ctx, ix.GuildID, action, r, u); err != nil {
 			return fmt.Sprintf("✗ Couldn't save that: %v", err)
 		}
-		p.audit(ctx, i, unsetAudit, permissionTarget(action, r, u), "")
+		p.audit(ctx, ix, unsetAudit, permissionTarget(action, r, u), "")
 	}
 	if len(added)+len(removed) == 0 {
 		return ""

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -186,18 +186,18 @@ func priceLine(id string, m Model, found bool) string {
 	return fmt.Sprintf("`%s` - $%.3f in / $%.3f out per million tokens", id, m.PromptPerM, m.CompletionPerM)
 }
 
-func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (p *Plugin) handleModelsShow(ctx context.Context, ix *core.Ix) {
 	// Deferred: this makes a network call to OpenRouter on a cold cache, and
 	// Discord's three second budget is not enough to gamble on somebody
 	// else's API being quick. spec.MD section 4a.
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("aimod: defer models show", "guild", i.GuildID, "err", err)
+	if err := ix.Defer(); err != nil {
+		p.log.Error("aimod: defer models show", "guild", ix.GuildID, "err", err)
 		return
 	}
 
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to read the configuration", err)
+		_ = ix.FollowUpErr("Failed to read the configuration", err)
 		return
 	}
 	spec, _ := route(cfg)
@@ -209,14 +209,14 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 		"Only what that flags is re-read by the **deep pass**, which is the only one that can delete anything. " +
 		"That is why the two are priced so differently and configured separately.\n\n")
 
-	catalogue, cerr := p.catalogue(ctx, i.GuildID)
+	catalogue, cerr := p.catalogue(ctx, ix.GuildID)
 	color := core.ColorInfo
 	if cerr != nil {
 		color = core.ColorWarning
 		body.WriteString("Live prices could not be fetched (" + cerr.Error() + "), so only the configured models are listed.\n\n")
 	}
 
-	fields := []*discordgo.MessageEmbedField{
+	fields := []discord.EmbedField{
 		{Name: "Cheap pass, reads everything", Value: core.TruncateEmbedField(
 			stackLines(fastIDs, catalogue, cfg.FastModels) + "\n" + p.reasoningLine(spec, fastIDs))},
 		{Name: "Deep pass, confirms before acting", Value: core.TruncateEmbedField(
@@ -226,20 +226,20 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 	// The projection. Measured traffic where there is any, clearly labelled
 	// assumptions where there is not, and never a bare number with no
 	// provenance: an admin is about to set a budget from this.
-	history, err := p.store.SpendSince(ctx, i.GuildID, today(p.now()).AddDate(0, 0, -7))
+	history, err := p.store.SpendSince(ctx, ix.GuildID, today(p.now()).AddDate(0, 0, -7))
 	if err != nil {
-		p.log.Error("aimod: read spend history", "guild", i.GuildID, "err", err)
+		p.log.Error("aimod: read spend history", "guild", ix.GuildID, "err", err)
 	}
-	if override := core.LeafArgs(i)["messages_per_day"]; override != nil {
+	if override, ok := ix.Args()["messages_per_day"]; ok {
 		// An explicit volume replaces the measured one but keeps the
 		// measured tokens-per-message, which is the half that is genuinely
 		// this server's own and the half an admin cannot guess.
-		history = scaleHistory(history, float64(override.IntValue()))
+		history = scaleHistory(history, float64(override.Int()))
 	}
 
 	fastModel, _ := findModel(catalogue, fastIDs[0])
 	deepModel, _ := findModel(catalogue, deepIDs[0])
-	est := estimateFor(history, fastModel, deepModel, p.measuredTraffic(ctx, i.GuildID))
+	est := estimateFor(history, fastModel, deepModel, p.measuredTraffic(ctx, ix.GuildID))
 
 	// What the current stack costs comes from the receipts, not from a price
 	// list. OpenRouter returns the cost of every call, so for a stack the
@@ -273,7 +273,7 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 		costLine += fmt.Sprintf("\n%.0f%% of the completion tokens were reasoning, billed at the same rate as the answer. "+
 			"Change models on `/aimod settings` to a stack that allows it to be switched off if that is not worth paying for.", share*100)
 	}
-	fields = append(fields, &discordgo.MessageEmbedField{
+	fields = append(fields, discord.EmbedField{
 		Name:  "Cost",
 		Value: core.TruncateEmbedField(costLine),
 	})
@@ -283,15 +283,15 @@ func (p *Plugin) handleModelsShow(ctx context.Context, s *discordgo.Session, i *
 		spentWeek += sp.SpentUSD
 	}
 	fields = append(fields,
-		&discordgo.MessageEmbedField{Name: "Actually spent, last 7 days", Value: formatUSD(spentWeek), Inline: true},
-		&discordgo.MessageEmbedField{Name: "Daily budget", Value: formatUSD(cfg.DailyBudgetUSD), Inline: true},
+		discord.EmbedField{Name: "Actually spent, last 7 days", Value: formatUSD(spentWeek), Inline: core.Inline()},
+		discord.EmbedField{Name: "Daily budget", Value: formatUSD(cfg.DailyBudgetUSD), Inline: core.Inline()},
 	)
 
 	body.WriteString("`/aimod models compare <model>` prices any other model against this same traffic before you switch to it.")
 
-	embed := core.NewEmbed(color, "Models and cost", core.TruncateEmbedDescription(body.String()), fields...)
-	if err := core.FollowUpEmbed(s, i, embed); err != nil {
-		p.log.Error("aimod: respond models show", "guild", i.GuildID, "err", err)
+	embed := core.Embed(color, "Models and cost", core.TruncateEmbedDescription(body.String()), fields...)
+	if err := ix.FollowUpEmbed(embed); err != nil {
+		p.log.Error("aimod: respond models show", "guild", ix.GuildID, "err", err)
 	}
 }
 
@@ -369,43 +369,43 @@ func scaleHistory(history []Spend, messagesPerDay float64) []Spend {
 	return out
 }
 
-func (p *Plugin) handleModelsCompare(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("aimod: defer models compare", "guild", i.GuildID, "err", err)
+func (p *Plugin) handleModelsCompare(ctx context.Context, ix *core.Ix) {
+	if err := ix.Defer(); err != nil {
+		p.log.Error("aimod: defer models compare", "guild", ix.GuildID, "err", err)
 		return
 	}
-	opts := core.LeafArgs(i)
-	id := strings.TrimSpace(opts["model"].Value.(string))
+	opts := ix.Args()
+	id := strings.TrimSpace(opts["model"].String())
 	pass := "fast"
 	if v, ok := opts["pass"]; ok {
-		pass = v.Value.(string)
+		pass = v.String()
 	}
 
-	catalogue, err := p.catalogue(ctx, i.GuildID)
+	catalogue, err := p.catalogue(ctx, ix.GuildID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Could not fetch model prices", err)
+		_ = ix.FollowUpErr("Could not fetch model prices", err)
 		return
 	}
 	candidateModel, found := findModel(catalogue, id)
 	if !found {
-		_ = core.FollowUpErr(s, i, "Unknown model", fmt.Errorf("%q is not in this key's catalogue", id))
+		_ = ix.FollowUpErr("Unknown model", fmt.Errorf("%q is not in this key's catalogue", id))
 		return
 	}
 
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to read the configuration", err)
+		_ = ix.FollowUpErr("Failed to read the configuration", err)
 		return
 	}
-	history, err := p.store.SpendSince(ctx, i.GuildID, today(p.now()).AddDate(0, 0, -7))
+	history, err := p.store.SpendSince(ctx, ix.GuildID, today(p.now()).AddDate(0, 0, -7))
 	if err != nil {
-		p.log.Error("aimod: read spend history", "guild", i.GuildID, "err", err)
+		p.log.Error("aimod: read spend history", "guild", ix.GuildID, "err", err)
 	}
 
 	spec, _ := route(cfg)
 	currentFast, _ := findModel(catalogue, modelsOr(cfg.FastModels, spec.fastModels)[0])
 	currentDeep, _ := findModel(catalogue, modelsOr(cfg.DeepModels, spec.deepModels)[0])
-	traffic := p.measuredTraffic(ctx, i.GuildID)
+	traffic := p.measuredTraffic(ctx, ix.GuildID)
 	now := estimateFor(history, currentFast, currentDeep, traffic)
 
 	after := now
@@ -422,30 +422,30 @@ func (p *Plugin) handleModelsCompare(ctx context.Context, s *discordgo.Session, 
 		delta = -delta
 	}
 
-	fields := []*discordgo.MessageEmbedField{
+	fields := []discord.EmbedField{
 		{Name: "Model", Value: priceLine(id, candidateModel, true)},
-		{Name: "As your " + pass + " pass", Value: formatUSD(after.USDPerDay) + " per day", Inline: true},
-		{Name: "Currently", Value: formatUSD(now.USDPerDay) + " per day", Inline: true},
-		{Name: "Difference", Value: formatUSD(delta) + " per day " + direction, Inline: true},
+		{Name: "As your " + pass + " pass", Value: formatUSD(after.USDPerDay) + " per day", Inline: core.Inline()},
+		{Name: "Currently", Value: formatUSD(now.USDPerDay) + " per day", Inline: core.Inline()},
+		{Name: "Difference", Value: formatUSD(delta) + " per day " + direction, Inline: core.Inline()},
 		{Name: "Based on", Value: after.Basis},
 	}
 	if pass == "fast" {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "Worth remembering",
 			Value: "The cheap pass can only ever flag. Nothing it says gets a message deleted without the deep pass " +
 				"confirming it, so this is the one to optimise for price.",
 		})
 	} else {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name: "Worth remembering",
 			Value: "The deep pass is the only thing that can delete a message. It reads about one message in a hundred, " +
 				"so a better model here costs little and is where accuracy actually comes from.",
 		})
 	}
 
-	embed := core.NewEmbed(core.ColorInfo, "Cost of switching", "", fields...)
-	if err := core.FollowUpEmbed(s, i, embed); err != nil {
-		p.log.Error("aimod: respond models compare", "guild", i.GuildID, "err", err)
+	embed := core.Embed(core.ColorInfo, "Cost of switching", "", fields...)
+	if err := ix.FollowUpEmbed(embed); err != nil {
+		p.log.Error("aimod: respond models compare", "guild", ix.GuildID, "err", err)
 	}
 }
 
@@ -455,9 +455,9 @@ func (p *Plugin) handleModelsCompare(ctx context.Context, s *discordgo.Session, 
 // broken.
 const maxStackModels = 5
 
-func (p *Plugin) setStack(ctx context.Context, i *discordgo.InteractionCreate, raw string, fast bool) outcome {
+func (p *Plugin) setStack(ctx context.Context, ix *core.Ix, raw string, fast bool) outcome {
 	raw = strings.TrimSpace(raw)
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
@@ -487,7 +487,7 @@ func (p *Plugin) setStack(ctx context.Context, i *discordgo.InteractionCreate, r
 	} else {
 		nextDeep = ids
 	}
-	if err := p.store.SetModels(ctx, i.GuildID, nextFast, nextDeep); err != nil {
+	if err := p.store.SetModels(ctx, ix.GuildID, nextFast, nextDeep); err != nil {
 		return failed("Failed to set the models", err)
 	}
 
@@ -495,7 +495,7 @@ func (p *Plugin) setStack(ctx context.Context, i *discordgo.InteractionCreate, r
 	if fast {
 		which = "fast"
 	}
-	p.auditConfig(ctx, i, "aimod.models_set", which, strings.Join(ids, ", "))
+	p.auditConfig(ctx, ix, "aimod.models_set", which, strings.Join(ids, ", "))
 
 	if len(ids) == 0 {
 		return outcome{core.ColorSuccess, "Tracking the defaults",
@@ -516,8 +516,8 @@ func (p *Plugin) setStack(ctx context.Context, i *discordgo.InteractionCreate, r
 // more than 25 choices outright (spec.MD section 4a), so the list is sorted
 // cheapest first and cut there: if it has to be truncated, the cheap end is
 // the half worth keeping.
-func (p *Plugin) autocompleteModel(ctx context.Context, i *discordgo.InteractionCreate, _, focusedValue string) []*discordgo.ApplicationCommandOptionChoice {
-	catalogue, err := p.catalogue(ctx, i.GuildID)
+func (p *Plugin) autocompleteModel(ctx context.Context, ix *core.Ix, _, focusedValue string) []discord.AutocompleteChoice {
+	catalogue, err := p.catalogue(ctx, ix.GuildID)
 	if err != nil {
 		return nil
 	}
@@ -550,7 +550,7 @@ func (p *Plugin) autocompleteModel(ctx context.Context, i *discordgo.Interaction
 	if len(matches) > maxChoices {
 		matches = matches[:maxChoices]
 	}
-	out := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(matches))
+	out := make([]discord.AutocompleteChoice, 0, len(matches))
 	for _, m := range matches {
 		label := fmt.Sprintf("%s ($%.3f/$%.3f per M)", m.ID, m.PromptPerM, m.CompletionPerM)
 		if m.Free {
@@ -565,7 +565,7 @@ func (p *Plugin) autocompleteModel(ctx context.Context, i *discordgo.Interaction
 		if len(value) > 100 {
 			continue
 		}
-		out = append(out, &discordgo.ApplicationCommandOptionChoice{Name: label, Value: value})
+		out = append(out, discord.AutocompleteChoiceString{Name: label, Value: value})
 	}
 	return out
 }

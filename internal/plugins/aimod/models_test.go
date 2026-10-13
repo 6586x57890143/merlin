@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/6586x57890143/merlin/internal/secret"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -278,13 +279,12 @@ func TestPriceLineHandlesAMissingModel(t *testing.T) {
 // panic here reaches a user as "the application did not respond".
 func TestModelsShowAndCompareRun(t *testing.T) {
 	p := stubCatalogue(t, newFakeStore())
-	s := testSession(t)
 
-	p.handleModelsShow(context.Background(), s, interaction("g1", "models", "show"))
-	p.handleModelsCompare(context.Background(), s, interaction("g1", "models", "compare",
+	p.handleModelsShow(context.Background(), interaction("g1", "models", "show"))
+	p.handleModelsCompare(context.Background(), interaction("g1", "models", "compare",
 		strOpt("model", "openai/gpt-5-mini"), strOpt("pass", "deep")))
 	// A model nobody has heard of is an ordinary typo, not a failure.
-	p.handleModelsCompare(context.Background(), s, interaction("g1", "models", "compare",
+	p.handleModelsCompare(context.Background(), interaction("g1", "models", "compare",
 		strOpt("model", "nobody/knows"), strOpt("pass", "fast")))
 }
 
@@ -324,8 +324,9 @@ func TestModelAutocompleteStaysUnderDiscordsLimit(t *testing.T) {
 		t.Errorf("returned %d choices, past Discord's cap of 25", len(choices))
 	}
 	for _, c := range choices {
-		if !strings.Contains(strings.ToLower(c.Value.(string)), "gpt") {
-			t.Errorf("choice %q does not match the typed prefix", c.Value)
+		v := c.(discord.AutocompleteChoiceString).Value
+		if !strings.Contains(strings.ToLower(v), "gpt") {
+			t.Errorf("choice %q does not match the typed prefix", v)
 		}
 	}
 }

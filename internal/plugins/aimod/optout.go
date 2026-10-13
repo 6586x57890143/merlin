@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -82,23 +80,23 @@ func scanExempt(cfg Config, authorID, content string) bool {
 // TierPublic, like /aimod moderate-me, because a switch every member is meant
 // to be able to reach is not a privilege. The refusals below are about
 // whether the guild offers the choice, never about the caller's rank.
-func (p *Plugin) handleOptOut(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (p *Plugin) handleOptOut(ctx context.Context, ix *core.Ix) {
 	userID := ""
-	if i.Member != nil && i.Member.User != nil {
-		userID = i.Member.User.ID
+	if ix.Member() != nil {
+		userID = ix.UserID
 	}
 	if userID == "" {
-		core.RespondErr(s, i, "Could not tell who you are", fmt.Errorf("run this in a server, not a DM"))
+		ix.RespondErr("Could not tell who you are", fmt.Errorf("run this in a server, not a DM"))
 		return
 	}
 
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
+		ix.RespondErr("Failed to read the configuration", err)
 		return
 	}
 
-	on := core.LeafArgs(i)["enabled"].BoolValue()
+	on := ix.Args()["enabled"].Bool()
 
 	// Refused rather than stored-for-later when the guild has not enabled it.
 	// A command that accepted the setting and did nothing would leave
@@ -108,7 +106,7 @@ func (p *Plugin) handleOptOut(ctx context.Context, s *discordgo.Session, i *disc
 	// Turning it *off* stays allowed even here: removing yourself from an
 	// inert list can only ever move you toward the default.
 	if on && !cfg.MemberOptOut {
-		core.RespondWarn(s, i, "This server doesn't offer that",
+		ix.RespondWarn("This server doesn't offer that",
 			"AI moderation applies to everyone here. Only the server owner can turn the opt-out on, with "+
 				"Member opt-out on `/aimod settings`.")
 		return
@@ -116,20 +114,20 @@ func (p *Plugin) handleOptOut(ctx context.Context, s *discordgo.Session, i *disc
 
 	next, changed := toggle(cfg.OptOutUserIDs, userID, on)
 	if !changed {
-		core.RespondInfo(s, i, "No change", fmt.Sprintf("You were already %s.", optOutWord(on)))
+		ix.RespondInfo("No change", fmt.Sprintf("You were already %s.", optOutWord(on)))
 		return
 	}
-	if err := p.store.SetOptOut(ctx, i.GuildID, next); err != nil {
-		core.RespondErr(s, i, "Failed to update the list", err)
+	if err := p.store.SetOptOut(ctx, ix.GuildID, next); err != nil {
+		ix.RespondErr("Failed to update the list", err)
 		return
 	}
-	p.auditConfig(ctx, i, "aimod.optout_changed", "", core.MentionUser(userID)+" "+optOutWord(on))
+	p.auditConfig(ctx, ix, "aimod.optout_changed", "", core.MentionUser(userID)+" "+optOutWord(on))
 
 	if !on {
-		core.RespondOK(s, i, "Back in", "Your messages are read by the filter again, like everyone else's.")
+		ix.RespondOK("Back in", "Your messages are read by the filter again, like everyone else's.")
 		return
 	}
-	core.RespondOK(s, i, "Opted out",
+	ix.RespondOK("Opted out",
 		"I'll stop moderating your messages, the same as for an exempt role. Two things that does not cover, so you know where you stand:\n\n"+
 			"- Slurs are still caught on everyone, exempt or not.\n"+
 			"- Anything reading as child safety is still checked. That one has no opt-out on this bot, for anybody.\n\n"+
@@ -138,12 +136,12 @@ func (p *Plugin) handleOptOut(ctx context.Context, s *discordgo.Session, i *disc
 
 // handleSetMemberOptOut flips the guild's switch. Owner or operator only; see
 // the file comment for why that is narrower than the TierAdmin on the leaf.
-func (p *Plugin) setMemberOptOut(ctx context.Context, i *discordgo.InteractionCreate, on bool) outcome {
+func (p *Plugin) setMemberOptOut(ctx context.Context, ix *core.Ix, on bool) outcome {
 	actor := ""
-	if i.Member != nil && i.Member.User != nil {
-		actor = i.Member.User.ID
+	if ix.Member() != nil {
+		actor = ix.UserID
 	}
-	allowed, err := p.ownerOrOperator(i.GuildID, actor)
+	allowed, err := p.ownerOrOperator(ix.GuildID, actor)
 	if err != nil {
 		return failed("Could not check who you are", err)
 	}
@@ -153,17 +151,17 @@ func (p *Plugin) setMemberOptOut(ctx context.Context, i *discordgo.InteractionCr
 				"here that makes the filter cover less of the server, so it does not travel with admin."}
 	}
 
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
 	if on == cfg.MemberOptOut {
 		return outcome{core.ColorInfo, "No change", fmt.Sprintf("Member opt-out is already %s.", onOff(on))}
 	}
-	if err := p.store.SetMemberOptOut(ctx, i.GuildID, on); err != nil {
+	if err := p.store.SetMemberOptOut(ctx, ix.GuildID, on); err != nil {
 		return failed("Failed to update the setting", err)
 	}
-	p.auditConfig(ctx, i, "aimod.member_opt_out_set", onOff(cfg.MemberOptOut), onOff(on))
+	p.auditConfig(ctx, ix, "aimod.member_opt_out_set", onOff(cfg.MemberOptOut), onOff(on))
 
 	if !on {
 		// The list survives, and saying so is the point: an owner who turns

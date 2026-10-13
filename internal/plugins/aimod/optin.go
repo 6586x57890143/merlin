@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -61,9 +59,9 @@ import (
 // needs: whether somebody is the bootstrap operator.
 type PrivilegeChecker interface {
 	IsBootstrapAdmin(userID string) bool
-	// Authorize is here for /aimod why, the one public command that shows a
+	// AuthorizeIx is here for /aimod why, the one public command that shows a
 	// moderator more than it shows a member.
-	Authorize(i *discordgo.InteractionCreate, spec core.PermSpec) error
+	AuthorizeIx(ix *core.Ix, spec core.PermSpec) error
 }
 
 // sanctionable reports whether an automated sanction may target userID even
@@ -79,26 +77,26 @@ func (p *Plugin) canManageOptIns(userID string) bool {
 	return userID != "" && p.privilege != nil && p.privilege.IsBootstrapAdmin(userID)
 }
 
-func (p *Plugin) handleModerateMe(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	on := core.LeafArgs(i)["enabled"].BoolValue()
+func (p *Plugin) handleModerateMe(ctx context.Context, ix *core.Ix) {
+	on := ix.Args()["enabled"].Bool()
 	userID := ""
-	if i.Member != nil && i.Member.User != nil {
-		userID = i.Member.User.ID
+	if ix.Member() != nil {
+		userID = ix.UserID
 	}
 	if userID == "" {
-		core.RespondErr(s, i, "Could not tell who you are", fmt.Errorf("run this in a server, not a DM"))
+		ix.RespondErr("Could not tell who you are", fmt.Errorf("run this in a server, not a DM"))
 		return
 	}
-	p.setOptIn(ctx, s, i, userID, on, true)
+	p.setOptIn(ctx, ix, userID, on, true)
 }
 
-func (p *Plugin) handleModerateUser(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (p *Plugin) handleModerateUser(ctx context.Context, ix *core.Ix) {
 	actor := ""
-	if i.Member != nil && i.Member.User != nil {
-		actor = i.Member.User.ID
+	if ix.Member() != nil {
+		actor = ix.UserID
 	}
-	opts := core.LeafArgs(i)
-	targetID := opts["user"].Value.(string)
+	opts := ix.Args()
+	targetID := opts["user"].String()
 
 	// The guard is here rather than in the PermSpec because there is no tier
 	// that means "one specific person". Same shape as
@@ -111,36 +109,36 @@ func (p *Plugin) handleModerateUser(ctx context.Context, s *discordgo.Session, i
 	// not.
 	if !p.canManageOptIns(actor) {
 		if targetID == actor {
-			p.setOptIn(ctx, s, i, actor, opts["enabled"].BoolValue(), true)
+			p.setOptIn(ctx, ix, actor, opts["enabled"].Bool(), true)
 			return
 		}
-		core.RespondWarn(s, i, "Not yours to set",
+		ix.RespondWarn("Not yours to set",
 			"Only the operator can put somebody else on the automatic-sanction list. "+
 				"Use `/aimod moderate-me` to put yourself on it.")
 		return
 	}
-	p.setOptIn(ctx, s, i, targetID, opts["enabled"].BoolValue(), targetID == actor)
+	p.setOptIn(ctx, ix, targetID, opts["enabled"].Bool(), targetID == actor)
 }
 
-func (p *Plugin) setOptIn(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, userID string, on, self bool) {
-	cfg, err := p.store.Config(ctx, i.GuildID)
+func (p *Plugin) setOptIn(ctx context.Context, ix *core.Ix, userID string, on, self bool) {
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
+		ix.RespondErr("Failed to read the configuration", err)
 		return
 	}
 	next, changed := toggle(cfg.SanctionOptInUserIDs, userID, on)
 	if !changed {
-		core.RespondInfo(s, i, "No change", fmt.Sprintf("%s was already %s.", core.MentionUser(userID), optInWord(on)))
+		ix.RespondInfo("No change", fmt.Sprintf("%s was already %s.", core.MentionUser(userID), optInWord(on)))
 		return
 	}
-	if err := p.store.SetSanctionOptIn(ctx, i.GuildID, next); err != nil {
-		core.RespondErr(s, i, "Failed to update the list", err)
+	if err := p.store.SetSanctionOptIn(ctx, ix.GuildID, next); err != nil {
+		ix.RespondErr("Failed to update the list", err)
 		return
 	}
-	p.auditConfig(ctx, i, "aimod.optin_changed", "", core.MentionUser(userID)+" "+optInWord(on))
+	p.auditConfig(ctx, ix, "aimod.optin_changed", "", core.MentionUser(userID)+" "+optInWord(on))
 
 	if !on {
-		core.RespondOK(s, i, "Removed from the list",
+		ix.RespondOK("Removed from the list",
 			fmt.Sprintf("%s is back to the default. For an ordinary member that still means fully moderated: this "+
 				"list only ever adds coverage, it never removes it.", core.MentionUser(userID)))
 		return
@@ -150,7 +148,7 @@ func (p *Plugin) setOptIn(ctx context.Context, s *discordgo.Session, i *discordg
 	if self {
 		who = "You will"
 	}
-	core.RespondOK(s, i, "Added to the list",
+	ix.RespondOK("Added to the list",
 		fmt.Sprintf("%s now be jailed by the automatic sanctions like anyone else, even holding a moderator or admin "+
 			"role.\n\nMessage removal already applied regardless of rank; this is only about the sanction that follows "+
 			"one. Undo it any time with the same command set to false.", who))

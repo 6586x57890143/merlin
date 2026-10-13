@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -101,30 +102,14 @@ const (
 // a burst by staying quiet until :59.
 const capWindow = time.Hour
 
-// bucket is a token bucket refilled lazily on read, with no background
-// goroutine, which is fine because this bot is single-instance by design and
-// nothing needs to observe the level except the call being decided.
-type bucket struct {
-	tokens   float64
-	capacity float64
-	lastFill time.Time
-}
-
-func (b *bucket) take(now time.Time) bool {
-	elapsed := now.Sub(b.lastFill)
-	if elapsed > 0 {
-		b.tokens += b.capacity * (float64(elapsed) / float64(capWindow))
-		if b.tokens > b.capacity {
-			b.tokens = b.capacity
-		}
-		b.lastFill = now
-	}
-	if b.tokens < 1 {
-		return false
-	}
-	b.tokens--
-	return true
-}
+// A bucket is a GCRA cell: one int64 holding the theoretical arrival time
+// in unix nanoseconds, advanced with a compare-and-swap. It behaves exactly
+// as a token bucket that starts full and refills cap tokens an hour,
+// continuously: a quiet guild may spend its whole cap at once, and after
+// that one call per capWindow/cap. No mutex, no allocation after a key's
+// first use, and no refill goroutine, since the refill is arithmetic on the
+// clock. Same design as skua's internal/guard.
+type bucketKey struct{ guildID, op string }
 
 // Circuit breaker tuning. Discord outages last minutes, not seconds, and
 // hammering through one is how a bot earns a longer ban than the outage.
@@ -136,10 +121,11 @@ const (
 // breaker is per guild rather than per operation class: a run of 5xx or 429
 // responses is a condition of Discord or of this guild, not of one endpoint,
 // and tracking it per endpoint would need each one to fail its own eight
-// times before anything backed off.
+// times before anything backed off. openedAt is unix nanoseconds, zero
+// while closed.
 type breaker struct {
-	failures int
-	openedAt time.Time
+	failures atomic.Int32
+	openedAt atomic.Int64
 }
 
 // allowRate applies the token bucket and the circuit breaker to one
@@ -147,17 +133,20 @@ type breaker struct {
 // a paused guild never reaches here, so it neither spends budget nor trips
 // the breaker on calls it never made.
 func (g *Guard) allowRate(guildID, op string, now time.Time) error {
-	g.rateMu.Lock()
-	defer g.rateMu.Unlock()
-
-	if b, ok := g.breakers[guildID]; ok && !b.openedAt.IsZero() {
-		if now.Sub(b.openedAt) < breakerCooldown {
-			return fmt.Errorf("%s: %w", op, ErrCircuitOpen)
+	at := now.UnixNano()
+	if v, ok := g.breakers.Load(guildID); ok {
+		b := v.(*breaker)
+		if opened := b.openedAt.Load(); opened != 0 {
+			if at-opened < int64(breakerCooldown) {
+				return fmt.Errorf("%s: %w", op, ErrCircuitOpen)
+			}
+			// Cooldown elapsed: let the next call through to test the water.
+			// If it fails, recordResult reopens for another full cooldown.
+			// Only the call that closes it resets the count.
+			if b.openedAt.CompareAndSwap(opened, 0) {
+				b.failures.Store(breakerThreshold - 1)
+			}
 		}
-		// Cooldown elapsed: let exactly one call through to test the water.
-		// If it fails, recordResult reopens for another full cooldown.
-		b.openedAt = time.Time{}
-		b.failures = breakerThreshold - 1
 	}
 
 	capacity, ok := opCaps[op]
@@ -167,16 +156,23 @@ func (g *Guard) allowRate(guildID, op string, now time.Time) error {
 		// destructive is unmetered.
 		return fmt.Errorf("discordguard: no rate cap defined for %q", op)
 	}
-	key := guildID + ":" + op
-	b, exists := g.buckets[key]
-	if !exists {
-		b = &bucket{tokens: float64(capacity), capacity: float64(capacity), lastFill: now}
-		g.buckets[key] = b
+	k := bucketKey{guildID, op}
+	v, ok := g.buckets.Load(k)
+	if !ok {
+		v, _ = g.buckets.LoadOrStore(k, new(atomic.Int64))
 	}
-	if !b.take(now) {
-		return fmt.Errorf("%s: %w (cap %d per %s)", op, ErrRateLimited, capacity, capWindow)
+	cell := v.(*atomic.Int64)
+	step := int64(capWindow) / int64(capacity)
+	for {
+		tat := cell.Load()
+		next := max(tat, at) + step
+		if next-at > int64(capWindow) {
+			return fmt.Errorf("%s: %w (cap %d per %s)", op, ErrRateLimited, capacity, capWindow)
+		}
+		if cell.CompareAndSwap(tat, next) {
+			return nil
+		}
 	}
-	return nil
 }
 
 // recordResult feeds one call's outcome to the guild's breaker. Only
@@ -185,25 +181,26 @@ func (g *Guard) allowRate(guildID, op string, now time.Time) error {
 // Discord's health and must not open the breaker for everything else.
 func (g *Guard) recordResult(guildID string, now time.Time, err error) {
 	transient := err != nil && isTransient(err)
-
-	g.rateMu.Lock()
-	defer g.rateMu.Unlock()
-	b, ok := g.breakers[guildID]
+	v, ok := g.breakers.Load(guildID)
 	if !ok {
-		b = &breaker{}
-		g.breakers[guildID] = b
+		if !transient {
+			return
+		}
+		v, _ = g.breakers.LoadOrStore(guildID, new(breaker))
 	}
+	b := v.(*breaker)
 	if !transient {
-		b.failures = 0
+		b.failures.Store(0)
 		return
 	}
-	b.failures++
-	if b.failures >= breakerThreshold && b.openedAt.IsZero() {
-		b.openedAt = now
+	if n := b.failures.Add(1); n >= breakerThreshold && b.openedAt.CompareAndSwap(0, now.UnixNano()) {
 		g.log.Error("discordguard: circuit breaker opened, refusing writes",
-			"guild", guildID, "failures", b.failures, "cooldown", breakerCooldown)
+			"guild", guildID, "failures", n, "cooldown", breakerCooldown)
 	}
 }
+
+// ponytail: cells and breakers are never evicted, a few hundred bytes per
+// guild that has ever written. A sweep if merlin joins thousands of guilds.
 
 // isTransient reports whether err looks like Discord being unwell (a 5xx or
 // a rate-limit response) rather than this request being wrong. Mirrors the

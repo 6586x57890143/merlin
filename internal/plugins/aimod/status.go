@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 )
 
 // /aimod status, in pages.
@@ -45,28 +46,28 @@ const statusPagePrefix = "aimod:status:page:"
 type statusPage struct {
 	name   string
 	body   string
-	fields []*discordgo.MessageEmbedField
+	fields []discord.EmbedField
 }
 
-func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.DeferResponse(s, i); err != nil {
-		p.log.Error("aimod: defer status", "guild", i.GuildID, "err", err)
+func (p *Plugin) handleStatus(ctx context.Context, ix *core.Ix) {
+	if err := ix.Defer(); err != nil {
+		p.log.Error("aimod: defer status", "guild", ix.GuildID, "err", err)
 		return
 	}
-	pages, color, err := p.statusPages(ctx, i.GuildID)
+	pages, color, err := p.statusPages(ctx, ix.GuildID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to read the configuration", err)
+		_ = ix.FollowUpErr("Failed to read the configuration", err)
 		return
 	}
 	embed, components := renderStatusPage(pages, color, 0)
-	if err := core.FollowUpEmbedWithComponents(s, i, embed, components); err != nil {
-		p.log.Error("aimod: respond status", "guild", i.GuildID, "err", err)
+	if err := ix.FollowUpEmbedWithComponents(embed, components); err != nil {
+		p.log.Error("aimod: respond status", "guild", ix.GuildID, "err", err)
 	}
 }
 
 // handleStatusPage answers a Prev/Next click by rebuilding the whole report
 // and rendering the requested page of it.
-func (p *Plugin) handleStatusPage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleStatusPage(ctx context.Context, ix *core.Ix, customID string) {
 	page, err := core.ParsePaginationPage(customID, statusPagePrefix)
 	if err != nil {
 		// A page number that will not parse can only come from a hand-built
@@ -75,32 +76,32 @@ func (p *Plugin) handleStatusPage(ctx context.Context, s *discordgo.Session, i *
 		p.log.Error("aimod: parse status page", "custom_id", customID, "err", err)
 		page = 0
 	}
-	if err := core.DeferUpdate(s, i); err != nil {
-		p.log.Error("aimod: defer status page", "guild", i.GuildID, "err", err)
+	if err := ix.DeferUpdate(); err != nil {
+		p.log.Error("aimod: defer status page", "guild", ix.GuildID, "err", err)
 		return
 	}
-	pages, color, err := p.statusPages(ctx, i.GuildID)
+	pages, color, err := p.statusPages(ctx, ix.GuildID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Failed to read the configuration", err)
+		_ = ix.FollowUpErr("Failed to read the configuration", err)
 		return
 	}
 	embed, components := renderStatusPage(pages, color, page)
-	if err := core.FollowUpEmbedWithComponents(s, i, embed, components); err != nil {
-		p.log.Error("aimod: update status page", "guild", i.GuildID, "err", err)
+	if err := ix.FollowUpEmbedWithComponents(embed, components); err != nil {
+		p.log.Error("aimod: update status page", "guild", ix.GuildID, "err", err)
 	}
 }
 
 // renderStatusPage turns one page of an already-built report into the embed
 // and controls to send. Split out from statusPages so the page arithmetic is
 // testable without a Discord session or a gateway.
-func renderStatusPage(pages []statusPage, color, page int) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+func renderStatusPage(pages []statusPage, color, page int) (discord.Embed, []discord.LayoutComponent) {
 	if len(pages) == 0 {
-		return core.NewEmbed(color, "AI moderation", "Nothing to report."), nil
+		return core.Embed(color, "AI moderation", "Nothing to report."), nil
 	}
 	page = min(max(page, 0), len(pages)-1)
 	pg := pages[page]
-	embed := core.NewEmbed(color, "AI moderation: "+pg.name, core.TruncateEmbedDescription(pg.body), pg.fields...)
-	return embed, core.PaginationRow(statusPagePrefix, page, len(pages))
+	embed := core.Embed(color, "AI moderation: "+pg.name, core.TruncateEmbedDescription(pg.body), pg.fields...)
+	return embed, ui.PaginationRow(statusPagePrefix, page, len(pages))
 }
 
 // statusPages builds the whole report and the one severity colour every page
@@ -170,10 +171,10 @@ func (p *Plugin) statusPages(ctx context.Context, guildID string) ([]statusPage,
 	pages := []statusPage{{
 		name: "overview",
 		body: body.String(),
-		fields: []*discordgo.MessageEmbedField{
-			{Name: "Spent today", Value: fmt.Sprintf("%s of %s", formatUSD(spend.SpentUSD), formatUSD(cfg.DailyBudgetUSD)), Inline: true},
-			{Name: "Messages scanned today", Value: fmt.Sprintf("%d", spend.Scanned), Inline: true},
-			{Name: "Model calls today", Value: fmt.Sprintf("%d cheap, %d deep", spend.FastCalls, spend.DeepCalls), Inline: true},
+		fields: []discord.EmbedField{
+			{Name: "Spent today", Value: fmt.Sprintf("%s of %s", formatUSD(spend.SpentUSD), formatUSD(cfg.DailyBudgetUSD)), Inline: core.Inline()},
+			{Name: "Messages scanned today", Value: fmt.Sprintf("%d", spend.Scanned), Inline: core.Inline()},
+			{Name: "Model calls today", Value: fmt.Sprintf("%d cheap, %d deep", spend.FastCalls, spend.DeepCalls), Inline: core.Inline()},
 		},
 	}}
 
@@ -199,11 +200,11 @@ func policyPage(cfg Config) statusPage {
 		name: "what it acts on",
 		body: "What happens to a message that breaches each policy area. The policy page on `/aimod settings` reads " +
 			"and changes each one.",
-		fields: []*discordgo.MessageEmbedField{
+		fields: []discord.EmbedField{
 			{Name: "Acting on", Value: core.TruncateEmbedField(orNone(enforcing))},
 			{Name: "Watching only", Value: core.TruncateEmbedField(orNone(watching))},
-			{Name: "Evidence kept", Value: evidenceWord(cfg.EvidenceHours), Inline: true},
-			{Name: "Sanctions", Value: string(cfg.SanctionAction), Inline: true},
+			{Name: "Evidence kept", Value: evidenceWord(cfg.EvidenceHours), Inline: core.Inline()},
+			{Name: "Sanctions", Value: string(cfg.SanctionAction), Inline: core.Inline()},
 			{Name: "Exempt channels", Value: core.TruncateEmbedField(mentionList(cfg.ExemptChannelIDs, core.MentionChannel))},
 			{Name: "Exempt roles", Value: core.TruncateEmbedField(mentionList(cfg.ExemptRoleIDs, core.MentionRole))},
 		},
@@ -221,7 +222,7 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 	spec, sealed := route(cfg)
 	page := statusPage{
 		name: "provider and cost",
-		fields: []*discordgo.MessageEmbedField{{
+		fields: []discord.EmbedField{{
 			Name:  "Provider",
 			Value: core.TruncateEmbedField(spec.label + "\n" + privacyLine(spec)),
 		}},
@@ -232,11 +233,11 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 	if len(sealed) > 0 {
 		if plain, err := p.sealer.Open(sealed); err != nil {
 			worse(core.ColorError)
-			page.fields = append(page.fields, &discordgo.MessageEmbedField{
+			page.fields = append(page.fields, discord.EmbedField{
 				Name: "API key", Value: "stored, but cannot be decrypted: " + err.Error()})
 		} else if info, err := p.keyInfo(ctx, cfg.GuildID, spec, plain); err != nil {
 			worse(core.ColorWarning)
-			page.fields = append(page.fields, &discordgo.MessageEmbedField{
+			page.fields = append(page.fields, discord.EmbedField{
 				Name: spec.label, Value: core.TruncateEmbedField("could not reach " + spec.label + ": " + err.Error())})
 		} else {
 			// A key with no limit set reports LimitRemaining nil, so there is
@@ -269,7 +270,7 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 					}
 				}
 			}
-			page.fields = append(page.fields, &discordgo.MessageEmbedField{
+			page.fields = append(page.fields, discord.EmbedField{
 				Name:  spec.label + " account",
 				Value: core.TruncateEmbedField(fmt.Sprintf("%s\n%s used across all uses of this key today", balance, formatUSD(info.UsageDaily))),
 			})
@@ -280,7 +281,7 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 	// shadow, because shadow exists precisely to produce a number an admin
 	// reads here before deciding.
 	if cfg.TriageMode != TriageOff {
-		page.fields = append(page.fields, &discordgo.MessageEmbedField{
+		page.fields = append(page.fields, discord.EmbedField{
 			Name:  "Local pre-filter",
 			Value: core.TruncateEmbedField(p.triageLine(ctx, cfg)),
 		})
@@ -303,7 +304,7 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 		if family := familyFor(f.Address); family != nil {
 			name += " (" + family.networks + ")"
 		}
-		page.fields = append(page.fields, &discordgo.MessageEmbedField{Name: name, Value: core.TruncateEmbedField(jar)})
+		page.fields = append(page.fields, discord.EmbedField{Name: name, Value: core.TruncateEmbedField(jar)})
 	}
 	return page
 }
@@ -356,7 +357,7 @@ func optOutPages(cfg Config) []statusPage {
 		pages = append(pages, statusPage{
 			name:   name,
 			body:   body,
-			fields: []*discordgo.MessageEmbedField{{Name: heading, Value: core.TruncateEmbedField(listed)}},
+			fields: []discord.EmbedField{{Name: heading, Value: core.TruncateEmbedField(listed)}},
 		})
 	}
 	return pages

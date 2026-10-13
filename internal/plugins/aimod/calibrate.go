@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -706,10 +704,10 @@ func (p *Plugin) makeCalibrationJob(guildID string) func(context.Context) error 
 	}
 }
 
-func (p *Plugin) handleCalibrateShow(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	cfg, err := p.store.Config(ctx, i.GuildID)
+func (p *Plugin) handleCalibrateShow(ctx context.Context, ix *core.Ix) {
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Failed to read the configuration", err)
+		ix.RespondErr("Failed to read the configuration", err)
 		return
 	}
 
@@ -743,11 +741,11 @@ func (p *Plugin) handleCalibrateShow(ctx context.Context, s *discordgo.Session, 
 	// The body interpolates an unbounded example list, and Discord rejects an
 	// over-limit description outright rather than trimming it, so without
 	// this the command would fail exactly when it had most to show.
-	core.RespondInfo(s, i, "Filter calibration", core.TruncateEmbedDescription(b.String()))
+	ix.RespondInfo("Filter calibration", core.TruncateEmbedDescription(b.String()))
 }
 
-func (p *Plugin) calibrateNow(ctx context.Context, i *discordgo.InteractionCreate) outcome {
-	cfg, err := p.store.Config(ctx, i.GuildID)
+func (p *Plugin) calibrateNow(ctx context.Context, ix *core.Ix) outcome {
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
@@ -784,8 +782,8 @@ func (p *Plugin) calibrateNow(ctx context.Context, i *discordgo.InteractionCreat
 		fmt.Sprintf("%d example(s) are waiting. `/aimod calibrate show` reads them; Apply puts them in force.", len(res.Examples))}
 }
 
-func (p *Plugin) calibrateApply(ctx context.Context, i *discordgo.InteractionCreate) outcome {
-	cfg, err := p.store.Config(ctx, i.GuildID)
+func (p *Plugin) calibrateApply(ctx context.Context, ix *core.Ix) outcome {
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
@@ -797,41 +795,41 @@ func (p *Plugin) calibrateApply(ctx context.Context, i *discordgo.InteractionCre
 	// A proposal can sit for a week, and a bucket switched off in the
 	// meantime must not come back through a stored example.
 	kept, _ := validateCalibration(cfg, cfg.CalibrationPending)
-	if err := p.store.SetCalibration(ctx, i.GuildID, kept, nil, time.Time{}); err != nil {
+	if err := p.store.SetCalibration(ctx, ix.GuildID, kept, nil, time.Time{}); err != nil {
 		return failed("Failed to apply it", err)
 	}
-	p.auditConfig(ctx, i, "aimod.calibration_applied",
+	p.auditConfig(ctx, ix, "aimod.calibration_applied",
 		fmt.Sprintf("%d in force", len(cfg.Calibration)), fmt.Sprintf("%d in force", len(kept)))
 	return outcome{core.ColorSuccess, "Calibration applied",
 		fmt.Sprintf("%d example(s) are now in force and will be carried by every scan from here on.", len(kept))}
 }
 
-func (p *Plugin) calibrateClear(ctx context.Context, i *discordgo.InteractionCreate) outcome {
-	cfg, err := p.store.Config(ctx, i.GuildID)
+func (p *Plugin) calibrateClear(ctx context.Context, ix *core.Ix) outcome {
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
-	if err := p.store.SetCalibration(ctx, i.GuildID, nil, nil, time.Time{}); err != nil {
+	if err := p.store.SetCalibration(ctx, ix.GuildID, nil, nil, time.Time{}); err != nil {
 		return failed("Failed to clear it", err)
 	}
-	p.auditConfig(ctx, i, "aimod.calibration_cleared",
+	p.auditConfig(ctx, ix, "aimod.calibration_cleared",
 		fmt.Sprintf("%d in force", len(cfg.Calibration)), "0 in force")
 	return outcome{core.ColorSuccess, "Calibration cleared",
 		"The filter is back to the built-in policies alone. The weekly review still runs unless you also set reviews off."}
 }
 
-func (p *Plugin) setCalibrationMode(ctx context.Context, i *discordgo.InteractionCreate, mode CalibrationMode) outcome {
+func (p *Plugin) setCalibrationMode(ctx context.Context, ix *core.Ix, mode CalibrationMode) outcome {
 	if !mode.valid() {
 		return failed("Unknown mode", fmt.Errorf("%q is not a review mode", mode))
 	}
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
-	if err := p.store.SetCalibrationMode(ctx, i.GuildID, mode); err != nil {
+	if err := p.store.SetCalibrationMode(ctx, ix.GuildID, mode); err != nil {
 		return failed("Failed to set the mode", err)
 	}
-	p.auditConfig(ctx, i, "aimod.calibration_mode_set", string(cfg.CalibrationMode), string(mode))
+	p.auditConfig(ctx, ix, "aimod.calibration_mode_set", string(cfg.CalibrationMode), string(mode))
 
 	// Registering or unregistering the job is this setting's whole effect, so
 	// it has to happen here: this plugin has no EventConfigChanged

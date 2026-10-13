@@ -571,8 +571,13 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 	// Only when the slur is the whole hit: hardHit checks credentials and
 	// links first, and a message carrying both must be removed, not
 	// rewritten around a leaked token.
+	// Rung 1 is read at most once per message: here when the guild scans,
+	// and carried into scan, which used to run it again on the same text. A
+	// guild with aimod off never reads it at all, as before.
+	var r1 *rung1
 	if cfg.Mode != ModeOff {
-		if bucket, reason, rewrite, hit := hardHit(c.Content); hit && bucket == BucketHateSpeech {
+		r1 = rung1Of(c.Content)
+		if bucket, reason, rewrite := r1.bucket, r1.reason, r1.rewrite; r1.hit && bucket == BucketHateSpeech {
 			action := EffectiveAction(cfg.BucketActions, bucket)
 			p.log.Info("aimod: hard slur", "guild", cfg.GuildID, "channel", c.ChannelID, "message", c.MessageID,
 				"action", action)
@@ -586,7 +591,7 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 				if p.slurCleared(bg, cfg, c, rewrite) {
 					p.log.Info("aimod: slur hit cleared by second look", "guild", cfg.GuildID,
 						"channel", c.ChannelID, "message", c.MessageID)
-					p.scan(bg, cfg, m, c, true)
+					p.scan(bg, cfg, m, c, r1, true)
 					return
 				}
 				p.enforceHardHit(bg, cfg, c, bucket, reason, rewrite)
@@ -594,14 +599,27 @@ func (p *Plugin) HandleMessage(m *discordgo.Message) {
 			return
 		}
 	}
-	p.scan(ctx, cfg, m, c, false)
+	p.scan(ctx, cfg, m, c, r1, false)
+}
+
+// rung1 is hardHit's answer for one message.
+type rung1 struct {
+	bucket          Bucket
+	reason, rewrite string
+	hit             bool
+}
+
+func rung1Of(content string) *rung1 {
+	var r rung1
+	r.bucket, r.reason, r.rewrite, r.hit = hardHit(content)
+	return &r
 }
 
 // scan is everything after the slur block: the skips, the rest of rung 1,
-// and the queue for the model rungs. slurCleared is set when the second
-// look has already overruled a slur hit on this exact text, so rung 1 does
-// not act on it again here.
-func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c candidate, slurCleared bool) {
+// and the queue for the model rungs. r1 is rung 1's answer for c.Content,
+// or nil if HandleMessage did not need it. slurCleared is set when the second look has already overruled a slur hit
+// on this exact text, so rung 1 does not act on it again here.
+func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c candidate, r1 *rung1, slurCleared bool) {
 	if reason := p.shouldSkip(cfg, m, p.now()); reason != skipNone {
 		// A skip is silent by design, which made "the word list missed this"
 		// unanswerable from the logs. Info when the skipped text is something
@@ -632,8 +650,11 @@ func (p *Plugin) scan(ctx context.Context, cfg Config, m *discordgo.Message, c c
 	// with the bucket's own configured action and no model in the loop, so
 	// a token leak or a phishing link is gone in well under a second even on
 	// a guild whose budget is spent.
-	if bucket, reason, rewrite, hit := hardHit(c.Content); hit && (!slurCleared || bucket != BucketHateSpeech) {
-		p.actOnHardHit(cfg, c, bucket, reason, rewrite)
+	if r1 == nil {
+		r1 = rung1Of(c.Content)
+	}
+	if r1.hit && (!slurCleared || r1.bucket != BucketHateSpeech) {
+		p.actOnHardHit(cfg, c, r1.bucket, r1.reason, r1.rewrite)
 		return
 	}
 	// The guild's own word list, after the hard patterns so a leaked token

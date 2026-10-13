@@ -208,51 +208,31 @@ func embedFiles(embed *discordgo.MessageEmbed) []*discordgo.File {
 	if embed == nil {
 		return nil
 	}
-	var files []*discordgo.File
 	// The avatar is attached only where something actually points at it.
 	// It used to go out unconditionally, which was right while NewEmbed set a
 	// footer icon and became a wasted upload on every single response the
 	// moment that footer went away. Discord also rejects a message carrying
-	// the same filename twice, so this is a single flag rather than one
-	// append per slot that could reference it.
-	if referencesAvatar(embed) {
-		files = append(files, avatarFile())
+	// the same filename twice, so each asset is listed once however many
+	// slots reference it. referencedAssets is shared with EmbedUploads, so
+	// the discordgo and disgo builders cannot disagree about what to upload.
+	var footer, author, thumb, image string
+	if embed.Footer != nil {
+		footer = embed.Footer.IconURL
+	}
+	if embed.Author != nil {
+		author = embed.Author.IconURL
 	}
 	if embed.Thumbnail != nil {
-		for m, a := range moodAssets {
-			if embed.Thumbnail.URL == "attachment://"+a.name {
-				files = append(files, moodFile(m))
-				break
-			}
-		}
+		thumb = embed.Thumbnail.URL
 	}
 	if embed.Image != nil {
-		switch embed.Image.URL {
-		case bannerAttachmentURL:
-			files = append(files, bannerFile())
-		case ruleAttachmentURL:
-			files = append(files, &discordgo.File{Name: ruleAttachmentName, ContentType: "image/png", Reader: bytes.NewReader(rulePNG)})
-		}
+		image = embed.Image.URL
+	}
+	var files []*discordgo.File
+	for _, a := range referencedAssets(footer, author, thumb, image) {
+		files = append(files, &discordgo.File{Name: a.name, ContentType: "image/png", Reader: bytes.NewReader(a.png)})
 	}
 	return files
-}
-
-// referencesAvatar reports whether any slot on the embed points at the brand
-// avatar. Nothing in this package sets one today; it stays because the check
-// costs nothing and the alternative failure (an embed pointing at an image
-// that was never uploaded, rendering as a broken frame in a public channel)
-// is silent and looks like nothing is wrong in the code that built it.
-func referencesAvatar(e *discordgo.MessageEmbed) bool {
-	if e.Footer != nil && e.Footer.IconURL == avatarAttachmentURL {
-		return true
-	}
-	if e.Author != nil && e.Author.IconURL == avatarAttachmentURL {
-		return true
-	}
-	if e.Thumbnail != nil && e.Thumbnail.URL == avatarAttachmentURL {
-		return true
-	}
-	return e.Image != nil && e.Image.URL == avatarAttachmentURL
 }
 
 func avatarFile() *discordgo.File {

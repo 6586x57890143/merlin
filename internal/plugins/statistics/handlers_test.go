@@ -5,9 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,95 +15,54 @@ import (
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
 )
 
-// The handlers are driven against a discordgo session whose transport
-// records every request body and answers with an empty success, the same
-// shape roles' and aimod's handler tests use.
+// The handlers are driven through core.Ix interactions decoded from
+// Discord's JSON, answered through a REST client whose requests land on a
+// paneltest.Wire. disgo's IDs are snowflakes, so the guild is
+// paneltest.IxGuild and the operator and an admin are numbered.
 
-type recordingTransport struct {
-	mu     sync.Mutex
-	bodies []string
-}
+const (
+	guild = paneltest.IxGuild
+	op    = "900"
+	admin = "901"
+)
 
-func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	var body []byte
-	if req.Body != nil {
-		body, _ = io.ReadAll(req.Body)
-	}
-	r.mu.Lock()
-	// JSON escapes < > and &, which every mention carries.
-	r.bodies = append(r.bodies, strings.NewReplacer("\\u003c", "<", "\\u003e", ">", "\\u0026", "&").Replace(string(body)))
-	r.mu.Unlock()
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(`{}`)),
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Request:    req,
-	}, nil
-}
-
-func (r *recordingTransport) said(text string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, b := range r.bodies {
-		if strings.Contains(b, text) {
-			return true
-		}
-	}
-	return false
-}
-
-func handlerSession(t *testing.T) (*discordgo.Session, *recordingTransport) {
+// run is actor running /statistics sub with args.
+func run(t *testing.T, actor, sub string, args ...map[string]any) (*core.Ix, *paneltest.Wire) {
 	t.Helper()
-	s, err := discordgo.New("Bot test-token")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt := &recordingTransport{}
-	s.Client = &http.Client{Transport: rt}
-	return s, rt
+	return paneltest.IxCommand(t, actor, "statistics", func(p map[string]any) {
+		opts := []any{}
+		for _, a := range args {
+			opts = append(opts, a)
+		}
+		p["data"].(map[string]any)["options"] = []any{map[string]any{"name": sub, "type": 1, "options": opts}}
+	})
 }
 
-func interaction(actor, group, sub string, args ...*discordgo.ApplicationCommandInteractionDataOption) *discordgo.InteractionCreate {
-	leaf := &discordgo.ApplicationCommandInteractionDataOption{Name: sub, Type: discordgo.ApplicationCommandOptionSubCommand, Options: args}
-	opts := []*discordgo.ApplicationCommandInteractionDataOption{leaf}
-	if group != "" {
-		opts = []*discordgo.ApplicationCommandInteractionDataOption{{
-			Name: group, Type: discordgo.ApplicationCommandOptionSubCommandGroup,
-			Options: []*discordgo.ApplicationCommandInteractionDataOption{leaf},
-		}}
-	}
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID: "i1", Token: "tok", GuildID: "g1", ChannelID: "chan",
-		Type:   discordgo.InteractionApplicationCommand,
-		Member: &discordgo.Member{User: &discordgo.User{ID: actor}},
-		Data:   discordgo.ApplicationCommandInteractionData{Name: "statistics", Options: opts},
-	}}
-}
+func strArg(name, v string) map[string]any { return map[string]any{"name": name, "type": 3, "value": v} }
 
-func strArg(name, v string) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionString, Value: v}
-}
+func intArg(name string, v int) map[string]any { return map[string]any{"name": name, "type": 4, "value": v} }
 
-func intArg(name string, v int) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionInteger, Value: float64(v)}
-}
+// unescape undoes JSON's escaping of < > and &, which every mention carries.
+var unescape = strings.NewReplacer("\\u003c", "<", "\\u003e", ">", "\\u0026", "&")
 
-// seeded is a plugin with a week of counted history for g1.
+func said(w *paneltest.Wire, text string) bool { return strings.Contains(unescape.Replace(w.All()), text) }
+
+// seeded is a plugin with a week of counted history for guild.
 func seeded(t *testing.T) (*Plugin, *fakeStore) {
 	t.Helper()
 	store := newFakeStore()
 	p := newTestPlugin(store, &fakeSource{channels: []*discordgo.Channel{textChannel("c1", "general")}, msgs: map[string][]*discordgo.Message{}})
-	p.privilege = fakePrivilege{operator: "op"}
+	p.privilege = fakePrivilege{operator: op}
 	p.sched = newFakeScheduler()
-	_ = store.MarkLive(context.Background(), "g1", windowStart)
+	_ = store.MarkLive(context.Background(), guild, windowStart)
 	_ = store.AddMessages(context.Background(), []Bucket{
-		{GuildID: "g1", ChannelID: "c1", UserID: "u1", Hour: windowStart, Messages: 5},
-		{GuildID: "g1", ChannelID: "c2", UserID: "u1", Hour: windowStart.Add(time.Hour), Messages: 1},
-		{GuildID: "g1", ChannelID: "c1", UserID: "u2", Hour: windowStart, Messages: 2},
+		{GuildID: guild, ChannelID: "c1", UserID: "u1", Hour: windowStart, Messages: 5},
+		{GuildID: guild, ChannelID: "c2", UserID: "u1", Hour: windowStart.Add(time.Hour), Messages: 1},
+		{GuildID: guild, ChannelID: "c1", UserID: "u2", Hour: windowStart, Messages: 2},
 	})
-	_ = store.UpsertUsers(context.Background(), []UserSeen{{GuildID: "g1", UserID: "u1", Name: "zoe", SeenAt: windowStart}})
-	_ = store.UpsertChannels(context.Background(), []ChannelSeen{{GuildID: "g1", ChannelID: "c1", Name: "general"}})
-	_ = store.AddMembers(context.Background(), []MemberBucket{{GuildID: "g1", Hour: windowStart, Joined: 3, Departed: 1}})
+	_ = store.UpsertUsers(context.Background(), []UserSeen{{GuildID: guild, UserID: "u1", Name: "zoe", SeenAt: windowStart}})
+	_ = store.UpsertChannels(context.Background(), []ChannelSeen{{GuildID: guild, ChannelID: "c1", Name: "general"}})
+	_ = store.AddMembers(context.Background(), []MemberBucket{{GuildID: guild, Hour: windowStart, Joined: 3, Departed: 1}})
 	return p, store
 }
 
@@ -131,7 +88,7 @@ func TestInitRegistersAFullyWiredCommandTree(t *testing.T) {
 // cannot end up in a shared report. The count still stands.
 func TestBuildHidesChannelNamesByDefault(t *testing.T) {
 	p, _ := seeded(t)
-	rep, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.Add(3 * time.Hour)})
+	rep, err := p.build(context.Background(), guild, options{from: windowStart, to: windowStart.Add(3 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +110,7 @@ func TestBuildHidesChannelNamesByDefault(t *testing.T) {
 // channels resolved to the names on record.
 func TestBuildNamesPeopleAndChannelsFromTheBuckets(t *testing.T) {
 	p, _ := seeded(t)
-	rep, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.Add(3 * time.Hour), showChannels: true})
+	rep, err := p.build(context.Background(), guild, options{from: windowStart, to: windowStart.Add(3 * time.Hour), showChannels: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +129,7 @@ func TestBuildNamesPeopleAndChannelsFromTheBuckets(t *testing.T) {
 	if rep.partial() {
 		t.Fatal("a window starting where counting began is whole")
 	}
-	early, _ := p.build(context.Background(), "g1", options{from: windowStart.Add(-24 * time.Hour), to: windowStart.Add(time.Hour)})
+	early, _ := p.build(context.Background(), guild, options{from: windowStart.Add(-24 * time.Hour), to: windowStart.Add(time.Hour)})
 	if !early.partial() || !early.coveredFrom.Equal(windowStart) {
 		t.Fatalf("a window from before the oldest bucket is partial: %+v", early)
 	}
@@ -180,122 +137,137 @@ func TestBuildNamesPeopleAndChannelsFromTheBuckets(t *testing.T) {
 
 func TestHandleReportIsOperatorOnly(t *testing.T) {
 	p, _ := seeded(t)
-	s, rt := handlerSession(t)
-	p.handleReport(context.Background(), s, interaction("admin", "", "report", strArg("from", "2026-09-01")))
-	if !rt.said("Not yours to run") {
+	ix, w := run(t, admin, "report", strArg("from", "2026-09-01"))
+	p.handleReport(context.Background(), ix)
+	if !said(w, "Not yours to run") {
 		t.Fatal("an admin must be refused")
 	}
-	p.handleBackfill(context.Background(), s, interaction("admin", "", "backfill", strArg("from", "2026-09-01")))
-	if len(rt.bodies) != 2 || !strings.Contains(rt.bodies[1], "Not yours to run") {
+	ix, w = run(t, admin, "backfill", strArg("from", "2026-09-01"))
+	p.handleBackfill(context.Background(), ix)
+	if !said(w, "Not yours to run") || len(w.Bodies) != 1 {
 		t.Fatal("backfill reads history and is the operator's too")
 	}
 }
 
 func TestHandleReportRendersAndAttaches(t *testing.T) {
 	p, store := seeded(t)
-	s, rt := handlerSession(t)
-	p.handleReport(context.Background(), s, interaction("op", "", "report", strArg("from", "2026-09-01"), intArg("top", 1)))
-	if !rt.said("who was active in") || !rt.said("**zoe**") {
-		t.Fatalf("expected the report, got %d bodies", len(rt.bodies))
+	ix, w := run(t, op, "report", strArg("from", "2026-09-01"), intArg("top", 1))
+	p.handleReport(context.Background(), ix)
+	if !said(w, "who was active in") || !said(w, "**zoe**") {
+		t.Fatalf("expected the report, got %d bodies", len(w.Bodies))
 	}
-	if !rt.said(`filename="activity.png"`) || !rt.said(`filename="activity.md"`) {
+	if !said(w, `filename="activity.png"`) || !said(w, `filename="activity.md"`) {
 		t.Fatal("expected the card and, with top=1 of 2, the full list attached")
 	}
 
-	p.handleReport(context.Background(), s, interaction("op", "", "report", strArg("from", "next week")))
-	if !rt.said("That window doesn't work") {
+	ix, w = run(t, op, "report", strArg("from", "next week"))
+	p.handleReport(context.Background(), ix)
+	if !said(w, "That window doesn't work") || len(w.Bodies) != 1 {
 		t.Fatal("bad input is refused before deferring")
 	}
 	store.reportErr = errors.New("db down")
-	p.handleReport(context.Background(), s, interaction("op", "", "report", strArg("from", "2026-09-01")))
-	if !rt.said("Could not read the statistics") {
+	ix, w = run(t, op, "report", strArg("from", "2026-09-01"))
+	p.handleReport(context.Background(), ix)
+	if !said(w, "Could not read the statistics") {
 		t.Fatal("a store failure is reported")
 	}
 }
 
 func TestHandleChannelsAndMembers(t *testing.T) {
 	p, _ := seeded(t)
-	s, rt := handlerSession(t)
-	p.handleChannels(context.Background(), s, interaction("admin", "", "channels", strArg("from", "2026-09-01")))
-	if !rt.said("Where the traffic went") || !rt.said("#general") || !rt.said("from `2` people") {
-		t.Fatalf("channels: %v", rt.bodies)
+	ix, w := run(t, admin, "channels", strArg("from", "2026-09-01"))
+	p.handleChannels(context.Background(), ix)
+	if !said(w, "Where the traffic went") || !said(w, "#general") || !said(w, "from `2` people") {
+		t.Fatalf("channels: %v", w.Bodies)
 	}
-	p.handleMembers(context.Background(), s, interaction("admin", "", "members", strArg("from", "2026-09-01")))
-	if !rt.said("`3` joined, `1` left, net `+2`") || !rt.said("`2026-09-01` `+3` `-1`") {
-		t.Fatalf("members: %v", rt.bodies)
+	ix, w = run(t, admin, "members", strArg("from", "2026-09-01"))
+	p.handleMembers(context.Background(), ix)
+	if !said(w, "`3` joined, `1` left, net `+2`") || !said(w, "`2026-09-01` `+3` `-1`") {
+		t.Fatalf("members: %v", w.Bodies)
 	}
-	p.handleChannels(context.Background(), s, interaction("admin", "", "channels", strArg("from", "2020-01-01"), strArg("to", "2020-01-02")))
-	if !rt.said("nothing was counted in that window") {
+	ix, w = run(t, admin, "channels", strArg("from", "2020-01-01"), strArg("to", "2020-01-02"))
+	p.handleChannels(context.Background(), ix)
+	if !said(w, "nothing was counted in that window") {
 		t.Fatal("an empty window says so")
 	}
-	p.handleMembers(context.Background(), s, interaction("admin", "", "members", strArg("from", "2020-01-01"), strArg("to", "2020-01-02")))
-	if !rt.said("no joins or departures") {
+	ix, w = run(t, admin, "members", strArg("from", "2020-01-01"), strArg("to", "2020-01-02"))
+	p.handleMembers(context.Background(), ix)
+	if !said(w, "no joins or departures") {
 		t.Fatal("an empty member window says so")
 	}
-	p.handleMembers(context.Background(), s, interaction("admin", "", "members", strArg("from", "soon")))
-	p.handleChannels(context.Background(), s, interaction("admin", "", "channels", strArg("from", "soon")))
-	if len(rt.bodies) != 6 {
-		t.Fatalf("expected a refusal for each bad window, got %d bodies", len(rt.bodies))
+	ix, w = run(t, admin, "members", strArg("from", "soon"))
+	p.handleMembers(context.Background(), ix)
+	ix2, w2 := run(t, admin, "channels", strArg("from", "soon"))
+	p.handleChannels(context.Background(), ix2)
+	if !said(w, "That window doesn't work") || !said(w2, "That window doesn't work") {
+		t.Fatalf("expected a refusal for each bad window: %v %v", w.Bodies, w2.Bodies)
 	}
 }
 
 func TestHandleStatusAndRetention(t *testing.T) {
 	p, store := seeded(t)
-	s, rt := handlerSession(t)
-	p.handleStatus(context.Background(), s, interaction("admin", "", "status"))
-	if !rt.said("since 2026-09-01 14:00 utc") || !rt.said("90 days") {
-		t.Fatalf("status: %v", rt.bodies)
+	ix, w := run(t, admin, "status")
+	p.handleStatus(context.Background(), ix)
+	if !said(w, "since 2026-09-01 14:00 utc") || !said(w, "90 days") {
+		t.Fatalf("status: %v", w.Bodies)
 	}
 
-	p.handleForm(context.Background(), s, retentionForm("30"), formSet+"retention")
-	if !rt.said("kept for 30 days") {
+	ix, w = retentionForm(t, "30")
+	p.handleForm(context.Background(), ix, formSet+"retention")
+	if !said(w, "kept for 30 days") {
 		t.Fatal("expected confirmation")
 	}
-	if cfg, _ := store.Config(context.Background(), "g1"); cfg.RetentionDays != 30 {
+	if cfg, _ := store.Config(context.Background(), guild); cfg.RetentionDays != 30 {
 		t.Fatalf("retention not saved: %+v", cfg)
 	}
-	p.handleForm(context.Background(), s, retentionForm("0"), formSet+"retention")
-	if !rt.said("must be between 1 and") {
+	ix, w = retentionForm(t, "0")
+	p.handleForm(context.Background(), ix, formSet+"retention")
+	if !said(w, "must be between 1 and") {
 		t.Fatal("zero days must be refused")
 	}
 
 	// A guild the bot has not seen yet.
 	fresh := newTestPlugin(newFakeStore(), &fakeSource{})
-	fresh.handleStatus(context.Background(), s, interaction("admin", "", "status"))
-	if !rt.said("not started yet") {
+	ix, w = run(t, admin, "status")
+	fresh.handleStatus(context.Background(), ix)
+	if !said(w, "not started yet") {
 		t.Fatal("status before counting should say so")
 	}
 }
 
 func TestHandleBackfillQueuesUpToTheLiveHour(t *testing.T) {
 	p, store := seeded(t)
-	s, rt := handlerSession(t)
-	p.handleBackfill(context.Background(), s, interaction("op", "", "backfill", strArg("from", "2026-08-01")))
-	if !rt.said("Backfill queued") || !rt.said("`1` channels") {
-		t.Fatalf("backfill: %v", rt.bodies)
+	ix, w := run(t, op, "backfill", strArg("from", "2026-08-01"))
+	p.handleBackfill(context.Background(), ix)
+	if !said(w, "Backfill queued") || !said(w, "`1` channels") {
+		t.Fatalf("backfill: %v", w.Bodies)
 	}
-	pending, _ := store.PendingBackfill(context.Background(), "g1")
+	pending, _ := store.PendingBackfill(context.Background(), guild)
 	if len(pending) != 1 || !pending[0].Until.Equal(windowStart) {
 		t.Fatalf("queued row should stop at the hour counting began: %+v", pending)
 	}
-	p.handleStatus(context.Background(), s, interaction("admin", "", "status"))
-	if !rt.said("1 to read, 0 done") {
+	ix, w = run(t, admin, "status")
+	p.handleStatus(context.Background(), ix)
+	if !said(w, "1 to read, 0 done") {
 		t.Fatal("status should show the queue")
 	}
 
-	p.handleBackfill(context.Background(), s, interaction("op", "", "backfill", strArg("from", "2026-09-10")))
-	if !rt.said("Already counted") {
+	ix, w = run(t, op, "backfill", strArg("from", "2026-09-10"))
+	p.handleBackfill(context.Background(), ix)
+	if !said(w, "Already counted") {
 		t.Fatal("a start after live counting began has nothing to fill")
 	}
-	p.handleBackfill(context.Background(), s, interaction("op", "", "backfill", strArg("from", "whenever")))
-	if !rt.said("That window doesn't work") {
+	ix, w = run(t, op, "backfill", strArg("from", "whenever"))
+	p.handleBackfill(context.Background(), ix)
+	if !said(w, "That window doesn't work") {
 		t.Fatal("bad date refused")
 	}
 
 	fresh := newTestPlugin(newFakeStore(), &fakeSource{})
-	fresh.privilege = fakePrivilege{operator: "op"}
-	fresh.handleBackfill(context.Background(), s, interaction("op", "", "backfill", strArg("from", "2026-08-01")))
-	if !rt.said("Nothing to fill up to") {
+	fresh.privilege = fakePrivilege{operator: op}
+	ix, w = run(t, op, "backfill", strArg("from", "2026-08-01"))
+	fresh.handleBackfill(context.Background(), ix)
+	if !said(w, "Nothing to fill up to") {
 		t.Fatal("no live_since means nothing to fill up to yet")
 	}
 }
@@ -305,10 +277,10 @@ func TestHandleBackfillQueuesUpToTheLiveHour(t *testing.T) {
 func TestBuildFoldsVoiceIn(t *testing.T) {
 	p, store := seeded(t)
 	_ = store.AddVoice(context.Background(), []VoiceBucket{
-		{GuildID: "g1", ChannelID: "v1", UserID: "u1", Hour: windowStart, Seconds: 1800},
-		{GuildID: "g1", ChannelID: "v1", UserID: "u9", Hour: windowStart.Add(time.Hour), Seconds: 7200},
+		{GuildID: guild, ChannelID: "v1", UserID: "u1", Hour: windowStart, Seconds: 1800},
+		{GuildID: guild, ChannelID: "v1", UserID: "u9", Hour: windowStart.Add(time.Hour), Seconds: 7200},
 	})
-	rep, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.Add(3 * time.Hour)})
+	rep, err := p.build(context.Background(), guild, options{from: windowStart, to: windowStart.Add(3 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,12 +298,12 @@ func TestBuildFoldsVoiceIn(t *testing.T) {
 	if !rep.hourly || len(rep.days) != 2 || rep.days[1].VoiceSeconds != 7200 {
 		t.Fatalf("hours: %v %+v", rep.hourly, rep.days)
 	}
-	long, err := p.build(context.Background(), "g1", options{from: windowStart, to: windowStart.AddDate(0, 0, 30)})
+	long, err := p.build(context.Background(), guild, options{from: windowStart, to: windowStart.AddDate(0, 0, 30)})
 	if err != nil || long.hourly || len(long.days) != 1 || long.days[0].Messages != 8 || long.days[0].VoiceSeconds != 9000 {
 		t.Fatalf("days: %v %+v %v", long.hourly, long.days, err)
 	}
 
-	perDay, ok := p.MessagesPerDay(context.Background(), "g1", 7)
+	perDay, ok := p.MessagesPerDay(context.Background(), guild, 7)
 	if !ok || perDay != 8 {
 		t.Fatalf("messages per day = %v, %v; want 8", perDay, ok)
 	}
@@ -340,9 +312,8 @@ func TestBuildFoldsVoiceIn(t *testing.T) {
 	}
 }
 
-// retentionForm is the operator submitting the retention form.
-func retentionForm(days string) *discordgo.InteractionCreate {
-	i := paneltest.Submit("admin", formSet+"retention", map[string]string{"days": days})
-	i.GuildID = "g1"
-	return i
+// retentionForm is an admin submitting the retention form.
+func retentionForm(t *testing.T, days string) (*core.Ix, *paneltest.Wire) {
+	t.Helper()
+	return paneltest.IxSubmit(t, admin, formSet+"retention", map[string]string{"days": days})
 }

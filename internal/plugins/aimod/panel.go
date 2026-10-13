@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 	"github.com/6586x57890143/merlin/internal/secret"
 )
 
@@ -71,79 +72,79 @@ func (o outcome) note() string {
 }
 
 func (p *Plugin) registerPanel() {
-	p.commands.HandleComponent(p.Name(), panelView, viewSpec, p.handlePanelView)
-	p.commands.HandleComponent(p.Name(), panelCfg, cfgSpec, p.handlePanelSet)
-	p.commands.HandleComponent(p.Name(), panelPol, policySpec, p.handlePanelSet)
-	p.commands.HandleModal(p.Name(), formCfg, cfgSpec, p.handleForm)
-	p.commands.HandleModal(p.Name(), formPol, policySpec, p.handleForm)
+	p.commands.HandleComponentIx(p.Name(), panelView, viewSpec, p.handlePanelView)
+	p.commands.HandleComponentIx(p.Name(), panelCfg, cfgSpec, p.handlePanelSet)
+	p.commands.HandleComponentIx(p.Name(), panelPol, policySpec, p.handlePanelSet)
+	p.commands.HandleModalIx(p.Name(), formCfg, cfgSpec, p.handleForm)
+	p.commands.HandleModalIx(p.Name(), formPol, policySpec, p.handleForm)
 }
 
-func (p *Plugin) handleSettings(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.RespondPanel(s, i, p.panel(ctx, i, "scanning", "", "")); err != nil {
+func (p *Plugin) handleSettings(ctx context.Context, ix *core.Ix) {
+	if err := ix.RespondPanel(p.panel(ctx, ix, "scanning", "", "")); err != nil {
 		p.log.Error("aimod: panel response failed", "err", err)
 	}
 }
 
 // handlePanelView turns pages (view:page) and picks a policy area
 // (view:bucket).
-func (p *Plugin) handlePanelView(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
-	page, arg := core.FirstValue(i), ""
+func (p *Plugin) handlePanelView(ctx context.Context, ix *core.Ix, customID string) {
+	page, arg := ix.FirstValue(), ""
 	if strings.TrimPrefix(customID, panelView) == "bucket" {
-		page, arg = "policy", core.FirstValue(i)
+		page, arg = "policy", ix.FirstValue()
 	}
-	p.redraw(ctx, s, i, page, arg, "")
+	p.redraw(ctx, ix, page, arg, "")
 }
 
-func (p *Plugin) redraw(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, page, arg, note string) {
-	if err := core.UpdatePanel(s, i, p.panel(ctx, i, page, arg, note)); err != nil {
+func (p *Plugin) redraw(ctx context.Context, ix *core.Ix, page, arg, note string) {
+	if err := ix.UpdatePanel(p.panel(ctx, ix, page, arg, note)); err != nil {
 		p.log.Error("aimod: panel update failed", "err", err)
 	}
 }
 
-func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page, arg, note string) core.Panel {
+func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string) core.Panel {
 	perms := p.commands.Perms()
-	canCfg, canPol := perms.Allows(i, cfgSpec), perms.Allows(i, policySpec)
+	canCfg, canPol := perms.AllowsIx(ix, cfgSpec), perms.AllowsIx(ix, policySpec)
 	pn := core.Panel{Color: core.ColorInfo, Title: "AI moderation", Plugin: p.Name(), Note: note,
 		Line:   "Checks messages against Discord's Community Guidelines",
 		Footer: "Reports stay commands: /aimod status, /aimod models show, /aimod calibrate show. Every change is audited."}
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		pn.Color = core.ColorError
-		pn.Body = []discordgo.MessageComponent{core.Text("✗ The configuration could not be read: " + err.Error())}
+		pn.Parts = []discord.ContainerSubComponent{ui.Text("✗ The configuration could not be read: " + err.Error())}
 		return pn
 	}
 	spec, _ := route(cfg)
 
 	switch page {
 	case "policy":
-		pn.Body = p.policyBody(cfg, Bucket(arg), canPol)
+		pn.Parts = p.policyBody(cfg, Bucket(arg), canPol)
 
 	case "models":
-		pn.Body = []discordgo.MessageComponent{
-			core.Text("The **cheap pass** reads every message past the free checks; the **deep pass** re-reads only what it flags, and is the only one that can delete anything.\n" +
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text("The **cheap pass** reads every message past the free checks; the **deep pass** re-reads only what it flags, and is the only one that can delete anything.\n" +
 				"**Cheap:** " + strings.Join(modelsOr(cfg.FastModels, spec.fastModels), ", ") + stackNote(cfg.FastModels) +
 				"\n**Deep:** " + strings.Join(modelsOr(cfg.DeepModels, spec.deepModels), ", ") + stackNote(cfg.DeepModels)),
-			core.Row(core.Button("Change models", panelCfg+"models", discordgo.PrimaryButton, !canCfg)),
+			ui.Row(ui.Button("Change models", panelCfg+"models", discord.ButtonStylePrimary, !canCfg)),
 		}
 		pn.Footer = "/aimod models show prices these at this server's traffic; /aimod models compare prices a switch."
 
 	case "words":
 		list := "Nothing listed."
-		var opts []discordgo.SelectMenuOption
+		var opts []discord.StringSelectMenuOption
 		if len(cfg.WordList) > 0 {
 			lines := make([]string, 0, len(cfg.WordList))
 			for _, w := range cfg.WordList {
 				lines = append(lines, "- "+describeWord(w))
-				opts = append(opts, discordgo.SelectMenuOption{Label: w.Word, Value: w.Word})
+				opts = append(opts, discord.StringSelectMenuOption{Label: w.Word, Value: w.Word})
 			}
 			list = core.TruncateEmbedField(strings.Join(lines, "\n"))
 		}
-		pn.Body = []discordgo.MessageComponent{
-			core.Text("Rewritten or removed with no model involved. A listed word also catches w.o.r.k, w0rk and working.\n" + list),
-			core.Row(core.Button("Add a word", panelPol+"word", discordgo.PrimaryButton, !canPol)),
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text("Rewritten or removed with no model involved. A listed word also catches w.o.r.k, w0rk and working.\n" + list),
+			ui.Row(ui.Button("Add a word", panelPol+"word", discord.ButtonStylePrimary, !canPol)),
 		}
 		if len(opts) > 0 {
-			pn.Body = append(pn.Body, core.Row(core.StringSelect(panelPol+"unword", "Take a word off the list", opts, false, !canPol)))
+			pn.Parts = append(pn.Parts, ui.Row(ui.StringSelect(panelPol+"unword", "Take a word off the list", opts, false, !canPol)))
 		}
 
 	case "calibration":
@@ -151,23 +152,23 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 		if !cfg.CalibrationRanAt.IsZero() {
 			ran = core.FormatDuration(p.now().Sub(cfg.CalibrationRanAt).Round(time.Minute)) + " ago"
 		}
-		var modes []discordgo.SelectMenuOption
+		var modes []discord.StringSelectMenuOption
 		for _, m := range CalibrationModes {
-			modes = append(modes, discordgo.SelectMenuOption{Label: "Weekly review: " + string(m), Value: string(m), Default: m == cfg.CalibrationMode})
+			modes = append(modes, discord.StringSelectMenuOption{Label: "Weekly review: " + string(m), Value: string(m), Default: m == cfg.CalibrationMode})
 		}
-		pn.Body = []discordgo.MessageComponent{
-			core.Text("Each week the filter reviews what it did here and proposes, or applies, examples that tune it to how this server talks.\n" +
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text("Each week the filter reviews what it did here and proposes, or applies, examples that tune it to how this server talks.\n" +
 				core.Readout([][2]string{
 					{"review", string(cfg.CalibrationMode)},
 					{"last run", ran},
 					{"in force", strconv.Itoa(len(cfg.Calibration)) + " example(s)"},
 					{"proposed", strconv.Itoa(len(cfg.CalibrationPending)) + " example(s)"},
 				})),
-			core.Row(core.StringSelect(panelPol+"calmode", "Weekly review", modes, false, !canPol)),
-			core.Row(
-				core.Button("Review now", panelPol+"calnow", discordgo.PrimaryButton, !canPol || cfg.Mode == ModeOff),
-				core.Button("Apply proposal", panelPol+"calapply", discordgo.SuccessButton, !canPol || len(cfg.CalibrationPending) == 0),
-				core.Button("Clear", panelPol+"calclear", discordgo.DangerButton, !canPol || len(cfg.Calibration)+len(cfg.CalibrationPending) == 0),
+			ui.Row(ui.StringSelect(panelPol+"calmode", "Weekly review", modes, false, !canPol)),
+			ui.Row(
+				ui.Button("Review now", panelPol+"calnow", discord.ButtonStylePrimary, !canPol || cfg.Mode == ModeOff),
+				ui.Button("Apply proposal", panelPol+"calapply", discord.ButtonStyleSuccess, !canPol || len(cfg.CalibrationPending) == 0),
+				ui.Button("Clear", panelPol+"calclear", discord.ButtonStyleDanger, !canPol || len(cfg.Calibration)+len(cfg.CalibrationPending) == 0),
 			),
 		}
 		pn.Footer = "/aimod calibrate show reads what is in force and what is proposed."
@@ -181,12 +182,12 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 				key = secret.Mask(plain)
 			}
 		}
-		owner, _ := p.ownerOrOperator(i.GuildID, actorOf(i))
-		optBtn := core.Button("Offer it", panelPol+"optout:on", discordgo.SecondaryButton, !canPol || !owner)
+		owner, _ := p.ownerOrOperator(ix.GuildID, actorOf(ix))
+		optBtn := ui.Button("Offer it", panelPol+"optout:on", discord.ButtonStyleSecondary, !canPol || !owner)
 		if cfg.MemberOptOut {
-			optBtn = core.Button("Stop offering", panelPol+"optout:off", discordgo.SecondaryButton, !canPol || !owner)
+			optBtn = ui.Button("Stop offering", panelPol+"optout:off", discord.ButtonStyleSecondary, !canPol || !owner)
 		}
-		modeOpts := []discordgo.SelectMenuOption{
+		modeOpts := []discord.StringSelectMenuOption{
 			{Label: "Off", Value: string(ModeOff), Description: "Nothing is scanned"},
 			{Label: "Flag", Value: string(ModeFlag), Description: "Watch what it would do; touch nothing"},
 			{Label: "Enforce", Value: string(ModeEnforce), Description: "Remove or rewrite per the policy page"},
@@ -194,7 +195,7 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 		for n := range modeOpts {
 			modeOpts[n].Default = Mode(modeOpts[n].Value) == cfg.Mode
 		}
-		sanctionOpts := []discordgo.SelectMenuOption{
+		sanctionOpts := []discord.StringSelectMenuOption{
 			{Label: "No sanctions", Value: string(SanctionOff), Description: "The message is dealt with, nothing else"},
 			{Label: "Report sanctions", Value: string(SanctionFlag), Description: "To the audit log for a human to decide"},
 			{Label: "Jail on confirmed violations", Value: string(SanctionJail), Description: "Escalating with each prior sanction"},
@@ -202,7 +203,7 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 		for n := range sanctionOpts {
 			sanctionOpts[n].Default = SanctionAction(sanctionOpts[n].Value) == cfg.SanctionAction
 		}
-		triageOpts := []discordgo.SelectMenuOption{
+		triageOpts := []discord.StringSelectMenuOption{
 			{Label: "Pre-filter off", Value: string(TriageOff), Description: "Send everything to a model"},
 			{Label: "Pre-filter in shadow", Value: string(TriageShadow), Description: "Learn and keep score, change nothing"},
 			{Label: "Pre-filter on", Value: string(TriageOn), Description: "Skip the model call when confident"},
@@ -210,32 +211,32 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, page
 		for n := range triageOpts {
 			triageOpts[n].Default = TriageMode(triageOpts[n].Value) == cfg.TriageMode
 		}
-		pn.Body = []discordgo.MessageComponent{
-			core.Text(core.Readout([][2]string{
+		pn.Parts = []discord.ContainerSubComponent{
+			ui.Text(core.Readout([][2]string{
 				{"mode", string(cfg.Mode)},
 				{"key", key},
 				{"budget", formatUSD(cfg.DailyBudgetUSD) + " a day"},
 				{"evidence", evidenceWord(cfg.EvidenceHours)},
 			})),
-			core.Row(core.StringSelect(panelCfg+"mode", "Mode", modeOpts, false, !canCfg)),
-			core.Row(
-				core.Button("API key", panelCfg+"key", discordgo.SecondaryButton, !canCfg),
-				core.Button("Budget and evidence", panelCfg+"limits", discordgo.SecondaryButton, !canCfg),
+			ui.Row(ui.StringSelect(panelCfg+"mode", "Mode", modeOpts, false, !canCfg)),
+			ui.Row(
+				ui.Button("API key", panelCfg+"key", discord.ButtonStyleSecondary, !canCfg),
+				ui.Button("Budget and evidence", panelCfg+"limits", discord.ButtonStyleSecondary, !canCfg),
 			),
-			core.Text("**Not scanned**: these channels, and members holding these roles."),
-			core.Row(core.EntitySelect(discordgo.ChannelSelectMenu, panelCfg+"exch", "Exempt channels", cfg.ExemptChannelIDs, core.MaxSelectValues, !canCfg)),
-			core.Row(core.EntitySelect(discordgo.RoleSelectMenu, panelCfg+"exrole", "Exempt roles", cfg.ExemptRoleIDs, core.MaxSelectValues, !canCfg)),
-			core.Row(core.StringSelect(panelPol+"sanction", "Sanctions", sanctionOpts, false, !canPol)),
-			core.Row(core.StringSelect(panelPol+"triage", "Local pre-filter", triageOpts, false, !canPol)),
-			core.Switch(fmt.Sprintf("**Member opt-out** is %s (%d opted out). Server owner only: it is the one setting that makes the filter cover less.", onOff(cfg.MemberOptOut), len(cfg.OptOutUserIDs)), optBtn),
+			ui.Text("**Not scanned**: these channels, and members holding these roles."),
+			ui.Row(ui.ChannelSelectMany(panelCfg+"exch", "Exempt channels", cfg.ExemptChannelIDs, ui.MaxSelectValues, !canCfg)),
+			ui.Row(ui.RoleSelect(panelCfg+"exrole", "Exempt roles", cfg.ExemptRoleIDs, ui.MaxSelectValues, !canCfg)),
+			ui.Row(ui.StringSelect(panelPol+"sanction", "Sanctions", sanctionOpts, false, !canPol)),
+			ui.Row(ui.StringSelect(panelPol+"triage", "Local pre-filter", triageOpts, false, !canPol)),
+			ui.Switch(fmt.Sprintf("**Member opt-out** is %s (%d opted out). Server owner only: it is the one setting that makes the filter cover less.", onOff(cfg.MemberOptOut), len(cfg.OptOutUserIDs)), optBtn),
 		}
 	}
 
-	opts := make([]discordgo.SelectMenuOption, len(aimodPages))
+	opts := make([]discord.StringSelectMenuOption, len(aimodPages))
 	for n, pg := range aimodPages {
-		opts[n] = discordgo.SelectMenuOption{Label: pg.label, Value: pg.key, Description: pg.about, Default: pg.key == page}
+		opts[n] = discord.StringSelectMenuOption{Label: pg.label, Value: pg.key, Description: pg.about, Default: pg.key == page}
 	}
-	pn.Body = append(pn.Body, core.Gap(), core.Row(core.StringSelect(panelView+"page", "Go to...", opts, false, false)))
+	pn.Parts = append(pn.Parts, ui.Gap(), ui.Row(ui.StringSelect(panelView+"page", "Go to...", opts, false, false)))
 	return pn
 }
 
@@ -246,9 +247,9 @@ func stackNote(pinned []string) string {
 	return ""
 }
 
-func actorOf(i *discordgo.InteractionCreate) string {
-	if i.Member != nil && i.Member.User != nil {
-		return i.Member.User.ID
+func actorOf(ix *core.Ix) string {
+	if ix.Member() != nil {
+		return ix.UserID
 	}
 	return ""
 }
@@ -258,36 +259,36 @@ func actorOf(i *discordgo.InteractionCreate) string {
 // "not a violation" half gets equal billing: it is the half people argue
 // about, and the half that decides whether the filter is trustworthy on a
 // server that likes to argue.
-func (p *Plugin) policyBody(cfg Config, bucket Bucket, can bool) []discordgo.MessageComponent {
+func (p *Plugin) policyBody(cfg Config, bucket Bucket, can bool) []discord.ContainerSubComponent {
 	var rows [][2]string
-	var opts []discordgo.SelectMenuOption
+	var opts []discord.StringSelectMenuOption
 	for _, b := range AllBuckets {
 		rows = append(rows, [2]string{string(b), string(EffectiveAction(cfg.BucketActions, b))})
-		opts = append(opts, discordgo.SelectMenuOption{Label: string(b), Value: string(b), Description: truncate(p.policies[b].Short, 100), Default: b == bucket})
+		opts = append(opts, discord.StringSelectMenuOption{Label: string(b), Value: string(b), Description: truncate(p.policies[b].Short, 100), Default: b == bucket})
 	}
-	body := []discordgo.MessageComponent{
-		core.Text("What this server does in each of Discord's guideline areas.\n" + core.Readout(rows)),
-		core.Row(core.StringSelect(panelView+"bucket", "Pick an area to read or change", opts, false, false)),
+	body := []discord.ContainerSubComponent{
+		ui.Text("What this server does in each of Discord's guideline areas.\n" + core.Readout(rows)),
+		ui.Row(ui.StringSelect(panelView+"bucket", "Pick an area to read or change", opts, false, false)),
 	}
 	pol, ok := p.policies[bucket]
 	if !ok {
 		return body
 	}
 	current := EffectiveAction(cfg.BucketActions, bucket)
-	var btns []discordgo.MessageComponent
+	var btns []discord.InteractiveComponent
 	for _, a := range Actions {
-		style := discordgo.SecondaryButton
+		style := discord.ButtonStyleSecondary
 		if a == current {
-			style = discordgo.PrimaryButton
+			style = discord.ButtonStylePrimary
 		}
-		btns = append(btns, core.Button(string(a), panelPol+"bucket:"+string(bucket)+":"+string(a), style, !can || a == current || bucket == BucketChildSafety))
+		btns = append(btns, ui.Button(string(a), panelPol+"bucket:"+string(bucket)+":"+string(a), style, !can || a == current || bucket == BucketChildSafety))
 	}
 	text := fmt.Sprintf("**%s** · `%s`\n%s\n**Is a violation**\n%s\n**Is not**\n%s", bucket, current, pol.Short,
 		bullets(pol.Violations), bullets(pol.NotViolations))
 	if bucket == BucketChildSafety {
 		text += "\n-# Always removes. A termination offence for the server and a reporting obligation for Discord, so nothing turns it off."
 	}
-	return append(body, core.Text(core.TruncateEmbedDescription(text)), core.Row(btns...))
+	return append(body, ui.Text(core.TruncateEmbedDescription(text)), ui.Row(btns...))
 }
 
 func truncate(s string, n int) string {
@@ -305,79 +306,79 @@ var pageOf = map[string]string{
 	"calmode": "calibration", "calnow": "calibration", "calapply": "calibration", "calclear": "calibration",
 }
 
-func (p *Plugin) handlePanelSet(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID string) {
 	verb, arg, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(customID, panelCfg), panelPol), ":")
 	var o outcome
 	switch verb {
 	case "key":
-		p.openForm(s, i, formCfg+"key", "Model provider key",
-			core.Field("key", "API key (stored encrypted, never shown again)", "", "sk-orca-... or sk-or-...", false, true),
-			core.Field("provider", "Provider, only if the key's prefix isn't known", "", "orcarouter or openrouter", false, false))
+		p.openForm(ix, formCfg+"key", "Model provider key",
+			ui.Field("key", "API key (stored encrypted, never shown again)", "", "sk-orca-... or sk-or-...", false, true),
+			ui.Field("provider", "Provider, only if the key's prefix isn't known", "", "orcarouter or openrouter", false, false))
 		return
 	case "limits":
-		if cfg, err := p.store.Config(ctx, i.GuildID); err == nil {
-			p.openForm(s, i, formCfg+"limits", "Budget and evidence",
-				core.Field("usd", "Most to spend per UTC day, in USD", strconv.FormatFloat(cfg.DailyBudgetUSD, 'f', -1, 64), "5", false, true),
-				core.Field("hours", "Hours to keep a moderated message's text", strconv.Itoa(cfg.EvidenceHours), "0 keeps nothing and makes undo impossible", false, true))
+		if cfg, err := p.store.Config(ctx, ix.GuildID); err == nil {
+			p.openForm(ix, formCfg+"limits", "Budget and evidence",
+				ui.Field("usd", "Most to spend per UTC day, in USD", strconv.FormatFloat(cfg.DailyBudgetUSD, 'f', -1, 64), "5", false, true),
+				ui.Field("hours", "Hours to keep a moderated message's text", strconv.Itoa(cfg.EvidenceHours), "0 keeps nothing and makes undo impossible", false, true))
 			return
 		}
 		o = outcome{core.ColorError, "Failed to read the configuration", ""}
 	case "models":
-		if cfg, err := p.store.Config(ctx, i.GuildID); err == nil {
-			p.openForm(s, i, formCfg+"models", "Models",
-				core.Field("fast", "Cheap pass: model IDs, cheapest first", stackInput(cfg.FastModels), "comma separated, or default", false, true),
-				core.Field("deep", "Deep pass: model IDs, best first", stackInput(cfg.DeepModels), "comma separated, or default", false, true))
+		if cfg, err := p.store.Config(ctx, ix.GuildID); err == nil {
+			p.openForm(ix, formCfg+"models", "Models",
+				ui.Field("fast", "Cheap pass: model IDs, cheapest first", stackInput(cfg.FastModels), "comma separated, or default", false, true),
+				ui.Field("deep", "Deep pass: model IDs, best first", stackInput(cfg.DeepModels), "comma separated, or default", false, true))
 			return
 		}
 		o = outcome{core.ColorError, "Failed to read the configuration", ""}
 	case "word":
-		p.openForm(s, i, formPol+"word", "Add a word",
-			core.Field("word", "Word (letters, digits and spaces)", "", "work", false, true),
-			core.Field("replacement", "What it becomes; empty removes the message", "", "the mines", false, false),
-			core.Field("noun", "Bare noun only? yes or no", "no", "yes: \"at work\" matches, \"this works\" passes", false, false))
+		p.openForm(ix, formPol+"word", "Add a word",
+			ui.Field("word", "Word (letters, digits and spaces)", "", "work", false, true),
+			ui.Field("replacement", "What it becomes; empty removes the message", "", "the mines", false, false),
+			ui.Field("noun", "Bare noun only? yes or no", "no", "yes: \"at work\" matches, \"this works\" passes", false, false))
 		return
 	case "mode":
-		o = p.setMode(ctx, i, Mode(core.FirstValue(i)))
+		o = p.setMode(ctx, ix, Mode(ix.FirstValue()))
 	case "exch", "exrole":
-		o = p.setExempt(ctx, i, verb == "exch")
+		o = p.setExempt(ctx, ix, verb == "exch")
 	case "sanction":
-		o = p.setSanction(ctx, i, SanctionAction(core.FirstValue(i)))
+		o = p.setSanction(ctx, ix, SanctionAction(ix.FirstValue()))
 	case "triage":
-		o = p.setTriage(ctx, i, TriageMode(core.FirstValue(i)))
+		o = p.setTriage(ctx, ix, TriageMode(ix.FirstValue()))
 	case "optout":
-		o = p.setMemberOptOut(ctx, i, arg == "on")
+		o = p.setMemberOptOut(ctx, ix, arg == "on")
 	case "bucket":
 		bucket, action, _ := strings.Cut(arg, ":")
-		o = p.setPolicy(ctx, i, Bucket(bucket), Action(action))
+		o = p.setPolicy(ctx, ix, Bucket(bucket), Action(action))
 		arg = bucket
 	case "unword":
-		o = p.removeWord(ctx, i, core.FirstValue(i))
+		o = p.removeWord(ctx, ix, ix.FirstValue())
 	case "calmode":
-		o = p.setCalibrationMode(ctx, i, CalibrationMode(core.FirstValue(i)))
+		o = p.setCalibrationMode(ctx, ix, CalibrationMode(ix.FirstValue()))
 	case "calapply":
-		o = p.calibrateApply(ctx, i)
+		o = p.calibrateApply(ctx, ix)
 	case "calclear":
-		o = p.calibrateClear(ctx, i)
+		o = p.calibrateClear(ctx, ix)
 	case "calnow":
 		// A transcript fetch plus the largest model call this plugin makes,
 		// nowhere near Discord's 3 second window.
-		if err := core.DeferPanelUpdate(s, i); err != nil {
+		if err := ix.DeferPanelUpdate(); err != nil {
 			p.log.Error("aimod: defer calibrate", "err", err)
 			return
 		}
-		o = p.calibrateNow(ctx, i)
-		if err := core.FollowUpPanel(s, i, p.panel(ctx, i, "calibration", "", o.note())); err != nil {
+		o = p.calibrateNow(ctx, ix)
+		if err := ix.FollowUpPanel(p.panel(ctx, ix, "calibration", "", o.note())); err != nil {
 			p.log.Error("aimod: panel follow-up failed", "err", err)
 		}
 		return
 	default:
 		o = outcome{core.ColorError, "That control is out of date", "Run `/aimod settings` again."}
 	}
-	p.redraw(ctx, s, i, pageOf[verb], arg, o.note())
+	p.redraw(ctx, ix, pageOf[verb], arg, o.note())
 }
 
-func (p *Plugin) openForm(s *discordgo.Session, i *discordgo.InteractionCreate, customID, title string, fields ...discordgo.MessageComponent) {
-	if err := core.OpenModal(s, i, customID, title, fields...); err != nil {
+func (p *Plugin) openForm(ix *core.Ix, customID, title string, fields ...discord.LayoutComponent) {
+	if err := ix.OpenModal(customID, title, fields...); err != nil {
 		p.log.Error("aimod: open form failed", "err", err)
 	}
 }
@@ -390,13 +391,13 @@ func stackInput(pinned []string) string {
 }
 
 // handleForm is the key, limits, models and word forms.
-func (p *Plugin) handleForm(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleForm(ctx context.Context, ix *core.Ix, customID string) {
 	verb := strings.TrimPrefix(strings.TrimPrefix(customID, formCfg), formPol)
-	v := core.ModalValues(i)
+	v := ix.ModalValues()
 	var o outcome
 	switch verb {
 	case "key":
-		o = p.setKey(ctx, i, v["key"], v["provider"])
+		o = p.setKey(ctx, ix, v["key"], v["provider"])
 	case "limits":
 		usd, err := strconv.ParseFloat(strings.TrimPrefix(strings.TrimSpace(v["usd"]), "$"), 64)
 		hours, herr := strconv.Atoi(strings.TrimSpace(v["hours"]))
@@ -406,38 +407,38 @@ func (p *Plugin) handleForm(ctx context.Context, s *discordgo.Session, i *discor
 		case herr != nil:
 			o = outcome{core.ColorError, "That evidence window isn't a number", "Give whole hours, like 48."}
 		default:
-			if o = p.setBudget(ctx, i, usd); o.color != core.ColorError {
-				o = p.setEvidence(ctx, i, hours)
+			if o = p.setBudget(ctx, ix, usd); o.color != core.ColorError {
+				o = p.setEvidence(ctx, ix, hours)
 			}
 		}
 	case "models":
-		if o = p.setStack(ctx, i, v["fast"], true); o.color != core.ColorError {
-			o = p.setStack(ctx, i, v["deep"], false)
+		if o = p.setStack(ctx, ix, v["fast"], true); o.color != core.ColorError {
+			o = p.setStack(ctx, ix, v["deep"], false)
 			if o.color != core.ColorError {
 				o = outcome{core.ColorSuccess, "Models set", "`/aimod models show` prices them at this server's traffic."}
 			}
 		}
 	case "word":
 		noun := strings.HasPrefix(strings.ToLower(strings.TrimSpace(v["noun"])), "y")
-		o = p.addWord(ctx, i, v["word"], v["replacement"], noun)
+		o = p.addWord(ctx, ix, v["word"], v["replacement"], noun)
 	default:
 		o = outcome{core.ColorError, "That form is out of date", "Run `/aimod settings` again."}
 	}
-	p.redraw(ctx, s, i, pageOf[verb], "", o.note())
+	p.redraw(ctx, ix, pageOf[verb], "", o.note())
 }
 
 // setExempt is the exempt channel and role pickers. Each one added or
 // removed is audited on its own, as the subcommands did one at a time.
-func (p *Plugin) setExempt(ctx context.Context, i *discordgo.InteractionCreate, channels bool) outcome {
+func (p *Plugin) setExempt(ctx context.Context, ix *core.Ix, channels bool) outcome {
 	id, render, action, save := panelCfg+"exrole", core.MentionRole, "aimod.exempt_role", p.store.SetExemptRoles
 	if channels {
 		id, render, action, save = panelCfg+"exch", core.MentionChannel, "aimod.exempt_channel", p.store.SetExemptChannels
 	}
-	added, removed := core.SelectDiff(i, id)
+	added, removed := ix.SelectDiff(id)
 	if len(added)+len(removed) == 0 {
 		return outcome{}
 	}
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		return failed("Failed to read the configuration", err)
 	}
@@ -452,14 +453,14 @@ func (p *Plugin) setExempt(ctx context.Context, i *discordgo.InteractionCreate, 
 		}
 	}
 	next = slices.DeleteFunc(next, func(x string) bool { return slices.Contains(removed, x) })
-	if err := save(ctx, i.GuildID, next); err != nil {
+	if err := save(ctx, ix.GuildID, next); err != nil {
 		return failed("Failed to update the exemptions", err)
 	}
 	for _, a := range added {
-		p.auditConfig(ctx, i, action, "", render(a)+" "+exemptWord(true))
+		p.auditConfig(ctx, ix, action, "", render(a)+" "+exemptWord(true))
 	}
 	for _, r := range removed {
-		p.auditConfig(ctx, i, action, "", render(r)+" "+exemptWord(false))
+		p.auditConfig(ctx, ix, action, "", render(r)+" "+exemptWord(false))
 	}
 	return outcome{core.ColorSuccess, "Exemptions updated", ""}
 }

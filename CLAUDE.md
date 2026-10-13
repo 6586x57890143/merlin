@@ -20,6 +20,7 @@ go test ./internal/obs -bench . -run x      # what a /perf sample costs
 govulncheck ./...
 
 go test ./... -coverprofile=coverage.out && scripts/coverage-floor.sh coverage.out   # the CI coverage gate
+go test ./internal/... -run x -bench . -benchmem                                  # hot paths: aimod intake and rung 1, statistics, event bus, write guard
 ```
 
 Every package under `internal/plugins/` must hold at least 70% statement coverage (`scripts/coverage-floor.sh`, run by CI). Plugins that predate the floor are pinned in that script at the coverage they had and may only go up; anything new gets the full 70% with no way to opt out but an edit somebody reviews.
@@ -68,6 +69,15 @@ Concrete stores (`internal/settings.Store`, `internal/config.Loader`) are never 
 - Any option whose valid values come from bot state (job keys, action names, ...) gets Discord autocomplete *plus* a plain `list` subcommand as a redundant, no-typing discovery path. Any channel/role/user-valued option uses the native `Channel`/`Role`/`User` option type, never a raw string ID. The one exception is `/rapsheet view`'s `user`, a string taking `@name` (Discord's member picker still opens in a string option and inserts `<@id>`) or a bare ID, because the `User` picker lists only current members and a sheet outlives membership; `viewTarget` validates it and refuses an ID Discord says belongs to no account. Autocomplete must return at most `25` choices, since Discord rejects a longer response outright, leaving the user with *no* suggestions rather than a truncated list.
 - **Discord's hard response limits are correctness constraints, not polish.** A handler has 3 seconds to respond at all: anything doing real work (`/scheduler run-now`, `/roles jail`'s first-ever run, `/roles configure sync-channels`) must `core.DeferResponse` first and finish with `core.FollowUpOK`/`FollowUpErr`, or a fully successful operation still surfaces as "the application did not respond." Likewise an embed field over 1024 bytes (`core.TruncateEmbedField`) fails the whole message rather than being trimmed, and repeated `UpdateEmbedWithComponents` edits must replace attachments rather than append them.
 - Use `core.LeafArgs(i)` inside handlers to read the invoked subcommand's arguments by name. Don't re-walk `i.ApplicationCommandData().Options` yourself; this exists specifically because that walk was independently reimplemented in three places before being consolidated.
+
+### Moving to disgo (`internal/core/ix.go`)
+
+merlin is moving from discordgo to disgo one plugin at a time. While both are in the tree:
+
+- The router takes discordgo's raw event (`HandleEvent`). A handler registered with `HandleIx`/`AutocompleteIx`/`HandleComponentIx`/`HandleModalIx` gets a `*core.Ix`: disgo's decoding of the same interaction, `GuildID`/`UserID` as merlin's string IDs, and the disgo REST client its answer goes through (`core.NewRest`, mentions off by default). The plugin gate and `Authorize` still read discordgo's copy, so neither security check moves until the last step.
+- `Ix`'s methods are the core helpers of the same names (`RespondOK`, `Defer`, `FollowUpEmbed`, `RespondPanel`, `SelectDiff`, `ModalValues`, ...). Embeds come from `core.Embed`/`core.LandmarkEmbed`; a panel sets `Parts` (disgo components) instead of `Body`. `ix_test.go` holds the disgo builders to the same Discord JSON and uploads as the discordgo ones, so a ported plugin looks exactly as it did.
+- A ported plugin's tests use `paneltest.IxCommand`/`IxClick`/`IxPick`/`IxSubmit`, which decode Discord's JSON through `core.NewIx`. disgo IDs are snowflakes, so those fixtures use numeric IDs (`paneltest.IxGuild`).
+- When the last plugin has moved, the gateway goes to disgo and the discordgo halves (and the `Ix` names' duplicates) are deleted.
 
 ### Settings panels (`internal/core/panel.go`)
 
@@ -230,6 +240,15 @@ status` rather than appearing to work.
   guild word list gets it too. A hit publishes the folded text as the
   rewrite (a disguised slur costs the message its accents); a miss returns
   the original untouched.
+- **Rung 1 is gated, and the gate may never change an answer** (`gate.go`).
+  Each pattern's required characters, and the letters a slur match can start
+  with, are read off its own parsed syntax at init, so a table entry needs no
+  gate written for it. A clean message costs ~2us and no allocations instead
+  of 15us and 62. `gate_test.go` holds gated and ungated rung 1 equal over
+  every string literal in this package's tests and under fuzzing, and walks
+  every rune through `squash` for the n-word shape gate: a new evasion test
+  is automatically a gate test. `HandleMessage` reads rung 1 once and hands
+  it to `scan`.
 - **The policy catalogue is data, validated like `internal/voice`'s.** Ten
   `policy/*.yaml` files, `go:embed`ed, each carrying `violations` **and**
   `not_violations`, both with a `minListItems` floor. The second list is the

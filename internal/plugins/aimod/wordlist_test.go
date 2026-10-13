@@ -10,6 +10,7 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // The example guild: "work" and "employment" are a running joke there.
@@ -120,7 +121,7 @@ func TestWordsAddRemove(t *testing.T) {
 		t.Fatalf("word list = %v, want work replaced once", cfg.WordList)
 	}
 
-	if sel := paneltest.Selects(p.panel(ctx, interaction("g1", "", "settings"), "words", "", ""))[panelPol+"unword"]; len(sel.Options) != 1 {
+	if sel, _ := paneltest.IxSelects(p.panel(ctx, interaction("g1", "", "settings"), "words", "", ""))[panelPol+"unword"].(discord.StringSelectMenuComponent); len(sel.Options) != 1 {
 		t.Errorf("remove picker = %v", sel.Options)
 	}
 

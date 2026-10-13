@@ -784,10 +784,10 @@ func (f fakePrivilege) IsBootstrapAdmin(userID string) bool {
 	return f.bootstrapID != "" && userID == f.bootstrapID
 }
 
-// Authorize passes the bootstrap identity and nobody else, which is all the
+// AuthorizeIx passes the bootstrap identity and nobody else, which is all the
 // tests need to tell a moderator from a member.
-func (f fakePrivilege) Authorize(i *discordgo.InteractionCreate, _ core.PermSpec) error {
-	if i.Member != nil && i.Member.User != nil && f.IsBootstrapAdmin(i.Member.User.ID) {
+func (f fakePrivilege) AuthorizeIx(ix *core.Ix, _ core.PermSpec) error {
+	if ix.Member() != nil && f.IsBootstrapAdmin(ix.UserID) {
 		return nil
 	}
 	return core.ErrForbidden{Reason: "not a mod"}
