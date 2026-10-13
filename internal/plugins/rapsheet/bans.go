@@ -7,12 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/voice"
+	"github.com/disgoorg/disgo/rest"
 )
 
 // Timeouts, kicks and bans: the consequences this plugin applies itself,
@@ -86,7 +85,7 @@ func (p *Plugin) handleTimeout(ctx context.Context, ix *core.Ix) {
 		_ = ix.FollowUpErr("Timeout", err)
 		return
 	}
-	if err := p.ops(ix.GuildID).GuildMemberTimeout(ix.GuildID, userID, &until); err != nil {
+	if err := p.ops(ix.GuildID).TimeoutMember(core.ID(ix.GuildID), core.ID(userID), &until); err != nil {
 		p.voidFailed(ctx, e, err)
 		_ = ix.FollowUpErr("Timeout", fmt.Errorf("case #%d was voided because Discord refused the timeout: %w", e.ID, err))
 		return
@@ -132,7 +131,7 @@ func (p *Plugin) handleKick(ctx context.Context, ix *core.Ix) {
 	}
 	p.dm(ctx, ix.GuildID, userID, voice.KeyKickNotice, "Removed from the server", core.ColorWarning,
 		map[string]string{"guild": p.guildName(ix.GuildID)}, reasonFields(category, reason)...)
-	if err := p.ops(ix.GuildID).GuildMemberDeleteWithReason(ix.GuildID, userID, auditReason(e)); err != nil {
+	if err := p.ops(ix.GuildID).RemoveMember(core.ID(ix.GuildID), core.ID(userID), auditReason(e)); err != nil {
 		p.voidFailed(ctx, e, err)
 		_ = ix.FollowUpErr("Kick", fmt.Errorf("case #%d was voided because Discord refused the kick: %w", e.ID, err))
 		return
@@ -218,7 +217,7 @@ func (p *Plugin) handleBan(ctx context.Context, ix *core.Ix) {
 		return
 	}
 	p.dm(ctx, ix.GuildID, userID, key, "Banned", core.ColorError, vars, reasonFields(category, reason)...)
-	if err := p.ops(ix.GuildID).GuildBanCreateWithReason(ix.GuildID, userID, auditReason(e), days); err != nil {
+	if err := p.ops(ix.GuildID).AddBan(core.ID(ix.GuildID), core.ID(userID), time.Duration(days)*24*time.Hour, auditReason(e)); err != nil {
 		p.voidFailed(ctx, e, err)
 		_ = ix.FollowUpErr("Ban", fmt.Errorf("case #%d was voided because Discord refused the ban: %w", e.ID, err))
 		return
@@ -239,10 +238,10 @@ func (p *Plugin) handleUnban(ctx context.Context, ix *core.Ix) {
 		p.log.Error("rapsheet: defer unban", "err", err)
 		return
 	}
-	err := p.ops(ix.GuildID).GuildBanDelete(ix.GuildID, userID)
+	err := p.ops(ix.GuildID).DeleteBan(core.ID(ix.GuildID), core.ID(userID))
 	switch {
 	case err == nil:
-	case core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownBan):
+	case core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownBan)):
 		// Not banned as far as Discord is concerned. Still worth settling
 		// the ledger below, in case a row says otherwise.
 	default:
@@ -363,7 +362,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 	}
 	var firstErr error
 	for _, e := range due {
-		err := p.ops(guildID).GuildBanDelete(guildID, e.UserID)
+		err := p.ops(guildID).DeleteBan(core.ID(guildID), core.ID(e.UserID))
 		switch {
 		case err == nil:
 			if err := p.store.MarkLifted(ctx, e.ID, p.now()); err != nil {
@@ -381,7 +380,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 				fmt.Sprintf("case #%d user=%s ban served", e.ID, core.MentionUser(e.UserID))); aerr != nil {
 				p.log.Error("rapsheet sweep: audit unban", "guild", guildID, "err", aerr)
 			}
-		case core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownBan):
+		case core.HasDiscordErrorCode(err, int(rest.JSONErrorCodeUnknownBan)):
 			p.log.Info("rapsheet sweep: ban already lifted by hand", "guild", guildID, "case", e.ID)
 			if err := p.store.MarkLifted(ctx, e.ID, p.now()); err != nil {
 				p.log.Error("rapsheet sweep: mark lifted", "guild", guildID, "case", e.ID, "err", err)

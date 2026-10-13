@@ -514,21 +514,18 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	if granted.Members {
 		log.Info("GUILD_MEMBERS granted: jails re-apply the moment an evader rejoins")
 		typed = append(typed, bot.NewListenerFunc(func(e *events.GuildMemberJoin) {
-			ma := &discordgo.GuildMemberAdd{Member: legacy[discordgo.Member](e.Member)}
-			if ma.Member != nil {
-				ma.GuildID = e.GuildID.String()
-			}
-			if ma.Member == nil || ma.User == nil {
+			if e.Member.User.ID == 0 {
 				return
 			}
-			statisticsPlugin.HandleMemberJoin(ma.GuildID)
+			guildID := e.GuildID.String()
+			statisticsPlugin.HandleMemberJoin(guildID)
 			joinCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			rolesPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.User.ID)
+			rolesPlugin.HandleMemberJoin(joinCtx, guildID, e.Member.User.ID.String())
 			// Compared with the members on record for a possible alt; a hint
 			// for a mod, never a link. Takes the whole member: the avatar
 			// hash, the names and the join time are the signals.
-			rapsheetPlugin.HandleMemberJoin(joinCtx, ma.GuildID, ma.Member)
+			rapsheetPlugin.HandleMemberJoin(joinCtx, guildID, e.Member)
 		}))
 		// Counted, and nothing else: see the note on GuildRoleDelete below for
 		// why roles deliberately has no handler here.
@@ -548,7 +545,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// intent off, just not instantly.
 		typed = append(typed, bot.NewListenerFunc(func(e *events.GuildMemberUpdate) {
 			mu := &discordgo.GuildMemberUpdate{Member: &discordgo.Member{
-				GuildID: e.GuildID.String(), User: &discordgo.User{ID: e.Member.User.ID.String()}, Roles: ids(e.Member.RoleIDs),
+				GuildID: e.GuildID.String(), User: &discordgo.User{ID: e.Member.User.ID.String()}, Roles: core.IDStrings(e.Member.RoleIDs),
 			}}
 			if mu.Member == nil || mu.User == nil {
 				return
@@ -630,15 +627,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// always-on GUILD_MODERATION intent, but only if the bot holds View
 	// Audit Log in the guild; /rapsheet status says when it does not.
 	typed = append(typed, bot.NewListenerFunc(func(ev *events.GuildAuditLogEntryCreate) {
-		entry := legacy[discordgo.AuditLogEntry](ev.AuditLogEntry)
-		if entry == nil {
-			return
-		}
-		e := &discordgo.GuildAuditLogEntryCreate{AuditLogEntry: entry, GuildID: ev.GuildID.String()}
-		botID := session.State.User.ID
 		entryCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		rapsheetPlugin.HandleAuditLogEntry(entryCtx, botID, e)
+		rapsheetPlugin.HandleAuditLogEntry(entryCtx, ev.GuildID.String(), ev.AuditLogEntry)
 	}))
 
 	// A deleted role is invisible to this bot otherwise, and it leaves two

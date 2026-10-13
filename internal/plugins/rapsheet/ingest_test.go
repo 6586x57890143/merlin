@@ -15,10 +15,10 @@ func publishAction(h *harness, guildID string, payload core.ModerationActionPayl
 
 func TestARolesJailArrivesAsAnEntry(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	ends := testNow.Add(2 * time.Hour)
 	publishAction(h, testGuild, core.ModerationActionPayload{
-		UserID: "u1", Kind: "jail", ActorID: modID, Reason: "spamming", Duration: 2 * time.Hour, EndsAt: &ends, Source: "roles",
+		UserID: "7300007", Kind: "jail", ActorID: modID, Reason: "spamming", Duration: 2 * time.Hour, EndsAt: &ends, Source: "roles",
 	})
 	entries := h.store.all()
 	if len(entries) != 1 {
@@ -33,12 +33,12 @@ func TestARolesJailArrivesAsAnEntry(t *testing.T) {
 	// (aimod's sanction, the ladder) does not, because its offence already
 	// did.
 	publishAction(h, testGuild, core.ModerationActionPayload{
-		UserID: "u2", Kind: "jail", ActorID: core.ActorSystem, Reason: "automatic", Duration: time.Hour, EndsAt: &ends, Source: "roles",
+		UserID: "7300008", Kind: "jail", ActorID: core.ActorSystem, Reason: "automatic", Duration: time.Hour, EndsAt: &ends, Source: "roles",
 	})
 	if e := h.store.all()[1]; e.Points != 0 {
 		t.Errorf("an automatic jail scored %d points", e.Points)
 	}
-	if cf, ok, _ := h.store.CaseFile(context.Background(), testGuild, "u1"); !ok || cf.Username != "user-u1" {
+	if cf, ok, _ := h.store.CaseFile(context.Background(), testGuild, "7300007"); !ok || cf.Username != "user-7300007" {
 		t.Errorf("case file should be opened from the fetched user, got %+v %v", cf, ok)
 	}
 }
@@ -46,7 +46,7 @@ func TestARolesJailArrivesAsAnEntry(t *testing.T) {
 func TestAnAIModRemovalArrivesOnceHoweverOftenItIsDelivered(t *testing.T) {
 	h := newHarness()
 	payload := core.ModerationActionPayload{
-		UserID: "u1", Kind: "removal", Category: "hate_speech", ActorID: core.ActorSystem,
+		UserID: "7300007", Kind: "removal", Category: "hate_speech", ActorID: core.ActorSystem,
 		Reason: "message removed automatically: slur", Source: "aimod", Ref: "77",
 	}
 	publishAction(h, testGuild, payload)
@@ -63,7 +63,7 @@ func TestAnAIModRemovalArrivesOnceHoweverOftenItIsDelivered(t *testing.T) {
 func TestAReversalVoidsTheEntryItNames(t *testing.T) {
 	h := newHarness()
 	publishAction(h, testGuild, core.ModerationActionPayload{
-		UserID: "u1", Kind: "removal", Category: "spam", ActorID: core.ActorSystem, Source: "aimod", Ref: "5",
+		UserID: "7300007", Kind: "removal", Category: "spam", ActorID: core.ActorSystem, Source: "aimod", Ref: "5",
 	})
 	h.bus.Publish(context.Background(), core.Event{Type: core.EventModerationReversed, GuildID: testGuild,
 		Payload: core.ModerationReversedPayload{Source: "aimod", Ref: "5", ActorID: modID, Reason: "undone by a moderator"}})
@@ -84,8 +84,8 @@ func TestAReversalVoidsTheEntryItNames(t *testing.T) {
 func TestIngestionRespectsTheGuildToggle(t *testing.T) {
 	h := newHarness()
 	h.p.gate = fakeGate{disabled: map[string]bool{testGuild: true}}
-	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "u1", Kind: "jail", ActorID: modID, Source: "roles"})
-	publishAction(h, "g2", core.ModerationActionPayload{UserID: "u1", Kind: "jail", ActorID: modID, Source: "roles"})
+	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "7300007", Kind: "jail", ActorID: modID, Source: "roles"})
+	publishAction(h, "g2", core.ModerationActionPayload{UserID: "7300007", Kind: "jail", ActorID: modID, Source: "roles"})
 	entries := h.store.all()
 	if len(entries) != 1 || entries[0].GuildID != "g2" {
 		t.Errorf("a disabled guild's events were recorded: %+v", entries)
@@ -95,7 +95,7 @@ func TestIngestionRespectsTheGuildToggle(t *testing.T) {
 func TestTheLaddersOwnJailIsNotRecordedTwice(t *testing.T) {
 	h := newHarness()
 	publishAction(h, testGuild, core.ModerationActionPayload{
-		UserID: "u1", Kind: "jail", ActorID: core.ActorSystem, Reason: ladderReasonPrefix + "12: score 63", Source: "roles",
+		UserID: "7300007", Kind: "jail", ActorID: core.ActorSystem, Reason: ladderReasonPrefix + "12: score 63", Source: "roles",
 	})
 	if n := len(h.store.all()); n != 0 {
 		t.Errorf("the ladder's own jail came back as %d entries", n)
@@ -104,9 +104,9 @@ func TestTheLaddersOwnJailIsNotRecordedTwice(t *testing.T) {
 
 func TestUnknownKindsAndSourcesAreDropped(t *testing.T) {
 	h := newHarness()
-	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "u1", Kind: "smite", ActorID: modID, Source: "roles"})
-	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "u1", Kind: "jail", ActorID: modID, Source: "carrier pigeon"})
-	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "u1", Kind: "jail", ActorID: modID, Source: "command"})
+	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "7300007", Kind: "smite", ActorID: modID, Source: "roles"})
+	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "7300007", Kind: "jail", ActorID: modID, Source: "carrier pigeon"})
+	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "7300007", Kind: "jail", ActorID: modID, Source: "command"})
 	if n := len(h.store.all()); n != 0 {
 		t.Errorf("%d entries from unknown publishers", n)
 	}
@@ -114,7 +114,7 @@ func TestUnknownKindsAndSourcesAreDropped(t *testing.T) {
 	// publisher as nothing at all.
 	h.bus.Publish(context.Background(), core.Event{Type: core.EventModerationAction, GuildID: testGuild, Payload: "garbage"})
 	h.store.insertErr = errors.New("db down")
-	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "u1", Kind: "jail", ActorID: modID, Source: "roles"})
+	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "7300007", Kind: "jail", ActorID: modID, Source: "roles"})
 }
 
 func TestTheSubscriptionIsMadeAtInit(t *testing.T) {
@@ -127,7 +127,7 @@ func TestTheSubscriptionIsMadeAtInit(t *testing.T) {
 	}
 	fresh.synchronous = true
 	bus.Publish(context.Background(), core.Event{Type: core.EventModerationAction, GuildID: testGuild,
-		Payload: core.ModerationActionPayload{UserID: "u1", Kind: "jail", ActorID: modID, Source: "roles"}})
+		Payload: core.ModerationActionPayload{UserID: "7300007", Kind: "jail", ActorID: modID, Source: "roles"}})
 	if n := len(h.store.all()); n != 1 {
 		t.Errorf("Init did not subscribe: %d entries", n)
 	}

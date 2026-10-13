@@ -321,6 +321,57 @@ func (o *GuildOps) DeletePermissionOverwrite(channelID, targetID snowflake.ID) e
 	})
 }
 
+// AddBan bans userID, deleting deleteMessages of their history. The reason
+// lands in Discord's own audit log next to merlin's name.
+func (o *GuildOps) AddBan(guildID, userID snowflake.ID, deleteMessages time.Duration, reason string) error {
+	if err := known(guildID, userID); err != nil {
+		return err
+	}
+	return gatedErr(o, opMemberBan, userID, func() error {
+		return o.guard.rest.AddBan(guildID, userID, deleteMessages, rest.WithReason(reason))
+	})
+}
+
+func (o *GuildOps) DeleteBan(guildID, userID snowflake.ID) error {
+	if err := known(guildID, userID); err != nil {
+		return err
+	}
+	return gatedErr(o, opMemberUnban, userID, func() error { return o.guard.rest.DeleteBan(guildID, userID) })
+}
+
+// RemoveMember kicks userID, with reason in Discord's audit log.
+func (o *GuildOps) RemoveMember(guildID, userID snowflake.ID, reason string) error {
+	if err := known(guildID, userID); err != nil {
+		return err
+	}
+	return gatedErr(o, opMemberKick, userID, func() error {
+		return o.guard.rest.RemoveMember(guildID, userID, rest.WithReason(reason))
+	})
+}
+
+// CreatePostInThreadChannel opens a forum post, its starter message
+// pinging nobody.
+func (o *GuildOps) CreatePostInThreadChannel(channelID snowflake.ID, c discord.ThreadChannelPostCreate) (*discord.ThreadChannelPost, error) {
+	if err := known(channelID); err != nil {
+		return nil, err
+	}
+	c.Message.AllowedMentions = noPings()
+	return gated(o, opThreadCreate, channelID, func() (*discord.ThreadChannelPost, error) {
+		return o.guard.rest.CreatePostInThreadChannel(channelID, c)
+	})
+}
+
+// UpdateMessage edits one of merlin's own messages, pinging nobody.
+func (o *GuildOps) UpdateMessage(channelID, messageID snowflake.ID, u discord.MessageUpdate) (*discord.Message, error) {
+	if err := known(channelID, messageID); err != nil {
+		return nil, err
+	}
+	u.AllowedMentions = noPings()
+	return gated(o, opMessageEdit, messageID, func() (*discord.Message, error) {
+		return o.guard.rest.UpdateMessage(channelID, messageID, u)
+	})
+}
+
 // TimeoutMember times userID out until until; nil lifts a timeout.
 func (o *GuildOps) TimeoutMember(guildID, userID snowflake.ID, until *time.Time) error {
 	if err := known(guildID, userID); err != nil {

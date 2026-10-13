@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -24,18 +24,18 @@ import (
 // says where to write, so `go test ./...` is unaffected.
 
 type previewScene struct {
-	Title      string                       `json:"title"`
-	Surface    string                       `json:"surface"` // interaction | dm | channel | thread
-	Content    string                       `json:"content,omitempty"`
-	Embeds     []*discordgo.MessageEmbed    `json:"embeds"`
-	Components []discordgo.MessageComponent `json:"components,omitempty"`
-	Ephemeral  bool                         `json:"ephemeral"`
+	Title      string            `json:"title"`
+	Surface    string            `json:"surface"` // interaction | dm | channel | thread
+	Content    string            `json:"content,omitempty"`
+	Embeds     []discord.Embed   `json:"embeds"`
+	Components []json.RawMessage `json:"components,omitempty"`
+	Ephemeral  bool              `json:"ephemeral"`
 }
 
 // lastResponse pulls the embeds and components out of what a handler put
 // on the wire: an interaction response ({"type":4,"data":{...}}), an
 // update ({"type":7,...}) or a follow-up (a bare webhook body).
-func lastResponse(rt *recordingTransport) (embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent, content string, ephemeral bool) {
+func lastResponse(rt *recordingTransport) (embeds []discord.Embed, components []json.RawMessage, content string, ephemeral bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	// A follow-up inherits the ephemerality of the deferral it replaces,
@@ -72,22 +72,15 @@ func lastResponse(rt *recordingTransport) (embeds []*discordgo.MessageEmbed, com
 			payload = outer.Data
 		}
 		var data struct {
-			Content    string                    `json:"content"`
-			Embeds     []*discordgo.MessageEmbed `json:"embeds"`
-			Components []json.RawMessage         `json:"components"`
-			Flags      int                       `json:"flags"`
+			Content    string            `json:"content"`
+			Embeds     []discord.Embed   `json:"embeds"`
+			Components []json.RawMessage `json:"components"`
+			Flags      int               `json:"flags"`
 		}
 		if err := json.Unmarshal(payload, &data); err != nil || (len(data.Embeds) == 0 && data.Content == "") {
 			continue
 		}
-		var comps []discordgo.MessageComponent
-		for _, raw := range data.Components {
-			var row discordgo.ActionsRow
-			if err := row.UnmarshalJSON(raw); err == nil {
-				comps = append(comps, row)
-			}
-		}
-		return data.Embeds, comps, data.Content, data.Flags&64 != 0 || deferredEphemeral
+		return data.Embeds, data.Components, data.Content, data.Flags&64 != 0 || deferredEphemeral
 	}
 	return nil, nil, "", false
 }
@@ -103,35 +96,31 @@ func TestWritePreviews(t *testing.T) {
 	}
 
 	var scenes []previewScene
-	add := func(title, surface string, embeds []*discordgo.MessageEmbed, comps []discordgo.MessageComponent, content string, ephemeral bool) {
+	add := func(title, surface string, embeds []discord.Embed, comps []json.RawMessage, content string, ephemeral bool) {
 		scenes = append(scenes, previewScene{Title: title, Surface: surface, Content: content, Embeds: embeds, Components: comps, Ephemeral: ephemeral})
 	}
 	fromRT := func(title string, rt *recordingTransport) {
 		e, c, content, eph := lastResponse(rt)
 		add(title, "interaction", e, c, content, eph)
 	}
-	fromSend := func(title, surface string, sends []*discordgo.MessageSend) {
+	fromSend := func(title, surface string, sends []discord.MessageCreate) {
 		if len(sends) == 0 {
 			add(title, surface, nil, nil, "(nothing was sent)", false)
 			return
 		}
 		m := sends[len(sends)-1]
-		embeds := m.Embeds
-		if m.Embed != nil {
-			embeds = append([]*discordgo.MessageEmbed{m.Embed}, embeds...)
-		}
-		add(title, surface, embeds, m.Components, m.Content, false)
+		add(title, surface, m.Embeds, raws(m.Components), m.Content, false)
 	}
 
 	h := newHarness()
 	h.p.speaker = speaker
 	withForum(h)
-	h.ops.channels["mods"] = &discordgo.Channel{ID: "mods", Type: discordgo.ChannelTypeGuildText}
+	h.ops.channels["7300020"] = &fch{ID: "7300020", Type: discord.ChannelTypeGuildText}
 	cfg, _ := h.store.Config(context.Background(), testGuild)
-	cfg.ModChannelID = "mods"
+	cfg.ModChannelID = "7300020"
 	_ = h.store.SetConfig(context.Background(), cfg)
 	h.ops.addMember(modID)
-	dana := &discordgo.User{ID: "1001", Username: "dana_k", GlobalName: "Dana"}
+	dana := &discord.User{ID: core.ID("1001"), Username: "dana_k", GlobalName: strp("Dana")}
 	h.ops.addMember("1001")
 	h.ops.users["1001"] = dana
 	ctx := context.Background()
@@ -147,20 +136,20 @@ func TestWritePreviews(t *testing.T) {
 		h.p.now = old
 		return e
 	}
-	seed(40*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategorySpam, ActorID: "mod-2", Reason: "posting the same link in six channels", Source: SourceCommand, Identity: dana})
+	seed(40*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategorySpam, ActorID: "7300005", Reason: "posting the same link in six channels", Source: SourceCommand, Identity: dana})
 	seed(12*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindRemoval, Category: CategoryHateSpeech, ActorID: core.ActorSystem, Reason: "message removed automatically: a slur aimed at another member", Source: SourceAIMod, Ref: "inc-411"})
 	ends := testNow.Add(-12*24*time.Hour + 8*time.Hour)
 	seed(12*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindJail, Category: CategoryServerRule, ActorID: core.ActorSystem, Reason: "automatic: hate speech (Discord hate speech policy)", Duration: 8 * time.Hour, EndsAt: &ends, Source: SourceRoles})
 	seed(5*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindNote, ActorID: modID, Reason: "apologised in modmail, seemed genuine", Source: SourceCommand})
-	wrong := seed(3*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategoryThreats, ActorID: "mod-2", Reason: "threatened to find someone's address", Source: SourceCommand})
+	wrong := seed(3*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategoryThreats, ActorID: "7300005", Reason: "threatened to find someone's address", Source: SourceCommand})
 	_ = h.store.Void(ctx, testGuild, wrong.ID, modID, "misread; they were quoting a film", testNow.Add(-2*24*time.Hour))
 
 	// 1. A warning by command, and everything it produces.
 	rt := stubSession()
 	h.p.handleWarn(ctx, withResolved(interaction("warn", userOpt("user", "1001"), strOpt("category", "server_rule"), strOpt("reason", "arguing with mods in #general after being asked to stop")), dana))
 	fromRT("/rapsheet warn: the moderator's confirmation", rt)
-	fromSend("DM to the member: warned", "dm", h.ops.sentTo("dm-1001"))
-	fromSend("Case file: the mirrored entry", "thread", h.ops.sentTo("t-1"))
+	fromSend("DM to the member: warned", "dm", h.ops.sentTo(dmWith("1001")))
+	fromSend("Case file: the mirrored entry", "thread", h.ops.sentTo("7500001"))
 
 	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "1417880000000000000", CandidateID: "1001", Signals: []string{"same avatar", "joined 12 minutes after " + core.MentionUser("1001") + " was jailed 8h"}, Score: 5})
 	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "1001", GroupID: "1001", LinkedBy: modID})
@@ -177,12 +166,12 @@ func TestWritePreviews(t *testing.T) {
 
 	// 3. A clean member.
 	rt = stubSession()
-	h.p.handleView(ctx, withResolved(interaction("view", userOpt("user", "1009")), &discordgo.User{ID: "1009", Username: "quiet_one"}))
+	h.p.handleView(ctx, withResolved(interaction("view", userOpt("user", "1009")), &discord.User{ID: core.ID("1009"), Username: "quiet_one"}))
 	fromRT("/rapsheet view: a member with nothing on record", rt)
 
 	// 4. The ladder suggests (score crossed jail 2h), then a mod applies it.
 	h.p.jailer = &fakeJailer{}
-	posts := h.ops.sentTo("mods")
+	posts := h.ops.sentTo("7300020")
 	if len(posts) == 0 {
 		t.Fatal("expected the warning above to have crossed a band and posted a suggestion")
 	}
@@ -194,10 +183,10 @@ func TestWritePreviews(t *testing.T) {
 	fromRT("Mod channel: that suggestion clicked after #6 was voided (withdrawn)", rt)
 	// A clean apply, on a member whose sheet was not amended underneath it.
 	h.ops.addMember("1007")
-	h.ops.users["1007"] = &discordgo.User{ID: "1007", Username: "rowdy", GlobalName: "Rowdy"}
+	h.ops.users["1007"] = &discord.User{ID: core.ID("1007"), Username: "rowdy", GlobalName: strp("Rowdy")}
 	_ = stubSession()
 	h.p.handleWarn(ctx, withResolved(interaction("warn", userOpt("user", "1007"), strOpt("category", "hate_speech"), strOpt("reason", "slur in voice chat, several people heard it"), intOpt("points", 60)), h.ops.users["1007"]))
-	fromSend("Mod channel: a suggestion for a second member, open", "channel", h.ops.sentTo("mods"))
+	fromSend("Mod channel: a suggestion for a second member, open", "channel", h.ops.sentTo("7300020"))
 	sug = suggestions(h)[len(suggestions(h))-1]
 	applyID = suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
 	rt = stubSession()
@@ -206,35 +195,35 @@ func TestWritePreviews(t *testing.T) {
 
 	// 5. Consequences by command.
 	h.ops.addMember("1002")
-	u2 := &discordgo.User{ID: "1002", Username: "loud_guy", GlobalName: "Loud"}
+	u2 := &discord.User{ID: core.ID("1002"), Username: "loud_guy", GlobalName: strp("Loud")}
 	h.ops.users["1002"] = u2
 	rt = stubSession()
 	h.p.handleTimeout(ctx, withResolved(interaction("timeout", userOpt("user", "1002"), strOpt("duration", "6h"), strOpt("category", "spam"), strOpt("reason", "wall of emoji in every channel")), u2))
 	fromRT("/timeout: confirmation", rt)
-	fromSend("DM to the member: timed out", "dm", h.ops.sentTo("dm-1002"))
+	fromSend("DM to the member: timed out", "dm", h.ops.sentTo(dmWith("1002")))
 	rt = stubSession()
 	h.p.handleBan(ctx, withResolved(interaction("ban", userOpt("user", "1002"), strOpt("category", "threats"), strOpt("reason", "doxxing threat against a moderator"), strOpt("duration", "7d")), u2))
 	fromRT("/ban: confirmation", rt)
-	fromSend("DM to the member: banned for 7d", "dm", h.ops.sentTo("dm-1002"))
+	fromSend("DM to the member: banned for 7d", "dm", h.ops.sentTo(dmWith("1002")))
 	h.ops.addMember("1003")
 	_ = stubSession()
 	h.p.handleBan(ctx, interaction("ban", userOpt("user", "1003"), strOpt("category", "child_safety"), strOpt("reason", "repeated after a final warning; details in the case file"), boolOpt("permanent", true)))
-	fromSend("DM to the member: banned permanently", "dm", h.ops.sentTo("dm-1003"))
+	fromSend("DM to the member: banned permanently", "dm", h.ops.sentTo(dmWith("1003")))
 	h.ops.addMember("1004")
 	_ = stubSession()
 	h.p.handleKick(ctx, interaction("kick", userOpt("user", "1004"), strOpt("category", "other"), strOpt("reason", "advertising, after two warnings")))
-	fromSend("DM to the member: kicked", "dm", h.ops.sentTo("dm-1004"))
+	fromSend("DM to the member: kicked", "dm", h.ops.sentTo(dmWith("1004")))
 	h.p.dm(ctx, testGuild, "1001", voice.KeyStrikeNotice, "A note about your record", core.ColorWarning, map[string]string{"guild": "Test Guild"})
-	fromSend("DM to the member: the ladder's notice band", "dm", h.ops.sentTo("dm-1001"))
+	fromSend("DM to the member: the ladder's notice band", "dm", h.ops.sentTo(dmWith("1001")))
 
 	// 6. Void, edit, and their refusals.
 	rt = stubSession()
 	h.p.handleVoid(ctx, interaction("void", intOpt("case", 1), strOpt("reason", "duplicate of an older case")))
 	fromRT("/rapsheet void: confirmation", rt)
 	fromSend("Case file: an entry after it was voided", "thread", h.ops.edits2(h))
-	h.ops.addMember("admin-1")
-	h.ranker.admins["admin-1"] = true
-	adminEntry, _, _ := h.p.record(ctx, cfg, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategoryGore, ActorID: "admin-1", Reason: "gore in #art", Source: SourceCommand})
+	h.ops.addMember("7300006")
+	h.ranker.admins["7300006"] = true
+	adminEntry, _, _ := h.p.record(ctx, cfg, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategoryGore, ActorID: "7300006", Reason: "gore in #art", Source: SourceCommand})
 	rt = stubSession()
 	h.p.handleVoid(ctx, interaction("void", intOpt("case", int(adminEntry.ID)), strOpt("reason", "nope")))
 	fromRT("/rapsheet void: refused by hierarchy", rt)
@@ -242,7 +231,7 @@ func TestWritePreviews(t *testing.T) {
 	h.p.handleBan(ctx, interaction("ban", userOpt("user", "1005"), strOpt("category", "spam"), strOpt("reason", "r")))
 	fromRT("/ban: neither duration nor permanent", rt)
 	rt = stubSession()
-	h.p.handleWarn(ctx, interaction("warn", userOpt("user", "admin-1"), strOpt("category", "spam"), strOpt("reason", "r")))
+	h.p.handleWarn(ctx, interaction("warn", userOpt("user", "7300006"), strOpt("category", "spam"), strOpt("reason", "r")))
 	fromRT("/rapsheet warn: refused, target outranks the mod", rt)
 
 	// 7. Configuration and status.
@@ -268,21 +257,21 @@ func TestWritePreviews(t *testing.T) {
 	panelForm(h.p, formSet+"halflife", map[string]string{"half_life": "14d"})
 	fromRT("/rapsheet configure half-life 14d", rt)
 	fresh := newHarness()
-	fresh.p.botID = "merlin-1"
+	fresh.p.botID = core.ID("7300003")
 	rt = stubSession()
 	panelClick(fresh.p, panelSet+"forumnew")
 	fromRT("/rapsheet configure forum (created)", rt)
 
 	// 8. Alt hints and links.
 	h.ops.addMember("1006")
-	h.ops.users["1006"] = &discordgo.User{ID: "1006", Username: "danak2", Avatar: "abc123"}
+	h.ops.users["1006"] = &discord.User{ID: core.ID("1006"), Username: "danak2", Avatar: strp("abc123")}
 	newcomer := "1417880000000000000" // a snowflake, so the account-age line renders
-	h.ops.users[newcomer] = &discordgo.User{ID: newcomer, Username: "danak2", Avatar: "abc123"}
+	h.ops.users[newcomer] = &discord.User{ID: core.ID(newcomer), Username: "danak2", Avatar: strp("abc123")}
 	hint := AltHint{GuildID: testGuild, UserID: newcomer, CandidateID: "1001", Signals: []string{"same avatar", "joined 12 minutes after " + core.MentionUser("1001") + " was jailed 8h"}, Score: 5}
 	embed, comps := altNoticeEmbed(h.ops.users[newcomer], hint, h.p.altContext(ctx, cfg, hint), "", false)
-	add("Mod channel: a possible alt on join", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
+	add("Mod channel: a possible alt on join", "channel", []discord.Embed{embed}, raws(comps), "", false)
 	embed, comps = altNoticeEmbed(h.ops.users[newcomer], hint, "", "Linked by "+core.MentionUser(modID)+". They now share one sheet.", true)
-	add("Mod channel: the same notice after Link", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
+	add("Mod channel: the same notice after Link", "channel", []discord.Embed{embed}, raws(comps), "", false)
 	rt = stubSession()
 	h.p.handleLink(ctx, interaction("link", userOpt("user", "1006"), userOpt("other", "1001"), strOpt("reason", "same avatar, rejoined minutes after the ban")))
 	fromRT("/rapsheet link: confirmation", rt)
@@ -308,10 +297,10 @@ func TestWritePreviews(t *testing.T) {
 	if err := h.sched.RunNow(ctx, reviewKey(testGuild)); err != nil {
 		t.Fatalf("review: %v", err)
 	}
-	fromSend("Mod channel: the Monday review", "channel", h.ops.sentTo("mods"))
+	fromSend("Mod channel: the Monday review", "channel", h.ops.sentTo("7300020"))
 	hint.Opinion = "Strong. An identical uploaded avatar is the best signal a bot can see, and joining twelve minutes after the jail fits a return. Worth checking whether they pick up the same conversations."
 	embed, comps = altNoticeEmbed(h.ops.users[newcomer], hint, h.p.altContext(ctx, cfg, hint), "", false)
-	add("Mod channel: a possible alt, with the model's second opinion", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
+	add("Mod channel: a possible alt, with the model's second opinion", "channel", []discord.Embed{embed}, raws(comps), "", false)
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -328,16 +317,29 @@ func TestWritePreviews(t *testing.T) {
 
 // edits2 turns the last mirrored edit into a MessageSend so the same
 // renderer can draw it.
-func (f *fakeOps) edits2(_ *harness) []*discordgo.MessageSend {
+func (f *fakeOps) edits2(_ *harness) []discord.MessageCreate {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.edits) == 0 {
 		return nil
 	}
 	last := f.edits[len(f.edits)-1]
-	var embeds []*discordgo.MessageEmbed
-	if last.Embeds != nil {
-		embeds = *last.Embeds
+	var embeds []discord.Embed
+	if last.u.Embeds != nil {
+		embeds = *last.u.Embeds
 	}
-	return []*discordgo.MessageSend{{Embeds: embeds}}
+	return []discord.MessageCreate{{Embeds: embeds}}
+}
+
+// raws is cs as the JSON the preview renderer reads.
+func raws(cs []discord.LayoutComponent) []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(cs))
+	for _, c := range cs {
+		b, err := json.Marshal(c)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, b)
+	}
+	return out
 }

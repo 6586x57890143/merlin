@@ -10,15 +10,18 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
+	"github.com/6586x57890143/merlin/internal/discordtest"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
 
@@ -452,20 +455,30 @@ func (f *fakeStore) all() []Entry {
 
 // --- discord ----------------------------------------------------------------
 
+// fch is the shared channel fixture.
+type fch = discordtest.Channel
+
+// edit is one UpdateMessage call.
+type edit struct {
+	channelID, messageID string
+	u                    discord.MessageUpdate
+}
+
 // fakeOps records every Discord call and can be armed to fail.
 type fakeOps struct {
 	mu      sync.Mutex
-	members map[string]*discordgo.Member // userID -> member; absent = unknown member
-	users   map[string]*discordgo.User
-	sent    map[string][]*discordgo.MessageSend // channelID -> sends
+	members map[string]*discord.Member // userID -> member; absent = unknown member
+	users   map[string]*discord.User
+	sent    map[string][]discord.MessageCreate // channelID -> sends
+	dms     map[string]bool                    // DM channels handed out
 	dmOpen  int
 
-	channels      map[string]*discordgo.Channel
-	created       []discordgo.GuildChannelCreateData
-	edits         []*discordgo.MessageEdit
+	channels      map[string]*fch
+	created       []discord.GuildForumChannelCreate
+	edits         []edit
 	threadsOpened int
 
-	roles    []*discordgo.Role
+	roles    []discord.Role
 	timeouts map[string]*time.Time // userID -> until (nil = cleared)
 	bans     map[string]string     // userID -> reason
 	kicked   []string
@@ -486,73 +499,76 @@ type fakeOps struct {
 
 func newFakeOps() *fakeOps {
 	return &fakeOps{
-		members:  map[string]*discordgo.Member{},
-		users:    map[string]*discordgo.User{},
-		sent:     map[string][]*discordgo.MessageSend{},
-		channels: map[string]*discordgo.Channel{},
+		members:  map[string]*discord.Member{},
+		users:    map[string]*discord.User{},
+		sent:     map[string][]discord.MessageCreate{},
+		dms:      map[string]bool{},
+		channels: map[string]*fch{},
 		timeouts: map[string]*time.Time{},
 		bans:     map[string]string{},
 	}
 }
 
-func (f *fakeOps) GuildMemberTimeout(_, userID string, until *time.Time, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) TimeoutMember(_, userID snowflake.ID, until *time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.timeoutErr != nil {
 		return f.timeoutErr
 	}
-	f.timeouts[userID] = until
+	f.timeouts[userID.String()] = until
 	return nil
 }
 
-func (f *fakeOps) GuildBanCreateWithReason(_, userID, reason string, _ int, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) AddBan(_, userID snowflake.ID, _ time.Duration, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.banErr != nil {
 		return f.banErr
 	}
-	f.bans[userID] = reason
-	delete(f.members, userID)
+	f.bans[userID.String()] = reason
+	delete(f.members, userID.String())
 	return nil
 }
 
-func (f *fakeOps) GuildBanDelete(_, userID string, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) DeleteBan(_, userID snowflake.ID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.unbanErr != nil {
 		return f.unbanErr
 	}
-	if _, ok := f.bans[userID]; !ok {
-		return unknownErr(discordgo.ErrCodeUnknownBan)
+	id := userID.String()
+	if _, ok := f.bans[id]; !ok {
+		return unknownErr(int(rest.JSONErrorCodeUnknownBan))
 	}
-	delete(f.bans, userID)
-	f.unbanned = append(f.unbanned, userID)
+	delete(f.bans, id)
+	f.unbanned = append(f.unbanned, id)
 	return nil
 }
 
-func (f *fakeOps) GuildMemberDeleteWithReason(_, userID, _ string, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) RemoveMember(_, userID snowflake.ID, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.kickErr != nil {
 		return f.kickErr
 	}
-	if _, ok := f.members[userID]; !ok {
+	id := userID.String()
+	if _, ok := f.members[id]; !ok {
 		return unknownMemberErr()
 	}
-	delete(f.members, userID)
-	f.kicked = append(f.kicked, userID)
+	delete(f.members, id)
+	f.kicked = append(f.kicked, id)
 	return nil
 }
 
-func (f *fakeOps) GuildRoles(_ string, _ ...discordgo.RequestOption) ([]*discordgo.Role, error) {
+func (f *fakeOps) GetRoles(snowflake.ID) ([]discord.Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.roles, nil
 }
 
 // addForum registers an existing forum channel.
-func (f *fakeOps) addForum(id string) *discordgo.Channel {
-	ch := &discordgo.Channel{ID: id, Name: "forum-" + id, Type: discordgo.ChannelTypeGuildForum}
+func (f *fakeOps) addForum(id string) *fch {
+	ch := &fch{ID: id, Name: "forum-" + id, Type: discord.ChannelTypeGuildForum}
 	f.mu.Lock()
 	f.channels[id] = ch
 	f.mu.Unlock()
@@ -560,139 +576,158 @@ func (f *fakeOps) addForum(id string) *discordgo.Channel {
 }
 
 func unknownErr(code int) error {
-	return &discordgo.RESTError{
-		Response: &http.Response{StatusCode: http.StatusNotFound},
-		Message:  &discordgo.APIErrorMessage{Code: code, Message: "Unknown"},
-	}
+	return &rest.Error{Code: rest.JSONErrorCode(code), Message: "Unknown", Response: &http.Response{StatusCode: http.StatusNotFound}}
 }
 
-func (f *fakeOps) addMember(id string, roles ...string) *discordgo.Member {
-	m := &discordgo.Member{User: &discordgo.User{ID: id, Username: "user-" + id}, Roles: roles}
+func (f *fakeOps) addMember(id string, roles ...string) *discord.Member {
+	m := &discord.Member{User: discord.User{ID: core.ID(id), Username: "user-" + id}, RoleIDs: core.IDs(roles)}
 	f.mu.Lock()
 	f.members[id] = m
-	f.users[id] = m.User
+	f.users[id] = &m.User
 	f.mu.Unlock()
 	return m
 }
 
-func unknownMemberErr() error { return unknownErr(discordgo.ErrCodeUnknownMember) }
+func unknownMemberErr() error { return unknownErr(int(rest.JSONErrorCodeUnknownMember)) }
 
-func (f *fakeOps) Guild(guildID string, _ ...discordgo.RequestOption) (*discordgo.Guild, error) {
-	return &discordgo.Guild{ID: guildID, Name: "Test Guild"}, nil
+func (f *fakeOps) GetGuild(guildID snowflake.ID) (*discord.RestGuild, error) {
+	g := &discord.RestGuild{}
+	g.ID, g.Name = guildID, "Test Guild"
+	return g, nil
 }
 
-func (f *fakeOps) GuildMember(_, userID string, _ ...discordgo.RequestOption) (*discordgo.Member, error) {
+func (f *fakeOps) GetMember(_, userID snowflake.ID) (*discord.Member, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.memberErr != nil {
 		return nil, f.memberErr
 	}
-	m, ok := f.members[userID]
+	m, ok := f.members[userID.String()]
 	if !ok {
 		return nil, unknownMemberErr()
 	}
 	return m, nil
 }
 
-func (f *fakeOps) User(userID string, _ ...discordgo.RequestOption) (*discordgo.User, error) {
+func (f *fakeOps) GetUser(userID snowflake.ID) (*discord.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if u, ok := f.users[userID]; ok {
+	if u, ok := f.users[userID.String()]; ok {
 		return u, nil
 	}
-	return nil, unknownErr(discordgo.ErrCodeUnknownUser)
+	return nil, unknownErr(int(rest.JSONErrorCodeUnknownUser))
 }
 
-func (f *fakeOps) UserChannelCreate(recipientID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+// dmWith is the DM channel the fake opens with userID: the user's ID with
+// a bit set that no fixture uses.
+func dmWith(userID string) string { return strconv.FormatUint(uint64(core.ID(userID))|1<<62, 10) }
+
+func (f *fakeOps) CreateDMChannel(recipientID snowflake.ID) (*discord.DMChannel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.dmErr != nil {
 		return nil, f.dmErr
 	}
 	f.dmOpen++
-	return &discordgo.Channel{ID: "dm-" + recipientID}, nil
+	id := dmWith(recipientID.String())
+	f.dms[id] = true
+	return discordtest.DM(id), nil
 }
 
-func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+func (f *fakeOps) CreateMessage(channelID snowflake.ID, data discord.MessageCreate) (*discord.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendErr != nil {
 		return nil, f.sendErr
 	}
-	if !strings.HasPrefix(channelID, "dm-") {
-		if _, ok := f.channels[channelID]; !ok {
-			return nil, unknownErr(discordgo.ErrCodeUnknownChannel)
+	id := channelID.String()
+	if !f.dms[id] {
+		if _, ok := f.channels[id]; !ok {
+			return nil, unknownErr(int(rest.JSONErrorCodeUnknownChannel))
 		}
 	}
-	f.sent[channelID] = append(f.sent[channelID], data)
-	return &discordgo.Message{ID: fmt.Sprintf("m-%d", len(f.sent[channelID])), ChannelID: channelID}, nil
+	f.sent[id] = append(f.sent[id], data)
+	return &discord.Message{ID: snowflake.ID(8000 + len(f.sent[id])), ChannelID: channelID}, nil
 }
 
-func (f *fakeOps) Channel(channelID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+func (f *fakeOps) GetChannel(channelID snowflake.ID) (discord.Channel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if ch, ok := f.channels[channelID]; ok {
-		return ch, nil
+	if ch, ok := f.channels[channelID.String()]; ok {
+		return ch.Disgo(), nil
 	}
-	return nil, unknownErr(discordgo.ErrCodeUnknownChannel)
+	return nil, unknownErr(int(rest.JSONErrorCodeUnknownChannel))
 }
 
-func (f *fakeOps) GuildChannels(_ string, _ ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
+func (f *fakeOps) GetGuildChannels(snowflake.ID) ([]discord.GuildChannel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.channelsErr != nil {
 		return nil, f.channelsErr
 	}
-	out := make([]*discordgo.Channel, 0, len(f.channels))
+	out := make([]discord.GuildChannel, 0, len(f.channels))
 	for _, ch := range f.channels {
-		out = append(out, ch)
+		out = append(out, ch.Disgo())
 	}
 	return out, nil
 }
 
-func (f *fakeOps) GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+func (f *fakeOps) CreateGuildChannel(guildID snowflake.ID, c discord.GuildChannelCreate) (discord.GuildChannel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
-	ch := &discordgo.Channel{ID: fmt.Sprintf("ch-%d", len(f.channels)+1), GuildID: guildID, Name: data.Name, Type: data.Type, PermissionOverwrites: data.PermissionOverwrites}
+	forum, ok := c.(discord.GuildForumChannelCreate)
+	if !ok {
+		return nil, fmt.Errorf("fakeOps: rapsheet creates forums, got %T", c)
+	}
+	ch := &fch{ID: strconv.Itoa(7400000 + len(f.channels) + 1), GuildID: guildID.String(), Name: forum.Name, Type: forum.Type(),
+		PermissionOverwrites: discordtest.Overwrites(forum.PermissionOverwrites)}
 	f.channels[ch.ID] = ch
-	f.created = append(f.created, data)
-	return ch, nil
+	f.created = append(f.created, forum)
+	return ch.Disgo(), nil
 }
 
-func (f *fakeOps) ForumThreadStartComplex(channelID string, th *discordgo.ThreadStart, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+func (f *fakeOps) CreatePostInThreadChannel(channelID snowflake.ID, c discord.ThreadChannelPostCreate) (*discord.ThreadChannelPost, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.threadErr != nil {
 		return nil, f.threadErr
 	}
-	if _, ok := f.channels[channelID]; !ok {
-		return nil, unknownErr(discordgo.ErrCodeUnknownChannel)
+	if _, ok := f.channels[channelID.String()]; !ok {
+		return nil, unknownErr(int(rest.JSONErrorCodeUnknownChannel))
 	}
 	f.threadsOpened++
-	id := fmt.Sprintf("t-%d", f.threadsOpened)
-	f.channels[id] = &discordgo.Channel{ID: id, Name: th.Name, ParentID: channelID, Type: discordgo.ChannelTypeGuildPublicThread}
-	f.sent[id] = append(f.sent[id], data)
-	return f.channels[id], nil
+	id := threadID(f.threadsOpened)
+	th := &fch{ID: id, Name: c.Name, ParentID: channelID.String(), Type: discord.ChannelTypeGuildPublicThread}
+	f.channels[id] = th
+	f.sent[id] = append(f.sent[id], c.Message)
+	return &discord.ThreadChannelPost{GuildThread: th.Thread()}, nil
 }
 
-func (f *fakeOps) ChannelMessageEditComplex(m *discordgo.MessageEdit, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+// threadID is the nth thread the fake opens.
+func threadID(n int) string { return strconv.Itoa(7500000 + n) }
+
+func (f *fakeOps) UpdateMessage(channelID, messageID snowflake.ID, u discord.MessageUpdate) (*discord.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.editErr != nil {
 		return nil, f.editErr
 	}
-	f.edits = append(f.edits, m)
-	return &discordgo.Message{ID: m.ID, ChannelID: m.Channel}, nil
+	f.edits = append(f.edits, edit{channelID: channelID.String(), messageID: messageID.String(), u: u})
+	return &discord.Message{ID: messageID, ChannelID: channelID}, nil
 }
 
-func (f *fakeOps) sentTo(channelID string) []*discordgo.MessageSend {
+func (f *fakeOps) sentTo(channelID string) []discord.MessageCreate {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]*discordgo.MessageSend(nil), f.sent[channelID]...)
+	return append([]discord.MessageCreate(nil), f.sent[channelID]...)
 }
+
+func strp(s string) *string { return &s }
+
+func ptrTime(t time.Time) *time.Time { return &t }
 
 // fakeSched records registrations so the "a job exists only where it has
 // work" rule can be asserted directly.
@@ -851,13 +886,13 @@ func newHarness() *harness {
 		bus:    core.NewEventBus(quietLog()),
 		sched:  newFakeSched(),
 	}
-	h.p = New(h.store, func(string) DiscordOps { return h.ops }, fakeModRoles{"mod-role"}, h.voice)
+	h.p = New(h.store, func(string) DiscordOps { return h.ops }, fakeModRoles{"7300018"}, h.voice)
 	h.p.audit = h.audit
 	h.p.log = quietLog()
 	h.p.perms = h.ranker
 	h.p.bus = h.bus
 	h.p.sched = h.sched
-	h.p.botID = "merlin-1"
+	h.p.botID = core.ID("7300003")
 	h.p.now = func() time.Time { return testNow }
 	h.store.now = func() time.Time { return h.p.now() }
 	h.p.synchronous = true
@@ -937,8 +972,8 @@ func stubSession() *recordingTransport {
 }
 
 const (
-	testGuild = "g1"
-	modID     = "mod-1"
+	testGuild = "7300001"
+	modID     = "7300004"
 )
 
 // payloads remembers what each test interaction was decoded from, so
@@ -953,8 +988,8 @@ type built struct {
 // decodeIx is Discord's JSON decoded by core.NewIx and answered through
 // current, from a member shown as "mod".
 //
-// The fixtures predate disgo: the store and fakes key on "g1", "chan-1" and
-// members like "mod-1", none of them snowflakes. Ix.GuildID, UserID and
+// The fixtures predate disgo: the store and fakes key on "7300001", "7300002" and
+// members like "7300004", none of them snowflakes. Ix.GuildID, UserID and
 // ChannelID are merlin's own string keys and every handler reads those, so
 // after decoding a real interaction they are pointed at the fixtures.
 func decodeIx(p map[string]any, user string) *core.Ix {
@@ -970,7 +1005,7 @@ func decodeIx(p map[string]any, user string) *core.Ix {
 	if err != nil {
 		panic(err)
 	}
-	ix.GuildID, ix.UserID, ix.ChannelID = testGuild, user, "chan-1"
+	ix.GuildID, ix.UserID, ix.ChannelID = testGuild, user, "7300002"
 	payloads[ix] = built{p, user}
 	return ix
 }
@@ -1011,7 +1046,7 @@ func interactionBy(userID, leaf string, opts ...map[string]any) *core.Ix {
 
 // withResolved attaches a resolved user, the way Discord does for a User
 // option. Resolved users are keyed by snowflake, so u's ID must be one.
-func withResolved(ix *core.Ix, u *discordgo.User) *core.Ix {
+func withResolved(ix *core.Ix, u *discord.User) *core.Ix {
 	b := payloads[ix]
 	data := b.p["data"].(map[string]any)
 	resolved, _ := data["resolved"].(map[string]any)
@@ -1019,7 +1054,7 @@ func withResolved(ix *core.Ix, u *discordgo.User) *core.Ix {
 		resolved = map[string]any{"users": map[string]any{}}
 		data["resolved"] = resolved
 	}
-	resolved["users"].(map[string]any)[u.ID] = map[string]any{"id": u.ID, "username": u.Username, "global_name": u.GlobalName, "avatar": u.Avatar, "bot": u.Bot}
+	resolved["users"].(map[string]any)[u.ID.String()] = map[string]any{"id": u.ID.String(), "username": u.Username, "global_name": u.GlobalName, "avatar": u.Avatar, "bot": u.Bot}
 	return decodeIx(b.p, b.user)
 }
 
@@ -1067,8 +1102,8 @@ func panelForm(p *Plugin, customID string, fields map[string]string) {
 }
 
 // asMember is ix run by u, as Discord sends the invoking member's user.
-func asMember(ix *core.Ix, u *discordgo.User) *core.Ix {
+func asMember(ix *core.Ix, u *discord.User) *core.Ix {
 	b := payloads[ix]
 	b.p["member"].(map[string]any)["user"] = map[string]any{"id": "11", "username": u.Username, "global_name": u.GlobalName, "avatar": u.Avatar}
-	return decodeIx(b.p, u.ID)
+	return decodeIx(b.p, u.ID.String())
 }

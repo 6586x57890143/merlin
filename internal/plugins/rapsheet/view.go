@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // Rendering a sheet.
@@ -64,7 +64,7 @@ type sheetView struct {
 	Hints     []AltHint
 }
 
-func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+func renderSheet(v sheetView) (discord.Embed, []discord.LayoutComponent) {
 	entries := v.Sheet.Entries
 	if v.ForMember {
 		entries = memberVisible(entries)
@@ -91,7 +91,7 @@ func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageCompo
 	if _, ok := standing(v.Sheet.Entries, v.Now); ok {
 		color = core.ColorWarning
 	}
-	embed := core.NewEmbed(color, title, core.TruncateEmbedDescription(strings.TrimRight(b.String(), "\n")))
+	embed := core.Embed(color, title, core.TruncateEmbedDescription(strings.TrimRight(b.String(), "\n")))
 
 	prefix := viewPagePrefix(v.UserID)
 	switch {
@@ -101,7 +101,7 @@ func renderSheet(v sheetView) (*discordgo.MessageEmbed, []discordgo.MessageCompo
 		// Its own prefix, so the next page keeps the alts block off.
 		prefix = pubPagePrefix(v.UserID)
 	}
-	return embed, core.PaginationRow(prefix, page, totalPages)
+	return embed, ui.PaginationRow(prefix, page, totalPages)
 }
 
 // writeHeader is the summary block above the entries.

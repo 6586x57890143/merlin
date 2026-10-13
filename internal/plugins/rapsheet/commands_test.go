@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -59,7 +59,7 @@ func TestWarnRecordsDMsAuditsAndReportsTheScore(t *testing.T) {
 	h := newHarness()
 	h.ops.addMember("1001")
 	rt := stubSession()
-	target := &discordgo.User{ID: "1001", Username: "dana", GlobalName: "Dana"}
+	target := &discord.User{ID: core.ID("1001"), Username: "dana", GlobalName: strp("Dana")}
 
 	h.p.handleWarn(context.Background(), withResolved(interaction("warn",
 		userOpt("user", "1001"), strOpt("category", "hate_speech"), strOpt("reason", "slur in #general")), target))
@@ -73,10 +73,10 @@ func TestWarnRecordsDMsAuditsAndReportsTheScore(t *testing.T) {
 		e.Source != SourceCommand || e.Reason != "slur in #general" || e.UserID != "1001" {
 		t.Errorf("entry = %+v", e)
 	}
-	if got := h.ops.sentTo("dm-1001"); len(got) != 1 {
+	if got := h.ops.sentTo(dmWith("1001")); len(got) != 1 {
 		t.Errorf("DMs to the member = %d, want 1", len(got))
-	} else if got[0].Embed == nil || !strings.Contains(fieldValue(got[0].Embed, "Reason given"), "slur") {
-		t.Errorf("the DM should carry the reason as a field, got %+v", got[0].Embed)
+	} else if len(got[0].Embeds) == 0 || !strings.Contains(fieldValue(got[0].Embeds[0], "Reason given"), "slur") {
+		t.Errorf("the DM should carry the reason as a field, got %+v", got[0].Embeds[0])
 	}
 	if len(h.voice.keys) != 1 || h.voice.keys[0] != voice.KeyWarnNotice {
 		t.Errorf("voice keys = %v, want [moderation.warn]", h.voice.keys)
@@ -111,9 +111,9 @@ func TestWarnRefusesStaffSelfAndBots(t *testing.T) {
 		setup func(h *harness) *core.Ix
 	}{
 		{"an admin, by a mod", func(h *harness) *core.Ix {
-			h.ops.addMember("admin-1")
-			h.ranker.admins["admin-1"] = true
-			return interaction("warn", userOpt("user", "admin-1"), strOpt("category", "spam"), strOpt("reason", "r"))
+			h.ops.addMember("7300006")
+			h.ranker.admins["7300006"] = true
+			return interaction("warn", userOpt("user", "7300006"), strOpt("category", "spam"), strOpt("reason", "r"))
 		}},
 		{"the bootstrap operator, by an admin", func(h *harness) *core.Ix {
 			h.ops.addMember("boot")
@@ -128,7 +128,7 @@ func TestWarnRefusesStaffSelfAndBots(t *testing.T) {
 		{"a bot", func(h *harness) *core.Ix {
 			h.ops.addMember("1101")
 			return withResolved(interaction("warn", userOpt("user", "1101"), strOpt("category", "spam"), strOpt("reason", "r")),
-				&discordgo.User{ID: "1101", Bot: true})
+				&discord.User{ID: core.ID("1101"), Bot: true})
 		}},
 		{"an unresolvable target", func(h *harness) *core.Ix {
 			h.ops.memberErr = errors.New("discord is down")
@@ -157,7 +157,7 @@ func TestWarnOfSomebodyWhoLeftStillRecords(t *testing.T) {
 	// they come back.
 	h := newHarness()
 	stubSession()
-	h.p.handleWarn(context.Background(), interaction("warn", userOpt("user", "gone"), strOpt("category", "spam"), strOpt("reason", "r")))
+	h.p.handleWarn(context.Background(), interaction("warn", userOpt("user", "7300017"), strOpt("category", "spam"), strOpt("reason", "r")))
 	if n := len(h.store.all()); n != 1 {
 		t.Errorf("entries = %d, want 1", n)
 	}
@@ -183,7 +183,7 @@ func TestAStoreFailureIsReportedNotSwallowed(t *testing.T) {
 	h.store.insertErr = errors.New("db down")
 	rt := stubSession()
 	h.p.handleWarn(context.Background(), interaction("warn", userOpt("user", "1001"), strOpt("category", "spam"), strOpt("reason", "r")))
-	if len(h.ops.sentTo("dm-1001")) != 0 {
+	if len(h.ops.sentTo(dmWith("1001"))) != 0 {
 		t.Error("nothing was recorded, so nobody should be told they were warned")
 	}
 	if !strings.Contains(rt.said(), "db down") {
@@ -195,9 +195,9 @@ func TestAStoreFailureIsReportedNotSwallowed(t *testing.T) {
 
 func TestNoteCarriesNoPointsAndSendsNoDM(t *testing.T) {
 	h := newHarness()
-	h.ranker.admins["admin-1"] = true // a note about an admin is fine
+	h.ranker.admins["7300006"] = true // a note about an admin is fine
 	stubSession()
-	h.p.handleNote(context.Background(), interaction("note", userOpt("user", "admin-1"), strOpt("reason", "asked for a rule change")))
+	h.p.handleNote(context.Background(), interaction("note", userOpt("user", "7300006"), strOpt("reason", "asked for a rule change")))
 	e := h.store.all()
 	if len(e) != 1 || e[0].Kind != KindNote || e[0].Points != 0 {
 		t.Fatalf("entries = %+v", e)
@@ -225,14 +225,14 @@ func TestViewRendersScoreEntriesAndPages(t *testing.T) {
 	h := newHarness()
 	seedEntries(h, "1001", 12)
 	_, _ = h.store.Insert(context.Background(), Entry{
-		GuildID: testGuild, UserID: "1001", Kind: KindNote, ActorID: "mod-2", Reason: "internal", Source: SourceCommand, CreatedAt: testNow,
+		GuildID: testGuild, UserID: "1001", Kind: KindNote, ActorID: "7300005", Reason: "internal", Source: SourceCommand, CreatedAt: testNow,
 	})
 	rt := stubSession()
-	h.p.handleView(context.Background(), withResolved(interaction("view", userOpt("user", "1001")), &discordgo.User{ID: "1001", Username: "dana"}))
+	h.p.handleView(context.Background(), withResolved(interaction("view", userOpt("user", "1001")), &discord.User{ID: core.ID("1001"), Username: "dana"}))
 	said := rt.said()
 	// Twelve warnings at ten points, spread over the last eleven hours of a
 	// thirty-day half-life, decay to just under 120.
-	for _, want := range []string{"Rapsheet: dana", "**Score:** 119", "jail 1d", "internal", "@mod-2", "Page 1/2", "#13 note"} {
+	for _, want := range []string{"Rapsheet: dana", "**Score:** 119", "jail 1d", "internal", "@7300005", "Page 1/2", "#13 note"} {
 		if !strings.Contains(said, want) {
 			t.Errorf("view should contain %q, got %s", want, said)
 		}
@@ -290,18 +290,18 @@ func TestPublicViewIsTheModViewWithoutAlts(t *testing.T) {
 	})
 	_ = h.store.Void(ctx, testGuild, id, modID, "oops", testNow)
 	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "1001", GroupID: "1001", LinkedBy: modID})
-	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "alt-account", GroupID: "1001", LinkedBy: modID})
-	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "1001", CandidateID: "hint-account", Signals: []string{"same avatar"}})
+	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "7300024", GroupID: "1001", LinkedBy: modID})
+	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "1001", CandidateID: "7300025", Signals: []string{"same avatar"}})
 
 	rt := stubSession()
 	h.p.handleView(ctx, withResolved(
 		interaction("view", userOpt("user", "1001"), boolOpt("public", true)),
-		&discordgo.User{ID: "1001", Username: "dana"}))
+		&discord.User{ID: core.ID("1001"), Username: "dana"}))
 	said := rt.said()
 	// Ephemeral messages cannot be forwarded, so the flag must be absent,
 	// and the buttons must not be the mod view's, whose next page would
 	// put the linked accounts back.
-	for _, leak := range []string{"alt-account", "hint-account", "Linked accounts", "Possible alts", `"flags":64`, viewPrefix} {
+	for _, leak := range []string{"7300024", "7300025", "Linked accounts", "Possible alts", `"flags":64`, viewPrefix} {
 		if strings.Contains(said, leak) {
 			t.Errorf("public view carried %q: %s", leak, said)
 		}
@@ -318,7 +318,7 @@ func TestPublicViewIsTheModViewWithoutAlts(t *testing.T) {
 	rt2 := stubSession()
 	h.p.handlePubPage(ctx, componentClick(modID, pubPagePrefix("1001")+"1"), pubPagePrefix("1001")+"1")
 	said2 := rt2.said()
-	if !strings.Contains(said2, "Page 2/2") || strings.Contains(said2, "alt-account") || strings.Contains(said2, "hint-account") {
+	if !strings.Contains(said2, "Page 2/2") || strings.Contains(said2, "7300024") || strings.Contains(said2, "7300025") {
 		t.Errorf("page two should stay the public view, got %s", said2)
 	}
 }
@@ -329,7 +329,7 @@ func TestViewTakesAMentionOrAnIDForSomebodyWhoLeft(t *testing.T) {
 	const gone = "123456789012345678"
 	seedEntries(h, gone, 2)
 	// Not a member any more, but still a Discord account.
-	h.ops.users[gone] = &discordgo.User{ID: gone, Username: "departed"}
+	h.ops.users[gone] = &discord.User{ID: core.ID(gone), Username: "departed"}
 
 	for _, in := range []string{gone, " " + gone + " ", "<@" + gone + ">", "<@!" + gone + ">"} {
 		rt := stubSession()
@@ -394,10 +394,10 @@ func TestVoidStrikesAnEntryAndItStopsCounting(t *testing.T) {
 
 func TestVoidRespectsHierarchy(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("admin-1")
-	h.ranker.admins["admin-1"] = true
+	h.ops.addMember("7300006")
+	h.ranker.admins["7300006"] = true
 	_, _ = h.store.Insert(context.Background(), Entry{
-		GuildID: testGuild, UserID: "1001", Kind: KindWarn, Points: 10, ActorID: "admin-1", Source: SourceCommand, CreatedAt: testNow,
+		GuildID: testGuild, UserID: "1001", Kind: KindWarn, Points: 10, ActorID: "7300006", Source: SourceCommand, CreatedAt: testNow,
 	})
 	rt := stubSession()
 	h.p.handleVoid(context.Background(), interaction("void", intOpt("case", 1), strOpt("reason", "nope")))
@@ -510,13 +510,13 @@ func TestStatusWarnsWhenSuggestionsHaveNowhereToGo(t *testing.T) {
 		t.Errorf("got %s", rt.said())
 	}
 	cfg := defaultConfig(testGuild)
-	cfg.ModChannelID = "mods"
+	cfg.ModChannelID = "7300020"
 	cfg.ForumChannelID = "forum"
 	_ = h.store.SetConfig(context.Background(), cfg)
 	seedEntries(h, "1001", 2)
 	rt2 := stubSession()
 	h.p.handleStatus(context.Background(), interaction("status"))
-	if !strings.Contains(rt2.said(), "#mods") || !strings.Contains(rt2.said(), "2 entries are not mirrored") {
+	if !strings.Contains(rt2.said(), "#7300020") || !strings.Contains(rt2.said(), "2 entries are not mirrored") {
 		t.Errorf("got %s", rt2.said())
 	}
 }
@@ -531,7 +531,7 @@ func TestConfigReadFailureFallsBackToDefaults(t *testing.T) {
 }
 
 // fieldValue is the value of the embed field named name, or "".
-func fieldValue(e *discordgo.MessageEmbed, name string) string {
+func fieldValue(e discord.Embed, name string) string {
 	for _, f := range e.Fields {
 		if f.Name == name {
 			return f.Value

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -40,9 +40,9 @@ func (f *fakeJailer) JailAutomatic(_ context.Context, _, userID string, d time.D
 }
 
 func withModChannel(h *harness, mode Mode) {
-	h.ops.channels["mods"] = &discordgo.Channel{ID: "mods", Type: discordgo.ChannelTypeGuildText}
+	h.ops.channels["7300020"] = &fch{ID: "7300020", Type: discord.ChannelTypeGuildText}
 	cfg := defaultConfig(testGuild)
-	cfg.ModChannelID = "mods"
+	cfg.ModChannelID = "7300020"
 	cfg.EscalationMode = mode
 	_ = h.store.SetConfig(context.Background(), cfg)
 }
@@ -70,29 +70,29 @@ func TestCrossingABandSuggestsOnceAndPostsToTheModChannel(t *testing.T) {
 	h := newHarness()
 	withModChannel(h, ModeSuggest)
 
-	warnPts(h, "u1", 20) // 20: below notice
+	warnPts(h, "7300007", 20) // 20: below notice
 	if len(suggestions(h)) != 0 {
 		t.Fatal("suggested below the first band")
 	}
-	warnPts(h, "u1", 10) // 30: notice band
+	warnPts(h, "7300007", 10) // 30: notice band
 	sug := suggestions(h)
 	if len(sug) != 1 || sug[0].Band != 1 || sug[0].Points != 0 || sug[0].Source != SourceLadder {
 		t.Fatalf("suggestions = %+v", sug)
 	}
-	posts := h.ops.sentTo("mods")
+	posts := h.ops.sentTo("7300020")
 	if len(posts) != 1 || !strings.Contains(posts[0].Embeds[0].Title, "notice") || len(posts[0].Components) != 1 {
 		t.Fatalf("mod channel posts = %+v", posts)
 	}
-	warnPts(h, "u1", 10) // 40: still notice band, no second suggestion
+	warnPts(h, "7300007", 10) // 40: still notice band, no second suggestion
 	if len(suggestions(h)) != 1 {
 		t.Error("the same band was suggested twice")
 	}
-	warnPts(h, "u1", 20) // 60: jail 2h band
+	warnPts(h, "7300007", 20) // 60: jail 2h band
 	sug = suggestions(h)
 	if len(sug) != 2 || sug[1].Band != 2 || sug[1].Duration != 2*time.Hour {
 		t.Errorf("suggestions = %+v", sug)
 	}
-	if len(h.ops.sentTo("mods")) != 2 {
+	if len(h.ops.sentTo("7300020")) != 2 {
 		t.Error("second band not posted")
 	}
 }
@@ -100,7 +100,7 @@ func TestCrossingABandSuggestsOnceAndPostsToTheModChannel(t *testing.T) {
 func TestADismissedSuggestionCanBeMadeAgainLater(t *testing.T) {
 	h := newHarness()
 	withModChannel(h, ModeSuggest)
-	warnPts(h, "u1", 30)
+	warnPts(h, "7300007", 30)
 	sug := suggestions(h)[0]
 
 	id := suggestDismissPrefix + strconv.FormatInt(sug.ID, 10)
@@ -116,7 +116,7 @@ func TestADismissedSuggestionCanBeMadeAgainLater(t *testing.T) {
 		t.Error("dismiss not audited")
 	}
 	// Another offence at the same band: a different time, suggested again.
-	warnPts(h, "u1", 5)
+	warnPts(h, "7300007", 5)
 	if n := len(suggestions(h)); n != 2 {
 		t.Errorf("suggestions after dismiss and re-cross = %d, want 2", n)
 	}
@@ -127,14 +127,14 @@ func TestApplyRunsTheConsequenceThroughTheJailerAndRecordsItAtZeroPoints(t *test
 	withModChannel(h, ModeSuggest)
 	jailer := &fakeJailer{}
 	h.p.jailer = jailer
-	warnPts(h, "u1", 60) // straight to jail 2h
+	warnPts(h, "7300007", 60) // straight to jail 2h
 	sug := suggestions(h)[0]
 	id := suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
 
 	rt := stubSession()
 	h.p.handleSuggestion(context.Background(), componentClick(modID, id), id)
 
-	if len(jailer.calls) != 1 || jailer.calls[0].userID != "u1" || jailer.calls[0].d != 2*time.Hour ||
+	if len(jailer.calls) != 1 || jailer.calls[0].userID != "7300007" || jailer.calls[0].d != 2*time.Hour ||
 		!strings.HasPrefix(jailer.calls[0].reason, ladderReasonPrefix) {
 		t.Fatalf("jailer calls = %+v", jailer.calls)
 	}
@@ -152,7 +152,7 @@ func TestApplyRunsTheConsequenceThroughTheJailerAndRecordsItAtZeroPoints(t *test
 	}
 	// A second click is refused as already applied.
 	rt2 := stubSession()
-	h.p.handleSuggestion(context.Background(), componentClick("mod-2", id), id)
+	h.p.handleSuggestion(context.Background(), componentClick("7300005", id), id)
 	if len(jailer.calls) != 1 || !strings.Contains(rt2.said(), "Already applied") {
 		t.Errorf("second click: calls %d said %s", len(jailer.calls), rt2.said())
 	}
@@ -166,7 +166,7 @@ func TestAFailedApplyVoidsTheConsequenceAndLeavesTheSuggestionOpen(t *testing.T)
 	h := newHarness()
 	withModChannel(h, ModeSuggest)
 	h.p.jailer = &fakeJailer{err: errors.New("jail role missing")}
-	warnPts(h, "u1", 60)
+	warnPts(h, "7300007", 60)
 	id := suggestApplyPrefix + strconv.FormatInt(suggestions(h)[0].ID, 10)
 
 	rt := stubSession()
@@ -184,7 +184,7 @@ func TestAFailedApplyVoidsTheConsequenceAndLeavesTheSuggestionOpen(t *testing.T)
 func TestApplyingABanNeedsAnAdminHoweverTheButtonWasRegistered(t *testing.T) {
 	h := newHarness()
 	withModChannel(h, ModeSuggest)
-	warnPts(h, "u1", 200) // ban 7d
+	warnPts(h, "7300007", 200) // ban 7d
 	id := suggestApplyPrefix + strconv.FormatInt(suggestions(h)[0].ID, 10)
 
 	h.ranker.authErr = core.ErrForbidden{Reason: "requires admin"}
@@ -196,8 +196,8 @@ func TestApplyingABanNeedsAnAdminHoweverTheButtonWasRegistered(t *testing.T) {
 
 	h.ranker.authErr = nil
 	stubSession()
-	h.p.handleSuggestion(context.Background(), componentClick("admin-1", id), id)
-	if _, ok := h.ops.bans["u1"]; !ok {
+	h.p.handleSuggestion(context.Background(), componentClick("7300006", id), id)
+	if _, ok := h.ops.bans["7300007"]; !ok {
 		t.Fatal("an admin could not apply the ban")
 	}
 	if !h.sched.has(sweepKey(testGuild)) {
@@ -213,30 +213,30 @@ func TestAutoModeActsOnAutomaticEntriesAndSuggestsOnAModsOwn(t *testing.T) {
 	withModChannel(h, ModeAuto)
 	jailer := &fakeJailer{}
 	h.p.jailer = jailer
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 
 	// A mod's warn that crosses into jail: suggested, not applied.
-	warnPts(h, "u1", 60)
+	warnPts(h, "7300007", 60)
 	if len(jailer.calls) != 0 || len(suggestions(h)) != 1 {
 		t.Fatalf("auto mode acted on a mod's own command: jails %d suggestions %d", len(jailer.calls), len(suggestions(h)))
 	}
 
 	// An aimod removal on somebody else that crosses: applied.
-	h.ops.addMember("u2")
+	h.ops.addMember("7300008")
 	for i := 0; i < 2; i++ {
 		publishAction(h, testGuild, core.ModerationActionPayload{
-			UserID: "u2", Kind: "removal", Category: "hate_speech", ActorID: core.ActorSystem, Source: "aimod", Ref: "inc-" + strconv.Itoa(i),
+			UserID: "7300008", Kind: "removal", Category: "hate_speech", ActorID: core.ActorSystem, Source: "aimod", Ref: "inc-" + strconv.Itoa(i),
 		})
 	}
 	// The first removal (50) crossed into jail 2h and was applied; the
 	// second (100) crossed into jail 1d, which the standing 2h jail does not
 	// cover, so it was applied too (roles extends, never shortens).
-	if len(jailer.calls) != 2 || jailer.calls[0].d != 2*time.Hour || jailer.calls[1].userID != "u2" || jailer.calls[1].d != 24*time.Hour {
+	if len(jailer.calls) != 2 || jailer.calls[0].d != 2*time.Hour || jailer.calls[1].userID != "7300008" || jailer.calls[1].d != 24*time.Hour {
 		t.Fatalf("auto mode did not act on aimod entries: %+v", jailer.calls)
 	}
 	var cons *Entry
 	for _, e := range h.store.all() {
-		if e.UserID == "u2" && e.Kind == KindJail {
+		if e.UserID == "7300008" && e.Kind == KindJail {
 			cons = &e
 		}
 	}
@@ -250,12 +250,12 @@ func TestTheLadderNeverActsOnStaffOrTheOperator(t *testing.T) {
 	withModChannel(h, ModeAuto)
 	jailer := &fakeJailer{}
 	h.p.jailer = jailer
-	h.ops.addMember("admin-1")
-	h.ranker.admins["admin-1"] = true
+	h.ops.addMember("7300006")
+	h.ranker.admins["7300006"] = true
 	h.ops.addMember("boot")
 	h.ranker.bootstrap = "boot"
 
-	for _, u := range []string{"admin-1", "boot"} {
+	for _, u := range []string{"7300006", "boot"} {
 		// An admin cannot be warned by a mod, so the points arrive over the
 		// bus (a Discord-side ban by another admin, say).
 		publishAction(h, testGuild, core.ModerationActionPayload{UserID: u, Kind: "kick", ActorID: "owner", Source: "discord", Ref: "k-" + u})
@@ -278,14 +278,14 @@ func TestAStandingConsequenceSuppressesAWeakerSuggestion(t *testing.T) {
 	// aimod jailed them for a day already (arrives as a zero-point jail),
 	// and the offence carried 100 points: jail 24h band.
 	ends := testNow.Add(24 * time.Hour)
-	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "u1", Kind: "jail", ActorID: core.ActorSystem, Duration: 24 * time.Hour, EndsAt: &ends, Source: "roles"})
-	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "u1", Kind: "removal", Category: "threats", ActorID: core.ActorSystem, Source: "aimod", Ref: "1"})
+	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "7300007", Kind: "jail", ActorID: core.ActorSystem, Duration: 24 * time.Hour, EndsAt: &ends, Source: "roles"})
+	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "7300007", Kind: "removal", Category: "threats", ActorID: core.ActorSystem, Source: "aimod", Ref: "1"})
 	if n := len(suggestions(h)); n != 0 {
 		t.Errorf("suggested a 24h jail over a standing 24h jail: %d", n)
 	}
 	// A second critical offence reaches the ban band, which the jail does
 	// not cover.
-	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "u1", Kind: "removal", Category: "threats", ActorID: core.ActorSystem, Source: "aimod", Ref: "2"})
+	publishAction(h, testGuild, core.ModerationActionPayload{UserID: "7300007", Kind: "removal", Category: "threats", ActorID: core.ActorSystem, Source: "aimod", Ref: "2"})
 	sug := suggestions(h)
 	if len(sug) != 1 || sug[0].Band != 4 {
 		t.Errorf("suggestions = %+v", sug)
@@ -294,7 +294,7 @@ func TestAStandingConsequenceSuppressesAWeakerSuggestion(t *testing.T) {
 
 func TestNoModChannelMeansNothingIsRecordedOrPosted(t *testing.T) {
 	h := newHarness()
-	warnPts(h, "u1", 60)
+	warnPts(h, "7300007", 60)
 	if len(suggestions(h)) != 0 {
 		t.Error("a suggestion was recorded with nowhere to post it, silencing the band")
 	}
@@ -303,25 +303,25 @@ func TestNoModChannelMeansNothingIsRecordedOrPosted(t *testing.T) {
 func TestModeOffRecordsAndScoresOnly(t *testing.T) {
 	h := newHarness()
 	withModChannel(h, ModeOff)
-	warnPts(h, "u1", 200)
-	if len(suggestions(h)) != 0 || len(h.ops.sentTo("mods")) != 0 {
+	warnPts(h, "7300007", 200)
+	if len(suggestions(h)) != 0 || len(h.ops.sentTo("7300020")) != 0 {
 		t.Error("mode off suggested")
 	}
 }
 
 func TestPriorsCountScoredOffencesAcrossTheGroupAndDeferWhenDisabled(t *testing.T) {
 	h := newHarness()
-	warnPts(h, "u1", 10)
-	warnPts(h, "u2", 10)
-	_ = h.store.Link(context.Background(), Link{GuildID: testGuild, UserID: "u1", GroupID: "u1", LinkedBy: modID})
-	_ = h.store.Link(context.Background(), Link{GuildID: testGuild, UserID: "u2", GroupID: "u1", LinkedBy: modID})
-	_, _ = h.store.Insert(context.Background(), Entry{GuildID: testGuild, UserID: "u1", Kind: KindNote, ActorID: modID, Source: SourceCommand, CreatedAt: testNow})
-	n, ok, err := h.p.Priors(context.Background(), testGuild, "u1", testNow.Add(-time.Hour))
+	warnPts(h, "7300007", 10)
+	warnPts(h, "7300008", 10)
+	_ = h.store.Link(context.Background(), Link{GuildID: testGuild, UserID: "7300007", GroupID: "7300007", LinkedBy: modID})
+	_ = h.store.Link(context.Background(), Link{GuildID: testGuild, UserID: "7300008", GroupID: "7300007", LinkedBy: modID})
+	_, _ = h.store.Insert(context.Background(), Entry{GuildID: testGuild, UserID: "7300007", Kind: KindNote, ActorID: modID, Source: SourceCommand, CreatedAt: testNow})
+	n, ok, err := h.p.Priors(context.Background(), testGuild, "7300007", testNow.Add(-time.Hour))
 	if err != nil || !ok || n != 2 {
 		t.Errorf("Priors = %d %v %v, want 2 (both accounts, note excluded)", n, ok, err)
 	}
 	h.p.gate = fakeGate{disabled: map[string]bool{testGuild: true}}
-	if _, ok, _ := h.p.Priors(context.Background(), testGuild, "u1", testNow.Add(-time.Hour)); ok {
+	if _, ok, _ := h.p.Priors(context.Background(), testGuild, "7300007", testNow.Add(-time.Hour)); ok {
 		t.Error("a disabled rapsheet should have no opinion")
 	}
 }
@@ -340,13 +340,13 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 	}
 
 	stubSession()
-	panelClick(h.p, panelSet+"modch", "mods")
+	panelClick(h.p, panelSet+"modch", "7300020")
 
 	rt3 := stubSession()
 	panelForm(h.p, formSet+"halflife", map[string]string{"half_life": "14d"})
 	rt4 := stubSession()
 	panelForm(h.p, formSet+"halflife", map[string]string{"half_life": "2h"})
-	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.HalfLife != 14*24*time.Hour || cfg.ModChannelID != "mods" {
+	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.HalfLife != 14*24*time.Hour || cfg.ModChannelID != "7300020" {
 		t.Errorf("cfg = %+v", cfg)
 	}
 	if !strings.Contains(rt3.said(), "count half after 14d") || !strings.Contains(rt4.said(), "between") {
@@ -405,8 +405,8 @@ func TestVoidingTheOffenceWithdrawsTheSuggestionItCaused(t *testing.T) {
 	h := newHarness()
 	withModChannel(h, ModeSuggest)
 	h.ops.addMember(modID)
-	warnPts(h, "u1", 30)  // notice band, suggested
-	warnPts(h, "u1", 100) // jail 1d band, suggested
+	warnPts(h, "7300007", 30)  // notice band, suggested
+	warnPts(h, "7300007", 100) // jail 1d band, suggested
 	sug := suggestions(h)
 	if len(sug) != 2 {
 		t.Fatalf("suggestions = %+v", sug)
@@ -432,11 +432,11 @@ func TestApplyRefusesWhenTheRecordNoLongerReachesTheBand(t *testing.T) {
 	h := newHarness()
 	withModChannel(h, ModeSuggest)
 	h.p.jailer = &fakeJailer{}
-	warnPts(h, "u1", 60)
+	warnPts(h, "7300007", 60)
 	sug := suggestions(h)[0]
 	// The warning is voided directly in the store, bypassing the command's
 	// own withdrawal, so the click is what finds out.
-	_ = h.store.Void(context.Background(), testGuild, 1, "mod-2", "x", testNow)
+	_ = h.store.Void(context.Background(), testGuild, 1, "7300005", "x", testNow)
 	id := suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
 	rt := stubSession()
 	h.p.handleSuggestion(context.Background(), componentClick(modID, id), id)

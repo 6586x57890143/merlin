@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // newEntry is what a caller knows about an entry before it is written.
@@ -31,7 +30,7 @@ type newEntry struct {
 	// Identity is the member's user object when the caller has one for free
 	// (an interaction's Resolved.Users, a gateway event), so the case file's
 	// snapshot is refreshed without a REST call.
-	Identity *discordgo.User
+	Identity *discord.User
 }
 
 // record is the one path every entry is written through, whatever produced
@@ -107,15 +106,15 @@ func (p *Plugin) afterRecord(ctx context.Context, cfg Config, e Entry) string {
 // identity snapshot when a user object is to hand. Without one it fetches
 // the user once; a failure there is logged and costs nothing but a blank
 // name in the alt matcher until the next entry.
-func (p *Plugin) ensureCaseFile(ctx context.Context, guildID, userID string, u *discordgo.User) {
+func (p *Plugin) ensureCaseFile(ctx context.Context, guildID, userID string, u *discord.User) {
 	if u == nil {
-		if fetched, err := p.ops(guildID).User(userID); err == nil {
+		if fetched, err := p.ops(guildID).GetUser(core.ID(userID)); err == nil {
 			u = fetched
 		}
 	}
 	cf := CaseFile{GuildID: guildID, UserID: userID}
 	if u != nil {
-		cf.Username, cf.GlobalName, cf.AvatarHash = u.Username, u.GlobalName, u.Avatar
+		cf.Username, cf.GlobalName, cf.AvatarHash = u.Username, deref(u.GlobalName), deref(u.Avatar)
 	}
 	if err := p.store.UpsertCaseFile(ctx, cf); err != nil {
 		p.log.Error("rapsheet: upsert case file", "guild", guildID, "user", userID, "err", err)

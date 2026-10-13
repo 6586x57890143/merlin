@@ -3,19 +3,20 @@ package rapsheet
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
 func withForum(h *harness) {
-	h.ops.addForum("forum-1")
+	h.ops.addForum("7300022")
 	cfg := defaultConfig(testGuild)
-	cfg.ForumChannelID = "forum-1"
+	cfg.ForumChannelID = "7300022"
 	_ = h.store.SetConfig(context.Background(), cfg)
 }
 
@@ -24,7 +25,7 @@ func warn(h *harness, userID, reason string) {
 	h.ops.addMember(userID)
 	h.p.handleWarn(context.Background(), withResolved(
 		interaction("warn", userOpt("user", userID), strOpt("category", "spam"), strOpt("reason", reason)),
-		&discordgo.User{ID: userID, Username: "dana", GlobalName: "Dana"}))
+		&discord.User{ID: core.ID(userID), Username: "dana", GlobalName: strp("Dana")}))
 }
 
 func TestTheFirstEntryOpensACaseFileAndLaterOnesAppend(t *testing.T) {
@@ -35,15 +36,15 @@ func TestTheFirstEntryOpensACaseFileAndLaterOnesAppend(t *testing.T) {
 	if h.ops.threadsOpened != 1 {
 		t.Fatalf("threads opened = %d, want 1", h.ops.threadsOpened)
 	}
-	th := h.ops.channels["t-1"]
-	if th.Name != "Dana (1001)" || th.ParentID != "forum-1" {
+	th := h.ops.channels["7500001"]
+	if th.Name != "Dana (1001)" || th.ParentID != "7300022" {
 		t.Errorf("thread = %+v", th)
 	}
 	cf, _, _ := h.store.CaseFile(context.Background(), testGuild, "1001")
-	if cf.ThreadID != "t-1" {
+	if cf.ThreadID != "7500001" {
 		t.Errorf("case file thread = %q", cf.ThreadID)
 	}
-	if e, _ := h.store.Entry(context.Background(), testGuild, 1); e.ThreadMessageID != "t-1" {
+	if e, _ := h.store.Entry(context.Background(), testGuild, 1); e.ThreadMessageID != "7500001" {
 		t.Errorf("starter message id should be the thread id, got %q", e.ThreadMessageID)
 	}
 
@@ -51,7 +52,7 @@ func TestTheFirstEntryOpensACaseFileAndLaterOnesAppend(t *testing.T) {
 	if h.ops.threadsOpened != 1 {
 		t.Errorf("a second entry opened another thread")
 	}
-	if sent := h.ops.sentTo("t-1"); len(sent) != 2 {
+	if sent := h.ops.sentTo("7500001"); len(sent) != 2 {
 		t.Errorf("messages in the case file = %d, want 2", len(sent))
 	} else if !strings.Contains(sent[1].Embeds[0].Title, "#2") || sent[1].Embeds[0].Description != "second" {
 		t.Errorf("mirrored embed = %+v", sent[1].Embeds[0])
@@ -99,7 +100,7 @@ func TestAMirrorFailureNeverFailsTheEntry(t *testing.T) {
 func TestADeletedForumUnsetsItself(t *testing.T) {
 	h := newHarness()
 	withForum(h)
-	delete(h.ops.channels, "forum-1")
+	delete(h.ops.channels, "7300022")
 	warn(h, "1001", "r")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.ForumChannelID != "" {
 		t.Errorf("forum still configured after Discord said it is gone: %q", cfg.ForumChannelID)
@@ -110,13 +111,13 @@ func TestADeletedThreadIsReopenedOnce(t *testing.T) {
 	h := newHarness()
 	withForum(h)
 	warn(h, "1001", "first")
-	delete(h.ops.channels, "t-1")
+	delete(h.ops.channels, "7500001")
 	warn(h, "1001", "second")
 	if h.ops.threadsOpened != 2 {
 		t.Fatalf("threads opened = %d, want 2", h.ops.threadsOpened)
 	}
 	cf, _, _ := h.store.CaseFile(context.Background(), testGuild, "1001")
-	if cf.ThreadID != "t-2" {
+	if cf.ThreadID != "7500002" {
 		t.Errorf("case file should point at the new thread, got %q", cf.ThreadID)
 	}
 }
@@ -135,18 +136,18 @@ func TestVoidAndEditRewriteTheMirroredMessage(t *testing.T) {
 	if len(h.ops.edits) != 2 {
 		t.Fatalf("edits = %d, want 2 (edit, void)", len(h.ops.edits))
 	}
-	if sent := h.ops.sentTo("t-1"); len(sent) != 1 {
+	if sent := h.ops.sentTo("7500001"); len(sent) != 1 {
 		t.Errorf("an amend posted again instead of editing: %d messages", len(sent))
 	}
 	edit, void := h.ops.edits[0], h.ops.edits[1]
-	if edit.Channel != "t-1" || edit.ID != "t-1" || (*edit.Embeds)[0].Description != "clearer" {
+	if edit.channelID != "7500001" || edit.messageID != "7500001" || (*edit.u.Embeds)[0].Description != "clearer" {
 		t.Errorf("edit = %+v", edit)
 	}
-	ve := (*void.Embeds)[0]
+	ve := (*void.u.Embeds)[0]
 	if !strings.Contains(ve.Title, "voided") || !strings.Contains(fieldValue(ve, "Voided"), "wrong person") {
 		t.Errorf("void embed = %+v", ve)
 	}
-	if void.Attachments == nil {
+	if void.u.Attachments == nil {
 		t.Error("attachments must be replaced on edit, or the old mood icon stays alongside the new one")
 	}
 }
@@ -172,7 +173,7 @@ func TestEntryEmbedShapes(t *testing.T) {
 	}
 	// The forum previews the post's image: it must be the mood icon, the
 	// only file uploaded, never the divider.
-	if files := core.EmbedFiles(em); em.Image != nil || len(files) != 1 || !strings.HasPrefix(files[0].Name, "merlin_") {
+	if files := core.EmbedUploads(em); em.Image != nil || len(files) != 1 || !strings.HasPrefix(files[0].Name, "merlin_") {
 		t.Errorf("case-file post image = %+v, files = %d; want only the mood icon", em.Image, len(files))
 	}
 	e.Source = SourceDiscord
@@ -195,24 +196,24 @@ func TestEntryEmbedShapes(t *testing.T) {
 
 func TestConfigureForumCreatesAHiddenForumForTheModRoles(t *testing.T) {
 	h := newHarness()
-	h.p.botID = "merlin-1"
+	h.p.botID = core.ID("7300003")
 	rt := stubSession()
 	panelClick(h.p, panelSet+"forumnew")
 	if len(h.ops.created) != 1 {
 		t.Fatalf("created %d channels", len(h.ops.created))
 	}
 	data := h.ops.created[0]
-	if data.Type != discordgo.ChannelTypeGuildForum || data.Name != caseFileForumName {
+	if data.Type() != discord.ChannelTypeGuildForum || data.Name != caseFileForumName {
 		t.Errorf("created %+v", data)
 	}
 	var everyoneDenied, botAllowed, modAllowed bool
-	for _, ow := range data.PermissionOverwrites {
+	for _, ow := range core.Overwrites(data.PermissionOverwrites) {
 		switch {
-		case ow.ID == testGuild && ow.Deny&discordgo.PermissionViewChannel != 0:
+		case ow.ID.String() == testGuild && ow.Deny&discord.PermissionViewChannel != 0:
 			everyoneDenied = true
-		case ow.ID == "merlin-1" && ow.Allow&discordgo.PermissionCreatePublicThreads != 0:
+		case ow.ID.String() == "7300003" && ow.Allow&discord.PermissionCreatePublicThreads != 0:
 			botAllowed = true
-		case ow.ID == "mod-role" && ow.Allow&discordgo.PermissionViewChannel != 0 && ow.Allow&discordgo.PermissionCreatePublicThreads == 0:
+		case ow.ID.String() == "7300018" && ow.Allow&discord.PermissionViewChannel != 0 && ow.Allow&discord.PermissionCreatePublicThreads == 0:
 			modAllowed = true
 		}
 	}
@@ -220,7 +221,7 @@ func TestConfigureForumCreatesAHiddenForumForTheModRoles(t *testing.T) {
 		t.Errorf("overwrites = %+v", data.PermissionOverwrites)
 	}
 	cfg, _ := h.store.Config(context.Background(), testGuild)
-	if cfg.ForumChannelID != "ch-1" {
+	if cfg.ForumChannelID != "7400001" {
 		t.Errorf("config forum = %q", cfg.ForumChannelID)
 	}
 	if !strings.Contains(rt.said(), "hidden from @everyone") || !h.audit.has("rapsheet.configured") {
@@ -230,13 +231,13 @@ func TestConfigureForumCreatesAHiddenForumForTheModRoles(t *testing.T) {
 
 func TestConfigureForumAcceptsAnExistingForumAndWarnsAboutItsPermissions(t *testing.T) {
 	h := newHarness()
-	h.ops.addForum("their-forum")
-	h.ops.channels["text"] = &discordgo.Channel{ID: "text", Type: discordgo.ChannelTypeGuildText}
+	h.ops.addForum("7300023")
+	h.ops.channels["7300021"] = &fch{ID: "7300021", Type: discord.ChannelTypeGuildText}
 	seedEntries(h, "1001", 3)
 
 	rt := stubSession()
-	panelClick(h.p, panelSet+"forum", "their-forum")
-	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.ForumChannelID != "their-forum" {
+	panelClick(h.p, panelSet+"forum", "7300023")
+	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.ForumChannelID != "7300023" {
 		t.Errorf("config forum = %q", cfg.ForumChannelID)
 	}
 	if len(h.ops.created) != 0 || !strings.Contains(rt.said(), "left as they are") || !strings.Contains(rt.said(), "3 existing entries") {
@@ -244,7 +245,7 @@ func TestConfigureForumAcceptsAnExistingForumAndWarnsAboutItsPermissions(t *test
 	}
 
 	rt2 := stubSession()
-	panelClick(h.p, panelSet+"forum", "text")
+	panelClick(h.p, panelSet+"forum", "7300021")
 	if !strings.Contains(rt2.said(), "not a forum") {
 		t.Errorf("got %s", rt2.said())
 	}
@@ -252,9 +253,9 @@ func TestConfigureForumAcceptsAnExistingForumAndWarnsAboutItsPermissions(t *test
 
 func TestConfigureForumRefusesNearTheChannelCap(t *testing.T) {
 	h := newHarness()
-	h.p.botID = "merlin-1"
+	h.p.botID = core.ID("7300003")
 	for i := 0; i < 500-channelCapHeadroom; i++ {
-		h.ops.channels[strings.Repeat("c", i+1)] = &discordgo.Channel{}
+		h.ops.channels[strconv.Itoa(60000+i)] = &fch{}
 	}
 	rt := stubSession()
 	panelClick(h.p, panelSet+"forumnew")
@@ -266,12 +267,12 @@ func TestConfigureForumRefusesNearTheChannelCap(t *testing.T) {
 func TestConfigureShowListsTheConfiguration(t *testing.T) {
 	h := newHarness()
 	cfg := defaultConfig(testGuild)
-	cfg.ModChannelID = "mods"
+	cfg.ModChannelID = "7300020"
 	cfg.CategoryPoints[CategorySpam] = 3
 	_ = h.store.SetConfig(context.Background(), cfg)
 	rt := stubSession()
 	h.p.handleSettings(context.Background(), interaction("settings"))
-	for _, want := range []string{"#mods", "not set", "spam=3", "defaults"} {
+	for _, want := range []string{"#7300020", "not set", "spam=3", "defaults"} {
 		if !strings.Contains(rt.said(), want) {
 			t.Errorf("want %q in %s", want, rt.said())
 		}

@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -32,29 +32,29 @@ import (
 // every destructive call behind the pause/dry-run/rate-limit gate without
 // this package importing the guard.
 type DiscordOps interface {
-	Guild(guildID string, options ...discordgo.RequestOption) (*discordgo.Guild, error)
+	GetGuild(guildID snowflake.ID) (*discord.RestGuild, error)
 	// GuildMember is a live REST fetch, for the same reason roles insists on
 	// one: the rank check that decides whether a target may be touched has to
 	// see their actual roles, not a cached snapshot.
-	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)
-	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
-	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	GetMember(guildID, userID snowflake.ID) (*discord.Member, error)
+	GetUser(userID snowflake.ID) (*discord.User, error)
+	CreateDMChannel(userID snowflake.ID) (*discord.DMChannel, error)
+	CreateMessage(channelID snowflake.ID, m discord.MessageCreate) (*discord.Message, error)
 	// The case-file forum (casefile.go): finding or creating it, opening a
 	// post per member, and editing a mirrored entry in place.
-	Channel(channelID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
-	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ForumThreadStartComplex(channelID string, threadData *discordgo.ThreadStart, messageData *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Channel, error)
-	ChannelMessageEditComplex(m *discordgo.MessageEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	GetChannel(channelID snowflake.ID) (discord.Channel, error)
+	GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel, error)
+	CreateGuildChannel(guildID snowflake.ID, c discord.GuildChannelCreate) (discord.GuildChannel, error)
+	CreatePostInThreadChannel(channelID snowflake.ID, c discord.ThreadChannelPostCreate) (*discord.ThreadChannelPost, error)
+	UpdateMessage(channelID, messageID snowflake.ID, u discord.MessageUpdate) (*discord.Message, error)
 	// The consequences this plugin applies itself (bans.go). Jail is not
 	// here: it stays roles' primitive, reached through Jailer.
-	GuildMemberTimeout(guildID, userID string, until *time.Time, options ...discordgo.RequestOption) error
-	GuildBanCreateWithReason(guildID, userID, reason string, days int, options ...discordgo.RequestOption) error
-	GuildBanDelete(guildID, userID string, options ...discordgo.RequestOption) error
-	GuildMemberDeleteWithReason(guildID, userID, reason string, options ...discordgo.RequestOption) error
+	TimeoutMember(guildID, userID snowflake.ID, until *time.Time) error
+	AddBan(guildID, userID snowflake.ID, deleteMessages time.Duration, reason string) error
+	DeleteBan(guildID, userID snowflake.ID) error
+	RemoveMember(guildID, userID snowflake.ID, reason string) error
 	// GuildRoles backs the View Audit Log check on /rapsheet status.
-	GuildRoles(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Role, error)
+	GetRoles(guildID snowflake.ID) ([]discord.Role, error)
 }
 
 // OpsProvider hands back the guild-bound Discord view. Mirrors
@@ -116,7 +116,7 @@ type Plugin struct {
 	synchronous bool
 
 	mu               sync.Mutex
-	botID            string
+	botID            snowflake.ID // merlin's own user, given access to the case-file forum
 	sweepRegistered  map[string]bool
 	reviewRegistered map[string]bool
 	// applying holds the suggestions being applied right now, so two mods
@@ -157,9 +157,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	p.commands = deps.Commands
 	p.perms = deps.Perms
 	p.bus = deps.Bus
-	if deps.Session != nil && deps.Session.State != nil && deps.Session.State.User != nil {
-		p.botID = deps.Session.State.User.ID
-	}
+	p.botID = deps.BotID
 	p.registerCommands()
 	p.subscribe()
 	return nil
