@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
+	"net/http"
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordtest"
 	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
@@ -24,14 +27,17 @@ func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, n
 // botUserID is merlin's own snowflake in these tests. Every forum overwrite
 // list carries an entry for her, so it needs a name rather than a literal
 // repeated at a dozen assertions.
-const botUserID = "merlin-1"
+const botUserID = "1001"
+
+// forumID is the forum the fake creates.
+const forumID = "2001"
 
 // guildRoles is a guild's role list as resolveAccess sees it: @everyone,
 // whose ID is the guild's, plus whatever the test names.
-func guildRoles(guildID string, ids ...string) []*discordgo.Role {
-	out := []*discordgo.Role{{ID: guildID, Name: "@everyone"}}
+func guildRoles(guildID string, ids ...string) []discord.Role {
+	out := []discord.Role{{ID: core.ID(guildID), Name: "@everyone"}}
 	for _, id := range ids {
-		out = append(out, &discordgo.Role{ID: id, Name: id})
+		out = append(out, discord.Role{ID: core.ID(id), Name: id})
 	}
 	return out
 }
@@ -346,24 +352,25 @@ func (f *fakeStore) ClearPrizeSecret(_ context.Context, prizeID string) error {
 type fakeOps struct {
 	mu sync.Mutex
 
-	channels []*discordgo.Channel
-	threads  []*discordgo.Channel
-	messages map[string][]*discordgo.Message // channel/thread ID -> messages
+	channels []*fch
+	threads  []*fch
+	messages map[string][]discord.Message // channel/thread ID -> messages
 
-	created  []discordgo.GuildChannelCreateData
-	sent     map[string][]*discordgo.MessageSend
-	overwrit []int64 // deny masks passed to ChannelPermissionSet, in order
+	created  []discord.GuildForumChannelCreate
+	sent     map[string][]discord.MessageCreate
+	overwrit []discord.Permissions // deny masks of every overwrite write, in order
 	pinned   []string
+	dms      map[string]bool // DM channels handed out
 
-	// threadsAskedFor records the id GuildThreadsActive was called with, so a
-	// test can tell the guild-scoped endpoint from the channel-scoped one it
-	// replaced. The fake ignores it otherwise.
+	// threadsAskedFor records the id GetActiveGuildThreads was called with,
+	// so a test can tell the guild-scoped endpoint from the channel-scoped
+	// one it replaced. The fake ignores it otherwise.
 	threadsAskedFor string
 
 	// archived is the other half of the forum: threads Discord returns only
 	// from the channel-scoped archived endpoint, which is where a quiet
 	// forum post ends up on its own.
-	archived         []*discordgo.Channel
+	archived         []*fch
 	archivedAskedFor string
 	archivedPages    int
 
@@ -371,7 +378,7 @@ type fakeOps struct {
 	// half of a sync: one REST call per entry, per run.
 	messageReads int
 
-	roles []*discordgo.Role
+	roles []discord.Role
 	// edits counts whole-list permission writes, which is how a test tells
 	// "the resync changed something" from "it decided nothing had to change".
 	edits int
@@ -384,41 +391,60 @@ type fakeOps struct {
 	archivedErr error
 }
 
+// fch and fow are the shared fixtures, under short names.
+type (
+	fch = discordtest.Channel
+	fow = discordtest.Overwrite
+)
+
 func newFakeOps() *fakeOps {
 	return &fakeOps{
-		messages: map[string][]*discordgo.Message{},
-		sent:     map[string][]*discordgo.MessageSend{},
+		messages: map[string][]discord.Message{},
+		sent:     map[string][]discord.MessageCreate{},
+		dms:      map[string]bool{},
 	}
 }
 
-// Channel hands back the stored channel, overwrites and all, rather than a
-// bare shell with the right ID. setForumOpen reads its own channel back to
+// channel is the stored channel by ID, nil if there is none.
+func (f *fakeOps) channel(id string) *fch {
+	for _, ch := range f.channels {
+		if ch.ID == id {
+			return ch
+		}
+	}
+	return nil
+}
+
+// GetChannel hands back the stored channel, overwrites and all, rather than
+// a bare shell with the right ID. setForumOpen reads its own channel back to
 // change one bit inside the @everyone entry, so a fake that forgets what it
 // was created with reports "nothing to change" for every call and the test
 // passes while the real thing does the opposite.
-func (f *fakeOps) Channel(id string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+func (f *fakeOps) GetChannel(id snowflake.ID) (discord.Channel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.channelErr != nil {
 		return nil, f.channelErr
 	}
-	for _, ch := range f.channels {
-		if ch.ID == id {
-			return ch, nil
-		}
+	if ch := f.channel(id.String()); ch != nil {
+		return ch.Disgo(), nil
 	}
-	return &discordgo.Channel{ID: id}, nil
+	return (&fch{ID: id.String()}).Disgo(), nil
 }
 
-func (f *fakeOps) GuildChannels(string, ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
+func (f *fakeOps) GetGuildChannels(snowflake.ID) ([]discord.GuildChannel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.channels, nil
+	out := make([]discord.GuildChannel, len(f.channels))
+	for i, ch := range f.channels {
+		out[i] = ch.Disgo()
+	}
+	return out, nil
 }
 
-// GuildRoles is what resolveAccess checks named roles against, so a test can
+// GetRoles is what resolveAccess checks named roles against, so a test can
 // make a role disappear the way a guild can.
-func (f *fakeOps) GuildRoles(string, ...discordgo.RequestOption) ([]*discordgo.Role, error) {
+func (f *fakeOps) GetRoles(snowflake.ID) ([]discord.Role, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.rolesErr != nil {
@@ -427,47 +453,47 @@ func (f *fakeOps) GuildRoles(string, ...discordgo.RequestOption) ([]*discordgo.R
 	return f.roles, nil
 }
 
-func (f *fakeOps) User(id string, _ ...discordgo.RequestOption) (*discordgo.User, error) {
-	if id == "@me" {
-		return &discordgo.User{ID: botUserID}, nil
-	}
-	return &discordgo.User{ID: id}, nil
-}
-
-func (f *fakeOps) ChannelEditComplex(channelID string, data *discordgo.ChannelEdit, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+func (f *fakeOps) UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate) (discord.Channel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.edits++
-	for _, ch := range f.channels {
-		if ch.ID == channelID {
-			if data.PermissionOverwrites != nil {
-				ch.PermissionOverwrites = data.PermissionOverwrites
-			}
-			return ch, nil
-		}
+	data, ok := u.(discord.GuildTextChannelUpdate)
+	if !ok {
+		return nil, fmt.Errorf("fakeOps: contest sends GuildTextChannelUpdate, got %T", u)
 	}
-	return &discordgo.Channel{ID: channelID}, nil
+	ch := f.channel(channelID.String())
+	if ch == nil {
+		return (&fch{ID: channelID.String()}).Disgo(), nil
+	}
+	if data.PermissionOverwrites != nil {
+		ch.PermissionOverwrites = discordtest.Overwrites(*data.PermissionOverwrites)
+	}
+	return ch.Disgo(), nil
 }
 
-func (f *fakeOps) GuildThreadsActive(id string, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+func (f *fakeOps) GetActiveGuildThreads(id snowflake.ID) (*discord.GuildActiveThreads, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.threadsAskedFor = id
+	f.threadsAskedFor = id.String()
 	if f.threadsErr != nil {
 		return nil, f.threadsErr
 	}
-	return &discordgo.ThreadsList{Threads: f.threads}, nil
+	out := &discord.GuildActiveThreads{}
+	for _, th := range f.threads {
+		out.Threads = append(out.Threads, th.Thread())
+	}
+	return out, nil
 }
 
-// ThreadsArchived pages the way Discord's does: newest archive time first,
-// `before` is the cursor, and HasMore says whether another page exists. The
-// fake used to hand back the whole slice and ignore both, so forumThreads'
-// cursor arithmetic -- the part that decides whether a quiet entry is found
-// or silently withdrawn -- was never exercised.
-func (f *fakeOps) ThreadsArchived(id string, before *time.Time, limit int, _ ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
+// GetPublicArchivedThreads pages the way Discord's does: newest archive time
+// first, `before` is the cursor, and HasMore says whether another page
+// exists. The fake used to hand back the whole slice and ignore both, so
+// forumThreads' cursor arithmetic, the part that decides whether a quiet
+// entry is found or silently withdrawn, was never exercised.
+func (f *fakeOps) GetPublicArchivedThreads(id snowflake.ID, before time.Time, limit int) (*discord.GetThreads, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.archivedAskedFor = id
+	f.archivedAskedFor = id.String()
 	f.archivedPages++
 	if f.archivedErr != nil {
 		return nil, f.archivedErr
@@ -476,12 +502,10 @@ func (f *fakeOps) ThreadsArchived(id string, before *time.Time, limit int, _ ...
 		limit = archivedPageSize
 	}
 
-	rest := make([]*discordgo.Channel, 0, len(f.archived))
+	var rest []*fch
 	for _, th := range f.archived {
-		if before != nil {
-			if th.ThreadMetadata == nil || !th.ThreadMetadata.ArchiveTimestamp.Before(*before) {
-				continue
-			}
+		if !before.IsZero() && !th.ArchivedAt.Before(before) {
+			continue
 		}
 		rest = append(rest, th)
 	}
@@ -489,102 +513,129 @@ func (f *fakeOps) ThreadsArchived(id string, before *time.Time, limit int, _ ...
 	if len(page) > limit {
 		page = page[:limit]
 	}
-	return &discordgo.ThreadsList{Threads: page, HasMore: len(rest) > len(page)}, nil
+	out := &discord.GetThreads{HasMore: len(rest) > len(page)}
+	for _, th := range page {
+		out.Threads = append(out.Threads, th.Thread())
+	}
+	return out, nil
 }
 
-func (f *fakeOps) ChannelMessages(channelID string, _ int, _, _, _ string, _ ...discordgo.RequestOption) ([]*discordgo.Message, error) {
+// GetMessage is a thread's starter message: the first message stored under
+// it, whatever its ID, as a forum post's starter shares the thread's.
+func (f *fakeOps) GetMessage(channelID, _ snowflake.ID) (*discord.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.messageReads++
-	return f.messages[channelID], nil
+	msgs := f.messages[channelID.String()]
+	if len(msgs) == 0 {
+		return nil, &rest.Error{Code: 10008, Message: "Unknown Message", Response: &http.Response{StatusCode: http.StatusNotFound}}
+	}
+	return &msgs[0], nil
 }
 
-func (f *fakeOps) GuildChannelCreateComplex(_ string, data discordgo.GuildChannelCreateData, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+func (f *fakeOps) CreateGuildChannel(guildID snowflake.ID, c discord.GuildChannelCreate) (discord.GuildChannel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createFail != nil {
 		return nil, f.createFail
 	}
-	f.created = append(f.created, data)
-	ch := &discordgo.Channel{
-		ID: "forum-1", Name: data.Name, GuildID: data.ParentID,
-		Type:                 data.Type,
-		PermissionOverwrites: data.PermissionOverwrites,
+	forum, ok := c.(discord.GuildForumChannelCreate)
+	if !ok {
+		return nil, fmt.Errorf("fakeOps: contest creates forums, got %T", c)
 	}
+	ch := &fch{
+		ID: forumID, Name: forum.Name, GuildID: guildID.String(), Type: forum.Type(), Topic: forum.Topic,
+		PermissionOverwrites: discordtest.Overwrites(forum.PermissionOverwrites),
+	}
+	if forum.ParentID != 0 {
+		ch.ParentID = forum.ParentID.String()
+	}
+	f.created = append(f.created, forum)
 	f.channels = append(f.channels, ch)
-	return ch, nil
+	return ch.Disgo(), nil
 }
 
-// ChannelPermissionSet replaces the whole (allow, deny) pair for one target,
-// which is what the real endpoint does and the reason setForumOpen has to
-// read before it writes.
-func (f *fakeOps) ChannelPermissionSet(channelID, targetID string, kind discordgo.PermissionOverwriteType, allow, deny int64, _ ...discordgo.RequestOption) error {
+// UpdatePermissionOverwrite replaces the whole (allow, deny) pair for one
+// target, which is what the real endpoint does and the reason setForumOpen
+// has to read before it writes.
+func (f *fakeOps) UpdatePermissionOverwrite(channelID, targetID snowflake.ID, u discord.PermissionOverwriteUpdate) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.overwrit = append(f.overwrit, deny)
-	for _, ch := range f.channels {
-		if ch.ID != channelID {
-			continue
-		}
-		for _, ow := range ch.PermissionOverwrites {
-			if ow.ID == targetID && ow.Type == kind {
-				ow.Allow, ow.Deny = allow, deny
-				return nil
-			}
-		}
-		ch.PermissionOverwrites = append(ch.PermissionOverwrites,
-			&discordgo.PermissionOverwrite{ID: targetID, Type: kind, Allow: allow, Deny: deny})
+	role, ok := u.(discord.RolePermissionOverwriteUpdate)
+	if !ok {
+		return fmt.Errorf("fakeOps: contest writes role overwrites, got %T", u)
 	}
+	var allow, deny discord.Permissions
+	if role.Allow != nil {
+		allow = *role.Allow
+	}
+	if role.Deny != nil {
+		deny = *role.Deny
+	}
+	f.overwrit = append(f.overwrit, deny)
+	ch := f.channel(channelID.String())
+	if ch == nil {
+		return nil
+	}
+	if ow := discordtest.Find(ch.PermissionOverwrites, targetID.String(), discord.PermissionOverwriteTypeRole); ow != nil {
+		ow.Allow, ow.Deny = allow, deny
+		return nil
+	}
+	ch.PermissionOverwrites = append(ch.PermissionOverwrites,
+		&fow{ID: targetID.String(), Type: discord.PermissionOverwriteTypeRole, Allow: allow, Deny: deny})
 	return nil
 }
 
 // everyoneOn is the (allow, deny) pair a channel carries for @everyone, which
 // in Discord's model is the role whose ID is the guild's.
-func (f *fakeOps) everyoneOn(channelID, guildID string) (allow, deny int64) {
+func (f *fakeOps) everyoneOn(channelID, guildID string) (allow, deny discord.Permissions) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, ch := range f.channels {
-		if ch.ID != channelID {
-			continue
-		}
-		for _, ow := range ch.PermissionOverwrites {
-			if ow.ID == guildID && ow.Type == discordgo.PermissionOverwriteTypeRole {
-				return ow.Allow, ow.Deny
-			}
+	if ch := f.channel(channelID); ch != nil {
+		if ow := discordtest.Find(ch.PermissionOverwrites, guildID, discord.PermissionOverwriteTypeRole); ow != nil {
+			return ow.Allow, ow.Deny
 		}
 	}
 	return 0, 0
 }
 
-func (f *fakeOps) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+func (f *fakeOps) CreateMessage(channelID snowflake.ID, m discord.MessageCreate) (*discord.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.sent[channelID] = append(f.sent[channelID], data)
-	return &discordgo.Message{ID: "msg-1", ChannelID: channelID}, nil
+	id := channelID.String()
+	f.sent[id] = append(f.sent[id], m)
+	return &discord.Message{ID: 9001, ChannelID: channelID}, nil
 }
 
-func (f *fakeOps) ChannelMessagePin(channelID, messageID string, _ ...discordgo.RequestOption) error {
+func (f *fakeOps) PinMessage(channelID, messageID snowflake.ID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.pinned = append(f.pinned, channelID+"/"+messageID)
+	f.pinned = append(f.pinned, channelID.String()+"/"+messageID.String())
 	return nil
 }
 
-func (f *fakeOps) UserChannelCreate(recipientID string, _ ...discordgo.RequestOption) (*discordgo.Channel, error) {
+func (f *fakeOps) CreateDMChannel(recipientID snowflake.ID) (*discord.DMChannel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.dmFails {
 		return nil, errors.New("cannot send messages to this user")
 	}
-	return &discordgo.Channel{ID: "dm-" + recipientID}, nil
+	id := dmWith(recipientID.String())
+	f.dms[id] = true
+	return discordtest.DM(id), nil
 }
 
-// sentTo returns every message body sent to one channel, flattened, so a
-// test can assert on what a member would actually have read.
-func (f *fakeOps) sentTo(channelID string) []*discordgo.MessageSend {
+func strp(s string) *string { return &s }
+
+// dmWith is the DM channel the fake opens with userID.
+func dmWith(userID string) string { return "9" + userID }
+
+// sentTo returns every message sent to one channel, so a test can assert
+// on what a member would actually have read.
+func (f *fakeOps) sentTo(channelID string) []discord.MessageCreate {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]*discordgo.MessageSend(nil), f.sent[channelID]...)
+	return append([]discord.MessageCreate(nil), f.sent[channelID]...)
 }
 
 // fakeSched records registrations so the "a job exists only where it has
@@ -681,6 +732,7 @@ func newTestPlugin(t interface{ Helper() }, store Store, ops *fakeOps, sched *fa
 	p.audit = audit
 	p.log = quietLog()
 	p.sched = sched
+	p.botID = core.ID(botUserID)
 	return p
 }
 
@@ -700,33 +752,33 @@ func testKey() string {
 // will do anything: who the forum is for. Tests that are not about the gate
 // use it so the refusal does not have to be worked around in each one.
 func gatedConfig() Config {
-	return Config{GuildID: "g1", DefaultMaxVotes: 2, AccessRoleIDs: []string{"melted"}}
+	return Config{GuildID: "1000", DefaultMaxVotes: 2, AccessRoleIDs: []string{"3001"}}
 }
 
 // seedGate configures a guild the way the melting pot is: @everyone sees
 // nothing, one role is what being let in means. gate-like points at that
 // channel, so merlin mirrors it rather than being told a role list.
 func seedGate(store *fakeStore, ops *fakeOps) {
-	ops.roles = guildRoles("g1", "melted", "mod")
-	ops.channels = append(ops.channels, &discordgo.Channel{
-		ID: "general-1", GuildID: "g1", Type: discordgo.ChannelTypeGuildText,
-		PermissionOverwrites: []*discordgo.PermissionOverwrite{
-			{ID: "g1", Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
-			{ID: "melted", Type: discordgo.PermissionOverwriteTypeRole, Allow: discordgo.PermissionViewChannel},
+	ops.roles = guildRoles("1000", "3001", "3002")
+	ops.channels = append(ops.channels, &fch{
+		ID: "2005", GuildID: "1000", Type: discord.ChannelTypeGuildText,
+		PermissionOverwrites: []*fow{
+			{ID: "1000", Type: discord.PermissionOverwriteTypeRole, Deny: discord.PermissionViewChannel},
+			{ID: "3001", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
 		},
 	})
-	store.cfg["g1"] = Config{GuildID: "g1", DefaultMaxVotes: 2, GateChannelID: "general-1"}
+	store.cfg["1000"] = Config{GuildID: "1000", DefaultMaxVotes: 2, GateChannelID: "2005"}
 }
 
 // dmCount is how many people were sent a direct message. DMs land in `sent`
-// under the channel UserChannelCreate handed back, so this is the count of
+// under the channel CreateDMChannel handed back, so this is the count of
 // those rather than a second recording path.
 func (f *fakeOps) dmCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := 0
 	for id := range f.sent {
-		if strings.HasPrefix(id, "dm-") {
+		if f.dms[id] {
 			n++
 		}
 	}
@@ -735,10 +787,10 @@ func (f *fakeOps) dmCount() int {
 
 // roleByID picks one role out of a guildRoles list so a test can give it the
 // guild-level permissions the mirror now reads.
-func roleByID(roles []*discordgo.Role, id string) *discordgo.Role {
-	for _, r := range roles {
-		if r.ID == id {
-			return r
+func roleByID(roles []discord.Role, id string) *discord.Role {
+	for i := range roles {
+		if roles[i].ID == core.ID(id) {
+			return &roles[i]
 		}
 	}
 	panic("no such role in the fake guild: " + id)

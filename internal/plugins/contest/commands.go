@@ -831,7 +831,7 @@ func (p *Plugin) handleCancel(ctx context.Context, ix *core.Ix) {
 	if err := p.setForumOpen(c, false); err != nil {
 		p.log.Error("contest: lock forum on cancel", "contest", c.ID, "err", err)
 	}
-	p.post(ctx, c, core.NewEmbed(core.ColorWarning, c.Title+" is off",
+	p.post(ctx, c, core.Embed(core.ColorWarning, c.Title+" is off",
 		"this one is called off. the posts stay where they are."), nil)
 	p.pushBestEffort(ctx, c)
 	p.afterFinish(ctx, c)

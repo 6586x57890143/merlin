@@ -84,7 +84,7 @@ func TestRefreshIsDrivenByTheLinksNotTheClock(t *testing.T) {
 
 	// One entry whose art is good for another twenty hours.
 	if err := store.UpsertSubmission(context.Background(), Submission{
-		ID: "s1", ContestID: c.ID, UserID: "u1", ThreadID: "t1",
+		ID: "s1", ContestID: c.ID, UserID: "4001", ThreadID: "5001",
 		MediaURLs: []string{signedURL("a", base.Add(20*time.Hour))},
 	}); err != nil {
 		t.Fatalf("seed submission: %v", err)
@@ -133,7 +133,7 @@ func TestAShorterLinkLifetimeIsFollowed(t *testing.T) {
 
 	// Suppose Discord starts issuing four-hour links.
 	if err := store.UpsertSubmission(context.Background(), Submission{
-		ID: "s1", ContestID: c.ID, UserID: "u1", ThreadID: "t1",
+		ID: "s1", ContestID: c.ID, UserID: "4001", ThreadID: "5001",
 		MediaURLs: []string{signedURL("a", base.Add(4*time.Hour))},
 	}); err != nil {
 		t.Fatalf("seed submission: %v", err)
@@ -181,21 +181,21 @@ func TestTheRefreshWindowEndsAndTheJobGoes(t *testing.T) {
 	if err := store.CreateContest(context.Background(), c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	ops.threads = append(ops.threads, entryThread(ops, "t1", "u1"))
+	ops.threads = append(ops.threads, entryThread(ops, "5001", "4001"))
 
 	now := base
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return now }
 
-	if _, ok := p.closedNeedingArt(context.Background(), "g1"); !ok {
+	if _, ok := p.closedNeedingArt(context.Background(), "1000"); !ok {
 		t.Fatal("a contest that closed a moment ago is not being kept alive")
 	}
 	now = base.Add(artRefreshWindow - time.Hour)
-	if _, ok := p.closedNeedingArt(context.Background(), "g1"); !ok {
+	if _, ok := p.closedNeedingArt(context.Background(), "1000"); !ok {
 		t.Error("the window ended early")
 	}
 	now = base.Add(artRefreshWindow + time.Hour)
-	if _, ok := p.closedNeedingArt(context.Background(), "g1"); ok {
+	if _, ok := p.closedNeedingArt(context.Background(), "1000"); ok {
 		t.Error("the window never ends, so every contest a guild ever ran keeps costing " +
 			"REST calls forever")
 	}

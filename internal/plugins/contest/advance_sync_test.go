@@ -5,8 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // The entry list freezes when voting opens, so the read that builds it has
@@ -28,7 +26,7 @@ func TestAdvanceToVoteReadsTheForumOneLastTime(t *testing.T) {
 	seedForum(ops, c, 0)
 
 	// The tick that ran a minute ago saw one post.
-	ops.threads = []*discordgo.Channel{entryThread(ops, "100", "u1")}
+	ops.threads = []*fch{entryThread(ops, "100", "4001")}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
 	if err := p.syncSubmissions(context.Background(), c); err != nil {
@@ -37,7 +35,7 @@ func TestAdvanceToVoteReadsTheForumOneLastTime(t *testing.T) {
 
 	// A second member posts in the seconds before the operator advances, so
 	// no tick has ever read it.
-	ops.threads = append(ops.threads, entryThread(ops, "200", "u2"))
+	ops.threads = append(ops.threads, entryThread(ops, "200", "4002"))
 
 	if err := p.advance(context.Background(), c); err != nil {
 		t.Fatalf("advance: %v", err)
@@ -70,9 +68,9 @@ func TestAdvanceToVoteStillHonoursALastMinuteWithdrawal(t *testing.T) {
 	c := seedLive(t, store, PhaseSubmit, base)
 	seedForum(ops, c, 0)
 
-	ops.threads = []*discordgo.Channel{
-		entryThread(ops, "100", "u1"),
-		entryThread(ops, "200", "u2"),
+	ops.threads = []*fch{
+		entryThread(ops, "100", "4001"),
+		entryThread(ops, "200", "4002"),
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
@@ -116,7 +114,7 @@ func TestAFailedFinalSyncStillClosesSubmissions(t *testing.T) {
 	if err := p.advance(context.Background(), c); err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	live, err := store.LiveContest(context.Background(), "g1")
+	live, err := store.LiveContest(context.Background(), "1000")
 	if err != nil {
 		t.Fatalf("live contest: %v", err)
 	}

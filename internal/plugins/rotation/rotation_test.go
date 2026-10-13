@@ -668,7 +668,7 @@ func TestArchiveOverwritesGrantsBotViewAccess(t *testing.T) {
 	out := desiredArchiveOverwrites(nil, 100, 800, archiveAccess{})
 
 	found := false
-	for _, ow := range overwritesOf(out) {
+	for _, ow := range core.Overwrites(out) {
 		if ow.ID == 800 && ow.Type == discord.PermissionOverwriteTypeMember && ow.Allow&discord.PermissionViewChannel != 0 {
 			found = true
 		}
@@ -846,7 +846,7 @@ func TestArchivedChannelOrigin(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			original, archived := archivedChannelOrigin(tc.channel.disgo(), core.ID(tc.categoryID))
+			original, archived := archivedChannelOrigin(tc.channel.Disgo(), core.ID(tc.categoryID))
 			if original != tc.wantOriginal || archived != tc.wantArchived {
 				t.Errorf("archivedChannelOrigin() = (%q, %v), want (%q, %v)", original, archived, tc.wantOriginal, tc.wantArchived)
 			}
@@ -861,7 +861,7 @@ func TestArchivedChannelOrigin(t *testing.T) {
 func TestArchiveNameRoundTrips(t *testing.T) {
 	for _, name := range []string{"general-chat", "off-topic", "a", "war-archive-chat", "channel-with-2026-in-it"} {
 		archived := &fch{Name: archiveChannelName(name, fixedNow), ParentID: "200"}
-		got, ok := archivedChannelOrigin(archived.disgo(), 200)
+		got, ok := archivedChannelOrigin(archived.Disgo(), 200)
 		if !ok || got != name {
 			t.Errorf("round trip of %q via %q = (%q, %v)", name, archived.Name, got, ok)
 		}

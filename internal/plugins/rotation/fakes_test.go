@@ -14,10 +14,10 @@ import (
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
-	"github.com/disgoorg/json/v2"
 	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordtest"
 	"github.com/6586x57890143/merlin/internal/settings"
 	"github.com/6586x57890143/merlin/internal/voice"
 )
@@ -40,58 +40,12 @@ func findOtherChannelByName(channels []*fch, name, excludeID string) *fch {
 	return nil
 }
 
-// fch is a channel as the fake holds it, with string IDs so fixtures read
-// as the settings they sit beside. disgo's channels are immutable values
-// with unexported fields, so the fake keeps its own and builds disgo's
-// from them on the way out, through the same JSON Discord sends.
-type fch struct {
-	ID, GuildID, ParentID, Name, Topic string
-	Type                               discord.ChannelType
-	Position, RateLimitPerUser         int
-	NSFW                               bool
-	PermissionOverwrites               []*fow
-}
-
-// fow is one permission overwrite, string-ID'd like fch.
-type fow struct {
-	ID          string
-	Type        discord.PermissionOverwriteType
-	Allow, Deny discord.Permissions
-}
-
-func (c *fch) disgo() discord.GuildChannel {
-	ows := make([]overwrite, len(c.PermissionOverwrites))
-	for i, o := range c.PermissionOverwrites {
-		ows[i] = overwrite{Type: o.Type, ID: core.ID(o.ID), Allow: o.Allow, Deny: o.Deny}
-	}
-	raw := map[string]any{
-		"name": c.Name, "type": c.Type, "position": c.Position,
-		"topic": c.Topic, "nsfw": c.NSFW, "rate_limit_per_user": c.RateLimitPerUser,
-		"permission_overwrites": disgoOverwrites(ows),
-	}
-	for k, v := range map[string]string{"id": c.ID, "guild_id": c.GuildID, "parent_id": c.ParentID} {
-		if v != "" {
-			raw[k] = v
-		}
-	}
-	b, err := json.Marshal(raw)
-	if err != nil {
-		panic(err)
-	}
-	var u discord.UnmarshalChannel
-	if err := json.Unmarshal(b, &u); err != nil {
-		panic(err)
-	}
-	return u.Channel.(discord.GuildChannel)
-}
-
-func fowsOf(ows []discord.PermissionOverwrite) []*fow {
-	out := make([]*fow, 0, len(ows))
-	for _, o := range overwritesOf(ows) {
-		out = append(out, &fow{ID: o.ID.String(), Type: o.Type, Allow: o.Allow, Deny: o.Deny})
-	}
-	return out
-}
+// fch and fow are the shared fixtures, under the names these tests grew up
+// with.
+type (
+	fch = discordtest.Channel
+	fow = discordtest.Overwrite
+)
 
 // fmsg is a message the fake holds.
 type fmsg struct{ ID, ChannelID, Content string }
@@ -247,7 +201,7 @@ func (f *fakeOps) GetChannel(channelID snowflake.ID) (discord.Channel, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ch.disgo(), nil
+	return ch.Disgo(), nil
 }
 
 func (f *fakeOps) GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel, error) {
@@ -257,7 +211,7 @@ func (f *fakeOps) GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel
 	chans, _ := f.GuildChannels(guildID.String())
 	out := make([]discord.GuildChannel, len(chans))
 	for i, c := range chans {
-		out[i] = c.disgo()
+		out[i] = c.Disgo()
 	}
 	return out, nil
 }
@@ -270,9 +224,7 @@ func (f *fakeOps) GetActiveGuildThreads(snowflake.ID) (*discord.GuildActiveThrea
 	defer f.mu.Unlock()
 	out := &discord.GuildActiveThreads{}
 	for _, t := range f.threads {
-		cp := *t
-		cp.Type = discord.ChannelTypeGuildPublicThread
-		out.Threads = append(out.Threads, cp.disgo().(discord.GuildThread))
+		out.Threads = append(out.Threads, t.Thread())
 	}
 	return out, nil
 }
@@ -303,14 +255,14 @@ func (f *fakeOps) CreateGuildChannel(guildID snowflake.ID, c discord.GuildChanne
 		Topic:                text.Topic,
 		RateLimitPerUser:     text.RateLimitPerUser,
 		Position:             text.Position,
-		PermissionOverwrites: fowsOf(text.PermissionOverwrites),
+		PermissionOverwrites: discordtest.Overwrites(text.PermissionOverwrites),
 		NSFW:                 text.NSFW,
 	}
 	if text.ParentID != 0 {
 		ch.ParentID = text.ParentID.String()
 	}
 	f.channels[ch.ID] = ch
-	return ch.disgo(), nil
+	return ch.Disgo(), nil
 }
 
 func (f *fakeOps) UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate) (discord.Channel, error) {
@@ -345,7 +297,7 @@ func (f *fakeOps) UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate)
 	// As Discord does: no list leaves the overwrites alone, and any list,
 	// an empty one included, replaces them.
 	if data.PermissionOverwrites != nil {
-		ch.PermissionOverwrites = fowsOf(*data.PermissionOverwrites)
+		ch.PermissionOverwrites = discordtest.Overwrites(*data.PermissionOverwrites)
 	}
 	// Position is a *int precisely so "move to 0" is distinguishable from
 	// "leave it alone"; reproducing that here is what lets a test catch a
@@ -353,7 +305,7 @@ func (f *fakeOps) UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate)
 	if data.Position != nil {
 		ch.Position = *data.Position
 	}
-	return ch.disgo(), nil
+	return ch.Disgo(), nil
 }
 
 func (f *fakeOps) DeleteChannel(channelID snowflake.ID) error {

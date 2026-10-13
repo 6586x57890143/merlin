@@ -11,23 +11,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 
+	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/secret"
 )
 
 func liveContest(phase Phase, base time.Time) Contest {
 	return Contest{
-		ID: "c1", GuildID: "g1", Slug: "abcdefghijklmnop",
+		ID: "c1", GuildID: "1000", Slug: "abcdefghijklmnop",
 		Title: "neon cats", Phase: phase, MaxVotes: 2,
 		SubmitAt:          base.Add(time.Hour),
 		VoteAt:            base.Add(2 * time.Hour),
 		ResultsAt:         base.Add(3 * time.Hour),
-		ForumChannelID:    "forum-1",
-		AnnounceChannelID: "announce-1",
-		CreatedBy:         "mod-1",
+		ForumChannelID:    "2001",
+		AnnounceChannelID: "2002",
+		CreatedBy:         "3003",
 	}
 }
 
@@ -36,12 +36,12 @@ func liveContest(phase Phase, base time.Time) Contest {
 // exercise the open/close flip need it, because setForumOpen now reads the
 // channel back and changes one bit rather than overwriting the pair, so a
 // forum the fake has never heard of correctly has nothing to change.
-func seedForum(ops *fakeOps, c Contest, extraDeny int64) {
-	ops.channels = append(ops.channels, &discordgo.Channel{
-		ID: c.ForumChannelID, GuildID: c.GuildID, Type: discordgo.ChannelTypeGuildForum,
-		PermissionOverwrites: []*discordgo.PermissionOverwrite{{
+func seedForum(ops *fakeOps, c Contest, extraDeny discord.Permissions) {
+	ops.channels = append(ops.channels, &fch{
+		ID: c.ForumChannelID, GuildID: c.GuildID, Type: discord.ChannelTypeGuildForum,
+		PermissionOverwrites: []*fow{{
 			ID:   c.GuildID,
-			Type: discordgo.PermissionOverwriteTypeRole,
+			Type: discord.PermissionOverwriteTypeRole,
 			Deny: postingPerms | extraDeny,
 		}},
 	})
@@ -62,32 +62,32 @@ func TestPhasesAdvanceInOrderAndAnnounceOnce(t *testing.T) {
 	p.now = func() time.Time { return now }
 
 	// Nothing is due yet, so the tick must change nothing at all.
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("early tick: %v", err)
 	}
-	if got, _ := store.LiveContest(context.Background(), "g1"); got.Phase != PhaseAnnounce {
+	if got, _ := store.LiveContest(context.Background(), "1000"); got.Phase != PhaseAnnounce {
 		t.Fatalf("phase moved early: %s", got.Phase)
 	}
 
 	now = base.Add(time.Hour + time.Second)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("tick to submit: %v", err)
 	}
-	got, _ := store.LiveContest(context.Background(), "g1")
+	got, _ := store.LiveContest(context.Background(), "1000")
 	if got.Phase != PhaseSubmit {
 		t.Fatalf("phase = %s, want submit", got.Phase)
 	}
-	if n := len(ops.sentTo("announce-1")); n != 1 {
+	if n := len(ops.sentTo("2002")); n != 1 {
 		t.Fatalf("announcements after one transition = %d, want 1", n)
 	}
 
 	// A second tick inside the same window must not announce again: the
 	// conditional phase claim is the whole reason two overlapping ticks
 	// cannot double-post.
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("repeat tick: %v", err)
 	}
-	if n := len(ops.sentTo("announce-1")); n != 1 {
+	if n := len(ops.sentTo("2002")); n != 1 {
 		t.Fatalf("announcements after a repeat tick = %d, want 1", n)
 	}
 }
@@ -103,11 +103,11 @@ func TestSubmissionsOpenAndCloseFlipsThePostingOverwrite(t *testing.T) {
 	now := base.Add(time.Hour + time.Second)
 	p.now = func() time.Time { return now }
 
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	now = base.Add(2*time.Hour + time.Second)
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
@@ -134,16 +134,16 @@ func TestOpeningSubmissionsKeepsTheGateShut(t *testing.T) {
 	if err := store.CreateContest(context.Background(), c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	seedForum(ops, c, discordgo.PermissionViewChannel)
+	seedForum(ops, c, discord.PermissionViewChannel)
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base.Add(time.Hour + time.Second) }
 
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("open: %v", err)
 	}
 
 	_, deny := ops.everyoneOn(c.ForumChannelID, c.GuildID)
-	if deny&discordgo.PermissionViewChannel == 0 {
+	if deny&discord.PermissionViewChannel == 0 {
 		t.Error("opening submissions cleared the @everyone view deny: the forum is now public")
 	}
 	if deny&postingPerms != 0 {
@@ -181,10 +181,10 @@ func TestNoEntriesEndsCleanlyRatherThanCrowningNobody(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base.Add(4 * time.Hour) }
 
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	got, _ := store.LatestContest(context.Background(), "g1")
+	got, _ := store.LatestContest(context.Background(), "1000")
 	if got.Phase != PhaseResults {
 		t.Fatalf("phase = %s, want results", got.Phase)
 	}
@@ -204,7 +204,7 @@ func TestAFailedTallyLeavesTheContestInVoteAndSaysWhy(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	if err := store.UpsertSubmission(context.Background(), Submission{
-		ID: "s1", ContestID: "c1", UserID: "u1", ThreadID: "t1", Title: "one", Author: "ana",
+		ID: "s1", ContestID: "c1", UserID: "4001", ThreadID: "5001", Title: "one", Author: "ana",
 	}); err != nil {
 		t.Fatalf("seed submission: %v", err)
 	}
@@ -217,10 +217,10 @@ func TestAFailedTallyLeavesTheContestInVoteAndSaysWhy(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, srv.URL)
 	p.now = func() time.Time { return base.Add(4 * time.Hour) }
 
-	if err := p.tick(context.Background(), "g1"); err == nil {
+	if err := p.tick(context.Background(), "1000"); err == nil {
 		t.Fatal("a failed close returned nil, so the scheduler would never retry")
 	}
-	got, _ := store.LiveContest(context.Background(), "g1")
+	got, _ := store.LiveContest(context.Background(), "1000")
 	if got.Phase != PhaseVote {
 		t.Fatalf("phase = %s, want vote: a contest must not finish without a tally", got.Phase)
 	}
@@ -236,8 +236,8 @@ func TestAWorkingTallyRanksAndAnnounces(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	for _, s := range []Submission{
-		{ID: "s1", ContestID: "c1", UserID: "u1", ThreadID: "t1", Title: "one", Author: "ana"},
-		{ID: "s2", ContestID: "c1", UserID: "u2", ThreadID: "t2", Title: "two", Author: "bo"},
+		{ID: "s1", ContestID: "c1", UserID: "4001", ThreadID: "5001", Title: "one", Author: "ana"},
+		{ID: "s2", ContestID: "c1", UserID: "4002", ThreadID: "5002", Title: "two", Author: "bo"},
 	} {
 		if err := store.UpsertSubmission(context.Background(), s); err != nil {
 			t.Fatalf("seed submission: %v", err)
@@ -256,10 +256,10 @@ func TestAWorkingTallyRanksAndAnnounces(t *testing.T) {
 	p := newTestPlugin(t, store, ops, sched, audit, srv.URL)
 	p.now = func() time.Time { return base.Add(4 * time.Hour) }
 
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	got, _ := store.LatestContest(context.Background(), "g1")
+	got, _ := store.LatestContest(context.Background(), "1000")
 	if got.Phase != PhaseResults {
 		t.Fatalf("phase = %s, want results", got.Phase)
 	}
@@ -271,7 +271,7 @@ func TestAWorkingTallyRanksAndAnnounces(t *testing.T) {
 		t.Fatalf("top result = %+v, want s2 rank 1 on 9", rs[0])
 	}
 	// The winning thread is pinned so the forum carries the outcome too.
-	if len(ops.pinned) != 1 || !strings.Contains(ops.pinned[0], "t2") {
+	if len(ops.pinned) != 1 || !strings.Contains(ops.pinned[0], "5002") {
 		t.Errorf("pinned = %v, want the winning thread", ops.pinned)
 	}
 }
@@ -283,9 +283,9 @@ func TestTheTickJobExistsOnlyWhileAContestIsLive(t *testing.T) {
 	store, ops, sched, audit := newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
-	key := scheduler.JobKey("g1", "contest-tick")
+	key := scheduler.JobKey("1000", "contest-tick")
 
-	p.SyncGuild(context.Background(), "g1")
+	p.SyncGuild(context.Background(), "1000")
 	if sched.has(key) {
 		t.Fatal("registered a tick for a guild that has never run a contest")
 	}
@@ -293,14 +293,14 @@ func TestTheTickJobExistsOnlyWhileAContestIsLive(t *testing.T) {
 	if err := store.CreateContest(context.Background(), liveContest(PhaseVote, base)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	p.SyncGuild(context.Background(), "g1")
+	p.SyncGuild(context.Background(), "1000")
 	if !sched.has(key) {
 		t.Fatal("no tick registered for a live contest")
 	}
 
 	// Finishing it must take the job away again.
 	p.now = func() time.Time { return base.Add(4 * time.Hour) }
-	if err := p.tick(context.Background(), "g1"); err != nil {
+	if err := p.tick(context.Background(), "1000"); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	if sched.has(key) {
@@ -318,12 +318,12 @@ func TestAFailedLookupLeavesTheTickRegistrationAlone(t *testing.T) {
 	}
 	p := newTestPlugin(t, store, ops, sched, audit, "")
 	p.now = func() time.Time { return base }
-	p.SyncGuild(context.Background(), "g1")
+	p.SyncGuild(context.Background(), "1000")
 
 	store.liveErr = errors.New("connection refused")
-	p.SyncGuild(context.Background(), "g1")
+	p.SyncGuild(context.Background(), "1000")
 
-	if !sched.has(scheduler.JobKey("g1", "contest-tick")) {
+	if !sched.has(scheduler.JobKey("1000", "contest-tick")) {
 		t.Error("a transient database error unregistered a live contest's tick")
 	}
 }
@@ -340,15 +340,15 @@ func TestOneEntryPerMemberKeepsTheOldestPost(t *testing.T) {
 
 	// Discord returns threads newest first, and snowflake ids sort
 	// chronologically, so "200" is the later post by the same member.
-	ops.threads = []*discordgo.Channel{
-		{ID: "200", ParentID: "forum-1", OwnerID: "u1", Name: "second go"},
-		{ID: "100", ParentID: "forum-1", OwnerID: "u1", Name: "first go"},
-		{ID: "300", ParentID: "forum-1", OwnerID: "u2", Name: "somebody else"},
+	ops.threads = []*fch{
+		{ID: "200", ParentID: "2001", OwnerID: "4001", Name: "second go"},
+		{ID: "100", ParentID: "2001", OwnerID: "4001", Name: "first go"},
+		{ID: "300", ParentID: "2001", OwnerID: "4002", Name: "somebody else"},
 	}
 	for _, id := range []string{"100", "200", "300"} {
-		ops.messages[id] = []*discordgo.Message{{
-			ID: id, Content: "here it is",
-			Author: &discordgo.User{ID: "u" + id[:1], Username: "someone"},
+		ops.messages[id] = []discord.Message{{
+			ID: core.ID(id), Content: "here it is",
+			Author: discord.User{ID: core.ID("400" + id[:1]), Username: "someone"},
 		}}
 	}
 
@@ -381,9 +381,9 @@ func TestADeletedThreadWithdrawsTheEntry(t *testing.T) {
 	if err := store.CreateContest(context.Background(), c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	ops.threads = []*discordgo.Channel{{ID: "100", ParentID: "forum-1", OwnerID: "u1", Name: "mine"}}
-	ops.messages["100"] = []*discordgo.Message{{
-		ID: "100", Content: "art", Author: &discordgo.User{ID: "u1", Username: "ana"},
+	ops.threads = []*fch{{ID: "100", ParentID: "2001", OwnerID: "4001", Name: "mine"}}
+	ops.messages["100"] = []discord.Message{{
+		ID: 100, Content: "art", Author: discord.User{ID: 4001, Username: "ana"},
 	}}
 
 	p := newTestPlugin(t, store, ops, sched, audit, "")
@@ -411,14 +411,14 @@ func TestAnUnreadablePostIsReportedRatherThanCountedEmpty(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	store, ops := newFakeStore(), newFakeOps()
 	c := liveContest(PhaseSubmit, base)
-	ops.messages["100"] = []*discordgo.Message{{
-		ID: "100", Author: &discordgo.User{ID: "u1", Username: "ana"},
+	ops.messages["100"] = []discord.Message{{
+		ID: 100, Author: discord.User{ID: 4001, Username: "ana"},
 	}}
 
 	p := newTestPlugin(t, store, ops, newFakeSched(), &fakeAudit{}, "")
 	p.now = func() time.Time { return base }
 	_, err := p.readThread(context.Background(), c,
-		&discordgo.Channel{ID: "100", ParentID: "forum-1", OwnerID: "u1", Name: "mine"})
+		(&fch{ID: "100", ParentID: "2001", OwnerID: "4001", Name: "mine"}).Thread())
 	if !errors.Is(err, ErrNoMessageContent) {
 		t.Fatalf("err = %v, want ErrNoMessageContent", err)
 	}
@@ -430,13 +430,13 @@ func TestAttachmentsAndLinksAreClassified(t *testing.T) {
 	c := liveContest(PhaseSubmit, base)
 	p := newTestPlugin(t, store, ops, newFakeSched(), &fakeAudit{}, "")
 
-	ops.messages["1"] = []*discordgo.Message{{
-		ID: "1", Author: &discordgo.User{ID: "u1", Username: "ana"},
-		Attachments: []*discordgo.MessageAttachment{
-			{URL: "https://cdn.discordapp.com/a.png", ContentType: "image/png", Filename: "a.png"},
+	ops.messages["1"] = []discord.Message{{
+		ID: 1, Author: discord.User{ID: 4001, Username: "ana"},
+		Attachments: []discord.Attachment{
+			{URL: "https://cdn.discordapp.com/a.png", ContentType: strp("image/png"), Filename: "a.png"},
 		},
 	}}
-	sub, err := p.readThread(context.Background(), c, &discordgo.Channel{ID: "1", OwnerID: "u1", Name: "art"})
+	sub, err := p.readThread(context.Background(), c, (&fch{ID: "1", OwnerID: "4001", Name: "art"}).Thread())
 	if err != nil {
 		t.Fatalf("image: %v", err)
 	}
@@ -444,11 +444,11 @@ func TestAttachmentsAndLinksAreClassified(t *testing.T) {
 		t.Errorf("image entry = %+v", sub)
 	}
 
-	ops.messages["2"] = []*discordgo.Message{{
-		ID: "2", Author: &discordgo.User{ID: "u2", Username: "bo"},
+	ops.messages["2"] = []discord.Message{{
+		ID: 2, Author: discord.User{ID: 4002, Username: "bo"},
 		Content: "listen to this https://soundcloud.com/x/y please",
 	}}
-	sub, err = p.readThread(context.Background(), c, &discordgo.Channel{ID: "2", OwnerID: "u2", Name: "track"})
+	sub, err = p.readThread(context.Background(), c, (&fch{ID: "2", OwnerID: "4002", Name: "track"}).Thread())
 	if err != nil {
 		t.Fatalf("link: %v", err)
 	}
@@ -512,11 +512,11 @@ func TestAPrizeCodeIsWipedOnlyAfterItIsDelivered(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 		if err := store.AddPrize(context.Background(), Prize{
-			ID: "p1", ContestID: "c1", DonorID: "u9", DonorName: "dana",
+			ID: "p1", ContestID: "c1", DonorID: "4009", DonorName: "dana",
 			Title: "a steam key", SecretSealed: sealed,
 			// Approved, because this test is about delivery. A pending
 			// pledge is not awarded at all, which is its own test.
-			ReviewedAt: &base, ReviewedBy: "mod-1", Approved: true,
+			ReviewedAt: &base, ReviewedBy: "3003", Approved: true,
 		}); err != nil {
 			t.Fatalf("seed prize: %v", err)
 		}
@@ -525,7 +525,7 @@ func TestAPrizeCodeIsWipedOnlyAfterItIsDelivered(t *testing.T) {
 		p.sealer = sealer
 		p.now = func() time.Time { return base }
 
-		subs := []Submission{{ID: "s1", ContestID: "c1", UserID: "u1", ThreadID: "t1", Author: "ana"}}
+		subs := []Submission{{ID: "s1", ContestID: "c1", UserID: "4001", ThreadID: "5001", Author: "ana"}}
 		p.awardPrizes(context.Background(), c, subs, []resultView{{ID: "s1", Votes: 4, Rank: 1}})
 
 		// The code must never reach the durable audit row, whichever way
@@ -543,7 +543,7 @@ func TestAPrizeCodeIsWipedOnlyAfterItIsDelivered(t *testing.T) {
 	}
 
 	delivered := run(false)
-	if delivered[0].AwardedTo == nil || *delivered[0].AwardedTo != "u1" {
+	if delivered[0].AwardedTo == nil || *delivered[0].AwardedTo != "4001" {
 		t.Fatalf("prize not awarded: %+v", delivered[0])
 	}
 	if delivered[0].HasSecret() {
@@ -565,8 +565,8 @@ func TestSnapshotNeverCarriesAPrizeCodeOrARawDiscordID(t *testing.T) {
 	c := liveContest(PhaseVote, base)
 
 	snap := p.snapshotOf(c,
-		[]Submission{{ID: "s1", UserID: "111222333444555666", ThreadID: "t1", Author: "ana", Title: "one"}},
-		[]Prize{{ID: "p1", DonorID: "u9", DonorName: "dana", Title: "a key",
+		[]Submission{{ID: "s1", UserID: "111222333444555666", ThreadID: "5001", Author: "ana", Title: "one"}},
+		[]Prize{{ID: "p1", DonorID: "4009", DonorName: "dana", Title: "a key",
 			SecretSealed: []byte("ciphertext-here")}})
 
 	blob, err := json.Marshal(snap)
@@ -741,9 +741,9 @@ func TestDeletingAPostDuringVotingDoesNotRemoveTheEntry(t *testing.T) {
 	if err := store.CreateContest(context.Background(), c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	ops.threads = []*discordgo.Channel{{ID: "100", ParentID: "forum-1", OwnerID: "u1", Name: "mine"}}
-	ops.messages["100"] = []*discordgo.Message{{
-		ID: "100", Content: "art", Author: &discordgo.User{ID: "u1", Username: "ana"},
+	ops.threads = []*fch{{ID: "100", ParentID: "2001", OwnerID: "4001", Name: "mine"}}
+	ops.messages["100"] = []discord.Message{{
+		ID: 100, Content: "art", Author: discord.User{ID: 4001, Username: "ana"},
 	}}
 
 	p := newTestPlugin(t, store, ops, newFakeSched(), &fakeAudit{}, "")
@@ -772,20 +772,20 @@ func TestEveryAttachmentIsKeptUpToTheCap(t *testing.T) {
 	c := liveContest(PhaseSubmit, base)
 	p := newTestPlugin(t, store, ops, newFakeSched(), &fakeAudit{}, "")
 
-	var atts []*discordgo.MessageAttachment
+	var atts []discord.Attachment
 	for i := 0; i < maxEntryMedia+3; i++ {
-		atts = append(atts, &discordgo.MessageAttachment{
+		atts = append(atts, discord.Attachment{
 			URL:         "https://cdn.discordapp.com/" + strconv.Itoa(i) + ".png",
-			ContentType: "image/png", Filename: strconv.Itoa(i) + ".png",
+			ContentType: strp("image/png"), Filename: strconv.Itoa(i) + ".png",
 		})
 	}
-	ops.messages["1"] = []*discordgo.Message{{
-		ID: "1", Content: "a caption too",
-		Author: &discordgo.User{ID: "u1", Username: "ana"}, Attachments: atts,
+	ops.messages["1"] = []discord.Message{{
+		ID: 1, Content: "a caption too",
+		Author: discord.User{ID: 4001, Username: "ana"}, Attachments: atts,
 	}}
 
 	sub, err := p.readThread(context.Background(), c,
-		&discordgo.Channel{ID: "1", OwnerID: "u1", Name: "four drawings"})
+		(&fch{ID: "1", OwnerID: "4001", Name: "four drawings"}).Thread())
 	if err != nil {
 		t.Fatalf("readThread: %v", err)
 	}
@@ -813,7 +813,7 @@ func TestSnapshotCarriesEveryAttachment(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	p := newTestPlugin(t, newFakeStore(), newFakeOps(), newFakeSched(), &fakeAudit{}, "https://w.test")
 	snap := p.snapshotOf(liveContest(PhaseVote, base), []Submission{{
-		ID: "s1", UserID: "u1", Author: "ana", Title: "one",
+		ID: "s1", UserID: "4001", Author: "ana", Title: "one",
 		MediaURL:  "https://cdn/a.png",
 		MediaURLs: []string{"https://cdn/a.png", "https://cdn/b.png"},
 	}}, nil)
@@ -842,14 +842,14 @@ func TestSyncAsksTheGuildForThreadsAndKeepsOnlyTheForumsOwn(t *testing.T) {
 
 	// A guild-wide listing carries threads from every channel, so the entry
 	// list has to be narrowed back down by parent.
-	ops.threads = []*discordgo.Channel{
-		{ID: "100", ParentID: "forum-1", OwnerID: "u1", Name: "an entry"},
-		{ID: "200", ParentID: "some-other-channel", OwnerID: "u2", Name: "unrelated chatter"},
+	ops.threads = []*fch{
+		{ID: "100", ParentID: "2001", OwnerID: "4001", Name: "an entry"},
+		{ID: "200", ParentID: "2010", OwnerID: "4002", Name: "unrelated chatter"},
 	}
 	for _, id := range []string{"100", "200"} {
-		ops.messages[id] = []*discordgo.Message{{
-			ID: id, Content: "here it is",
-			Author: &discordgo.User{ID: "u" + id[:1], Username: "someone"},
+		ops.messages[id] = []discord.Message{{
+			ID: core.ID(id), Content: "here it is",
+			Author: discord.User{ID: core.ID("400" + id[:1]), Username: "someone"},
 		}}
 	}
 

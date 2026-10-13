@@ -7,7 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // postingPerms is what a member needs to start a forum post. Denying it is
@@ -15,7 +18,7 @@ import (
 // the channel: a locked channel also stops people talking in the posts that
 // already exist, and the discussion under an entry is half the point of
 // running the contest in a forum at all.
-const postingPerms = discordgo.PermissionCreatePublicThreads
+const postingPerms = discord.PermissionCreatePublicThreads
 
 // ErrForumFull reports that the guild is too close to Discord's 500-channel
 // cap to safely create another channel.
@@ -50,7 +53,7 @@ func (p *Plugin) createForum(cfg Config, c Contest, open bool) (string, error) {
 	// Self-throttle well clear of Discord's guild channel cap, the same rule
 	// rotation applies before creating a replacement channel. The bot must
 	// never be the thing that walks a guild into a hard platform limit.
-	channels, err := ops.GuildChannels(c.GuildID)
+	channels, err := ops.GetGuildChannels(core.ID(c.GuildID))
 	if err != nil {
 		return "", fmt.Errorf("contest: list channels: %w", err)
 	}
@@ -58,24 +61,26 @@ func (p *Plugin) createForum(cfg Config, c Contest, open bool) (string, error) {
 		return "", ErrForumFull
 	}
 
-	ch, err := ops.GuildChannelCreateComplex(c.GuildID, discordgo.GuildChannelCreateData{
+	ch, err := ops.CreateGuildChannel(core.ID(c.GuildID), discord.GuildForumChannelCreate{
 		Name:                 forumName(c.Title),
-		Type:                 discordgo.ChannelTypeGuildForum,
 		Topic:                truncate(strings.TrimSuffix(c.Title+". "+c.Theme, ". "), 1000),
-		ParentID:             cfg.ForumCategoryID,
+		ParentID:             core.ID(cfg.ForumCategoryID),
 		PermissionOverwrites: overwrites,
+		// disgo sends this field whether set or not, and an empty list is
+		// what Discord expects rather than the null it would otherwise be.
+		AvailableTags: []discord.ChannelTag{},
 	})
 	if err != nil {
 		return "", fmt.Errorf("contest: create forum: %w", err)
 	}
-	return ch.ID, nil
+	return ch.ID().String(), nil
 }
 
 // setForumOpen flips whether members may start new posts.
 //
 // It reads the forum's current @everyone entry and changes one bit inside it,
-// rather than writing a fresh (allow, deny) pair. ChannelPermissionSet
-// replaces the whole mask for its target, so the obvious version -- write
+// rather than writing a fresh (allow, deny) pair. A permission overwrite
+// write replaces the whole mask for its target, so the obvious version -- write
 // (0, postingPerms) to close and (0, 0) to open -- silently erases every
 // other bit anybody has set on @everyone for this channel. Today that is only
 // theoretical; the moment a ViewChannel deny is what keeps ungated members out
@@ -90,13 +95,14 @@ func (p *Plugin) setForumOpen(c Contest, open bool) error {
 		return nil
 	}
 	ops := p.opsFor(c.GuildID)
-	ch, err := ops.Channel(c.ForumChannelID)
+	forum, guild := core.ID(c.ForumChannelID), core.ID(c.GuildID)
+	ch, err := guildChannel(ops, forum)
 	if err != nil {
 		return fmt.Errorf("contest: read forum: %w", err)
 	}
 
-	var allow, deny int64
-	if ow := findOverwrite(ch, c.GuildID, discordgo.PermissionOverwriteTypeRole); ow != nil {
+	var allow, deny discord.Permissions
+	if ow, ok := ch.PermissionOverwrites().Role(guild); ok {
 		allow, deny = ow.Allow, ow.Deny
 	}
 	want := deny | postingPerms
@@ -110,18 +116,20 @@ func (p *Plugin) setForumOpen(c Contest, open bool) error {
 	if want == deny {
 		return nil
 	}
-	return ops.ChannelPermissionSet(
-		c.ForumChannelID, c.GuildID, discordgo.PermissionOverwriteTypeRole, allow, want)
+	return ops.UpdatePermissionOverwrite(forum, guild, discord.RolePermissionOverwriteUpdate{Allow: &allow, Deny: &want})
 }
 
-// findOverwrite returns a channel's entry for one target, or nil.
-func findOverwrite(ch *discordgo.Channel, targetID string, kind discordgo.PermissionOverwriteType) *discordgo.PermissionOverwrite {
-	for _, ow := range ch.PermissionOverwrites {
-		if ow.ID == targetID && ow.Type == kind {
-			return ow
-		}
+// guildChannel is channelID read as a guild channel.
+func guildChannel(ops DiscordOps, channelID snowflake.ID) (discord.GuildChannel, error) {
+	c, err := ops.GetChannel(channelID)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	gc, ok := c.(discord.GuildChannel)
+	if !ok {
+		return nil, fmt.Errorf("channel %s is not in a server", channelID)
+	}
+	return gc, nil
 }
 
 // syncForum reapplies the gate to a contest's existing forum.
@@ -139,7 +147,7 @@ func (p *Plugin) syncForum(cfg Config, c Contest) (bool, error) {
 		return false, nil
 	}
 	ops := p.opsFor(c.GuildID)
-	ch, err := ops.Channel(c.ForumChannelID)
+	ch, err := guildChannel(ops, core.ID(c.ForumChannelID))
 	if err != nil {
 		return false, fmt.Errorf("contest: read forum: %w", err)
 	}
@@ -147,18 +155,18 @@ func (p *Plugin) syncForum(cfg Config, c Contest) (bool, error) {
 	// Submissions are open exactly while the contest is in its submit phase,
 	// so the resync must not quietly open or close the forum as a side effect
 	// of somebody fixing who can see it.
-	want, err := p.forumOverwritesFor(cfg, c.GuildID, ch.PermissionOverwrites, c.Phase == PhaseSubmit)
+	want, err := p.forumOverwritesFor(cfg, c.GuildID, ch.PermissionOverwrites(), c.Phase == PhaseSubmit)
 	if err != nil {
 		return false, err
 	}
-	if overwritesEqual(ch.PermissionOverwrites, want) {
+	if core.SameOverwrites(ch.PermissionOverwrites(), want) {
 		return false, nil
 	}
 	// A whole-list edit rather than per-target sets, because removing a stray
 	// allow is not expressible as a set -- the same reason
 	// reconcileArchiveCategory patches the channel.
-	if _, err := ops.ChannelEditComplex(c.ForumChannelID, &discordgo.ChannelEdit{
-		PermissionOverwrites: want,
+	if _, err := ops.UpdateChannel(ch.ID(), discord.GuildTextChannelUpdate{
+		PermissionOverwrites: &want,
 	}); err != nil {
 		return false, fmt.Errorf("contest: apply forum permissions: %w", err)
 	}
@@ -230,10 +238,10 @@ func (p *Plugin) syncSubmissions(ctx context.Context, c Contest) error {
 	// One live entry per member. The keeper is the earliest post rather than
 	// whichever the list happened to return first: thread IDs are
 	// snowflakes, so comparing them is comparing creation time.
-	keep := make(map[string]string, len(threads)) // user -> thread
+	keep := make(map[snowflake.ID]snowflake.ID, len(threads)) // user -> thread
 	for _, th := range threads {
-		if prev, dup := keep[th.OwnerID]; !dup || th.ID < prev {
-			keep[th.OwnerID] = th.ID
+		if prev, dup := keep[th.OwnerID]; !dup || th.ID() < prev {
+			keep[th.OwnerID] = th.ID()
 		}
 	}
 
@@ -241,13 +249,17 @@ func (p *Plugin) syncSubmissions(ctx context.Context, c Contest) error {
 	// It used to be a break inside the dedupe loop testing a slice that was
 	// only appended to in the loop after it, so it read 0 >= maxEntries on
 	// every pass and bounded nothing at all.
-	live := make([]string, 0, len(keep))
+	ids := make([]snowflake.ID, 0, len(keep))
 	for _, id := range keep {
-		live = append(live, id)
+		ids = append(ids, id)
 	}
-	slices.Sort(live)
-	if len(live) > maxEntries {
-		live = live[:maxEntries]
+	slices.Sort(ids)
+	if len(ids) > maxEntries {
+		ids = ids[:maxEntries]
+	}
+	live := make([]string, len(ids))
+	for i, id := range ids {
+		live[i] = id.String()
 	}
 
 	// Withdraw before upserting, not after, and from what Discord says
@@ -267,21 +279,24 @@ func (p *Plugin) syncSubmissions(ctx context.Context, c Contest) error {
 		}
 	}
 
-	wanted := make(map[string]bool, len(live))
-	for _, id := range live {
+	wanted := make(map[snowflake.ID]bool, len(ids))
+	for _, id := range ids {
 		wanted[id] = true
 	}
 	for _, th := range threads {
-		if !wanted[th.ID] {
+		if !wanted[th.ID()] {
 			continue
 		}
+		// Archived pages are cursored on whole seconds, so a thread can turn
+		// up twice; it is read once.
+		delete(wanted, th.ID())
 		sub, err := p.readThread(ctx, c, th)
 		if err != nil {
-			p.log.Error("contest: read thread", "thread", th.ID, "err", err)
+			p.log.Error("contest: read thread", "thread", th.ID(), "err", err)
 			continue
 		}
 		if err := p.store.UpsertSubmission(ctx, sub); err != nil {
-			p.log.Error("contest: record submission", "thread", th.ID, "err", err)
+			p.log.Error("contest: record submission", "thread", th.ID(), "err", err)
 			continue
 		}
 	}
@@ -298,15 +313,16 @@ func (p *Plugin) syncSubmissions(ctx context.Context, c Contest) error {
 // it. Reading only the active list made a quiet entry indistinguishable from
 // a deleted one, so it got withdrawn: dropped from the gallery, the vote and
 // the tally, with nothing said to the member.
-func (p *Plugin) forumThreads(c Contest) ([]*discordgo.Channel, error) {
+func (p *Plugin) forumThreads(c Contest) ([]discord.GuildThread, error) {
 	ops := p.opsFor(c.GuildID)
-	active, err := ops.GuildThreadsActive(c.GuildID)
+	forum := core.ID(c.ForumChannelID)
+	active, err := ops.GetActiveGuildThreads(core.ID(c.GuildID))
 	if err != nil {
 		return nil, fmt.Errorf("contest: list threads: %w", err)
 	}
-	out := make([]*discordgo.Channel, 0, len(active.Threads))
+	out := make([]discord.GuildThread, 0, len(active.Threads))
 	for _, th := range active.Threads {
-		if th.ParentID == c.ForumChannelID {
+		if parent := th.ParentID(); parent != nil && *parent == forum {
 			out = append(out, th)
 		}
 	}
@@ -314,52 +330,47 @@ func (p *Plugin) forumThreads(c Contest) ([]*discordgo.Channel, error) {
 	// Channel-scoped, so no ParentID filter is needed here. Paged from
 	// newest archive time backwards, which is the order Discord returns and
 	// the cursor it takes.
-	var before *time.Time
+	var before time.Time
 	for range maxArchivedPages {
-		list, err := ops.ThreadsArchived(c.ForumChannelID, before, archivedPageSize)
+		list, err := ops.GetPublicArchivedThreads(forum, before, archivedPageSize)
 		if err != nil {
 			return nil, fmt.Errorf("contest: list archived threads: %w", err)
 		}
 		out = append(out, list.Threads...)
 		last := len(list.Threads) - 1
-		if !list.HasMore || last < 0 || list.Threads[last].ThreadMetadata == nil {
+		if !list.HasMore || last < 0 {
 			break
 		}
-		ts := list.Threads[last].ThreadMetadata.ArchiveTimestamp
-		before = &ts
+		before = list.Threads[last].ThreadMetadata.ArchiveTimestamp
 	}
 	return out, nil
 }
 
 // readThread turns one forum post into a submission.
 //
-// The starter message of a forum post shares the thread's own id, so asking
-// for one message around that id returns exactly it. This is the only place
+// The starter message of a forum post shares the thread's own id, so it is
+// fetched by that id. This is the only place
 // this plugin reads message content, it is one message at a time and on
 // demand, and it happens over REST rather than the gateway: contest never
 // joins aimod in receiving every message in every guild.
-func (p *Plugin) readThread(ctx context.Context, c Contest, th *discordgo.Channel) (Submission, error) {
+func (p *Plugin) readThread(ctx context.Context, c Contest, th discord.GuildThread) (Submission, error) {
 	ops := p.opsFor(c.GuildID)
-	msgs, err := ops.ChannelMessages(th.ID, 1, "", "", th.ID)
+	msg, err := ops.GetMessage(th.ID(), th.ID())
 	if err != nil {
 		return Submission{}, fmt.Errorf("contest: read starter message: %w", err)
 	}
-	if len(msgs) == 0 {
-		return Submission{}, fmt.Errorf("contest: thread %s has no starter message", th.ID)
-	}
-	msg := msgs[0]
 
 	sub := Submission{
 		ID:        newID(),
 		ContestID: c.ID,
-		UserID:    th.OwnerID,
-		ThreadID:  th.ID,
-		Title:     th.Name,
+		UserID:    th.OwnerID.String(),
+		ThreadID:  th.ID().String(),
+		Title:     th.Name(),
 		Body:      strings.TrimSpace(msg.Content),
 		Kind:      "text",
 	}
-	if msg.Author != nil {
-		sub.UserID = msg.Author.ID
+	if msg.Author.ID != 0 {
+		sub.UserID = msg.Author.ID.String()
 		sub.Author = displayName(msg)
 	}
 	if len(msg.Attachments) > 0 {
@@ -375,7 +386,7 @@ func (p *Plugin) readThread(ctx context.Context, c Contest, th *discordgo.Channe
 		}
 		first := msg.Attachments[0]
 		sub.MediaURL = first.URL
-		sub.Kind = kindOf(first.ContentType, first.Filename)
+		sub.Kind = kindOf(deref(first.ContentType), first.Filename)
 	} else if link := firstLink(sub.Body); link != "" {
 		sub.Link = link
 		sub.Kind = "link"
@@ -391,14 +402,18 @@ func (p *Plugin) readThread(ctx context.Context, c Contest, th *discordgo.Channe
 
 // displayName prefers the member's per-server nickname, since that is the
 // name everybody in the channel already associates with them.
-func displayName(msg *discordgo.Message) string {
-	if msg.Member != nil && msg.Member.Nick != "" {
-		return msg.Member.Nick
+func displayName(msg *discord.Message) string {
+	if msg.Member != nil && deref(msg.Member.Nick) != "" {
+		return *msg.Member.Nick
 	}
-	if msg.Author.GlobalName != "" {
-		return msg.Author.GlobalName
+	return msg.Author.EffectiveName()
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
 	}
-	return msg.Author.Username
+	return *s
 }
 
 // kindOf decides how the gallery renders an entry. Content type first,
@@ -447,28 +462,29 @@ func firstLink(body string) string {
 //
 // ThreadCreate carries the thread's id, name and owner, none of which are
 // message-content fields, so this arrives with no privileged intent.
-func (p *Plugin) HandleThreadCreate(s *discordgo.Session, tc *discordgo.ThreadCreate) {
-	if tc.GuildID == "" || tc.ParentID == "" {
+func (p *Plugin) HandleThreadCreate(th discord.GuildThread) {
+	parent := th.ParentID()
+	if th.GuildID() == 0 || parent == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	c, err := p.store.LiveContest(ctx, tc.GuildID)
-	if err != nil || c.ForumChannelID != tc.ParentID {
+	c, err := p.store.LiveContest(ctx, th.GuildID().String())
+	if err != nil || core.ID(c.ForumChannelID) != *parent {
 		return
 	}
 	if c.Phase != PhaseSubmit {
 		return
 	}
 
-	sub, err := p.readThread(ctx, c, tc.Channel)
+	sub, err := p.readThread(ctx, c, th)
 	if err == ErrNoMessageContent {
-		p.sayInThread(ctx, c, tc.ID, "i can't see attachments or text on this post, so it isn't counted yet. an admin needs to switch on Message Content in the developer portal.")
+		p.sayInThread(ctx, c, th.ID(), "i can't see attachments or text on this post, so it isn't counted yet. an admin needs to switch on Message Content in the developer portal.")
 		return
 	}
 	if err != nil {
-		p.log.Error("contest: read new thread", "thread", tc.ID, "err", err)
+		p.log.Error("contest: read new thread", "thread", th.ID(), "err", err)
 		return
 	}
 
@@ -482,17 +498,17 @@ func (p *Plugin) HandleThreadCreate(s *discordgo.Session, tc *discordgo.ThreadCr
 	}
 	for _, e := range existing {
 		if e.UserID == sub.UserID && e.ThreadID != sub.ThreadID {
-			p.sayInThread(ctx, c, tc.ID, "you already have an entry in this one, so this post doesn't count. delete the other post if you'd rather this be it.")
+			p.sayInThread(ctx, c, th.ID(), "you already have an entry in this one, so this post doesn't count. delete the other post if you'd rather this be it.")
 			return
 		}
 	}
 	if len(existing) >= maxEntries {
-		p.sayInThread(ctx, c, tc.ID, "this contest is full, sorry. nothing past "+fmt.Sprint(maxEntries)+" entries fits on the gallery.")
+		p.sayInThread(ctx, c, th.ID(), "this contest is full, sorry. nothing past "+fmt.Sprint(maxEntries)+" entries fits on the gallery.")
 		return
 	}
 
 	if err := p.store.UpsertSubmission(ctx, sub); err != nil {
-		p.log.Error("contest: record new submission", "thread", tc.ID, "err", err)
+		p.log.Error("contest: record new submission", "thread", th.ID(), "err", err)
 		return
 	}
 	p.pushBestEffort(ctx, c)
@@ -502,8 +518,8 @@ func (p *Plugin) HandleThreadCreate(s *discordgo.Session, tc *discordgo.ThreadCr
 // rather than an embed on purpose: these are corrections aimed at one
 // person mid-post, and an embed with a thumbnail would read as an
 // announcement.
-func (p *Plugin) sayInThread(ctx context.Context, c Contest, threadID, msg string) {
-	if _, err := p.opsFor(c.GuildID).ChannelMessageSendComplex(threadID, &discordgo.MessageSend{
+func (p *Plugin) sayInThread(ctx context.Context, c Contest, threadID snowflake.ID, msg string) {
+	if _, err := p.opsFor(c.GuildID).CreateMessage(threadID, discord.MessageCreate{
 		Content: msg,
 	}); err != nil {
 		p.log.Error("contest: reply in thread", "thread", threadID, "err", err)

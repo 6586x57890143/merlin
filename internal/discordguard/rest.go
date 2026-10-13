@@ -84,6 +84,31 @@ func (o *GuildOps) GetActiveGuildThreads(guildID snowflake.ID) (*discord.GuildAc
 	return o.guard.rest.GetActiveGuildThreads(guildID)
 }
 
+func (o *GuildOps) GetRoles(guildID snowflake.ID) ([]discord.Role, error) {
+	if err := known(guildID); err != nil {
+		return nil, err
+	}
+	return o.guard.rest.GetRoles(guildID)
+}
+
+// GetPublicArchivedThreads is the other half of "every thread under this
+// channel": the active list leaves archived threads out, and a forum post
+// archives itself after its parent's inactivity window. Pages run from
+// before (zero for the newest) backwards.
+func (o *GuildOps) GetPublicArchivedThreads(channelID snowflake.ID, before time.Time, limit int) (*discord.GetThreads, error) {
+	if err := known(channelID); err != nil {
+		return nil, err
+	}
+	return o.guard.rest.GetPublicArchivedThreads(channelID, before, limit)
+}
+
+func (o *GuildOps) GetMessage(channelID, messageID snowflake.ID) (*discord.Message, error) {
+	if err := known(channelID, messageID); err != nil {
+		return nil, err
+	}
+	return o.guard.rest.GetMessage(channelID, messageID)
+}
+
 // GetMessages is up to limit of channelID's messages older than before (0
 // for the newest), newest first.
 func (o *GuildOps) GetMessages(channelID, before snowflake.ID, limit int) ([]discord.Message, error) {
@@ -140,6 +165,16 @@ func (o *GuildOps) UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate
 	}
 	return gated(o, opChannelEdit, channelID, func() (discord.Channel, error) {
 		return o.guard.rest.UpdateChannel(channelID, u)
+	})
+}
+
+// UpdatePermissionOverwrite replaces one target's overwrite on channelID.
+func (o *GuildOps) UpdatePermissionOverwrite(channelID, targetID snowflake.ID, u discord.PermissionOverwriteUpdate) error {
+	if err := known(channelID, targetID); err != nil {
+		return err
+	}
+	return gatedErr(o, opChannelPermissions, channelID, func() error {
+		return o.guard.rest.UpdatePermissionOverwrite(channelID, targetID, u)
 	})
 }
 

@@ -5,6 +5,8 @@ import (
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 const viewBit = discord.PermissionViewChannel
@@ -17,8 +19,8 @@ func memberOW(id snowflake.ID, allow, deny discord.Permissions) discord.Permissi
 	return discord.MemberPermissionOverwrite{UserID: id, Allow: allow, Deny: deny}
 }
 
-func findOW(out []discord.PermissionOverwrite, id snowflake.ID, kind discord.PermissionOverwriteType) *overwrite {
-	for _, ow := range overwritesOf(out) {
+func findOW(out []discord.PermissionOverwrite, id snowflake.ID, kind discord.PermissionOverwriteType) *core.Overwrite {
+	for _, ow := range core.Overwrites(out) {
 		if ow.ID == id && ow.Type == kind {
 			return &ow
 		}
@@ -193,19 +195,8 @@ func TestDesiredArchiveOverwrites(t *testing.T) {
 		access := archiveAccess{modRoleIDs: []snowflake.ID{600}, viewerRoleIDs: []snowflake.ID{602}, viewerUserIDs: []snowflake.ID{700}}
 		once := desiredArchiveOverwrites(start, guildID, botID, access)
 		twice := desiredArchiveOverwrites(once, guildID, botID, access)
-		if !overwritesEqual(once, twice) {
+		if !core.SameOverwrites(once, twice) {
 			t.Fatalf("expected a second pass to change nothing:\nonce:  %+v\ntwice: %+v", once, twice)
 		}
 	})
-}
-
-func TestOverwritesEqualIgnoresOrder(t *testing.T) {
-	a := []discord.PermissionOverwrite{roleOW(903, viewBit, 0), roleOW(904, 0, viewBit)}
-	b := []discord.PermissionOverwrite{roleOW(904, 0, viewBit), roleOW(903, viewBit, 0)}
-	if !overwritesEqual(a, b) {
-		t.Fatal("expected order not to matter: Discord returns overwrites in whatever order it likes")
-	}
-	if overwritesEqual(a, []discord.PermissionOverwrite{roleOW(903, viewBit, 0)}) {
-		t.Fatal("expected a shorter list to differ")
-	}
 }

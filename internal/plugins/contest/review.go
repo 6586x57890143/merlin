@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -143,7 +142,7 @@ func (p *Plugin) approvePledge(ctx context.Context, ix *core.Ix, c Contest, priz
 		"donor": pr.DonorName,
 		"prize": pr.Title,
 	}, pr.DonorName+" put up "+pr.Title+".")
-	p.post(ctx, c, core.NewEmbed(core.ColorSuccess, "prize pledged", line), nil)
+	p.post(ctx, c, core.Embed(core.ColorSuccess, "prize pledged", line), nil)
 
 	if err := p.audit.Record(ctx, c.GuildID, actorID(ix), "contest.prize_approved", "", pr.Title); err != nil {
 		p.log.Error("contest: audit prize approval", "prize", prizeID, "err", err)
@@ -197,7 +196,7 @@ func (p *Plugin) pendingPrize(ctx context.Context, c Contest, prizeID string) (P
 
 func (p *Plugin) tellDonorRejected(c Contest, pr Prize) error {
 	ops := p.opsFor(c.GuildID)
-	dm, err := ops.UserChannelCreate(pr.DonorID)
+	dm, err := ops.CreateDMChannel(core.ID(pr.DonorID))
 	if err != nil {
 		return err
 	}
@@ -206,17 +205,17 @@ func (p *Plugin) tellDonorRejected(c Contest, pr Prize) error {
 	// voice.Line selects at random and falls back silently, which is right
 	// for a greeting and wrong for the sentence explaining why somebody's
 	// prize is not going up.
-	embed := core.NewEmbed(core.ColorWarning, "your pledge wasn't taken",
+	embed := core.Embed(core.ColorWarning, "your pledge wasn't taken",
 		"a mod turned down what you put up for "+c.Title+". nothing of yours was published.",
-		&discordgo.MessageEmbedField{Name: "what", Value: core.TruncateEmbedField(pr.Title)},
-		&discordgo.MessageEmbedField{
+		discord.EmbedField{Name: "what", Value: core.TruncateEmbedField(pr.Title)},
+		discord.EmbedField{
 			Name: "if that's a mistake",
 			Value: "talk to a mod in " + core.MentionChannel(c.AnnounceChannelID) +
 				". you can pledge again with /contest prize.",
 		})
-	_, err = ops.ChannelMessageSendComplex(dm.ID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed},
-		Files:  core.EmbedFiles(embed),
+	_, err = ops.CreateMessage(dm.ID(), discord.MessageCreate{
+		Embeds: []discord.Embed{embed},
+		Files:  core.EmbedUploads(embed),
 	})
 	return err
 }
@@ -282,17 +281,17 @@ func reviewView(pending []Prize, at int) (discord.Embed, []discord.LayoutCompone
 
 // donorLine is who pledged, plus how old their account is.
 //
-// The age comes out of the snowflake (discordgo.SnowflakeTimestamp), so it
+// The age comes out of the snowflake, so it
 // costs no API call, and it is account age rather than join date on purpose:
 // a throwaway made this morning is the signal worth having, while somebody
 // who joined the server last week may well have been on Discord for years.
 func donorLine(pr Prize) string {
 	who := core.MentionUser(pr.DonorID)
-	made, err := discordgo.SnowflakeTimestamp(pr.DonorID)
-	if err != nil {
+	id := core.ID(pr.DonorID)
+	if id == 0 {
 		return who
 	}
-	return who + " · account made " + discordTS(made.Unix())
+	return who + " · account made " + discordTS(id.Time().Unix())
 }
 
 func indexOfPrize(prizes []Prize, id string) int {
