@@ -17,6 +17,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/secret"
 	"github.com/6586x57890143/merlin/internal/voice"
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 const (
@@ -772,4 +773,10 @@ func (p *Plugin) speak(ctx context.Context, guildID string, key voice.Key, vars 
 		return line
 	}
 	return plain
+}
+
+// Perms is what a contest does as merlin: create its forum and copy view
+// permissions onto it.
+func (p *Plugin) Perms(string) discord.Permissions {
+	return discord.PermissionManageChannels | discord.PermissionManageRoles
 }

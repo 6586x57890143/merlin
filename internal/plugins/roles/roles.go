@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/scheduler"
@@ -340,4 +341,11 @@ func (p *Plugin) forgetJailRole(guildID string) {
 	p.jailRoleMu.Lock()
 	defer p.jailRoleMu.Unlock()
 	delete(p.jailRoleID, guildID)
+}
+
+// Perms is what jail, vacation and grants do as merlin: edit members'
+// roles, set the markers' channel overwrites, and move a jailed member out
+// of a voice call, which overwrites cannot do to a session already running.
+func (p *Plugin) Perms(string) discord.Permissions {
+	return discord.PermissionManageChannels | discord.PermissionManageRoles | discord.PermissionMoveMembers
 }

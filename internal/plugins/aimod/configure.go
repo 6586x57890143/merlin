@@ -106,6 +106,10 @@ func (p *Plugin) setMode(ctx context.Context, ix *core.Ix, mode Mode) outcome {
 		return failed("Failed to set the mode", err)
 	}
 	p.auditConfig(ctx, ix, "aimod.mode_set", string(cfg.Mode), string(mode))
+	// What merlin asks servers for follows the mode (Perms).
+	if p.bus != nil {
+		p.bus.Publish(ctx, core.Event{Type: core.EventConfigChanged, GuildID: ix.GuildID})
+	}
 
 	switch mode {
 	case ModeEnforce:

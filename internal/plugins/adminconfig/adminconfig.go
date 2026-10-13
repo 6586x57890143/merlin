@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/settings"
@@ -293,4 +294,10 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, gc *discordgo.GuildCre
 	if err := p.settings.MarkOnboardingNudgeSent(ctx, gc.ID); err != nil {
 		p.log.Error("adminconfig: failed to record onboarding nudge sent", "guild", gc.ID, "err", err)
 	}
+}
+
+// Perms is what guided setup does as merlin: create the audit and status
+// channels and the mod role.
+func (p *Plugin) Perms(string) discord.Permissions {
+	return discord.PermissionManageChannels | discord.PermissionManageRoles
 }

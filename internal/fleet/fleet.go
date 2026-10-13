@@ -21,14 +21,6 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
-// Perms is what merlin's plugins use between them: docs/install.md's widest
-// install link (the base three, AI moderation's and rapsheet's), so cygnet can grant
-// the lot to a server she runs.
-//
-// ponytail: one constant, as merlin's plugins don't declare what they use;
-// a Perms per plugin, unioned here, once one needs to differ.
-const Perms = 1100333786262
-
 // Link is merlin on the hub: nil when it isn't configured.
 type Link struct {
 	c        *link.Client
@@ -64,14 +56,14 @@ func (l *Link) Run(ctx context.Context) {
 }
 
 // Describe is what merlin.manifest answers from now on: her app, the
-// intents she identifies with (which are what she asks for: Discord turns a
-// connection down outright for a privileged one the portal hasn't granted)
-// and each command with the lowest tier under it.
-func (l *Link) Describe(app string, intents uint64, tiers map[string]core.PermTier) {
+// intents she identifies with (what the Developer Portal grants), the
+// permissions her install asks for (core.Install) and each command with
+// the lowest tier under it.
+func (l *Link) Describe(app string, intents, perms uint64, tiers map[string]core.PermTier) {
 	if l == nil {
 		return
 	}
-	m := link.Manifest{Build: Build(), App: app, Perms: strconv.FormatUint(Perms, 10), Intents: intents, Wants: intents, Serves: []string{"ping"}, Commands: []link.Command{}}
+	m := link.Manifest{Build: Build(), App: app, Perms: strconv.FormatUint(perms, 10), Intents: intents, Wants: intents, Serves: []string{"ping"}, Commands: []link.Command{}}
 	for name, t := range tiers {
 		m.Commands = append(m.Commands, link.Command{Name: name, Tier: tier(t)})
 	}

@@ -683,3 +683,8 @@ func (p *Plugin) guildName(guildID string) string {
 	}
 	return g.Name
 }
+
+// Perms is what the backfill does as merlin: read a channel's history.
+func (p *Plugin) Perms(string) discord.Permissions {
+	return discord.PermissionViewChannel | discord.PermissionReadMessageHistory
+}

@@ -24,7 +24,7 @@ func TestUnconfigured(t *testing.T) {
 	}
 	// Unlinked, everything is a no-op and refusals are only logged.
 	var l *Link
-	l.Describe("1", 1, nil)
+	l.Describe("1", 1, 0, nil)
 	l.Run(context.Background())
 	srv := refusing(t)
 	c := &http.Client{Transport: l.Transport(nil, quiet)}
@@ -47,7 +47,7 @@ func TestDescribe(t *testing.T) {
 	if l.manifest.Load() != nil {
 		t.Fatal("a manifest before the commands are finalised")
 	}
-	l.Describe("1533094679560847460", 1<<1, map[string]core.PermTier{"rapsheet": core.TierMod, "ping": core.TierPublic, "config": core.TierAdmin})
+	l.Describe("1533094679560847460", 1<<1, 1100333786262, map[string]core.PermTier{"rapsheet": core.TierMod, "ping": core.TierPublic, "config": core.TierAdmin})
 	m := l.manifest.Load()
 	if m.App != "1533094679560847460" || m.Perms != "1100333786262" || m.Intents != 2 || m.Wants != 2 || len(m.Serves) != 1 || m.Build == "" {
 		t.Fatalf("manifest %+v", m)
