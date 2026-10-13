@@ -23,8 +23,8 @@ func TestSettingsPanelDisablesWhatTheViewerCannotDo(t *testing.T) {
 			t.Errorf("%s is pressable without permission", id)
 		}
 	}
-	s, rt := stubSession()
-	panelClick(h.p, s, panelSet+"gone")
+	rt := stubSession()
+	panelClick(h.p, panelSet+"gone")
 	if !strings.Contains(rt.said(), "out of date") {
 		t.Errorf("a stale control was not told so: %s", rt.said())
 	}

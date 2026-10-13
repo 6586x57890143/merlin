@@ -48,106 +48,106 @@ const (
 
 // --- timeout ------------------------------------------------------------------
 
-func (p *Plugin) handleTimeout(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	userID := args["user"].Value.(string)
-	category := Category(args["category"].StringValue())
-	reason := strings.TrimSpace(args["reason"].StringValue())
-	duration, err := core.ParseFlexibleDuration(args["duration"].StringValue())
+func (p *Plugin) handleTimeout(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	userID := args["user"].String()
+	category := Category(args["category"].String())
+	reason := strings.TrimSpace(args["reason"].String())
+	duration, err := core.ParseFlexibleDuration(args["duration"].String())
 	if err != nil {
-		core.RespondErr(s, i, "Timeout", err)
+		ix.RespondErr("Timeout", err)
 		return
 	}
 	if duration <= 0 || duration > maxDiscordTimeout {
-		core.RespondErr(s, i, "Timeout", fmt.Errorf("a timeout must be between a minute and %s", core.FormatDuration(maxDiscordTimeout)))
+		ix.RespondErr("Timeout", fmt.Errorf("a timeout must be between a minute and %s", core.FormatDuration(maxDiscordTimeout)))
 		return
 	}
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer timeout", "err", err)
 		return
 	}
-	_, present, err := p.checkTarget(ctx, i, userID)
+	_, present, err := p.checkTarget(ctx, ix, userID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Not timed out", err)
+		_ = ix.FollowUpErr("Not timed out", err)
 		return
 	}
 	if !present {
-		_ = core.FollowUpErr(s, i, "Not timed out", fmt.Errorf("%s is not in this server", core.MentionUser(userID)))
+		_ = ix.FollowUpErr("Not timed out", fmt.Errorf("%s is not in this server", core.MentionUser(userID)))
 		return
 	}
 
-	cfg := p.config(ctx, i.GuildID)
+	cfg := p.config(ctx, ix.GuildID)
 	until := p.now().Add(duration)
 	e, _, err := p.record(ctx, cfg, newEntry{
-		GuildID: i.GuildID, UserID: userID, Kind: KindTimeout, Category: category, ActorID: actorID(i),
-		Reason: reason, Duration: duration, EndsAt: &until, Source: SourceCommand, Identity: resolvedUser(i, userID),
+		GuildID: ix.GuildID, UserID: userID, Kind: KindTimeout, Category: category, ActorID: actorID(ix),
+		Reason: reason, Duration: duration, EndsAt: &until, Source: SourceCommand, Identity: resolvedUser(ix, userID),
 	})
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Timeout", err)
+		_ = ix.FollowUpErr("Timeout", err)
 		return
 	}
-	if err := p.ops(i.GuildID).GuildMemberTimeout(i.GuildID, userID, &until); err != nil {
+	if err := p.ops(ix.GuildID).GuildMemberTimeout(ix.GuildID, userID, &until); err != nil {
 		p.voidFailed(ctx, e, err)
-		_ = core.FollowUpErr(s, i, "Timeout", fmt.Errorf("case #%d was voided because Discord refused the timeout: %w", e.ID, err))
+		_ = ix.FollowUpErr("Timeout", fmt.Errorf("case #%d was voided because Discord refused the timeout: %w", e.ID, err))
 		return
 	}
-	p.dm(ctx, i.GuildID, userID, voice.KeyTimeoutNotice, "Timed out", core.ColorWarning,
-		map[string]string{"guild": p.guildName(i.GuildID), "until": relativeTimestamp(until)}, append(reasonFields(category, reason), nextStepField())...)
+	p.dm(ctx, ix.GuildID, userID, voice.KeyTimeoutNotice, "Timed out", core.ColorWarning,
+		map[string]string{"guild": p.guildName(ix.GuildID), "until": relativeTimestamp(until)}, append(reasonFields(category, reason), nextStepField())...)
 	p.auditEntry(ctx, "rapsheet.timeout", e)
-	_ = core.FollowUpOK(s, i, "Timed out", p.caseSummary(ctx, cfg, e))
+	_ = ix.FollowUpOK("Timed out", p.caseSummary(ctx, cfg, e))
 }
 
 // --- kick -------------------------------------------------------------------------
 
-func (p *Plugin) handleKick(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	userID := args["user"].Value.(string)
-	category := Category(args["category"].StringValue())
-	reason := strings.TrimSpace(args["reason"].StringValue())
+func (p *Plugin) handleKick(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	userID := args["user"].String()
+	category := Category(args["category"].String())
+	reason := strings.TrimSpace(args["reason"].String())
 
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer kick", "err", err)
 		return
 	}
-	_, present, err := p.checkTarget(ctx, i, userID)
+	_, present, err := p.checkTarget(ctx, ix, userID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Not kicked", err)
+		_ = ix.FollowUpErr("Not kicked", err)
 		return
 	}
 	if !present {
 		// A kick of somebody who already left is a no-op Discord would
 		// refuse, and a record of it would be a lie.
-		_ = core.FollowUpErr(s, i, "Not kicked", fmt.Errorf("%s is not in this server", core.MentionUser(userID)))
+		_ = ix.FollowUpErr("Not kicked", fmt.Errorf("%s is not in this server", core.MentionUser(userID)))
 		return
 	}
 
-	cfg := p.config(ctx, i.GuildID)
+	cfg := p.config(ctx, ix.GuildID)
 	e, _, err := p.record(ctx, cfg, newEntry{
-		GuildID: i.GuildID, UserID: userID, Kind: KindKick, Category: category, ActorID: actorID(i),
-		Reason: reason, Source: SourceCommand, Identity: resolvedUser(i, userID),
+		GuildID: ix.GuildID, UserID: userID, Kind: KindKick, Category: category, ActorID: actorID(ix),
+		Reason: reason, Source: SourceCommand, Identity: resolvedUser(ix, userID),
 	})
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Kick", err)
+		_ = ix.FollowUpErr("Kick", err)
 		return
 	}
-	p.dm(ctx, i.GuildID, userID, voice.KeyKickNotice, "Removed from the server", core.ColorWarning,
-		map[string]string{"guild": p.guildName(i.GuildID)}, reasonFields(category, reason)...)
-	if err := p.ops(i.GuildID).GuildMemberDeleteWithReason(i.GuildID, userID, auditReason(e)); err != nil {
+	p.dm(ctx, ix.GuildID, userID, voice.KeyKickNotice, "Removed from the server", core.ColorWarning,
+		map[string]string{"guild": p.guildName(ix.GuildID)}, reasonFields(category, reason)...)
+	if err := p.ops(ix.GuildID).GuildMemberDeleteWithReason(ix.GuildID, userID, auditReason(e)); err != nil {
 		p.voidFailed(ctx, e, err)
-		_ = core.FollowUpErr(s, i, "Kick", fmt.Errorf("case #%d was voided because Discord refused the kick: %w", e.ID, err))
+		_ = ix.FollowUpErr("Kick", fmt.Errorf("case #%d was voided because Discord refused the kick: %w", e.ID, err))
 		return
 	}
 	p.auditEntry(ctx, "rapsheet.kick", e)
-	_ = core.FollowUpOK(s, i, "Kicked", p.caseSummary(ctx, cfg, e))
+	_ = ix.FollowUpOK("Kicked", p.caseSummary(ctx, cfg, e))
 }
 
 // --- ban / unban --------------------------------------------------------------------
 
-func (p *Plugin) handleBan(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	userID := args["user"].Value.(string)
-	category := Category(args["category"].StringValue())
-	reason := strings.TrimSpace(args["reason"].StringValue())
+func (p *Plugin) handleBan(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	userID := args["user"].String()
+	category := Category(args["category"].String())
+	reason := strings.TrimSpace(args["reason"].String())
 
 	var (
 		duration  time.Duration
@@ -155,18 +155,18 @@ func (p *Plugin) handleBan(ctx context.Context, s *discordgo.Session, i *discord
 		days      int
 	)
 	if a, ok := args["permanent"]; ok {
-		permanent = a.BoolValue()
+		permanent = a.Bool()
 	}
 	if a, ok := args["duration"]; ok {
-		d, err := core.ParseFlexibleDuration(a.StringValue())
+		d, err := core.ParseFlexibleDuration(a.String())
 		if err != nil {
-			core.RespondErr(s, i, "Ban", err)
+			ix.RespondErr("Ban", err)
 			return
 		}
 		duration = d
 	}
 	if a, ok := args["delete_message_days"]; ok {
-		days = int(a.IntValue())
+		days = int(int64(a.Int()))
 	}
 	// Exactly one of the two, stated. A ban with neither would have to
 	// default to one of them, and whichever it picked would be the wrong
@@ -174,37 +174,37 @@ func (p *Plugin) handleBan(ctx context.Context, s *discordgo.Session, i *discord
 	// never does.
 	switch {
 	case permanent && duration > 0:
-		core.RespondErr(s, i, "Ban", errors.New("give a duration or say permanent, not both"))
+		ix.RespondErr("Ban", errors.New("give a duration or say permanent, not both"))
 		return
 	case !permanent && duration <= 0:
-		core.RespondErr(s, i, "Ban", errors.New("give a duration (like 7d), or say permanent: true"))
+		ix.RespondErr("Ban", errors.New("give a duration (like 7d), or say permanent: true"))
 		return
 	case duration > maxBanDuration:
-		core.RespondErr(s, i, "Ban", fmt.Errorf("a temporary ban can be at most %s; past that, say permanent", core.FormatDuration(maxBanDuration)))
+		ix.RespondErr("Ban", fmt.Errorf("a temporary ban can be at most %s; past that, say permanent", core.FormatDuration(maxBanDuration)))
 		return
 	}
 
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer ban", "err", err)
 		return
 	}
 	// A ban works on somebody who has already left, which is most of what
 	// bans are for, so presence is not required here.
-	if _, _, err := p.checkTarget(ctx, i, userID); err != nil {
-		_ = core.FollowUpErr(s, i, "Not banned", err)
+	if _, _, err := p.checkTarget(ctx, ix, userID); err != nil {
+		_ = ix.FollowUpErr("Not banned", err)
 		return
 	}
-	if _, active, err := p.store.ActiveBan(ctx, i.GuildID, userID); err == nil && active {
-		_ = core.FollowUpErr(s, i, "Not banned", fmt.Errorf("%s is already banned; `/rapsheet unban` first if the sentence should change", core.MentionUser(userID)))
+	if _, active, err := p.store.ActiveBan(ctx, ix.GuildID, userID); err == nil && active {
+		_ = ix.FollowUpErr("Not banned", fmt.Errorf("%s is already banned; `/rapsheet unban` first if the sentence should change", core.MentionUser(userID)))
 		return
 	}
 
-	cfg := p.config(ctx, i.GuildID)
+	cfg := p.config(ctx, ix.GuildID)
 	in := newEntry{
-		GuildID: i.GuildID, UserID: userID, Kind: KindBan, Category: category, ActorID: actorID(i),
-		Reason: reason, Source: SourceCommand, Identity: resolvedUser(i, userID),
+		GuildID: ix.GuildID, UserID: userID, Kind: KindBan, Category: category, ActorID: actorID(ix),
+		Reason: reason, Source: SourceCommand, Identity: resolvedUser(ix, userID),
 	}
-	vars := map[string]string{"guild": p.guildName(i.GuildID)}
+	vars := map[string]string{"guild": p.guildName(ix.GuildID)}
 	key := voice.KeyBanPermanentNotice
 	if !permanent {
 		until := p.now().Add(duration)
@@ -214,61 +214,61 @@ func (p *Plugin) handleBan(ctx context.Context, s *discordgo.Session, i *discord
 	}
 	e, _, err := p.record(ctx, cfg, in)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Ban", err)
+		_ = ix.FollowUpErr("Ban", err)
 		return
 	}
-	p.dm(ctx, i.GuildID, userID, key, "Banned", core.ColorError, vars, reasonFields(category, reason)...)
-	if err := p.ops(i.GuildID).GuildBanCreateWithReason(i.GuildID, userID, auditReason(e), days); err != nil {
+	p.dm(ctx, ix.GuildID, userID, key, "Banned", core.ColorError, vars, reasonFields(category, reason)...)
+	if err := p.ops(ix.GuildID).GuildBanCreateWithReason(ix.GuildID, userID, auditReason(e), days); err != nil {
 		p.voidFailed(ctx, e, err)
-		_ = core.FollowUpErr(s, i, "Ban", fmt.Errorf("case #%d was voided because Discord refused the ban: %w", e.ID, err))
+		_ = ix.FollowUpErr("Ban", fmt.Errorf("case #%d was voided because Discord refused the ban: %w", e.ID, err))
 		return
 	}
 	p.auditEntry(ctx, "rapsheet.ban", e)
 	p.mu.Lock()
-	p.reconcileSweepJob(ctx, i.GuildID)
+	p.reconcileSweepJob(ctx, ix.GuildID)
 	p.mu.Unlock()
-	_ = core.FollowUpOK(s, i, "Banned", p.caseSummary(ctx, cfg, e))
+	_ = ix.FollowUpOK("Banned", p.caseSummary(ctx, cfg, e))
 }
 
-func (p *Plugin) handleUnban(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	userID := args["user"].Value.(string)
-	reason := strings.TrimSpace(args["reason"].StringValue())
+func (p *Plugin) handleUnban(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	userID := args["user"].String()
+	reason := strings.TrimSpace(args["reason"].String())
 
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer unban", "err", err)
 		return
 	}
-	err := p.ops(i.GuildID).GuildBanDelete(i.GuildID, userID)
+	err := p.ops(ix.GuildID).GuildBanDelete(ix.GuildID, userID)
 	switch {
 	case err == nil:
 	case core.HasDiscordErrorCode(err, discordgo.ErrCodeUnknownBan):
 		// Not banned as far as Discord is concerned. Still worth settling
 		// the ledger below, in case a row says otherwise.
 	default:
-		_ = core.FollowUpErr(s, i, "Unban", err)
+		_ = ix.FollowUpErr("Unban", err)
 		return
 	}
-	if _, lifted, lerr := p.liftBan(ctx, i.GuildID, userID); lerr != nil {
-		p.log.Error("rapsheet: mark ban lifted", "guild", i.GuildID, "user", userID, "err", lerr)
+	if _, lifted, lerr := p.liftBan(ctx, ix.GuildID, userID); lerr != nil {
+		p.log.Error("rapsheet: mark ban lifted", "guild", ix.GuildID, "user", userID, "err", lerr)
 	} else if !lifted && err != nil {
-		_ = core.FollowUpErr(s, i, "Unban", fmt.Errorf("%s is not banned", core.MentionUser(userID)))
+		_ = ix.FollowUpErr("Unban", fmt.Errorf("%s is not banned", core.MentionUser(userID)))
 		return
 	}
-	cfg := p.config(ctx, i.GuildID)
+	cfg := p.config(ctx, ix.GuildID)
 	e, _, rerr := p.record(ctx, cfg, newEntry{
-		GuildID: i.GuildID, UserID: userID, Kind: KindUnban, ActorID: actorID(i), Reason: reason,
-		Source: SourceCommand, Identity: resolvedUser(i, userID),
+		GuildID: ix.GuildID, UserID: userID, Kind: KindUnban, ActorID: actorID(ix), Reason: reason,
+		Source: SourceCommand, Identity: resolvedUser(ix, userID),
 	})
 	if rerr != nil {
-		p.log.Error("rapsheet: record unban", "guild", i.GuildID, "user", userID, "err", rerr)
+		p.log.Error("rapsheet: record unban", "guild", ix.GuildID, "user", userID, "err", rerr)
 	} else {
 		p.auditEntry(ctx, "rapsheet.unban", e)
 	}
 	p.mu.Lock()
-	p.reconcileSweepJob(ctx, i.GuildID)
+	p.reconcileSweepJob(ctx, ix.GuildID)
 	p.mu.Unlock()
-	_ = core.FollowUpOK(s, i, "Unbanned", fmt.Sprintf("%s is unbanned.", core.MentionUser(userID)))
+	_ = ix.FollowUpOK("Unbanned", fmt.Sprintf("%s is unbanned.", core.MentionUser(userID)))
 }
 
 // liftBan marks the member's standing ban lifted, if there is one.

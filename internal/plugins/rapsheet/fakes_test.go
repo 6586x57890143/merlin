@@ -2,6 +2,7 @@ package rapsheet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
@@ -772,7 +774,7 @@ func (f *fakeRanker) CanModerate(_ string, actor *discordgo.Member, targetUserID
 
 func (f *fakeRanker) IsBootstrapAdmin(userID string) bool { return userID == f.bootstrap }
 
-func (f *fakeRanker) Authorize(*discordgo.InteractionCreate, core.PermSpec) error { return f.authErr }
+func (f *fakeRanker) AuthorizeIx(*core.Ix, core.PermSpec) error { return f.authErr }
 
 // --- audit / voice / gate ----------------------------------------------------
 
@@ -925,13 +927,13 @@ func textPart(body string) string {
 	return rest
 }
 
-func stubSession() (*discordgo.Session, *recordingTransport) {
-	rt := &recordingTransport{}
-	return &discordgo.Session{
-		Client:      &http.Client{Transport: rt},
-		Ratelimiter: discordgo.NewRatelimiter(),
-		Token:       "Bot test",
-	}, rt
+// current is the recorder the next interaction answers through. stubSession
+// makes a fresh one per case, as it used to make a fresh session.
+var current *recordingTransport
+
+func stubSession() *recordingTransport {
+	current = &recordingTransport{}
+	return current
 }
 
 const (
@@ -939,93 +941,134 @@ const (
 	modID     = "mod-1"
 )
 
+// payloads remembers what each test interaction was decoded from, so
+// withResolved can add a resolved user the way Discord sends one.
+var payloads = map[*core.Ix]built{}
+
+type built struct {
+	p    map[string]any
+	user string
+}
+
+// decodeIx is Discord's JSON decoded by core.NewIx and answered through
+// current, from a member shown as "mod".
+//
+// The fixtures predate disgo: the store and fakes key on "g1", "chan-1" and
+// members like "mod-1", none of them snowflakes. Ix.GuildID, UserID and
+// ChannelID are merlin's own string keys and every handler reads those, so
+// after decoding a real interaction they are pointed at the fixtures.
+func decodeIx(p map[string]any, user string) *core.Ix {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		panic(err)
+	}
+	rt := current
+	if rt == nil {
+		rt = &recordingTransport{}
+	}
+	ix, err := core.NewIx(raw, rest.New(rest.NewClient("test", rest.WithHTTPClient(&http.Client{Transport: rt}))))
+	if err != nil {
+		panic(err)
+	}
+	ix.GuildID, ix.UserID, ix.ChannelID = testGuild, user, "chan-1"
+	payloads[ix] = built{p, user}
+	return ix
+}
+
+func payload(typ int, data map[string]any) map[string]any {
+	return map[string]any{
+		"id": "1000", "application_id": "2", "type": typ, "token": "tok", "version": 1,
+		"guild_id": paneltest.IxGuild,
+		"channel":  map[string]any{"id": "101", "type": 0},
+		"member": map[string]any{
+			"nick":        "mod",
+			"user":        map[string]any{"id": "11", "username": "mod", "global_name": "mod"},
+			"permissions": "0", "roles": []any{}, "joined_at": "2026-01-01T00:00:00Z",
+		},
+		"data": data,
+	}
+}
+
 // interaction builds a command invocation for one leaf of /rapsheet, run
 // by modID.
-func interaction(leaf string, opts ...*discordgo.ApplicationCommandInteractionDataOption) *discordgo.InteractionCreate {
+func interaction(leaf string, opts ...map[string]any) *core.Ix {
 	return interactionBy(modID, leaf, opts...)
 }
 
-func interactionBy(userID, leaf string, opts ...*discordgo.ApplicationCommandInteractionDataOption) *discordgo.InteractionCreate {
-	var options []*discordgo.ApplicationCommandInteractionDataOption
-	if group, sub, ok := strings.Cut(leaf, "/"); ok {
-		options = []*discordgo.ApplicationCommandInteractionDataOption{{
-			Name: group, Type: discordgo.ApplicationCommandOptionSubCommandGroup,
-			Options: []*discordgo.ApplicationCommandInteractionDataOption{{
-				Name: sub, Type: discordgo.ApplicationCommandOptionSubCommand, Options: opts,
-			}},
-		}}
-	} else {
-		options = []*discordgo.ApplicationCommandInteractionDataOption{{
-			Name: leaf, Type: discordgo.ApplicationCommandOptionSubCommand, Options: opts,
-		}}
+func interactionBy(userID, leaf string, opts ...map[string]any) *core.Ix {
+	args := []any{}
+	for _, o := range opts {
+		args = append(args, o)
 	}
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID:        "i1",
-		Token:     "tok",
-		GuildID:   testGuild,
-		ChannelID: "chan-1",
-		Type:      discordgo.InteractionApplicationCommand,
-		Member: &discordgo.Member{
-			Nick: "mod",
-			User: &discordgo.User{ID: userID, Username: "mod", GlobalName: "mod"},
-		},
-		Data: discordgo.ApplicationCommandInteractionData{
-			Name:     "rapsheet",
-			Options:  options,
-			Resolved: &discordgo.ApplicationCommandInteractionDataResolved{Users: map[string]*discordgo.User{}},
-		},
-	}}
+	options := []any{map[string]any{"name": leaf, "type": 1, "options": args}}
+	if group, sub, ok := strings.Cut(leaf, "/"); ok {
+		options = []any{map[string]any{"name": group, "type": 2, "options": []any{
+			map[string]any{"name": sub, "type": 1, "options": args},
+		}}}
+	}
+	return decodeIx(payload(2, map[string]any{"id": "6", "name": "rapsheet", "type": 1, "options": options}), userID)
 }
 
 // withResolved attaches a resolved user, the way Discord does for a User
-// option.
-func withResolved(i *discordgo.InteractionCreate, u *discordgo.User) *discordgo.InteractionCreate {
-	data := i.ApplicationCommandData()
-	data.Resolved.Users[u.ID] = u
-	i.Data = data
-	return i
+// option. Resolved users are keyed by snowflake, so u's ID must be one.
+func withResolved(ix *core.Ix, u *discordgo.User) *core.Ix {
+	b := payloads[ix]
+	data := b.p["data"].(map[string]any)
+	resolved, _ := data["resolved"].(map[string]any)
+	if resolved == nil {
+		resolved = map[string]any{"users": map[string]any{}}
+		data["resolved"] = resolved
+	}
+	resolved["users"].(map[string]any)[u.ID] = map[string]any{"id": u.ID, "username": u.Username, "global_name": u.GlobalName, "avatar": u.Avatar, "bot": u.Bot}
+	return decodeIx(b.p, b.user)
 }
 
-func strOpt(name, v string) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionString, Value: v}
+func strOpt(name, v string) map[string]any {
+	return map[string]any{"name": name, "type": 3, "value": v}
 }
 
-func userOpt(name, id string) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionUser, Value: id}
+func userOpt(name, id string) map[string]any {
+	return map[string]any{"name": name, "type": 6, "value": id}
 }
 
-func intOpt(name string, v int) *discordgo.ApplicationCommandInteractionDataOption {
-	// Discord sends numbers as float64 over JSON, and IntValue asserts
-	// exactly that.
-	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionInteger, Value: float64(v)}
+func intOpt(name string, v int) map[string]any {
+	return map[string]any{"name": name, "type": 4, "value": v}
 }
 
-func boolOpt(name string, v bool) *discordgo.ApplicationCommandInteractionDataOption {
-	return &discordgo.ApplicationCommandInteractionDataOption{Name: name, Type: discordgo.ApplicationCommandOptionBoolean, Value: v}
+func boolOpt(name string, v bool) map[string]any {
+	return map[string]any{"name": name, "type": 5, "value": v}
 }
 
-func componentClick(userID, customID string) *discordgo.InteractionCreate {
-	return &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
-		ID: "i3", Token: "tok", GuildID: testGuild, ChannelID: "chan-1",
-		Type: discordgo.InteractionMessageComponent,
-		Member: &discordgo.Member{
-			Nick: "mod", User: &discordgo.User{ID: userID, Username: "mod"},
-		},
-		Data: discordgo.MessageComponentInteractionData{CustomID: customID},
-	}}
+func componentClick(userID, customID string) *core.Ix {
+	return decodeIx(payload(3, map[string]any{"custom_id": customID, "component_type": 2}), userID)
 }
 
 // panelClick is modID clicking customID on /rapsheet settings, picking
 // values.
-func panelClick(p *Plugin, s *discordgo.Session, customID string, values ...string) {
-	i := paneltest.Click(modID, customID, nil, values...)
-	i.GuildID = testGuild
-	p.handlePanelSet(context.Background(), s, i, customID)
+func panelClick(p *Plugin, customID string, values ...string) {
+	data := map[string]any{"custom_id": customID, "component_type": 2}
+	if values != nil {
+		vs := []any{}
+		for _, v := range values {
+			vs = append(vs, v)
+		}
+		data["component_type"], data["values"] = 3, vs
+	}
+	p.handlePanelSet(context.Background(), decodeIx(payload(3, data), modID), customID)
 }
 
 // panelForm is modID submitting one of /rapsheet settings' forms.
-func panelForm(p *Plugin, s *discordgo.Session, customID string, fields map[string]string) {
-	i := paneltest.Submit(modID, customID, fields)
-	i.GuildID = testGuild
-	p.handleForm(context.Background(), s, i, customID)
+func panelForm(p *Plugin, customID string, fields map[string]string) {
+	rows := []any{}
+	for k, v := range fields {
+		rows = append(rows, map[string]any{"type": 1, "components": []any{map[string]any{"type": 4, "custom_id": k, "value": v}}})
+	}
+	p.handleForm(context.Background(), decodeIx(payload(5, map[string]any{"custom_id": customID, "components": rows}), modID), customID)
+}
+
+// asMember is ix run by u, as Discord sends the invoking member's user.
+func asMember(ix *core.Ix, u *discordgo.User) *core.Ix {
+	b := payloads[ix]
+	b.p["member"].(map[string]any)["user"] = map[string]any{"id": "11", "username": u.Username, "global_name": u.GlobalName, "avatar": u.Avatar}
+	return decodeIx(b.p, u.ID)
 }

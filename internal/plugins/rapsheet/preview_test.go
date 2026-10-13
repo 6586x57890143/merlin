@@ -131,9 +131,9 @@ func TestWritePreviews(t *testing.T) {
 	cfg.ModChannelID = "mods"
 	_ = h.store.SetConfig(context.Background(), cfg)
 	h.ops.addMember(modID)
-	dana := &discordgo.User{ID: "u1", Username: "dana_k", GlobalName: "Dana"}
-	h.ops.addMember("u1")
-	h.ops.users["u1"] = dana
+	dana := &discordgo.User{ID: "1001", Username: "dana_k", GlobalName: "Dana"}
+	h.ops.addMember("1001")
+	h.ops.users["1001"] = dana
 	ctx := context.Background()
 
 	// A record with some history, spread over time.
@@ -147,38 +147,37 @@ func TestWritePreviews(t *testing.T) {
 		h.p.now = old
 		return e
 	}
-	seed(40*24*time.Hour, newEntry{GuildID: testGuild, UserID: "u1", Kind: KindWarn, Category: CategorySpam, ActorID: "mod-2", Reason: "posting the same link in six channels", Source: SourceCommand, Identity: dana})
-	seed(12*24*time.Hour, newEntry{GuildID: testGuild, UserID: "u1", Kind: KindRemoval, Category: CategoryHateSpeech, ActorID: core.ActorSystem, Reason: "message removed automatically: a slur aimed at another member", Source: SourceAIMod, Ref: "inc-411"})
+	seed(40*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategorySpam, ActorID: "mod-2", Reason: "posting the same link in six channels", Source: SourceCommand, Identity: dana})
+	seed(12*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindRemoval, Category: CategoryHateSpeech, ActorID: core.ActorSystem, Reason: "message removed automatically: a slur aimed at another member", Source: SourceAIMod, Ref: "inc-411"})
 	ends := testNow.Add(-12*24*time.Hour + 8*time.Hour)
-	seed(12*24*time.Hour, newEntry{GuildID: testGuild, UserID: "u1", Kind: KindJail, Category: CategoryServerRule, ActorID: core.ActorSystem, Reason: "automatic: hate speech (Discord hate speech policy)", Duration: 8 * time.Hour, EndsAt: &ends, Source: SourceRoles})
-	seed(5*24*time.Hour, newEntry{GuildID: testGuild, UserID: "u1", Kind: KindNote, ActorID: modID, Reason: "apologised in modmail, seemed genuine", Source: SourceCommand})
-	wrong := seed(3*24*time.Hour, newEntry{GuildID: testGuild, UserID: "u1", Kind: KindWarn, Category: CategoryThreats, ActorID: "mod-2", Reason: "threatened to find someone's address", Source: SourceCommand})
+	seed(12*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindJail, Category: CategoryServerRule, ActorID: core.ActorSystem, Reason: "automatic: hate speech (Discord hate speech policy)", Duration: 8 * time.Hour, EndsAt: &ends, Source: SourceRoles})
+	seed(5*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindNote, ActorID: modID, Reason: "apologised in modmail, seemed genuine", Source: SourceCommand})
+	wrong := seed(3*24*time.Hour, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategoryThreats, ActorID: "mod-2", Reason: "threatened to find someone's address", Source: SourceCommand})
 	_ = h.store.Void(ctx, testGuild, wrong.ID, modID, "misread; they were quoting a film", testNow.Add(-2*24*time.Hour))
 
 	// 1. A warning by command, and everything it produces.
-	s, rt := stubSession()
-	h.p.handleWarn(ctx, s, withResolved(interaction("warn", userOpt("user", "u1"), strOpt("category", "server_rule"), strOpt("reason", "arguing with mods in #general after being asked to stop")), dana))
+	rt := stubSession()
+	h.p.handleWarn(ctx, withResolved(interaction("warn", userOpt("user", "1001"), strOpt("category", "server_rule"), strOpt("reason", "arguing with mods in #general after being asked to stop")), dana))
 	fromRT("/rapsheet warn: the moderator's confirmation", rt)
-	fromSend("DM to the member: warned", "dm", h.ops.sentTo("dm-u1"))
+	fromSend("DM to the member: warned", "dm", h.ops.sentTo("dm-1001"))
 	fromSend("Case file: the mirrored entry", "thread", h.ops.sentTo("t-1"))
 
-	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "1417880000000000000", CandidateID: "u1", Signals: []string{"same avatar", "joined 12 minutes after " + core.MentionUser("u1") + " was jailed 8h"}, Score: 5})
-	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "u1", GroupID: "u1", LinkedBy: modID})
-	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "u5", GroupID: "u1", LinkedBy: modID, Reason: "admitted it"})
+	_ = h.store.UpsertHint(ctx, AltHint{GuildID: testGuild, UserID: "1417880000000000000", CandidateID: "1001", Signals: []string{"same avatar", "joined 12 minutes after " + core.MentionUser("1001") + " was jailed 8h"}, Score: 5})
+	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "1001", GroupID: "1001", LinkedBy: modID})
+	_ = h.store.Link(ctx, Link{GuildID: testGuild, UserID: "1005", GroupID: "1001", LinkedBy: modID, Reason: "admitted it"})
 
 	// 2. The sheet, both audiences.
-	s, rt = stubSession()
-	h.p.handleView(ctx, s, withResolved(interaction("view", userOpt("user", "u1")), dana))
+	rt = stubSession()
+	h.p.handleView(ctx, withResolved(interaction("view", userOpt("user", "1001")), dana))
 	fromRT("/rapsheet view: the moderator's view", rt)
-	s, rt = stubSession()
-	me := interactionBy("u1", "me")
-	me.Member.User = dana
-	h.p.handleMe(ctx, s, me)
+	rt = stubSession()
+	me := asMember(interactionBy("1001", "me"), dana)
+	h.p.handleMe(ctx, me)
 	fromRT("/rapsheet me: the member's own view", rt)
 
 	// 3. A clean member.
-	s, rt = stubSession()
-	h.p.handleView(ctx, s, withResolved(interaction("view", userOpt("user", "u9")), &discordgo.User{ID: "u9", Username: "quiet_one"}))
+	rt = stubSession()
+	h.p.handleView(ctx, withResolved(interaction("view", userOpt("user", "1009")), &discordgo.User{ID: "1009", Username: "quiet_one"}))
 	fromRT("/rapsheet view: a member with nothing on record", rt)
 
 	// 4. The ladder suggests (score crossed jail 2h), then a mod applies it.
@@ -190,119 +189,119 @@ func TestWritePreviews(t *testing.T) {
 	fromSend("Mod channel: a ladder suggestion, open", "channel", posts)
 	sug := suggestions(h)[len(suggestions(h))-1]
 	applyID := suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
-	s, rt = stubSession()
-	h.p.handleSuggestion(ctx, s, componentClick(modID, applyID), applyID)
+	rt = stubSession()
+	h.p.handleSuggestion(ctx, componentClick(modID, applyID), applyID)
 	fromRT("Mod channel: that suggestion clicked after #6 was voided (withdrawn)", rt)
 	// A clean apply, on a member whose sheet was not amended underneath it.
-	h.ops.addMember("u7")
-	h.ops.users["u7"] = &discordgo.User{ID: "u7", Username: "rowdy", GlobalName: "Rowdy"}
-	s, _ = stubSession()
-	h.p.handleWarn(ctx, s, withResolved(interaction("warn", userOpt("user", "u7"), strOpt("category", "hate_speech"), strOpt("reason", "slur in voice chat, several people heard it"), intOpt("points", 60)), h.ops.users["u7"]))
+	h.ops.addMember("1007")
+	h.ops.users["1007"] = &discordgo.User{ID: "1007", Username: "rowdy", GlobalName: "Rowdy"}
+	_ = stubSession()
+	h.p.handleWarn(ctx, withResolved(interaction("warn", userOpt("user", "1007"), strOpt("category", "hate_speech"), strOpt("reason", "slur in voice chat, several people heard it"), intOpt("points", 60)), h.ops.users["1007"]))
 	fromSend("Mod channel: a suggestion for a second member, open", "channel", h.ops.sentTo("mods"))
 	sug = suggestions(h)[len(suggestions(h))-1]
 	applyID = suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
-	s, rt = stubSession()
-	h.p.handleSuggestion(ctx, s, componentClick(modID, applyID), applyID)
+	rt = stubSession()
+	h.p.handleSuggestion(ctx, componentClick(modID, applyID), applyID)
 	fromRT("Mod channel: the same suggestion after Apply", rt)
 
 	// 5. Consequences by command.
-	h.ops.addMember("u2")
-	u2 := &discordgo.User{ID: "u2", Username: "loud_guy", GlobalName: "Loud"}
-	h.ops.users["u2"] = u2
-	s, rt = stubSession()
-	h.p.handleTimeout(ctx, s, withResolved(interaction("timeout", userOpt("user", "u2"), strOpt("duration", "6h"), strOpt("category", "spam"), strOpt("reason", "wall of emoji in every channel")), u2))
+	h.ops.addMember("1002")
+	u2 := &discordgo.User{ID: "1002", Username: "loud_guy", GlobalName: "Loud"}
+	h.ops.users["1002"] = u2
+	rt = stubSession()
+	h.p.handleTimeout(ctx, withResolved(interaction("timeout", userOpt("user", "1002"), strOpt("duration", "6h"), strOpt("category", "spam"), strOpt("reason", "wall of emoji in every channel")), u2))
 	fromRT("/timeout: confirmation", rt)
-	fromSend("DM to the member: timed out", "dm", h.ops.sentTo("dm-u2"))
-	s, rt = stubSession()
-	h.p.handleBan(ctx, s, withResolved(interaction("ban", userOpt("user", "u2"), strOpt("category", "threats"), strOpt("reason", "doxxing threat against a moderator"), strOpt("duration", "7d")), u2))
+	fromSend("DM to the member: timed out", "dm", h.ops.sentTo("dm-1002"))
+	rt = stubSession()
+	h.p.handleBan(ctx, withResolved(interaction("ban", userOpt("user", "1002"), strOpt("category", "threats"), strOpt("reason", "doxxing threat against a moderator"), strOpt("duration", "7d")), u2))
 	fromRT("/ban: confirmation", rt)
-	fromSend("DM to the member: banned for 7d", "dm", h.ops.sentTo("dm-u2"))
-	h.ops.addMember("u3")
-	s, _ = stubSession()
-	h.p.handleBan(ctx, s, interaction("ban", userOpt("user", "u3"), strOpt("category", "child_safety"), strOpt("reason", "repeated after a final warning; details in the case file"), boolOpt("permanent", true)))
-	fromSend("DM to the member: banned permanently", "dm", h.ops.sentTo("dm-u3"))
-	h.ops.addMember("u4")
-	s, _ = stubSession()
-	h.p.handleKick(ctx, s, interaction("kick", userOpt("user", "u4"), strOpt("category", "other"), strOpt("reason", "advertising, after two warnings")))
-	fromSend("DM to the member: kicked", "dm", h.ops.sentTo("dm-u4"))
-	h.p.dm(ctx, testGuild, "u1", voice.KeyStrikeNotice, "A note about your record", core.ColorWarning, map[string]string{"guild": "Test Guild"})
-	fromSend("DM to the member: the ladder's notice band", "dm", h.ops.sentTo("dm-u1"))
+	fromSend("DM to the member: banned for 7d", "dm", h.ops.sentTo("dm-1002"))
+	h.ops.addMember("1003")
+	_ = stubSession()
+	h.p.handleBan(ctx, interaction("ban", userOpt("user", "1003"), strOpt("category", "child_safety"), strOpt("reason", "repeated after a final warning; details in the case file"), boolOpt("permanent", true)))
+	fromSend("DM to the member: banned permanently", "dm", h.ops.sentTo("dm-1003"))
+	h.ops.addMember("1004")
+	_ = stubSession()
+	h.p.handleKick(ctx, interaction("kick", userOpt("user", "1004"), strOpt("category", "other"), strOpt("reason", "advertising, after two warnings")))
+	fromSend("DM to the member: kicked", "dm", h.ops.sentTo("dm-1004"))
+	h.p.dm(ctx, testGuild, "1001", voice.KeyStrikeNotice, "A note about your record", core.ColorWarning, map[string]string{"guild": "Test Guild"})
+	fromSend("DM to the member: the ladder's notice band", "dm", h.ops.sentTo("dm-1001"))
 
 	// 6. Void, edit, and their refusals.
-	s, rt = stubSession()
-	h.p.handleVoid(ctx, s, interaction("void", intOpt("case", 1), strOpt("reason", "duplicate of an older case")))
+	rt = stubSession()
+	h.p.handleVoid(ctx, interaction("void", intOpt("case", 1), strOpt("reason", "duplicate of an older case")))
 	fromRT("/rapsheet void: confirmation", rt)
 	fromSend("Case file: an entry after it was voided", "thread", h.ops.edits2(h))
 	h.ops.addMember("admin-1")
 	h.ranker.admins["admin-1"] = true
-	adminEntry, _, _ := h.p.record(ctx, cfg, newEntry{GuildID: testGuild, UserID: "u1", Kind: KindWarn, Category: CategoryGore, ActorID: "admin-1", Reason: "gore in #art", Source: SourceCommand})
-	s, rt = stubSession()
-	h.p.handleVoid(ctx, s, interaction("void", intOpt("case", int(adminEntry.ID)), strOpt("reason", "nope")))
+	adminEntry, _, _ := h.p.record(ctx, cfg, newEntry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategoryGore, ActorID: "admin-1", Reason: "gore in #art", Source: SourceCommand})
+	rt = stubSession()
+	h.p.handleVoid(ctx, interaction("void", intOpt("case", int(adminEntry.ID)), strOpt("reason", "nope")))
 	fromRT("/rapsheet void: refused by hierarchy", rt)
-	s, rt = stubSession()
-	h.p.handleBan(ctx, s, interaction("ban", userOpt("user", "u5"), strOpt("category", "spam"), strOpt("reason", "r")))
+	rt = stubSession()
+	h.p.handleBan(ctx, interaction("ban", userOpt("user", "1005"), strOpt("category", "spam"), strOpt("reason", "r")))
 	fromRT("/ban: neither duration nor permanent", rt)
-	s, rt = stubSession()
-	h.p.handleWarn(ctx, s, interaction("warn", userOpt("user", "admin-1"), strOpt("category", "spam"), strOpt("reason", "r")))
+	rt = stubSession()
+	h.p.handleWarn(ctx, interaction("warn", userOpt("user", "admin-1"), strOpt("category", "spam"), strOpt("reason", "r")))
 	fromRT("/rapsheet warn: refused, target outranks the mod", rt)
 
 	// 7. Configuration and status.
-	s, rt = stubSession()
-	h.p.handleStatus(ctx, s, interaction("status"))
+	rt = stubSession()
+	h.p.handleStatus(ctx, interaction("status"))
 	fromRT("/rapsheet status", rt)
-	s, rt = stubSession()
-	h.p.handleListBands(ctx, s, interaction("list/bands"))
+	rt = stubSession()
+	h.p.handleListBands(ctx, interaction("list/bands"))
 	fromRT("/rapsheet list bands", rt)
-	s, rt = stubSession()
-	h.p.handleListCategories(ctx, s, interaction("list/categories"))
+	rt = stubSession()
+	h.p.handleListCategories(ctx, interaction("list/categories"))
 	fromRT("/rapsheet list categories", rt)
-	s, rt = stubSession()
-	h.p.handleSettings(ctx, s, interaction("settings"))
+	rt = stubSession()
+	h.p.handleSettings(ctx, interaction("settings"))
 	fromRT("/rapsheet configure show", rt)
-	s, rt = stubSession()
-	panelClick(h.p, s, panelSet+"mode", "auto")
+	rt = stubSession()
+	panelClick(h.p, panelSet+"mode", "auto")
 	fromRT("/rapsheet configure mode auto", rt)
-	s, rt = stubSession()
-	panelForm(h.p, s, formSet+"bands", map[string]string{"ladder": "25 notice, 50 jail 2h, 100 jail 1d, 200 ban 7d, 400 ban 30d"})
+	rt = stubSession()
+	panelForm(h.p, formSet+"bands", map[string]string{"ladder": "25 notice, 50 jail 2h, 100 jail 1d, 200 ban 7d, 400 ban 30d"})
 	fromRT("/rapsheet configure bands", rt)
-	s, rt = stubSession()
-	panelForm(h.p, s, formSet+"halflife", map[string]string{"half_life": "14d"})
+	rt = stubSession()
+	panelForm(h.p, formSet+"halflife", map[string]string{"half_life": "14d"})
 	fromRT("/rapsheet configure half-life 14d", rt)
 	fresh := newHarness()
 	fresh.p.botID = "merlin-1"
-	s, rt = stubSession()
-	panelClick(fresh.p, s, panelSet+"forumnew")
+	rt = stubSession()
+	panelClick(fresh.p, panelSet+"forumnew")
 	fromRT("/rapsheet configure forum (created)", rt)
 
 	// 8. Alt hints and links.
-	h.ops.addMember("u6")
-	h.ops.users["u6"] = &discordgo.User{ID: "u6", Username: "danak2", Avatar: "abc123"}
+	h.ops.addMember("1006")
+	h.ops.users["1006"] = &discordgo.User{ID: "1006", Username: "danak2", Avatar: "abc123"}
 	newcomer := "1417880000000000000" // a snowflake, so the account-age line renders
 	h.ops.users[newcomer] = &discordgo.User{ID: newcomer, Username: "danak2", Avatar: "abc123"}
-	hint := AltHint{GuildID: testGuild, UserID: newcomer, CandidateID: "u1", Signals: []string{"same avatar", "joined 12 minutes after " + core.MentionUser("u1") + " was jailed 8h"}, Score: 5}
+	hint := AltHint{GuildID: testGuild, UserID: newcomer, CandidateID: "1001", Signals: []string{"same avatar", "joined 12 minutes after " + core.MentionUser("1001") + " was jailed 8h"}, Score: 5}
 	embed, comps := altNoticeEmbed(h.ops.users[newcomer], hint, h.p.altContext(ctx, cfg, hint), "", false)
 	add("Mod channel: a possible alt on join", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
 	embed, comps = altNoticeEmbed(h.ops.users[newcomer], hint, "", "Linked by "+core.MentionUser(modID)+". They now share one sheet.", true)
 	add("Mod channel: the same notice after Link", "channel", []*discordgo.MessageEmbed{embed}, comps, "", false)
-	s, rt = stubSession()
-	h.p.handleLink(ctx, s, interaction("link", userOpt("user", "u6"), userOpt("other", "u1"), strOpt("reason", "same avatar, rejoined minutes after the ban")))
+	rt = stubSession()
+	h.p.handleLink(ctx, interaction("link", userOpt("user", "1006"), userOpt("other", "1001"), strOpt("reason", "same avatar, rejoined minutes after the ban")))
 	fromRT("/rapsheet link: confirmation", rt)
-	s, rt = stubSession()
-	h.p.handleUnlink(ctx, s, interaction("unlink", userOpt("user", "u6")))
+	rt = stubSession()
+	h.p.handleUnlink(ctx, interaction("unlink", userOpt("user", "1006")))
 	fromRT("/rapsheet unlink: confirmation", rt)
-	s, rt = stubSession()
-	panelClick(h.p, s, panelSet+"alts:off")
+	rt = stubSession()
+	panelClick(h.p, panelSet+"alts:off")
 	fromRT("/rapsheet configure alt-hints off", rt)
 
 	// 9. The model surfaces, with a scripted reviewer.
 	rev := &fakeReviewer{out: "Dana has four scored entries in the last six weeks: a spam warning in early August, an automatic hate speech removal twelve days ago that carried an eight hour jail, and a server rule warning today for arguing with moderators. One threats warning was voided as a misread. The pattern is escalating in frequency rather than severity, with the last two inside a fortnight. At 67 points the record sits in the jail 2h band."}
 	h.p.reviewer = rev
-	s, rt = stubSession()
-	h.p.handleSummary(ctx, s, withResolved(interaction("summary", userOpt("user", "u1")), dana))
+	rt = stubSession()
+	h.p.handleSummary(ctx, withResolved(interaction("summary", userOpt("user", "1001")), dana))
 	fromRT("/rapsheet summary: written by the model", rt)
 	h.p.reviewer = &fakeReviewer{err: noModel{"aimod: the daily model budget for this guild is spent"}}
-	s, rt = stubSession()
-	h.p.handleSummary(ctx, s, withResolved(interaction("summary", userOpt("user", "u1")), dana))
+	rt = stubSession()
+	h.p.handleSummary(ctx, withResolved(interaction("summary", userOpt("user", "1001")), dana))
 	fromRT("/rapsheet summary: model unavailable, the sheet instead", rt)
 	h.p.reviewer = &fakeReviewer{out: "Spam was handled three ways this month: a 10 point warning (#1), a 60 point warning (#9) and nothing at all where the ladder reached jail 2h for a second member. Two entries carry no reason beyond a single word. Voids are spread across moderators and days. Otherwise the month reads consistently."}
 	h.p.SyncGuild(ctx, testGuild)

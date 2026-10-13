@@ -256,7 +256,7 @@ func suggestionEmbed(e Entry, rec Recommendation, score float64, tipped, standin
 // ledger on the click: the suggestion may have been dismissed or applied
 // by another mod, the band may have been reconfigured, and a click on a
 // week-old message is still a click.
-func (p *Plugin) handleSuggestion(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleSuggestion(ctx context.Context, ix *core.Ix, customID string) {
 	apply := strings.HasPrefix(customID, suggestApplyPrefix)
 	idStr := strings.TrimPrefix(strings.TrimPrefix(customID, suggestApplyPrefix), suggestDismissPrefix)
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -264,39 +264,39 @@ func (p *Plugin) handleSuggestion(ctx context.Context, s *discordgo.Session, i *
 		p.log.Error("rapsheet: parse suggestion id", "custom_id", customID, "err", err)
 		return
 	}
-	if err := core.DeferUpdate(s, i); err != nil {
+	if err := ix.DeferUpdate(); err != nil {
 		p.log.Error("rapsheet: defer suggestion click", "err", err)
 		return
 	}
-	cfg := p.config(ctx, i.GuildID)
-	sug, err := p.store.Entry(ctx, i.GuildID, id)
+	cfg := p.config(ctx, ix.GuildID)
+	sug, err := p.store.Entry(ctx, ix.GuildID, id)
 	if err != nil || sug.Kind != KindSuggestion {
-		p.log.Error("rapsheet: suggestion click on a missing case", "guild", i.GuildID, "case", id, "err", err)
+		p.log.Error("rapsheet: suggestion click on a missing case", "guild", ix.GuildID, "case", id, "err", err)
 		return
 	}
 	rec, ok := bandRecommendation(cfg, sug.Band)
 	if !ok {
-		p.settle(s, i, sug, rec, "The ladder has been reconfigured since; this band no longer exists.", true)
+		p.settle(ix, sug, rec, "The ladder has been reconfigured since; this band no longer exists.", true)
 		return
 	}
 	if sug.Voided() {
-		p.settle(s, i, sug, rec, fmt.Sprintf("Already dismissed by %s.", actorWords(sug.VoidedBy, false)), true)
+		p.settle(ix, sug, rec, fmt.Sprintf("Already dismissed by %s.", actorWords(sug.VoidedBy, false)), true)
 		return
 	}
 
 	if !apply {
 		now := p.now()
-		if err := p.store.Void(ctx, i.GuildID, sug.ID, actorID(i), "dismissed", now); err != nil {
-			p.log.Error("rapsheet: dismiss suggestion", "guild", i.GuildID, "case", sug.ID, "err", err)
+		if err := p.store.Void(ctx, ix.GuildID, sug.ID, actorID(ix), "dismissed", now); err != nil {
+			p.log.Error("rapsheet: dismiss suggestion", "guild", ix.GuildID, "case", sug.ID, "err", err)
 			return
 		}
-		sug.VoidedAt, sug.VoidedBy, sug.VoidReason = &now, actorID(i), "dismissed"
+		sug.VoidedAt, sug.VoidedBy, sug.VoidReason = &now, actorID(ix), "dismissed"
 		p.afterAmend(ctx, sug)
-		if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.suggestion_dismissed", "",
+		if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "rapsheet.suggestion_dismissed", "",
 			fmt.Sprintf("case #%d user=%s %s", sug.ID, core.MentionUser(sug.UserID), recWords(rec))); err != nil {
-			p.log.Error("rapsheet: audit dismiss", "guild", i.GuildID, "err", err)
+			p.log.Error("rapsheet: audit dismiss", "guild", ix.GuildID, "err", err)
 		}
-		p.settle(s, i, sug, rec, fmt.Sprintf("Dismissed by %s.", core.MentionUser(actorID(i))), true)
+		p.settle(ix, sug, rec, fmt.Sprintf("Dismissed by %s.", core.MentionUser(actorID(ix))), true)
 		return
 	}
 
@@ -305,28 +305,28 @@ func (p *Plugin) handleSuggestion(ctx context.Context, s *discordgo.Session, i *
 	// here for the one action that would otherwise let a button do what the
 	// command refuses.
 	if rec.Action == ActionBan {
-		if err := p.perms.Authorize(i, core.PermSpec{Tier: core.TierAdmin, Action: actionBan}); err != nil {
+		if err := p.perms.AuthorizeIx(ix, core.PermSpec{Tier: core.TierAdmin, Action: actionBan}); err != nil {
 			// Still open: the buttons stay for an admin.
-			p.settle(s, i, sug, rec, fmt.Sprintf("%s tried to apply this, but a ban needs an admin.", core.MentionUser(actorID(i))), false)
+			p.settle(ix, sug, rec, fmt.Sprintf("%s tried to apply this, but a ban needs an admin.", core.MentionUser(actorID(ix))), false)
 			return
 		}
 	}
 	// Somebody else may have applied it between the post and this click,
 	// or two mods may be clicking at once.
-	sh, err := p.loadSheet(ctx, cfg, i.GuildID, sug.UserID)
+	sh, err := p.loadSheet(ctx, cfg, ix.GuildID, sug.UserID)
 	if err != nil {
-		p.log.Error("rapsheet: load sheet on apply", "guild", i.GuildID, "err", err)
+		p.log.Error("rapsheet: load sheet on apply", "guild", ix.GuildID, "err", err)
 		return
 	}
 	if maxAppliedBand(sh.Entries, sug.CreatedAt) >= sug.Band {
-		p.settle(s, i, sug, rec, "Already applied.", true)
+		p.settle(ix, sug, rec, "Already applied.", true)
 		return
 	}
 	if sh.Rec.Band < sug.Band {
 		// Something was voided since; the record no longer reaches this
 		// band and applying would punish for points that are gone.
-		p.withdrawStaleSuggestions(ctx, cfg, i.GuildID, sug.UserID)
-		p.settle(s, i, sug, rec, fmt.Sprintf("Withdrawn: their record no longer reaches this band (score %.0f now).", sh.Score), true)
+		p.withdrawStaleSuggestions(ctx, cfg, ix.GuildID, sug.UserID)
+		p.settle(ix, sug, rec, fmt.Sprintf("Withdrawn: their record no longer reaches this band (score %.0f now).", sh.Score), true)
 		return
 	}
 	if !p.claim(sug.ID) {
@@ -334,14 +334,14 @@ func (p *Plugin) handleSuggestion(ctx context.Context, s *discordgo.Session, i *
 	}
 	defer p.unclaim(sug.ID)
 
-	outcome, err := p.applyLadder(ctx, cfg, sug.UserID, rec, sh.Score, actorID(i))
+	outcome, err := p.applyLadder(ctx, cfg, sug.UserID, rec, sh.Score, actorID(ix))
 	if err != nil {
 		// Still open: a transient failure (Discord down, jail role missing)
 		// is something an admin may fix and retry.
-		p.settle(s, i, sug, rec, fmt.Sprintf("%s tried to apply this and it failed: %v", core.MentionUser(actorID(i)), err), false)
+		p.settle(ix, sug, rec, fmt.Sprintf("%s tried to apply this and it failed: %v", core.MentionUser(actorID(ix)), err), false)
 		return
 	}
-	p.settle(s, i, sug, rec, fmt.Sprintf("Applied by %s: %s.", core.MentionUser(actorID(i)), outcome), true)
+	p.settle(ix, sug, rec, fmt.Sprintf("Applied by %s: %s.", core.MentionUser(actorID(ix)), outcome), true)
 }
 
 // bandRecommendation looks a stored band index up in the current ladder.
@@ -372,7 +372,7 @@ func maxAppliedBand(entries []Entry, since time.Time) int {
 	return best
 }
 
-func (p *Plugin) settle(s *discordgo.Session, i *discordgo.InteractionCreate, sug Entry, rec Recommendation, outcome string, settled bool) {
+func (p *Plugin) settle(ix *core.Ix, sug Entry, rec Recommendation, outcome string, settled bool) {
 	var score float64
 	_, _ = fmt.Sscanf(sug.Reason, "score %f", &score)
 	// Settled from the stored suggestion alone; the tipping entry is
@@ -388,8 +388,8 @@ func (p *Plugin) settle(s *discordgo.Session, i *discordgo.InteractionCreate, su
 		}
 	}
 	embed, components := suggestionEmbed(sug, rec, score, tipped, "", outcome, settled)
-	if err := core.UpdateEmbedWithComponents(s, i, embed, components); err != nil {
-		p.log.Error("rapsheet: update suggestion message", "guild", i.GuildID, "err", err)
+	if err := ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+		p.log.Error("rapsheet: update suggestion message", "guild", ix.GuildID, "err", err)
 	}
 }
 

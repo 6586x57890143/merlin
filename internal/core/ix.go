@@ -99,6 +99,15 @@ func (ix *Ix) RespondEmbed(embed discord.Embed) error {
 	})
 }
 
+// RespondPublic answers in the channel for everyone, for a view somebody
+// asked to share (/rapsheet view public:true); Discord will not forward an
+// ephemeral message.
+func (ix *Ix) RespondPublic(embed discord.Embed, components []discord.LayoutComponent) error {
+	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
+		Embeds: []discord.Embed{embed}, Components: components, Files: EmbedUploads(embed), AllowedMentions: noPings(),
+	})
+}
+
 // RespondText answers with plain text, privately.
 func (ix *Ix) RespondText(content string) error {
 	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{

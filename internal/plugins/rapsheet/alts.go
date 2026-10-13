@@ -259,7 +259,7 @@ func altNoticeEmbed(joiner *discordgo.User, h AltHint, context, note string, set
 }
 
 // handleAltButton is both buttons on the notice.
-func (p *Plugin) handleAltButton(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handleAltButton(ctx context.Context, ix *core.Ix, customID string) {
 	link := strings.HasPrefix(customID, altLinkPrefix)
 	rest := strings.TrimPrefix(strings.TrimPrefix(customID, altLinkPrefix), altDismissPrefix)
 	userID, candidateID, ok := strings.Cut(rest, ":")
@@ -267,32 +267,32 @@ func (p *Plugin) handleAltButton(ctx context.Context, s *discordgo.Session, i *d
 		p.log.Error("rapsheet: malformed alt custom id", "custom_id", customID)
 		return
 	}
-	if err := core.DeferUpdate(s, i); err != nil {
+	if err := ix.DeferUpdate(); err != nil {
 		p.log.Error("rapsheet: defer alt click", "err", err)
 		return
 	}
-	h := AltHint{GuildID: i.GuildID, UserID: userID, CandidateID: candidateID}
-	for _, stored := range p.hintsFor(ctx, i.GuildID, userID) {
+	h := AltHint{GuildID: ix.GuildID, UserID: userID, CandidateID: candidateID}
+	for _, stored := range p.hintsFor(ctx, ix.GuildID, userID) {
 		if stored.CandidateID == candidateID {
 			h = stored
 		}
 	}
 	joiner := &discordgo.User{ID: userID}
 	if link {
-		if err := p.link(ctx, i.GuildID, userID, candidateID, actorID(i), "alt notice: "+strings.Join(h.Signals, ", ")); err != nil {
-			embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("%s tried to link them and it failed: %v", core.MentionUser(actorID(i)), err), false)
-			_ = core.UpdateEmbedWithComponents(s, i, embed, comps)
+		if err := p.link(ctx, ix.GuildID, userID, candidateID, actorID(ix), "alt notice: "+strings.Join(h.Signals, ", ")); err != nil {
+			embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("%s tried to link them and it failed: %v", core.MentionUser(actorID(ix)), err), false)
+			_ = ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(comps))
 			return
 		}
-		embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("Linked by %s. They now share one sheet.", core.MentionUser(actorID(i))), true)
-		_ = core.UpdateEmbedWithComponents(s, i, embed, comps)
+		embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("Linked by %s. They now share one sheet.", core.MentionUser(actorID(ix))), true)
+		_ = ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(comps))
 		return
 	}
-	if err := p.store.DeleteHint(ctx, i.GuildID, userID, candidateID); err != nil {
-		p.log.Error("rapsheet: dismiss alt hint", "guild", i.GuildID, "err", err)
+	if err := p.store.DeleteHint(ctx, ix.GuildID, userID, candidateID); err != nil {
+		p.log.Error("rapsheet: dismiss alt hint", "guild", ix.GuildID, "err", err)
 	}
-	embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("Dismissed by %s.", core.MentionUser(actorID(i))), true)
-	_ = core.UpdateEmbedWithComponents(s, i, embed, comps)
+	embed, comps := altNoticeEmbed(joiner, h, "", fmt.Sprintf("Dismissed by %s.", core.MentionUser(actorID(ix))), true)
+	_ = ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(comps))
 }
 
 func (p *Plugin) hintsFor(ctx context.Context, guildID, userID string) []AltHint {
@@ -334,43 +334,43 @@ func (p *Plugin) link(ctx context.Context, guildID, userID, otherID, actor, reas
 	return nil
 }
 
-func (p *Plugin) handleLink(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	args := core.LeafArgs(i)
-	userID := args["user"].Value.(string)
-	otherID := args["other"].Value.(string)
+func (p *Plugin) handleLink(ctx context.Context, ix *core.Ix) {
+	args := ix.Args()
+	userID := args["user"].String()
+	otherID := args["other"].String()
 	reason := ""
 	if a, ok := args["reason"]; ok {
-		reason = strings.TrimSpace(a.StringValue())
+		reason = strings.TrimSpace(a.String())
 	}
-	if err := p.link(ctx, i.GuildID, userID, otherID, actorID(i), reason); err != nil {
-		core.RespondErr(s, i, "Link", err)
+	if err := p.link(ctx, ix.GuildID, userID, otherID, actorID(ix), reason); err != nil {
+		ix.RespondErr("Link", err)
 		return
 	}
-	group, _ := p.store.Group(ctx, i.GuildID, userID)
+	group, _ := p.store.Group(ctx, ix.GuildID, userID)
 	mentions := make([]string, 0, len(group))
 	for _, id := range group {
 		mentions = append(mentions, core.MentionUser(id))
 	}
-	core.RespondOK(s, i, "Linked", fmt.Sprintf("%s now share one sheet and one score. `/rapsheet unlink` takes an account back out.", strings.Join(mentions, ", ")))
+	ix.RespondOK("Linked", fmt.Sprintf("%s now share one sheet and one score. `/rapsheet unlink` takes an account back out.", strings.Join(mentions, ", ")))
 }
 
-func (p *Plugin) handleUnlink(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := core.LeafArgs(i)["user"].Value.(string)
-	group, err := p.store.Group(ctx, i.GuildID, userID)
+func (p *Plugin) handleUnlink(ctx context.Context, ix *core.Ix) {
+	userID := ix.Args()["user"].String()
+	group, err := p.store.Group(ctx, ix.GuildID, userID)
 	if err != nil {
-		core.RespondErr(s, i, "Unlink", err)
+		ix.RespondErr("Unlink", err)
 		return
 	}
 	if len(group) < 2 {
-		core.RespondErr(s, i, "Unlink", fmt.Errorf("%s is not linked to anyone", core.MentionUser(userID)))
+		ix.RespondErr("Unlink", fmt.Errorf("%s is not linked to anyone", core.MentionUser(userID)))
 		return
 	}
-	if err := p.store.Unlink(ctx, i.GuildID, userID); err != nil {
-		core.RespondErr(s, i, "Unlink", err)
+	if err := p.store.Unlink(ctx, ix.GuildID, userID); err != nil {
+		ix.RespondErr("Unlink", err)
 		return
 	}
-	if err := p.audit.Record(ctx, i.GuildID, actorID(i), "rapsheet.unlinked", "", "user="+core.MentionUser(userID)); err != nil {
-		p.log.Error("rapsheet: audit unlink", "guild", i.GuildID, "err", err)
+	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "rapsheet.unlinked", "", "user="+core.MentionUser(userID)); err != nil {
+		p.log.Error("rapsheet: audit unlink", "guild", ix.GuildID, "err", err)
 	}
-	core.RespondOK(s, i, "Unlinked", fmt.Sprintf("%s is on their own sheet again, with the entries recorded against them; the rest of the group keeps theirs.", core.MentionUser(userID)))
+	ix.RespondOK("Unlinked", fmt.Sprintf("%s is on their own sheet again, with the entries recorded against them; the rest of the group keeps theirs.", core.MentionUser(userID)))
 }

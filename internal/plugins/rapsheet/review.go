@@ -139,45 +139,45 @@ const summarySystem = `You are helping a Discord moderator read one member's mod
 
 // --- /rapsheet summary ------------------------------------------------------------
 
-func (p *Plugin) handleSummary(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := core.LeafArgs(i)["user"].Value.(string)
-	if err := core.DeferResponse(s, i); err != nil {
+func (p *Plugin) handleSummary(ctx context.Context, ix *core.Ix) {
+	userID := ix.Args()["user"].String()
+	if err := ix.Defer(); err != nil {
 		p.log.Error("rapsheet: defer summary", "err", err)
 		return
 	}
-	cfg := p.config(ctx, i.GuildID)
-	sh, err := p.loadSheet(ctx, cfg, i.GuildID, userID)
+	cfg := p.config(ctx, ix.GuildID)
+	sh, err := p.loadSheet(ctx, cfg, ix.GuildID, userID)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Summary", err)
+		_ = ix.FollowUpErr("Summary", err)
 		return
 	}
-	name := displayName(resolvedUser(i, userID), nil, userID)
+	name := displayName(resolvedUser(ix, userID), nil, userID)
 	if len(sh.Entries) == 0 {
-		_ = core.FollowUpOK(s, i, "Summary: "+name, "Nothing on record, so nothing to summarise.")
+		_ = ix.FollowUpOK("Summary: "+name, "Nothing on record, so nothing to summarise.")
 		return
 	}
 	if p.reviewer == nil {
-		p.plainInsteadOfSummary(ctx, s, i, cfg, userID, name, "No model is wired into this build.")
+		p.plainInsteadOfSummary(ctx, ix, cfg, userID, name, "No model is wired into this build.")
 		return
 	}
 	user := fmt.Sprintf("Server ladder: %s.\nCurrent score: %.0f, which is the %s band.\n\nRecord, newest first:\n%s",
 		bandsWords(effectiveBands(cfg.Bands)), sh.Score, recWords(sh.Rec), sheetText(sh.Entries, p.now(), cfg.HalfLife))
 	cctx, cancel := context.WithTimeout(ctx, summaryTimeout)
 	defer cancel()
-	out, err := p.reviewer.Complete(cctx, i.GuildID, summarySystem, user)
+	out, err := p.reviewer.Complete(cctx, ix.GuildID, summarySystem, user)
 	if err != nil {
 		if unavailable(err) {
-			p.plainInsteadOfSummary(ctx, s, i, cfg, userID, name, unavailableWords(err))
+			p.plainInsteadOfSummary(ctx, ix, cfg, userID, name, unavailableWords(err))
 			return
 		}
-		_ = core.FollowUpErr(s, i, "Summary", fmt.Errorf("the model did not answer: %w", err))
+		_ = ix.FollowUpErr("Summary", fmt.Errorf("the model did not answer: %w", err))
 		return
 	}
 	embed := core.NewEmbed(core.ColorInfo, "Summary: "+name, core.TruncateEmbedDescription(strings.TrimSpace(out)),
 		&discordgo.MessageEmbedField{Name: "Score", Value: fmt.Sprintf("%.0f (%s)", sh.Score, recWords(sh.Rec)), Inline: true},
 		&discordgo.MessageEmbedField{Name: "Entries", Value: entryCountWords(sh.Entries), Inline: true},
 		&discordgo.MessageEmbedField{Name: "Written by", Value: "a model, from this member's record; `/rapsheet view` is the record itself"})
-	if err := core.FollowUpEmbed(s, i, embed); err != nil {
+	if err := ix.FollowUpEmbed(core.EmbedOf(embed)); err != nil {
 		p.log.Error("rapsheet: summary follow-up", "err", err)
 	}
 }
@@ -214,15 +214,15 @@ func entryCountWords(entries []Entry) string {
 
 // plainInsteadOfSummary renders the sheet the ordinary way with a line
 // saying why there is no prose.
-func (p *Plugin) plainInsteadOfSummary(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, cfg Config, userID, name, why string) {
-	embed, components, err := p.renderFor(ctx, i.GuildID, userID, resolvedUser(i, userID), 0, false, false)
+func (p *Plugin) plainInsteadOfSummary(ctx context.Context, ix *core.Ix, cfg Config, userID, name, why string) {
+	embed, components, err := p.renderFor(ctx, ix.GuildID, userID, resolvedUser(ix, userID), 0, false, false)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Summary", err)
+		_ = ix.FollowUpErr("Summary", err)
 		return
 	}
 	embed.Title = "Summary unavailable: " + name
 	embed.Description = core.TruncateEmbedDescription("No summary: " + why + "\n\n" + embed.Description)
-	if err := core.FollowUpEmbedWithComponents(s, i, embed, components); err != nil {
+	if err := ix.FollowUpEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
 		p.log.Error("rapsheet: plain summary follow-up", "err", err)
 	}
 }

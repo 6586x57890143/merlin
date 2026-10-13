@@ -50,9 +50,9 @@ func withModChannel(h *harness, mode Mode) {
 // warnPts warns u1 with an explicit points override, the quickest way to
 // walk a record up the ladder.
 func warnPts(h *harness, userID string, pts int) {
-	s, _ := stubSession()
+	stubSession()
 	h.ops.addMember(userID)
-	h.p.handleWarn(context.Background(), s, interaction("warn",
+	h.p.handleWarn(context.Background(), interaction("warn",
 		userOpt("user", userID), strOpt("category", "spam"), strOpt("reason", "r"), intOpt("points", pts)))
 }
 
@@ -104,8 +104,8 @@ func TestADismissedSuggestionCanBeMadeAgainLater(t *testing.T) {
 	sug := suggestions(h)[0]
 
 	id := suggestDismissPrefix + strconv.FormatInt(sug.ID, 10)
-	s, rt := stubSession()
-	h.p.handleSuggestion(context.Background(), s, componentClick(modID, id), id)
+	rt := stubSession()
+	h.p.handleSuggestion(context.Background(), componentClick(modID, id), id)
 	if e, _ := h.store.Entry(context.Background(), testGuild, sug.ID); !e.Voided() || e.VoidReason != "dismissed" {
 		t.Fatalf("suggestion after dismiss = %+v (id %d)", e, sug.ID)
 	}
@@ -131,8 +131,8 @@ func TestApplyRunsTheConsequenceThroughTheJailerAndRecordsItAtZeroPoints(t *test
 	sug := suggestions(h)[0]
 	id := suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
 
-	s, rt := stubSession()
-	h.p.handleSuggestion(context.Background(), s, componentClick(modID, id), id)
+	rt := stubSession()
+	h.p.handleSuggestion(context.Background(), componentClick(modID, id), id)
 
 	if len(jailer.calls) != 1 || jailer.calls[0].userID != "u1" || jailer.calls[0].d != 2*time.Hour ||
 		!strings.HasPrefix(jailer.calls[0].reason, ladderReasonPrefix) {
@@ -151,8 +151,8 @@ func TestApplyRunsTheConsequenceThroughTheJailerAndRecordsItAtZeroPoints(t *test
 		t.Errorf("said %s audit %v", rt.said(), h.audit.all())
 	}
 	// A second click is refused as already applied.
-	s2, rt2 := stubSession()
-	h.p.handleSuggestion(context.Background(), s2, componentClick("mod-2", id), id)
+	rt2 := stubSession()
+	h.p.handleSuggestion(context.Background(), componentClick("mod-2", id), id)
 	if len(jailer.calls) != 1 || !strings.Contains(rt2.said(), "Already applied") {
 		t.Errorf("second click: calls %d said %s", len(jailer.calls), rt2.said())
 	}
@@ -169,8 +169,8 @@ func TestAFailedApplyVoidsTheConsequenceAndLeavesTheSuggestionOpen(t *testing.T)
 	warnPts(h, "u1", 60)
 	id := suggestApplyPrefix + strconv.FormatInt(suggestions(h)[0].ID, 10)
 
-	s, rt := stubSession()
-	h.p.handleSuggestion(context.Background(), s, componentClick(modID, id), id)
+	rt := stubSession()
+	h.p.handleSuggestion(context.Background(), componentClick(modID, id), id)
 	for _, e := range h.store.all() {
 		if e.Kind == KindJail && !e.Voided() {
 			t.Errorf("a failed jail left a live consequence: %+v", e)
@@ -188,15 +188,15 @@ func TestApplyingABanNeedsAnAdminHoweverTheButtonWasRegistered(t *testing.T) {
 	id := suggestApplyPrefix + strconv.FormatInt(suggestions(h)[0].ID, 10)
 
 	h.ranker.authErr = core.ErrForbidden{Reason: "requires admin"}
-	s, rt := stubSession()
-	h.p.handleSuggestion(context.Background(), s, componentClick(modID, id), id)
+	rt := stubSession()
+	h.p.handleSuggestion(context.Background(), componentClick(modID, id), id)
 	if len(h.ops.bans) != 0 || !strings.Contains(rt.said(), "needs an admin") || !strings.Contains(rt.said(), "custom_id") {
 		t.Errorf("bans %v said %s", h.ops.bans, rt.said())
 	}
 
 	h.ranker.authErr = nil
-	s2, _ := stubSession()
-	h.p.handleSuggestion(context.Background(), s2, componentClick("admin-1", id), id)
+	stubSession()
+	h.p.handleSuggestion(context.Background(), componentClick("admin-1", id), id)
 	if _, ok := h.ops.bans["u1"]; !ok {
 		t.Fatal("an admin could not apply the ban")
 	}
@@ -330,8 +330,8 @@ func TestPriorsCountScoredOffencesAcrossTheGroupAndDeferWhenDisabled(t *testing.
 
 func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 	h := newHarness()
-	s, rt := stubSession()
-	panelClick(h.p, s, panelSet+"mode", "auto")
+	rt := stubSession()
+	panelClick(h.p, panelSet+"mode", "auto")
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.EscalationMode != ModeAuto {
 		t.Errorf("mode = %s", cfg.EscalationMode)
 	}
@@ -339,13 +339,13 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 		t.Errorf("auto with no mod channel should warn: %s", rt.said())
 	}
 
-	s2, _ := stubSession()
-	panelClick(h.p, s2, panelSet+"modch", "mods")
+	stubSession()
+	panelClick(h.p, panelSet+"modch", "mods")
 
-	s3, rt3 := stubSession()
-	panelForm(h.p, s3, formSet+"halflife", map[string]string{"half_life": "14d"})
-	s4, rt4 := stubSession()
-	panelForm(h.p, s4, formSet+"halflife", map[string]string{"half_life": "2h"})
+	rt3 := stubSession()
+	panelForm(h.p, formSet+"halflife", map[string]string{"half_life": "14d"})
+	rt4 := stubSession()
+	panelForm(h.p, formSet+"halflife", map[string]string{"half_life": "2h"})
 	if cfg, _ := h.store.Config(context.Background(), testGuild); cfg.HalfLife != 14*24*time.Hour || cfg.ModChannelID != "mods" {
 		t.Errorf("cfg = %+v", cfg)
 	}
@@ -353,10 +353,10 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 		t.Errorf("said %s / %s", rt3.said(), rt4.said())
 	}
 
-	s5, _ := stubSession()
-	panelForm(h.p, s5, formSet+"points:spam", map[string]string{"points": "3"})
-	s6, _ := stubSession()
-	panelForm(h.p, s6, formSet+"points:gore", map[string]string{"points": ""})
+	stubSession()
+	panelForm(h.p, formSet+"points:spam", map[string]string{"points": "3"})
+	stubSession()
+	panelForm(h.p, formSet+"points:gore", map[string]string{"points": ""})
 	cfg, _ := h.store.Config(context.Background(), testGuild)
 	if cfg.CategoryPoints[CategorySpam] != 3 {
 		t.Errorf("points = %v", cfg.CategoryPoints)
@@ -365,8 +365,8 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 		t.Error("omitting points should reset the category")
 	}
 
-	s7, rt7 := stubSession()
-	panelForm(h.p, s7, formSet+"bands", map[string]string{"ladder": "20 notice, 40 timeout 1h, 80 jail 2h, 160 ban 24h"})
+	rt7 := stubSession()
+	panelForm(h.p, formSet+"bands", map[string]string{"ladder": "20 notice, 40 timeout 1h, 80 jail 2h, 160 ban 24h"})
 	cfg, _ = h.store.Config(context.Background(), testGuild)
 	if len(cfg.Bands) != 5 || cfg.Bands[2].Action != ActionTimeout || cfg.Bands[4].Duration != 24*time.Hour {
 		t.Errorf("bands = %+v", cfg.Bands)
@@ -374,13 +374,13 @@ func TestConfigureModeHalfLifePointsAndBands(t *testing.T) {
 	if !strings.Contains(rt7.said(), "40+: timeout 1h") {
 		t.Errorf("got %s", rt7.said())
 	}
-	s8, rt8 := stubSession()
-	panelForm(h.p, s8, formSet+"bands", map[string]string{"ladder": "50 ban"})
+	rt8 := stubSession()
+	panelForm(h.p, formSet+"bands", map[string]string{"ladder": "50 ban"})
 	if !strings.Contains(rt8.said(), "never bans permanently") {
 		t.Errorf("a permanent ban band was accepted: %s", rt8.said())
 	}
-	s9, _ := stubSession()
-	panelForm(h.p, s9, formSet+"bands", map[string]string{"ladder": "default"})
+	stubSession()
+	panelForm(h.p, formSet+"bands", map[string]string{"ladder": "default"})
 	if cfg, _ := h.store.Config(context.Background(), testGuild); len(cfg.Bands) != 0 {
 		t.Error("default did not clear the bands")
 	}
@@ -412,8 +412,8 @@ func TestVoidingTheOffenceWithdrawsTheSuggestionItCaused(t *testing.T) {
 		t.Fatalf("suggestions = %+v", sug)
 	}
 	// The 100-point warning was a mistake.
-	s, _ := stubSession()
-	h.p.handleVoid(context.Background(), s, interaction("void", intOpt("case", 3), strOpt("reason", "misread")))
+	stubSession()
+	h.p.handleVoid(context.Background(), interaction("void", intOpt("case", 3), strOpt("reason", "misread")))
 	sug = suggestions(h)
 	if sug[0].Voided() || !sug[1].Voided() || !strings.Contains(sug[1].VoidReason, "no longer reaches") {
 		t.Errorf("after void: notice suggestion %v, jail suggestion %v (%q)", sug[0].Voided(), sug[1].Voided(), sug[1].VoidReason)
@@ -421,8 +421,8 @@ func TestVoidingTheOffenceWithdrawsTheSuggestionItCaused(t *testing.T) {
 	// A click on the withdrawn one says so and applies nothing.
 	h.p.jailer = &fakeJailer{}
 	id := suggestApplyPrefix + strconv.FormatInt(sug[1].ID, 10)
-	s2, rt := stubSession()
-	h.p.handleSuggestion(context.Background(), s2, componentClick(modID, id), id)
+	rt := stubSession()
+	h.p.handleSuggestion(context.Background(), componentClick(modID, id), id)
 	if len(h.p.jailer.(*fakeJailer).calls) != 0 || !strings.Contains(rt.said(), "dismissed") && !strings.Contains(rt.said(), "Withdrawn") && !strings.Contains(rt.said(), "withdrawn") {
 		t.Errorf("said %s", rt.said())
 	}
@@ -438,8 +438,8 @@ func TestApplyRefusesWhenTheRecordNoLongerReachesTheBand(t *testing.T) {
 	// own withdrawal, so the click is what finds out.
 	_ = h.store.Void(context.Background(), testGuild, 1, "mod-2", "x", testNow)
 	id := suggestApplyPrefix + strconv.FormatInt(sug.ID, 10)
-	s, rt := stubSession()
-	h.p.handleSuggestion(context.Background(), s, componentClick(modID, id), id)
+	rt := stubSession()
+	h.p.handleSuggestion(context.Background(), componentClick(modID, id), id)
 	if len(h.p.jailer.(*fakeJailer).calls) != 0 || !strings.Contains(rt.said(), "no longer reaches") {
 		t.Errorf("calls %d said %s", len(h.p.jailer.(*fakeJailer).calls), rt.said())
 	}
