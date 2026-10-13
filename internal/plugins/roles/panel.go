@@ -70,7 +70,7 @@ func (p *Plugin) handlePanelView(ctx context.Context, ix *core.Ix, customID stri
 
 func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string) core.Panel {
 	perms := p.commands.Perms()
-	canJail, canScripts := perms.AllowsIx(ix, jailSpec), perms.AllowsIx(ix, scriptsSpec)
+	canJail, canScripts := perms.Allows(ix, jailSpec), perms.Allows(ix, scriptsSpec)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Roles", Plugin: p.Name(), Note: note,
 		Line:   "Jail, vacation, new members and scripts",
 		Footer: "Jail, release and grants are still commands: /roles jail, /roles release, /roles grant. Every change here is audited."}

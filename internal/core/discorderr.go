@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/rest"
 )
 
@@ -32,23 +31,15 @@ func IsUnknownResource(err error) bool {
 		if code := int(re.Code); code >= unknownResourceCodeMin && code <= unknownResourceCodeMax {
 			return true
 		}
+		// No code to go on (an empty or malformed error body): the status
+		// alone still tells "no such thing" from a retryable failure.
 		return re.Code == 0 && re.Response != nil && re.Response.StatusCode == http.StatusNotFound
 	}
-	var restErr *discordgo.RESTError
-	if !errors.As(err, &restErr) {
-		return false
-	}
-	if restErr.Message != nil && restErr.Message.Code >= unknownResourceCodeMin && restErr.Message.Code <= unknownResourceCodeMax {
-		return true
-	}
-	// No parsed JSON body to go on (an empty or malformed error payload):
-	// the status alone still distinguishes "no such thing" from a retryable
-	// failure.
-	return restErr.Message == nil && restErr.Response != nil && restErr.Response.StatusCode == http.StatusNotFound
+	return false
 }
 
 // HasDiscordErrorCode reports whether err is a Discord REST error carrying
-// exactly the given code (discordgo.ErrCodeUnknownRole, ...).
+// exactly the given code (rest.JSONErrorCodeUnknownRole, ...).
 //
 // Use this, not IsUnknownResource, when the reaction depends on *which* thing
 // is missing rather than on "something is missing." One API call can report
@@ -56,12 +47,6 @@ func IsUnknownResource(err error) bool {
 // target who left and Unknown Role for a deleted role), and a caller that
 // treats them alike acts on the wrong one.
 func HasDiscordErrorCode(err error, code int) bool {
-	if re, ok := errors.AsType[*rest.Error](err); ok {
-		return int(re.Code) == code
-	}
-	var restErr *discordgo.RESTError
-	if !errors.As(err, &restErr) {
-		return false
-	}
-	return restErr.Message != nil && restErr.Message.Code == code
+	re, ok := errors.AsType[*rest.Error](err)
+	return ok && int(re.Code) == code
 }

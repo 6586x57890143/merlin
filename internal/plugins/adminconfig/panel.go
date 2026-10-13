@@ -83,7 +83,7 @@ func (p *Plugin) redraw(ctx context.Context, ix *core.Ix, page, arg, note string
 
 // panel draws one page. arg is the permissions page's area or action.
 func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string) core.Panel {
-	can := p.perms.AllowsIx(ix, mutateSpec)
+	can := p.perms.Allows(ix, mutateSpec)
 	gs := p.settings.GuildSettings(ix.GuildID)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Settings", Plugin: p.Name(), Note: note,
 		Footer: "Mods can read this; only admins can change it. Every change is written to the audit log."}

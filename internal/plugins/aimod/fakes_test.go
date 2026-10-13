@@ -801,9 +801,9 @@ func (f fakePrivilege) IsBootstrapAdmin(userID string) bool {
 	return f.bootstrapID != "" && userID == f.bootstrapID
 }
 
-// AuthorizeIx passes the bootstrap identity and nobody else, which is all the
+// Authorize passes the bootstrap identity and nobody else, which is all the
 // tests need to tell a moderator from a member.
-func (f fakePrivilege) AuthorizeIx(ix *core.Ix, _ core.PermSpec) error {
+func (f fakePrivilege) Authorize(ix *core.Ix, _ core.PermSpec) error {
 	if ix.Member() != nil && f.IsBootstrapAdmin(ix.UserID) {
 		return nil
 	}
