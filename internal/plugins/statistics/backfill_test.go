@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -34,8 +32,8 @@ func (f *fakeScheduler) NextDue(context.Context, string) (time.Time, bool, error
 
 // history builds a channel's messages, newest first, n per hour over hours
 // hours ending just before until, alternating two authors.
-func history(until time.Time, hours, perHour int) []*discordgo.Message {
-	var out []*discordgo.Message
+func history(until time.Time, hours, perHour int) []post {
+	var out []post
 	for h := 1; h <= hours; h++ {
 		hour := until.Add(-time.Duration(h) * time.Hour)
 		for i := perHour - 1; i >= 0; i-- {
@@ -55,8 +53,8 @@ func history(until time.Time, hours, perHour int) []*discordgo.Message {
 func TestBackfillFillsTheHoursBeforeCounting(t *testing.T) {
 	live := windowStart.Add(10 * time.Hour)
 	src := &fakeSource{
-		channels: []*discordgo.Channel{textChannel("c1", "general")},
-		msgs:     map[string][]*discordgo.Message{"c1": history(live.Add(time.Hour), 12, 4)},
+		channels: []ChannelSeen{textChannel("c1", "general")},
+		msgs:     map[string][]post{"c1": history(live.Add(time.Hour), 12, 4)},
 	}
 	store := newFakeStore()
 	p := newTestPlugin(store, src)
@@ -99,8 +97,8 @@ func TestBackfillFillsTheHoursBeforeCounting(t *testing.T) {
 func TestBackfillResumesWithoutDoubleCounting(t *testing.T) {
 	live := windowStart.Add(10 * time.Hour)
 	src := &fakeSource{
-		channels: []*discordgo.Channel{textChannel("c1", "general")},
-		msgs:     map[string][]*discordgo.Message{"c1": history(live, 10, 30)},
+		channels: []ChannelSeen{textChannel("c1", "general")},
+		msgs:     map[string][]post{"c1": history(live, 10, 30)},
 	}
 	store := newFakeStore()
 	p := newTestPlugin(store, src)
@@ -151,8 +149,8 @@ func TestBackfillResumesWithoutDoubleCounting(t *testing.T) {
 func TestBackfillSkipsAnUnreadableChannelAndKeepsGoing(t *testing.T) {
 	live := windowStart.Add(2 * time.Hour)
 	src := &fakeSource{
-		channels:   []*discordgo.Channel{textChannel("a-secret", "secret"), textChannel("b-open", "open")},
-		msgs:       map[string][]*discordgo.Message{"b-open": history(live, 2, 3)},
+		channels:   []ChannelSeen{textChannel("a-secret", "secret"), textChannel("b-open", "open")},
+		msgs:       map[string][]post{"b-open": history(live, 2, 3)},
 		unreadable: map[string]bool{"a-secret": true},
 	}
 	store := newFakeStore()
@@ -178,7 +176,7 @@ func TestBackfillSkipsAnUnreadableChannelAndKeepsGoing(t *testing.T) {
 // other per-guild job here.
 func TestBackfillJobRegistersOnlyWhileThereIsWork(t *testing.T) {
 	live := windowStart.Add(time.Hour)
-	src := &fakeSource{channels: []*discordgo.Channel{textChannel("c1", "general")}, msgs: map[string][]*discordgo.Message{}}
+	src := &fakeSource{channels: []ChannelSeen{textChannel("c1", "general")}, msgs: map[string][]post{}}
 	store := newFakeStore()
 	p := newTestPlugin(store, src)
 	sched := newFakeScheduler()
@@ -210,7 +208,7 @@ func TestBackfillJobRegistersOnlyWhileThereIsWork(t *testing.T) {
 // nothing newer.
 func TestSnowflakeCursorArithmetic(t *testing.T) {
 	m := msgAt(windowStart, 5, "u", "u")
-	id := messageID(m.ID)
+	id := messageID(m.id)
 	if id == 0 {
 		t.Fatal("a real snowflake should parse")
 	}
@@ -218,9 +216,9 @@ func TestSnowflakeCursorArithmetic(t *testing.T) {
 		t.Fatal("garbage is 0")
 	}
 	next := strconv.FormatInt(id+1, 10)
-	src := &fakeSource{msgs: map[string][]*discordgo.Message{"c": {m}}}
+	src := &fakeSource{msgs: map[string][]post{"c": {m}}}
 	got, _ := src.messagePage("c", next, 100)
-	if len(got) != 1 || got[0].id != m.ID {
+	if len(got) != 1 || got[0].id != m.id {
 		t.Fatalf("before=id+1 should return the message itself, got %v", got)
 	}
 }
