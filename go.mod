@@ -3,7 +3,7 @@ module github.com/6586x57890143/merlin
 go 1.27.0
 
 require (
-	github.com/6586x57890143/cygnet/link v0.6.0
+	github.com/6586x57890143/cygnet/link v0.8.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/disgoorg/disgo v0.19.6
 	github.com/disgoorg/snowflake/v2 v2.0.3
