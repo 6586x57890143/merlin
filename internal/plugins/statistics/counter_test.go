@@ -29,18 +29,18 @@ func TestCounterBucketsByHourAndSkipsNonPeople(t *testing.T) {
 	store := newFakeStore()
 	p := newTestPlugin(store, &fakeSource{})
 
-	p.HandleMessage(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
-	p.HandleMessage(guildMsg(windowStart.Add(20*time.Minute), 2, "g1", "c1", "u1", "zoe"))
-	p.HandleMessage(guildMsg(windowStart.Add(time.Hour), 3, "g1", "c2", "u1", "zoe"))
-	p.HandleMessage(guildMsg(windowStart, 4, "g1", "c1", "u2", "abe"))
+	p.messageGo(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
+	p.messageGo(guildMsg(windowStart.Add(20*time.Minute), 2, "g1", "c1", "u1", "zoe"))
+	p.messageGo(guildMsg(windowStart.Add(time.Hour), 3, "g1", "c2", "u1", "zoe"))
+	p.messageGo(guildMsg(windowStart, 4, "g1", "c1", "u2", "abe"))
 	bot := guildMsg(windowStart, 5, "g1", "c1", "bot", "bot")
 	bot.Author.Bot = true
-	p.HandleMessage(bot)
+	p.messageGo(bot)
 	hook := guildMsg(windowStart, 6, "g1", "c1", "u3", "hook")
 	hook.WebhookID = "w"
-	p.HandleMessage(hook)
-	p.HandleMessage(msgAt(windowStart, 7, "u4", "dm")) // no guild
-	p.HandleMessage(nil)
+	p.messageGo(hook)
+	p.messageGo(msgAt(windowStart, 7, "u4", "dm")) // no guild
+	p.messageGo(nil)
 
 	p.flush(context.Background())
 
@@ -72,14 +72,14 @@ func TestCounterBucketsByHourAndSkipsNonPeople(t *testing.T) {
 func TestCounterKeepsCountsAcrossAFailedFlush(t *testing.T) {
 	store := newFakeStore()
 	p := newTestPlugin(store, &fakeSource{})
-	p.HandleMessage(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
+	p.messageGo(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
 
 	store.addErr = errors.New("db down")
 	p.flush(context.Background())
 	if store.total("g1", "") != 0 {
 		t.Fatal("nothing should have landed")
 	}
-	p.HandleMessage(guildMsg(windowStart, 2, "g1", "c1", "u1", "zoe"))
+	p.messageGo(guildMsg(windowStart, 2, "g1", "c1", "u1", "zoe"))
 	store.addErr = nil
 	p.flush(context.Background())
 	if got := store.total("g1", "u1"); got != 2 {
@@ -114,7 +114,7 @@ func TestFlushLoopFlushesOnShutdown(t *testing.T) {
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	p.HandleMessage(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
+	p.messageGo(guildMsg(windowStart, 1, "g1", "c1", "u1", "zoe"))
 	if err := p.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +154,8 @@ func TestCounterHonoursThePluginGate(t *testing.T) {
 	store := newFakeStore()
 	p := newTestPlugin(store, &fakeSource{})
 	p.gate = fakeGate{"on": true}
-	p.HandleMessage(guildMsg(windowStart, 1, "on", "c", "u", "u"))
-	p.HandleMessage(guildMsg(windowStart, 2, "off", "c", "u", "u"))
+	p.messageGo(guildMsg(windowStart, 1, "on", "c", "u", "u"))
+	p.messageGo(guildMsg(windowStart, 2, "off", "c", "u", "u"))
 	p.HandleMemberJoin("off")
 	p.flush(context.Background())
 	if store.total("on", "") != 1 || store.total("off", "") != 0 || len(store.members) != 0 {
@@ -180,17 +180,17 @@ func TestVoiceIsBookedByTheHour(t *testing.T) {
 	clock := windowStart.Add(30 * time.Minute) // 14:30
 	p.now = func() time.Time { return clock }
 
-	p.HandleVoiceState(voiceState("g1", "u1", "v1"))
+	p.voiceGo(voiceState("g1", "u1", "v1"))
 	clock = clock.Add(time.Hour) // 15:30, one hour in v1 across two buckets
 	muted := voiceState("g1", "u1", "v1")
 	muted.SelfMute = true
 	muted.BeforeUpdate = &discordgo.VoiceState{ChannelID: "v1"}
-	p.HandleVoiceState(muted)
-	p.HandleVoiceState(voiceState("g1", "u1", "v2")) // switch rooms
-	clock = clock.Add(10 * time.Minute)              // 15:40
+	p.voiceGo(muted)
+	p.voiceGo(voiceState("g1", "u1", "v2")) // switch rooms
+	clock = clock.Add(10 * time.Minute)     // 15:40
 	p.flush(context.Background())
-	clock = clock.Add(5 * time.Minute)             // 15:45
-	p.HandleVoiceState(voiceState("g1", "u1", "")) // leave
+	clock = clock.Add(5 * time.Minute)    // 15:45
+	p.voiceGo(voiceState("g1", "u1", "")) // leave
 	clock = clock.Add(time.Hour)
 	p.flush(context.Background())
 
@@ -218,7 +218,7 @@ func TestVoiceIsBookedByTheHour(t *testing.T) {
 	// off is not watched.
 	bot := voiceState("g1", "b1", "v1")
 	bot.Member.User.Bot = true
-	p.HandleVoiceState(bot)
+	p.voiceGo(bot)
 	if _, open := p.count.open["g1:b1"]; open {
 		t.Fatal("a bot is on the clock")
 	}
@@ -232,12 +232,12 @@ func TestSyncVoiceSeedsWhoIsAlreadyThere(t *testing.T) {
 	clock := windowStart
 	p.now = func() time.Time { return clock }
 
-	p.HandleVoiceState(voiceState("g1", "u1", "v1"))
+	p.voiceGo(voiceState("g1", "u1", "v1"))
 	clock = clock.Add(10 * time.Minute)
-	p.SyncVoice("g1", []*discordgo.VoiceState{
-		{UserID: "u1", ChannelID: "v1"},
-		{UserID: "u2", ChannelID: "v2"},
-		{UserID: "u3"}, // not in a channel
+	p.syncVoice("g1", [][2]string{
+		{"u1", "v1"},
+		{"u2", "v2"},
+		{"u3", ""}, // not in a channel
 	})
 	clock = clock.Add(5 * time.Minute)
 	p.flush(context.Background())
@@ -264,10 +264,10 @@ func TestVoiceStopsWhenTheGuildTurnsThePluginOff(t *testing.T) {
 	clock := windowStart
 	p.now = func() time.Time { return clock }
 
-	p.HandleVoiceState(voiceState("g1", "u1", "v1"))
+	p.voiceGo(voiceState("g1", "u1", "v1"))
 	clock = clock.Add(time.Minute)
 	gate["g1"] = false
-	p.HandleVoiceState(voiceState("g1", "u1", "")) // not heard
+	p.voiceGo(voiceState("g1", "u1", "")) // not heard
 	p.flush(context.Background())
 	clock = clock.Add(time.Hour)
 	p.flush(context.Background())
@@ -287,7 +287,7 @@ func TestVoiceSurvivesAFailedFlush(t *testing.T) {
 	clock := windowStart
 	p.now = func() time.Time { return clock }
 
-	p.HandleVoiceState(voiceState("g1", "u1", "v1"))
+	p.voiceGo(voiceState("g1", "u1", "v1"))
 	clock = clock.Add(time.Minute)
 	store.addErr = errors.New("down")
 	p.flush(context.Background())

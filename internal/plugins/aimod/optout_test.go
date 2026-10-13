@@ -90,7 +90,7 @@ func TestOptedOutMessageIsNeverQueued(t *testing.T) {
 	client := &fakeClassifier{}
 	p := optOutIntake(t, store, client, true, "u1")
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "honestly this whole patch is a mess and i hate it",
 		Author:  &discordgo.User{ID: "u1"},
@@ -115,7 +115,7 @@ func TestOptOutAppliesToTheMemberNotTheGuild(t *testing.T) {
 	store := newFakeStore()
 	p := optOutIntake(t, store, &fakeClassifier{}, true, "u1")
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "honestly this whole patch is a mess and i hate it",
 		Author:  &discordgo.User{ID: "u2"},
@@ -145,7 +145,7 @@ func TestOptedOutIsTreatedLikeAnExemptRole(t *testing.T) {
 	store.setConfig(cfg)
 
 	post := func(id, content string) {
-		p.HandleMessage(&discordgo.Message{
+		p.handleGo(&discordgo.Message{
 			ID: id, GuildID: "g1", ChannelID: "c1", Content: content,
 			Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
 		})
@@ -172,7 +172,7 @@ func TestOptedOutChildSafetyVocabularyIsStillScanned(t *testing.T) {
 	store := newFakeStore()
 	p := optOutIntake(t, store, &fakeClassifier{}, true, "u1")
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: "anyone here into 14 year old girls",
 		Author:  &discordgo.User{ID: "u1"},

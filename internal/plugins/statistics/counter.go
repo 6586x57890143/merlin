@@ -6,7 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	snow "github.com/disgoorg/snowflake/v2"
 )
 
 // flushEvery is how often the in-memory tallies are written out. discordgo
@@ -66,73 +67,122 @@ func newCounter() *counter {
 	}
 }
 
+// post is what statistics reads of a gateway message.
+type post struct {
+	guildID, channelID, authorID string
+	at                           time.Time
+	// name is the member's nickname, else their display name, else their
+	// username.
+	name, avatar string
+	// skip is a bot, a webhook, or a message with no author.
+	skip bool
+}
+
 // HandleMessage counts one gateway message. Bots and webhooks are not
 // people; DMs have no guild. Content is never read, and the event carries
 // none without the MESSAGE_CONTENT intent anyway.
-func (p *Plugin) HandleMessage(m *discordgo.Message) {
-	if m == nil || m.GuildID == "" || m.Author == nil || m.Author.Bot || m.WebhookID != "" || !p.enabled(m.GuildID) {
+func (p *Plugin) HandleMessage(m discord.Message) {
+	if m.GuildID == nil {
 		return
 	}
-	at := m.Timestamp.UTC()
+	in := post{
+		guildID: m.GuildID.String(), channelID: m.ChannelID.String(), authorID: m.Author.ID.String(),
+		at: m.CreatedAt, avatar: deref(m.Author.Avatar),
+		skip: m.Author.ID == 0 || m.Author.Bot || m.WebhookID != nil,
+	}
+	in.name = m.Author.Username
+	if g := deref(m.Author.GlobalName); g != "" {
+		in.name = g
+	}
+	if m.Member != nil && deref(m.Member.Nick) != "" {
+		in.name = *m.Member.Nick
+	}
+	p.count1(in)
+}
+
+func (p *Plugin) count1(m post) {
+	if m.guildID == "" || m.skip || !p.enabled(m.guildID) {
+		return
+	}
+	at := m.at.UTC()
 	if at.IsZero() {
 		at = p.now()
 	}
-	name := m.Author.GlobalName
-	if name == "" {
-		name = m.Author.Username
-	}
-	if m.Member != nil && m.Member.Nick != "" {
-		name = m.Member.Nick
-	}
 	chName := ""
 	if p.channelName != nil {
-		chName = p.channelName(m.GuildID, m.ChannelID)
+		chName = p.channelName(m.guildID, m.channelID)
 	}
 
 	c := p.count
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.messages[bucketKey{m.GuildID, m.ChannelID, m.Author.ID, at.Truncate(time.Hour)}]++
-	c.users[m.GuildID+":"+m.Author.ID] = UserSeen{GuildID: m.GuildID, UserID: m.Author.ID, Name: name, Avatar: m.Author.Avatar, SeenAt: at}
+	c.messages[bucketKey{m.guildID, m.channelID, m.authorID, at.Truncate(time.Hour)}]++
+	c.users[m.guildID+":"+m.authorID] = UserSeen{GuildID: m.guildID, UserID: m.authorID, Name: m.name, Avatar: m.avatar, SeenAt: at}
 	if chName != "" {
-		c.channels[m.GuildID+":"+m.ChannelID] = ChannelSeen{GuildID: m.GuildID, ChannelID: m.ChannelID, Name: chName}
+		c.channels[m.guildID+":"+m.channelID] = ChannelSeen{GuildID: m.guildID, ChannelID: m.channelID, Name: chName}
 	}
+}
+
+// move is what statistics reads of a voice state change.
+type move struct {
+	guildID, userID, channelID string
+	// before is the channel before the change, when the gateway cache knew
+	// it; a mute or deafen leaves it equal to channelID.
+	before *string
+	bot    bool
+	// named is set when the event carried the member, and name and avatar
+	// are theirs.
+	named        bool
+	name, avatar string
 }
 
 // HandleVoiceState books a member's voice time as their channel changes.
 // A mute or deafen toggle arrives as the same event with the channel
 // unchanged and is ignored, so one sitting is one run of seconds. The
 // seconds up to now go into the hourly buckets and the cursor moves,
-// whether they left, switched rooms or joined.
-func (p *Plugin) HandleVoiceState(vs *discordgo.VoiceStateUpdate) {
-	if vs == nil || vs.VoiceState == nil || vs.GuildID == "" || vs.UserID == "" || !p.enabled(vs.GuildID) {
+// whether they left, switched rooms or joined. old is the state before,
+// from the gateway cache, zero when it had none.
+func (p *Plugin) HandleVoiceState(vs, old discord.VoiceState, m discord.Member) {
+	in := move{guildID: vs.GuildID.String(), userID: vs.UserID.String(), channelID: channelOf(vs.ChannelID), bot: m.User.Bot}
+	if old.UserID != 0 {
+		before := channelOf(old.ChannelID)
+		in.before = &before
+	}
+	if m.User.ID != 0 {
+		in.named, in.avatar = true, deref(m.User.Avatar)
+		in.name = m.User.Username
+		if g := deref(m.User.GlobalName); g != "" {
+			in.name = g
+		}
+		if n := deref(m.Nick); n != "" {
+			in.name = n
+		}
+	}
+	p.voice1(in)
+}
+
+func (p *Plugin) voice1(vs move) {
+	if vs.guildID == "" || vs.userID == "" || !p.enabled(vs.guildID) {
 		return
 	}
-	if vs.BeforeUpdate != nil && vs.BeforeUpdate.ChannelID == vs.ChannelID {
+	if vs.before != nil && *vs.before == vs.channelID {
 		return
 	}
-	if vs.Member != nil && vs.Member.User != nil && vs.Member.User.Bot {
+	if vs.bot {
 		return
 	}
 	now := p.now()
 	c := p.count
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.settleVoice(vs.GuildID, vs.UserID, now)
-	if vs.ChannelID == "" {
-		delete(c.open, vs.GuildID+":"+vs.UserID)
+	c.settleVoice(vs.guildID, vs.userID, now)
+	if vs.channelID == "" {
+		delete(c.open, vs.guildID+":"+vs.userID)
 		return
 	}
-	c.open[vs.GuildID+":"+vs.UserID] = voiceOpen{channelID: vs.ChannelID, since: now}
-	if m := vs.Member; m != nil && m.User != nil {
-		name := m.User.GlobalName
-		if name == "" {
-			name = m.User.Username
-		}
-		if m.Nick != "" {
-			name = m.Nick
-		}
-		c.users[vs.GuildID+":"+vs.UserID] = UserSeen{GuildID: vs.GuildID, UserID: vs.UserID, Name: name, Avatar: m.User.Avatar, SeenAt: now}
+	c.open[vs.guildID+":"+vs.userID] = voiceOpen{channelID: vs.channelID, since: now}
+	if vs.named {
+		c.users[vs.guildID+":"+vs.userID] = UserSeen{GuildID: vs.guildID, UserID: vs.userID, Name: vs.name, Avatar: vs.avatar, SeenAt: now}
 	}
 }
 
@@ -141,7 +191,18 @@ func (p *Plugin) HandleVoiceState(vs *discordgo.VoiceStateUpdate) {
 // minutes between the old process going down and this one seeing the
 // guild are lost, which is the honest direction: a gap the size of a
 // deploy, never time nobody was there for.
-func (p *Plugin) SyncVoice(guildID string, states []*discordgo.VoiceState) {
+func (p *Plugin) SyncVoice(guildID string, states []discord.VoiceState) {
+	seats := make([][2]string, 0, len(states))
+	for _, vs := range states {
+		if vs.UserID != 0 {
+			seats = append(seats, [2]string{vs.UserID.String(), channelOf(vs.ChannelID)})
+		}
+	}
+	p.syncVoice(guildID, seats)
+}
+
+// syncVoice is SyncVoice for seats of user and channel.
+func (p *Plugin) syncVoice(guildID string, seats [][2]string) {
 	if guildID == "" || !p.enabled(guildID) {
 		return
 	}
@@ -149,15 +210,30 @@ func (p *Plugin) SyncVoice(guildID string, states []*discordgo.VoiceState) {
 	c := p.count
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, vs := range states {
-		if vs == nil || vs.UserID == "" || vs.ChannelID == "" {
+	for _, s := range seats {
+		user, ch := s[0], s[1]
+		if user == "" || ch == "" {
 			continue
 		}
-		if _, already := c.open[guildID+":"+vs.UserID]; already {
+		if _, already := c.open[guildID+":"+user]; already {
 			continue
 		}
-		c.open[guildID+":"+vs.UserID] = voiceOpen{channelID: vs.ChannelID, since: now}
+		c.open[guildID+":"+user] = voiceOpen{channelID: ch, since: now}
 	}
+}
+
+func channelOf(id *snow.ID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // settleVoice books one member's open time up to now into the hourly

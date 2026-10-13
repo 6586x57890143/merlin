@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // Default model stacks.
@@ -147,7 +145,7 @@ const maxReplyContext = 120
 //
 // forwarded is returned rather than inferred later because it changes the
 // action; see enforce.
-func messageText(m *discordgo.Message) (text string, forwarded bool) {
+func messageText(m message) (text string, forwarded bool) {
 	if strings.TrimSpace(m.Content) != "" {
 		return m.Content, false
 	}
@@ -156,9 +154,9 @@ func messageText(m *discordgo.Message) (text string, forwarded bool) {
 	// opening line is innocuous and whose second is not doing exactly the
 	// thing this function exists to stop.
 	var parts []string
-	for _, snap := range m.MessageSnapshots {
-		if snap.Message != nil && strings.TrimSpace(snap.Message.Content) != "" {
-			parts = append(parts, snap.Message.Content)
+	for _, snap := range m.Snapshots {
+		if strings.TrimSpace(snap) != "" {
+			parts = append(parts, snap)
 		}
 	}
 	if len(parts) == 0 {
@@ -168,11 +166,11 @@ func messageText(m *discordgo.Message) (text string, forwarded bool) {
 }
 
 // replyContext extracts the referenced message's text, if there is one.
-func replyContext(m *discordgo.Message) string {
-	if m.ReferencedMessage == nil {
+func replyContext(m message) string {
+	if m.ReplyTo == "" {
 		return ""
 	}
-	s := sanitizeForPrompt(m.ReferencedMessage.Content)
+	s := sanitizeForPrompt(m.ReplyTo)
 	if len([]rune(s)) > maxReplyContext {
 		s = string([]rune(s)[:maxReplyContext]) + "..."
 	}
