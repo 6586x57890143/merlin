@@ -70,6 +70,15 @@ Concrete stores (`internal/settings.Store`, `internal/config.Loader`) are never 
 - **Discord's hard response limits are correctness constraints, not polish.** A handler has 3 seconds to respond at all: anything doing real work (`/scheduler run-now`, `/roles jail`'s first-ever run, `/roles configure sync-channels`) must `core.DeferResponse` first and finish with `core.FollowUpOK`/`FollowUpErr`, or a fully successful operation still surfaces as "the application did not respond." Likewise an embed field over 1024 bytes (`core.TruncateEmbedField`) fails the whole message rather than being trimmed, and repeated `UpdateEmbedWithComponents` edits must replace attachments rather than append them.
 - Use `core.LeafArgs(i)` inside handlers to read the invoked subcommand's arguments by name. Don't re-walk `i.ApplicationCommandData().Options` yourself; this exists specifically because that walk was independently reimplemented in three places before being consolidated.
 
+### Moving to disgo (`internal/core/ix.go`)
+
+merlin is moving from discordgo to disgo one plugin at a time. While both are in the tree:
+
+- The router takes discordgo's raw event (`HandleEvent`). A handler registered with `HandleIx`/`AutocompleteIx`/`HandleComponentIx`/`HandleModalIx` gets a `*core.Ix`: disgo's decoding of the same interaction, `GuildID`/`UserID` as merlin's string IDs, and the disgo REST client its answer goes through (`core.NewRest`, mentions off by default). The plugin gate and `Authorize` still read discordgo's copy, so neither security check moves until the last step.
+- `Ix`'s methods are the core helpers of the same names (`RespondOK`, `Defer`, `FollowUpEmbed`, `RespondPanel`, `SelectDiff`, `ModalValues`, ...). Embeds come from `core.Embed`/`core.LandmarkEmbed`; a panel sets `Parts` (disgo components) instead of `Body`. `ix_test.go` holds the disgo builders to the same Discord JSON and uploads as the discordgo ones, so a ported plugin looks exactly as it did.
+- A ported plugin's tests use `paneltest.IxCommand`/`IxClick`/`IxPick`/`IxSubmit`, which decode Discord's JSON through `core.NewIx`. disgo IDs are snowflakes, so those fixtures use numeric IDs (`paneltest.IxGuild`).
+- When the last plugin has moved, the gateway goes to disgo and the discordgo halves (and the `Ix` names' duplicates) are deleted.
+
 ### Settings panels (`internal/core/panel.go`)
 
 A plugin's configuration is a **panel**, not a tree of `configure` subcommands: one Components V2 container opened by a bare top-level command, read and changed with pickers, redrawn in place. `/config` (`adminconfig/panel.go`) is the reference and was eighteen subcommands. Moderation *actions* on a person (`/roles jail`, `/rapsheet warn`) stay commands; it is settings that move.

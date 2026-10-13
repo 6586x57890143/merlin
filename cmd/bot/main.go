@@ -153,7 +153,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return fmt.Errorf("load voice catalog: %w", err)
 	}
 
-	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker)
+	// Plugins moved to disgo answer through their own REST client (core.Ix);
+	// the rest still answer through the session.
+	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker).WithRest(core.NewRest(cfg.Discord.Token))
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	journal := discordguard.NewPostgresJournal(db.Pool)
 	auditWriter := audit.New(db.Pool, session, settingsStore)
@@ -348,7 +350,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// sync and whenever the bot is added to a new guild later, so this one
 	// handler covers "known at startup" and "joined while running" the same
 	// way, with no restart required for the latter.
-	session.AddHandler(commands.HandleInteraction)
+	session.AddHandler(commands.HandleEvent)
 	session.AddHandler(func(s *discordgo.Session, gc *discordgo.GuildCreate) {
 		guildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

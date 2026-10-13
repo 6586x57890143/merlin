@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 // Panel is a settings surface: one Components V2 container that a plugin's
@@ -51,6 +52,12 @@ type Panel struct {
 	// upload, nil when Icon is already a URL Discord can fetch.
 	Icon     string
 	IconFile *discordgo.File
+
+	// Parts and IconUpload are Body and IconFile on disgo's types, for a
+	// plugin answering through an Ix, which draws with Layout and Uploads.
+	// Both shapes live here until the last plugin is off discordgo.
+	Parts      []discord.ContainerSubComponent
+	IconUpload *discord.File
 }
 
 // Components renders p as the message's single top-level container.
