@@ -4,9 +4,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/disgoorg/disgo/discord"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // meta is how one audit action is presented: what it is called in the embed
@@ -15,7 +15,7 @@ type meta struct {
 	title string
 	color int
 	// mood overrides the colour-derived face. Only set where the palette
-	// cannot express the distinction, matching core.WithMood's own rule.
+	// cannot express the distinction, matching core.SetMood's own rule.
 	mood core.Mood
 }
 
@@ -233,19 +233,18 @@ func upperFirst(s string) string {
 
 // buildEmbed renders one audit entry.
 //
-// Pure, and separate from Record's database write and Discord send, because
-// Writer holds a concrete *discordgo.Session and so nothing in this package
-// was testable at all. Titles, colours, actor rendering and truncation are
-// the parts most likely to be got wrong and the parts most worth asserting.
-func buildEmbed(actorID, action, oldValue, newValue string) *discordgo.MessageEmbed {
+// Pure, and separate from Record's database write and Discord send, so the
+// parts most likely to be got wrong (titles, colours, actor rendering and
+// truncation) can be asserted without either.
+func buildEmbed(actorID, action, oldValue, newValue string) discord.Embed {
 	m := metaFor(action)
-	embed := core.NewEmbed(m.color, m.title, "")
+	embed := core.Embed(m.color, m.title, "")
 	if m.mood != core.MoodNone {
-		embed = core.WithMood(embed, m.mood)
+		core.SetMood(&embed, m.mood)
 	}
 
-	embed.Fields = []*discordgo.MessageEmbedField{
-		{Name: "Actor", Value: core.FormatActor(actorID), Inline: true},
+	embed.Fields = []discord.EmbedField{
+		{Name: "Actor", Value: core.FormatActor(actorID), Inline: core.Inline()},
 	}
 
 	// Truncated because an embed field over 1024 bytes doesn't get trimmed by
@@ -261,17 +260,17 @@ func buildEmbed(actorID, action, oldValue, newValue string) *discordgo.MessageEm
 	switch {
 	case oldValue != "" && newValue != "":
 		embed.Fields = append(embed.Fields,
-			&discordgo.MessageEmbedField{Name: "Before", Value: core.TruncateEmbedField(oldValue), Inline: true},
-			&discordgo.MessageEmbedField{Name: "After", Value: core.TruncateEmbedField(newValue), Inline: true},
+			discord.EmbedField{Name: "Before", Value: core.TruncateEmbedField(oldValue), Inline: core.Inline()},
+			discord.EmbedField{Name: "After", Value: core.TruncateEmbedField(newValue), Inline: core.Inline()},
 		)
 	case newValue != "":
 		// Not inline: with nothing to sit beside, a half-width field just
 		// leaves a gap, and these carry the detail worth reading.
 		embed.Fields = append(embed.Fields,
-			&discordgo.MessageEmbedField{Name: "Details", Value: core.TruncateEmbedField(newValue)})
+			discord.EmbedField{Name: "Details", Value: core.TruncateEmbedField(newValue)})
 	case oldValue != "":
 		embed.Fields = append(embed.Fields,
-			&discordgo.MessageEmbedField{Name: "Removed", Value: core.TruncateEmbedField(oldValue)})
+			discord.EmbedField{Name: "Removed", Value: core.TruncateEmbedField(oldValue)})
 	}
 	return embed
 }

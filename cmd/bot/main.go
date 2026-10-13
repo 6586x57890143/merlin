@@ -183,7 +183,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	commands := core.NewCommandRouter(perms, settingsStore, log).WithVoice(speaker).WithRest(ixRest)
 	sched := scheduler.New(scheduler.NewPostgresJobStateStore(db.Pool), settingsStore, log)
 	journal := discordguard.NewPostgresJournal(db.Pool)
-	auditWriter := audit.New(db.Pool, session, settingsStore)
+	auditWriter := audit.New(db.Pool, ixRest, settingsStore)
 	// audit_log, action_journal and aimod's stored evidence all grow forever
 	// otherwise. Housekeeping, not a Scheduler job: none of these tables is
 	// per guild, and missing a tick just means the next one prunes the same

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -112,12 +112,12 @@ func visibleLen(v string) int {
 // row of two is split in halves under a row split in thirds and nothing
 // lines up. Values too wide for a column go underneath at full width, where
 // they read on one line and cannot pull the grid above out of line.
-func gridLayout(lead []*discordgo.MessageEmbedField, items []item) (description string, fields []*discordgo.MessageEmbedField) {
+func gridLayout(lead []discord.EmbedField, items []item) (description string, fields []discord.EmbedField) {
 	var desc []string
-	var wide []*discordgo.MessageEmbedField
+	var wide []discord.EmbedField
 	grid := lead
-	for _, f := range grid {
-		f.Inline = true
+	for i := range grid {
+		grid[i].Inline = core.Inline()
 	}
 	for _, it := range items {
 		switch it.key {
@@ -126,9 +126,9 @@ func gridLayout(lead []*discordgo.MessageEmbedField, items []item) (description 
 		case "reason":
 			desc = append(desc, "> "+strings.ReplaceAll(it.val, "\n", "\n> "))
 		default:
-			f := &discordgo.MessageEmbedField{Name: label(it.key), Value: core.TruncateEmbedField(it.val)}
+			f := discord.EmbedField{Name: label(it.key), Value: core.TruncateEmbedField(it.val)}
 			if visibleLen(it.val) <= maxColumnText && !strings.Contains(it.val, "\n") {
-				f.Inline = true
+				f.Inline = core.Inline()
 				grid = append(grid, f)
 			} else {
 				wide = append(wide, f)
@@ -136,7 +136,7 @@ func gridLayout(lead []*discordgo.MessageEmbedField, items []item) (description 
 		}
 	}
 	for len(grid)%gridColumns != 0 {
-		grid = append(grid, &discordgo.MessageEmbedField{Name: "\u200b", Value: "\u200b", Inline: true})
+		grid = append(grid, discord.EmbedField{Name: "\u200b", Value: "\u200b", Inline: core.Inline()})
 	}
 	return core.TruncateEmbedDescription(strings.Join(desc, "\n")), append(grid, wide...)
 }
