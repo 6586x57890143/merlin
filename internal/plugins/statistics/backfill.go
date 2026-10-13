@@ -151,17 +151,17 @@ func (p *Plugin) backfillChannel(ctx context.Context, row BackfillRow, deadline 
 			return writeHour(before, true)
 		}
 		for _, m := range msgs {
-			id := messageID(m.ID)
+			id := messageID(m.id)
 			if id == 0 || id >= snowflake(row.Until) {
 				continue
 			}
 			if id < after {
-				return writeHour(m.ID, true)
+				return writeHour(m.id, true)
 			}
-			if m.Author == nil || m.Author.Bot || m.WebhookID != "" {
+			if m.skip {
 				continue
 			}
-			hour := m.Timestamp.UTC().Truncate(time.Hour)
+			hour := m.at.UTC().Truncate(time.Hour)
 			if !pendingHour.IsZero() && !hour.Equal(pendingHour) {
 				// First message of an older hour: the newer one is whole.
 				// Resume just above this message, which is not written yet.
@@ -170,35 +170,23 @@ func (p *Plugin) backfillChannel(ctx context.Context, row BackfillRow, deadline 
 				}
 			}
 			pendingHour = hour
-			pending[m.Author.ID]++
-			name := m.Author.GlobalName
-			if name == "" {
-				name = m.Author.Username
-			}
-			users[m.Author.ID] = UserSeen{GuildID: row.GuildID, UserID: m.Author.ID, Name: name, Avatar: m.Author.Avatar, SeenAt: m.Timestamp.UTC()}
+			pending[m.authorID]++
+			users[m.authorID] = UserSeen{GuildID: row.GuildID, UserID: m.authorID, Name: m.name, Avatar: m.avatar, SeenAt: m.at.UTC()}
 		}
-		before = msgs[len(msgs)-1].ID
+		before = msgs[len(msgs)-1].id
 	}
 }
 
 // queueBackfill lists the guild's readable channels and active threads and
 // queues each from from up to the hour counting began. Returns how many.
 func (p *Plugin) queueBackfill(ctx context.Context, guildID string, from, until time.Time) (int, error) {
-	channels, err := p.source.GuildChannels(guildID)
+	names, err := p.source.channelList(guildID)
 	if err != nil {
 		return 0, fmt.Errorf("could not list this server's channels: %w", err)
 	}
-	if threads, terr := p.source.ThreadsActive(guildID); terr == nil && threads != nil {
-		channels = append(channels, threads.Threads...)
-	}
-	var rows []BackfillRow
-	var names []ChannelSeen
-	for _, ch := range channels {
-		if !readable(ch) {
-			continue
-		}
-		rows = append(rows, BackfillRow{GuildID: guildID, ChannelID: ch.ID, From: from, Until: until})
-		names = append(names, ChannelSeen{GuildID: guildID, ChannelID: ch.ID, Name: ch.Name})
+	rows := make([]BackfillRow, 0, len(names))
+	for _, ch := range names {
+		rows = append(rows, BackfillRow{GuildID: guildID, ChannelID: ch.ChannelID, From: from, Until: until})
 	}
 	if err := p.store.UpsertChannels(ctx, names); err != nil {
 		p.log.Warn("statistics: record channel names", "guild", guildID, "err", err)

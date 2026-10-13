@@ -219,8 +219,8 @@ func TestSnowflakeCursorArithmetic(t *testing.T) {
 	}
 	next := strconv.FormatInt(id+1, 10)
 	src := &fakeSource{msgs: map[string][]*discordgo.Message{"c": {m}}}
-	got, _ := src.ChannelMessages("c", 100, next, "", "")
-	if len(got) != 1 || got[0].ID != m.ID {
+	got, _ := src.messagePage("c", next, 100)
+	if len(got) != 1 || got[0].id != m.ID {
 		t.Fatalf("before=id+1 should return the message itself, got %v", got)
 	}
 }

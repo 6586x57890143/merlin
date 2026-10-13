@@ -30,15 +30,24 @@ type fakeSource struct {
 	calls int
 }
 
-func (f *fakeSource) GuildChannels(string, ...discordgo.RequestOption) ([]*discordgo.Channel, error) {
-	return f.channels, f.channelsErr
+// channelList lists the fixtures' readable channels and threads, as
+// restSource does Discord's.
+func (f *fakeSource) channelList(guildID string) ([]ChannelSeen, error) {
+	if f.channelsErr != nil {
+		return nil, f.channelsErr
+	}
+	var out []ChannelSeen
+	for _, ch := range append(append([]*discordgo.Channel{}, f.channels...), f.threads...) {
+		if readable(discord.ChannelType(ch.Type)) {
+			out = append(out, ChannelSeen{GuildID: guildID, ChannelID: ch.ID, Name: ch.Name})
+		}
+	}
+	return out, nil
 }
 
-func (f *fakeSource) ThreadsActive(string, ...discordgo.RequestOption) (*discordgo.ThreadsList, error) {
-	return &discordgo.ThreadsList{Threads: f.threads}, nil
-}
-
-func (f *fakeSource) ChannelMessages(channelID string, limit int, beforeID, _, _ string, _ ...discordgo.RequestOption) ([]*discordgo.Message, error) {
+// messagePage pages the fixtures as Discord would, read as restSource reads
+// them.
+func (f *fakeSource) messagePage(channelID, beforeID string, limit int) ([]post, error) {
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
@@ -49,13 +58,20 @@ func (f *fakeSource) ChannelMessages(channelID string, limit int, beforeID, _, _
 		}
 	}
 	before, _ := strconv.ParseInt(beforeID, 10, 64)
-	var out []*discordgo.Message
+	var out []post
 	for _, m := range f.msgs[channelID] {
 		id, _ := strconv.ParseInt(m.ID, 10, 64)
-		if id >= before {
+		if before != 0 && id >= before {
 			continue
 		}
-		out = append(out, m)
+		in := post{id: m.ID, channelID: channelID, at: m.Timestamp, skip: m.Author == nil || m.WebhookID != ""}
+		if m.Author != nil {
+			in.authorID, in.avatar, in.name, in.skip = m.Author.ID, m.Author.Avatar, m.Author.Username, in.skip || m.Author.Bot
+			if m.Author.GlobalName != "" {
+				in.name = m.Author.GlobalName
+			}
+		}
+		out = append(out, in)
 		if len(out) == limit {
 			break
 		}

@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	snow "github.com/disgoorg/snowflake/v2"
 )
 
 // discordEpoch is the millisecond epoch Discord snowflakes count from. A
@@ -19,32 +22,100 @@ import (
 const discordEpoch = 1420070400000
 
 const (
-	// pageSize is Discord's own maximum for one ChannelMessages call.
+	// pageSize is Discord's own maximum for one page of messages.
 	pageSize = 100
 	// requestGap is the backfill's own throttle: one page request per gap,
 	// so 40 a second, under Discord's 50 a second global ceiling with room
-	// for everything else the bot is doing. Per channel, discordgo already
+	// for everything else the bot is doing. Per channel, disgo already
 	// tracks the bucket and sleeps out its reset, which for message history
 	// is about a page a second and is what actually bounds a backfill; this
-	// is the global half, which discordgo only learns about from a 429
+	// is the global half, which disgo only learns about from a 429
 	// (spec.MD §4: self-throttle, do not rely on Discord's).
 	requestGap = 25 * time.Millisecond
 	// pageRetries is how many times one page is re-asked for after a
 	// transient failure (a 5xx, a dropped connection) before the channel is
-	// given up on. discordgo retries 429s itself; this is for the rest. A
+	// given up on. disgo retries 429s itself; this is for the rest. A
 	// 4xx is not retried: Missing Access does not get better by asking.
 	pageRetries = 3
 	retryPause  = 2 * time.Second
 )
 
-// messageSource is the slice of *discordgo.Session the backfill uses, so it
-// can be driven by a fake in tests. The narrow-interface seam every other
-// consumer in this codebase uses, rather than depending on the concrete
-// session.
+// messageSource is what the backfill reads from Discord, as statistics
+// reads it: restSource in production, a fake in tests.
 type messageSource interface {
-	GuildChannels(guildID string, options ...discordgo.RequestOption) ([]*discordgo.Channel, error)
-	ThreadsActive(guildID string, options ...discordgo.RequestOption) (*discordgo.ThreadsList, error)
-	ChannelMessages(channelID string, limit int, beforeID, afterID, aroundID string, options ...discordgo.RequestOption) ([]*discordgo.Message, error)
+	// channelList is guildID's channels and active threads that carry messages.
+	channelList(guildID string) ([]ChannelSeen, error)
+	// messagePage is up to limit of channelID's messages older than before,
+	// newest first, as Discord pages them.
+	messagePage(channelID, before string, limit int) ([]post, error)
+}
+
+// historyREST is the slice of disgo's REST client restSource uses.
+type historyREST interface {
+	GetGuildChannels(guildID snow.ID, opts ...rest.RequestOpt) ([]discord.GuildChannel, error)
+	GetActiveGuildThreads(guildID snow.ID, opts ...rest.RequestOpt) (*discord.GuildActiveThreads, error)
+	GetMessages(channelID, around, before, after snow.ID, limit int, opts ...rest.RequestOpt) ([]discord.Message, error)
+}
+
+// restSource is messageSource on disgo. Threads come from the guild's
+// active-threads endpoint; the channel-scoped one discordgo called (with a
+// guild ID) was removed in API v10, so backfills had been missing every
+// thread.
+type restSource struct{ r historyREST }
+
+func (s restSource) channelList(guildID string) ([]ChannelSeen, error) {
+	gid, err := snow.Parse(guildID)
+	if err != nil {
+		return nil, err
+	}
+	chans, err := s.r.GetGuildChannels(gid)
+	if err != nil {
+		return nil, err
+	}
+	var out []ChannelSeen
+	add := func(ch discord.GuildChannel) {
+		if readable(ch.Type()) {
+			out = append(out, ChannelSeen{GuildID: guildID, ChannelID: ch.ID().String(), Name: ch.Name()})
+		}
+	}
+	for _, ch := range chans {
+		add(ch)
+	}
+	if threads, terr := s.r.GetActiveGuildThreads(gid); terr == nil && threads != nil {
+		for _, th := range threads.Threads {
+			add(th)
+		}
+	}
+	return out, nil
+}
+
+func (s restSource) messagePage(channelID, before string, limit int) ([]post, error) {
+	cid, err := snow.Parse(channelID)
+	if err != nil {
+		return nil, err
+	}
+	var b snow.ID
+	if before != "" {
+		if b, err = snow.Parse(before); err != nil {
+			return nil, err
+		}
+	}
+	msgs, err := s.r.GetMessages(cid, 0, b, 0, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]post, len(msgs))
+	for i, m := range msgs {
+		out[i] = post{
+			id: m.ID.String(), channelID: channelID, authorID: m.Author.ID.String(), at: m.CreatedAt,
+			name: m.Author.Username, avatar: deref(m.Author.Avatar),
+			skip: m.Author.ID == 0 || m.Author.Bot || m.WebhookID != nil,
+		}
+		if g := deref(m.Author.GlobalName); g != "" {
+			out[i].name = g
+		}
+	}
+	return out, nil
 }
 
 // person is one member's total over a window, as the renderer wants it.
@@ -104,14 +175,11 @@ func parseWhen(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("%q is not a date i understand. try 2026-09-01, 2026-09-01 14:00 or an rfc3339 timestamp, all utc", s)
 }
 
-func readable(ch *discordgo.Channel) bool {
-	if ch == nil {
-		return false
-	}
-	switch ch.Type {
-	case discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews,
-		discordgo.ChannelTypeGuildPublicThread, discordgo.ChannelTypeGuildPrivateThread,
-		discordgo.ChannelTypeGuildNewsThread:
+func readable(t discord.ChannelType) bool {
+	switch t {
+	case discord.ChannelTypeGuildText, discord.ChannelTypeGuildNews,
+		discord.ChannelTypeGuildPublicThread, discord.ChannelTypeGuildPrivateThread,
+		discord.ChannelTypeGuildNewsThread:
 		return true
 	}
 	return false
@@ -124,14 +192,14 @@ var errScanStopped = errors.New("scan stopped early")
 // page fetches one page, waiting for a request slot first and re-asking
 // after a transient failure. The context is checked at every wait, so a
 // deadline is felt within one gap rather than one retry pause.
-func page(ctx context.Context, src messageSource, channelID, before string, tick <-chan time.Time) ([]*discordgo.Message, error) {
+func page(ctx context.Context, src messageSource, channelID, before string, tick <-chan time.Time) ([]post, error) {
 	for attempt := 0; ; attempt++ {
 		select {
 		case <-ctx.Done():
 			return nil, errScanStopped
 		case <-tick:
 		}
-		msgs, err := src.ChannelMessages(channelID, pageSize, before, "", "")
+		msgs, err := src.messagePage(channelID, before, pageSize)
 		if err == nil || attempt >= pageRetries || !transient(err) {
 			return msgs, err
 		}
@@ -146,6 +214,9 @@ func page(ctx context.Context, src messageSource, channelID, before string, tick
 // transient is an error worth asking again about: anything but a Discord
 // 4xx, which is an answer rather than a fault.
 func transient(err error) bool {
+	if re, ok := errors.AsType[*rest.Error](err); ok && re.Response != nil {
+		return re.Response.StatusCode >= 500
+	}
 	var rerr *discordgo.RESTError
 	if errors.As(err, &rerr) && rerr.Response != nil {
 		return rerr.Response.StatusCode >= 500
