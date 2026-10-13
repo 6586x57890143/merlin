@@ -3,7 +3,10 @@ module github.com/6586x57890143/merlin
 go 1.27.0
 
 require (
+	github.com/6586x57890143/cygnet/link v0.6.0
 	github.com/bwmarrin/discordgo v0.29.0
+	github.com/disgoorg/disgo v0.19.6
+	github.com/disgoorg/snowflake/v2 v2.0.3
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/joho/godotenv v1.5.1
@@ -14,13 +17,10 @@ require (
 )
 
 require (
-	github.com/6586x57890143/cygnet/link v0.6.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
-	github.com/disgoorg/disgo v0.19.6 // indirect
 	github.com/disgoorg/godave v0.1.0 // indirect
 	github.com/disgoorg/json/v2 v2.0.0 // indirect
 	github.com/disgoorg/omit v1.0.0 // indirect
-	github.com/disgoorg/snowflake/v2 v2.0.3 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect

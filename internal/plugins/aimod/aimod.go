@@ -477,8 +477,8 @@ func (p *Plugin) ForgetGuild(guildID string) {
 
 // HandleMessage is the gateway entry point, called from the MessageCreate
 // handler in cmd/bot/main.go. It returns immediately: everything past the
-// free rungs happens on the batch timer, because discordgo dispatches events
-// serially per shard and blocking here would stall every other handler.
+// free rungs happens on the batch timer, so a busy server's messages never
+// pile up goroutines waiting on a model.
 // HandleMessageEdit is the MessageUpdate entry point.
 //
 // Scanning edits is what closes the plugin's most obvious bypass: post

@@ -84,7 +84,7 @@ type Plugin struct {
 	// channelName resolves a channel's current name from the gateway cache,
 	// for the live counter; nil in tests. A function rather than an
 	// interface for the same reason roles.voiceChannelOf is: it is the one
-	// piece of session.State this plugin reads.
+	// piece of the gateway cache this plugin reads.
 	channelName func(guildID, channelID string) string
 	// gate is the per-guild plugin switch. The router consults it before
 	// any command; the gateway handlers consult it here, so a guild that

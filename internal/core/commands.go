@@ -10,6 +10,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/obs"
@@ -444,25 +445,25 @@ func walkOption(opt *discordgo.ApplicationCommandOption, prefix []string, out *[
 	*out = append(*out, strings.Join(segs, "/"))
 }
 
-// HandleEvent is the single session.AddHandler callback for the whole bot;
-// construct it once (core.NewCommandRouter) and register it once. It takes
-// discordgo's raw event because what is routed is Discord's own JSON,
-// decoded by disgo (HandleRaw); every other event is ignored.
-func (r *CommandRouter) HandleEvent(_ *discordgo.Session, e *discordgo.Event) {
-	if e.Type == "INTERACTION_CREATE" {
-		r.HandleRaw(e.RawData)
-	}
+// OnInteraction is the gateway listener for every interaction, registered
+// once (core.NewGateway). Plugins never listen for interactions themselves.
+func (r *CommandRouter) OnInteraction(e *events.InteractionCreate) {
+	r.route(IxOf(e.Interaction, r.rest))
 }
 
-// HandleRaw routes one interaction from Discord's JSON. One that does not
-// decode cannot be answered, since its token is in what failed to decode,
-// so it is logged and dropped.
+// HandleRaw routes one interaction from Discord's JSON, as the gateway
+// would deliver it. One that does not decode cannot be answered, since its
+// token is in what failed to decode, so it is logged and dropped.
 func (r *CommandRouter) HandleRaw(raw []byte) {
 	ix, err := NewIx(raw, r.rest)
 	if err != nil {
 		r.log.Error("interaction not decoded", "err", err)
 		return
 	}
+	r.route(ix)
+}
+
+func (r *CommandRouter) route(ix *Ix) {
 	switch i := ix.I.(type) {
 	case discord.ApplicationCommandInteraction:
 		r.dispatchCommand(ix, i)

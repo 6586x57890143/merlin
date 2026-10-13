@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/events"
+	"github.com/disgoorg/disgo/gateway"
+	"github.com/disgoorg/snowflake/v2"
 	"github.com/joho/godotenv"
 
 	"github.com/6586x57890143/merlin/internal/audit"
@@ -114,10 +118,18 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
-	session, err := core.NewSession(cfg.Discord.Token, core.Intents{
+	// REST still goes out through discordgo; the gateway, and its cache,
+	// are disgo's. Built here, unopened, because Permissions and plugins
+	// read the cache; listeners are added below once there is something
+	// to deliver to.
+	session, err := core.NewSession(cfg.Discord.Token)
+	if err != nil {
+		return err
+	}
+	gw, err := core.NewGateway(cfg.Discord.Token, core.Intents{
 		Members:        cfg.GuildMembersIntent,
 		MessageContent: cfg.MessageContentIntent,
-	})
+	}, log)
 	if err != nil {
 		return err
 	}
@@ -143,7 +155,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// to fail-closed defaults; this walks those back to real values once the
 	// database is reachable again, instead of waiting on the next mutation.
 	settingsStore.StartRetry(ctx, log)
-	perms := core.NewPermissions(session, settingsStore, cfg.BootstrapAdminUserID)
+	perms := core.NewPermissions(gw.Caches, settingsStore, cfg.BootstrapAdminUserID)
 	// Loaded and validated before anything can use it, so a catalog that
 	// has lost a required placeholder (the rotation notice's retention
 	// window, most of all) stops the bot here rather than posting an
@@ -197,19 +209,21 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		func(guildID string) roles.DiscordMemberOps { return guard.For(guildID) },
 		guard.DryRun,
 		speaker,
-		// Reads discordgo's gateway-cached voice state directly (session.State
-		// is a field, not embedded, so *discordgo.Session can't structurally
-		// satisfy an interface method for this the way it does for every REST
-		// call in DiscordMemberOps). Enrichment only: roles.disconnectFromVoice
-		// still force-disconnects unconditionally even when this reports
-		// nothing, so a cold or incomplete cache never costs a missed kick,
-		// only a less specific log line.
+		// Reads the gateway cache's voice state. Enrichment only:
+		// roles.disconnectFromVoice still force-disconnects unconditionally
+		// even when this reports nothing, so a cold or incomplete cache never
+		// costs a missed kick, only a less specific log line.
 		func(guildID, userID string) (string, bool) {
-			vs, err := session.State.VoiceState(guildID, userID)
-			if err != nil {
+			g, err1 := snowflake.Parse(guildID)
+			u, err2 := snowflake.Parse(userID)
+			if err1 != nil || err2 != nil {
 				return "", false
 			}
-			return vs.ChannelID, true
+			vs, ok := gw.Caches.VoiceState(g, u)
+			if !ok || vs.ChannelID == nil {
+				return "", false
+			}
+			return vs.ChannelID.String(), true
 		},
 	)
 
@@ -299,11 +313,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry.Register(aimodPlugin)
 	registry.Register(contestPlugin)
 	registry.Register(rapsheetPlugin)
-	// Channel names come off the gateway cache, the only piece of
-	// session.State this plugin reads; the counting itself is wired below.
+	// Channel names come off the gateway cache, the only piece of it this
+	// plugin reads; the counting itself is wired below.
 	statisticsPlugin := statistics.New(statistics.NewPostgresStore(db.Pool), settingsStore, func(guildID, channelID string) string {
-		if ch, err := session.State.Channel(channelID); err == nil && ch.GuildID == guildID {
-			return ch.Name
+		id, err := snowflake.Parse(channelID)
+		if err != nil {
+			return ""
+		}
+		if ch, ok := gw.Caches.Channel(id); ok && ch.GuildID().String() == guildID {
+			return ch.Name()
 		}
 		return ""
 	})
@@ -343,15 +361,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	}()
 
 	// One dispatcher for every plugin's commands (spec.MD §4a), replacing
-	// each plugin calling session.AddHandler itself. Guild-scoped command
+	// each plugin listening to the gateway itself. Guild-scoped command
 	// registration and settings loading both happen reactively per guild via
-	// GuildCreate, not from a static config list: discordgo fires one
-	// GuildCreate per guild the bot is in, both during the initial post-Open
-	// sync and whenever the bot is added to a new guild later, so this one
+	// GuildCreate, not from a static config list: Discord sends one
+	// GUILD_CREATE per guild the bot is in, both as the connection comes up
+	// and whenever the bot is added to a new guild later, so this one
 	// handler covers "known at startup" and "joined while running" the same
 	// way, with no restart required for the latter.
-	session.AddHandler(commands.HandleEvent)
-	session.AddHandler(func(s *discordgo.Session, gc *discordgo.GuildCreate) {
+	fromRaw := newLegacy(log)
+	on(fromRaw, gateway.EventTypeGuildCreate, func(gc *discordgo.GuildCreate) {
 		guildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -378,7 +396,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			settingsLoaded = false
 		}
 		commandsRegistered := true
-		if err := commands.RegisterGuild(s, cfg.Discord.AppID, gc.ID); err != nil {
+		if err := commands.RegisterGuild(session, cfg.Discord.AppID, gc.ID); err != nil {
 			log.Error("register commands for guild", "guild", gc.ID, "err", err)
 			commandsRegistered = false
 		}
@@ -438,7 +456,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// on the one-minute sweep is the whole protection instead of the backstop.
 	if cfg.GuildMembersIntent {
 		log.Info("GUILD_MEMBERS intent requested: jails re-apply the moment an evader rejoins")
-		session.AddHandler(func(s *discordgo.Session, ma *discordgo.GuildMemberAdd) {
+		on(fromRaw, gateway.EventTypeGuildMemberAdd, func(ma *discordgo.GuildMemberAdd) {
 			if ma.Member == nil || ma.User == nil {
 				return
 			}
@@ -453,7 +471,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		})
 		// Counted, and nothing else: see the note on GuildRoleDelete below for
 		// why roles deliberately has no handler here.
-		session.AddHandler(func(s *discordgo.Session, mr *discordgo.GuildMemberRemove) {
+		on(fromRaw, gateway.EventTypeGuildMemberRemove, func(mr *discordgo.GuildMemberRemove) {
 			statisticsPlugin.HandleMemberLeave(mr.GuildID)
 		})
 
@@ -466,7 +484,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// real server access. reapplyEvadedJails' sweep is the backstop for
 		// this too (bounded to one minute), so it still closes even with the
 		// intent off, just not instantly.
-		session.AddHandler(func(s *discordgo.Session, mu *discordgo.GuildMemberUpdate) {
+		on(fromRaw, gateway.EventTypeGuildMemberUpdate, func(mu *discordgo.GuildMemberUpdate) {
 			if mu.Member == nil || mu.User == nil {
 				return
 			}
@@ -483,13 +501,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// Every message is counted (author, channel, hour; never text), which
 	// GUILD_MESSAGES delivers without any privileged intent. A map write
 	// under a lock, so it does not hold up the handlers behind it.
-	session.AddHandler(func(s *discordgo.Session, mc *discordgo.MessageCreate) {
+	on(fromRaw, gateway.EventTypeMessageCreate, func(mc *discordgo.MessageCreate) {
 		statisticsPlugin.HandleMessage(mc.Message)
 	})
 	// Voice time is booked from channel changes (member, channel, hour;
 	// never a session log). Same map write under the same lock.
-	session.AddHandler(func(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
-		statisticsPlugin.HandleVoiceState(vs)
+	// The typed event, not the raw one: only the cache knows the state
+	// before it, which is how a move is told from a mute.
+	voiceListener := bot.NewListenerFunc(func(e *events.GuildVoiceStateUpdate) {
+		statisticsPlugin.HandleVoiceState(voiceUpdate(e))
 	})
 
 	// Message scanning. Registered only when the intent was actually
@@ -499,16 +519,16 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// entirely useless filter.
 	if cfg.MessageContentIntent {
 		log.Info("MESSAGE_CONTENT intent requested: AI moderation can read messages")
-		session.AddHandler(func(s *discordgo.Session, mc *discordgo.MessageCreate) {
+		on(fromRaw, gateway.EventTypeMessageCreate, func(mc *discordgo.MessageCreate) {
 			// Returns immediately; the paid work happens on aimod's own batch
-			// timer. discordgo dispatches events serially per shard, so
-			// blocking here would stall every other handler behind it.
+			// timer, so a busy server's messages never pile up goroutines
+			// waiting on a model.
 			aimodPlugin.HandleMessage(mc.Message)
 		})
 		// Edits, too, and this is not polish. Without it the whole plugin has
 		// a one-step bypass: post something innocuous, wait for it to be
 		// cleared, then edit it into whatever you like. Nothing looked again.
-		session.AddHandler(func(s *discordgo.Session, mu *discordgo.MessageUpdate) {
+		on(fromRaw, gateway.EventTypeMessageUpdate, func(mu *discordgo.MessageUpdate) {
 			aimodPlugin.HandleMessageEdit(mu.Message)
 		})
 	} else {
@@ -518,7 +538,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 
 	// A channel disappearing under a rotation config is otherwise only
 	// noticed as a job that quietly fails for five runs before alerting.
-	session.AddHandler(func(s *discordgo.Session, cd *discordgo.ChannelDelete) {
+	on(fromRaw, gateway.EventTypeChannelDelete, func(cd *discordgo.ChannelDelete) {
 		if cd.GuildID == "" {
 			return
 		}
@@ -540,16 +560,15 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// are message-content fields, so it arrives with no privileged intent.
 	// The plugin then reads that one starter message over REST. contest
 	// deliberately does not join aimod on the gateway firehose.
-	session.AddHandler(contestPlugin.HandleThreadCreate)
+	on(fromRaw, gateway.EventTypeThreadCreate, func(tc *discordgo.ThreadCreate) {
+		contestPlugin.HandleThreadCreate(session, tc)
+	})
 	// Bans, kicks and timeouts done through the Discord client, not through
 	// merlin, so the rapsheet does not lie by omission. Arrives under the
 	// always-on GUILD_MODERATION intent, but only if the bot holds View
 	// Audit Log in the guild; /rapsheet status says when it does not.
-	session.AddHandler(func(s *discordgo.Session, e *discordgo.GuildAuditLogEntryCreate) {
-		botID := ""
-		if s.State != nil && s.State.User != nil {
-			botID = s.State.User.ID
-		}
+	on(fromRaw, gateway.EventTypeGuildAuditLogEntryCreate, func(e *discordgo.GuildAuditLogEntryCreate) {
+		botID := session.State.User.ID
 		entryCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		rapsheetPlugin.HandleAuditLogEntry(entryCtx, botID, e)
@@ -566,7 +585,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// re-applies the marker if they come back inside their window. Dropping
 	// or flagging it on leave is precisely the evasion bug that was fixed
 	// once already, and evasion_test.go asserts the row survives.
-	session.AddHandler(func(s *discordgo.Session, rd *discordgo.GuildRoleDelete) {
+	on(fromRaw, gateway.EventTypeGuildRoleDelete, func(rd *discordgo.GuildRoleDelete) {
 		guildCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		rolesPlugin.HandleRoleDeleted(guildCtx, rd.GuildID, rd.RoleID)
@@ -594,7 +613,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// edit with a fresh copy of the original (latency only: the roles sweep
 	// re-checks every minute regardless), and the join-role script, which
 	// reports an edit to a role every new member is given.
-	session.AddHandler(func(s *discordgo.Session, ru *discordgo.GuildRoleUpdate) {
+	on(fromRaw, gateway.EventTypeGuildRoleUpdate, func(ru *discordgo.GuildRoleUpdate) {
 		if ru.GuildRole == nil {
 			return
 		}
@@ -603,7 +622,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		rolesPlugin.HandleRoleUpdated(guildCtx, ru.GuildID, ru.Role)
 	})
 
-	session.AddHandler(func(s *discordgo.Session, gd *discordgo.GuildDelete) {
+	on(fromRaw, gateway.EventTypeGuildDelete, func(gd *discordgo.GuildDelete) {
 		// Discord sends the same event for "this guild is temporarily
 		// unavailable" (an outage on their side) as for "you were removed",
 		// distinguished only by this flag. Tearing down on an outage would
@@ -623,23 +642,19 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
 	})
 
-	// Armed before Open, which is where discordgo starts dispatching. See
-	// core.WatchReady. Open only means the identify was sent, never that
-	// Discord accepted it, and nothing below works without a live gateway.
-	awaitReady := core.WatchReady(session)
-
-	if err := session.Open(); err != nil {
+	gw.EventManager.AddEventListeners(
+		bot.NewListenerFunc(commands.OnInteraction),
+		bot.NewListenerFunc(fromRaw.OnRaw),
+		voiceListener,
+	)
+	if err := core.OpenGateway(ctx, gw); err != nil {
 		return err
 	}
 	defer func() {
-		if err := session.Close(); err != nil {
-			log.Error("closing discord session", "err", err)
-		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		gw.Close(closeCtx)
 	}()
-
-	if err := awaitReady(); err != nil {
-		return err
-	}
 
 	if err := registry.StartAll(ctx); err != nil {
 		return err

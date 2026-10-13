@@ -6,7 +6,9 @@ import (
 	"slices"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 // PermTier is how restrictive a command/subcommand is. The zero value,
@@ -115,7 +117,7 @@ type PluginGate interface {
 // by CommandRouter before its handler ever runs, so there is no per-plugin
 // choke point to forget.
 type Permissions struct {
-	session     *discordgo.Session
+	state       cache.Caches
 	settings    GuildAuthData
 	bootstrapID string
 }
@@ -124,8 +126,12 @@ type Permissions struct {
 // identity (env-sourced, never DB-backed) that always satisfies TierAdmin
 // regardless of settings state, so a wiped or not-yet-configured guild's
 // settings can never permanently lock the operator out.
-func NewPermissions(s *discordgo.Session, settings GuildAuthData, bootstrapAdminUserID string) *Permissions {
-	return &Permissions{session: s, settings: settings, bootstrapID: bootstrapAdminUserID}
+//
+// state is the gateway's cache, where a guild's owner and roles and the bot's
+// own member are read; nil means nothing resolves, and every check that
+// needs it fails closed.
+func NewPermissions(state cache.Caches, settings GuildAuthData, bootstrapAdminUserID string) *Permissions {
+	return &Permissions{state: state, settings: settings, bootstrapID: bootstrapAdminUserID}
 }
 
 // Authorize checks spec against the invoking member. Discord's own
@@ -349,30 +355,44 @@ func (p *Permissions) isAdminMember(guildID, userID string, roleIDs []string) (b
 	if userID == p.bootstrapID || slices.Contains(p.settings.AdminUserIDs(guildID), userID) {
 		return true, nil
 	}
-	guild, err := p.guild(guildID)
+	gid, guild, err := p.guild(guildID)
 	if err != nil {
 		return false, err
 	}
-	if guild.OwnerID == userID {
+	if guild.OwnerID.String() == userID {
 		return true, nil
 	}
-	for _, r := range guild.Roles {
-		if r.Permissions&discordgo.PermissionAdministrator != 0 && slices.Contains(roleIDs, r.ID) {
+	// The member's roles, looked up one by one: a member holds a handful,
+	// a guild can hold hundreds.
+	for _, id := range roleIDs {
+		rid, err := snowflake.Parse(id)
+		if err != nil {
+			continue
+		}
+		if r, ok := p.state.Role(gid, rid); ok && r.Permissions.Has(discord.PermissionAdministrator) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// guild resolves guildID from the session's state cache, reporting a clear
-// error instead of panicking when there's no session at all (which is how
+// guild resolves guildID from the gateway's cache, reporting a clear error
+// rather than panicking when there is no cache at all (which is how
 // Permissions is constructed in unit tests, and would otherwise turn every
 // hierarchy check into a nil dereference on a security path).
-func (p *Permissions) guild(guildID string) (*discordgo.Guild, error) {
-	if p.session == nil || p.session.State == nil {
-		return nil, errors.New("core: no session state available to resolve guild")
+func (p *Permissions) guild(guildID string) (snowflake.ID, discord.Guild, error) {
+	if p.state == nil {
+		return 0, discord.Guild{}, errors.New("core: no gateway cache available to resolve guild")
 	}
-	return p.session.State.Guild(guildID)
+	gid, err := snowflake.Parse(guildID)
+	if err != nil {
+		return 0, discord.Guild{}, fmt.Errorf("core: guild id %q: %w", guildID, err)
+	}
+	g, ok := p.state.Guild(gid)
+	if !ok {
+		return 0, discord.Guild{}, fmt.Errorf("core: guild %s is not in the gateway cache", guildID)
+	}
+	return gid, g, nil
 }
 
 // CanManageRole enforces layer 3: the bot's own top role must sit strictly
@@ -383,42 +403,35 @@ func (p *Permissions) guild(guildID string) (*discordgo.Guild, error) {
 // check exists so we fail cleanly with a clear message instead of surfacing
 // a raw 403 from Discord.
 func (p *Permissions) CanManageRole(guildID, targetRoleID string) error {
-	guild, err := p.guild(guildID)
+	gid, _, err := p.guild(guildID)
 	if err != nil {
 		return err
 	}
-	botTop, err := p.botTopRolePosition(guild)
-	if err != nil {
-		return err
+	self, ok := p.state.SelfMember(gid)
+	if !ok {
+		return fmt.Errorf("core: the bot's own member in guild %s is not in the gateway cache", guildID)
 	}
-	for _, r := range guild.Roles {
-		if r.ID == targetRoleID {
-			if r.Managed {
-				return ErrForbidden{Reason: "role is managed by an integration and can't be added or removed"}
-			}
-			if r.Position >= botTop {
-				return ErrForbidden{Reason: "target role at/above bot's top role"}
-			}
-			return nil
+	botTop := -1
+	for _, id := range self.RoleIDs {
+		if r, ok := p.state.Role(gid, id); ok && r.Position > botTop {
+			botTop = r.Position
 		}
 	}
-	return ErrForbidden{Reason: "target role not found in guild"}
-}
-
-func (p *Permissions) botTopRolePosition(guild *discordgo.Guild) (int, error) {
-	self, err := p.session.State.Member(guild.ID, p.session.State.User.ID)
+	rid, err := snowflake.Parse(targetRoleID)
 	if err != nil {
-		return 0, err
+		return ErrForbidden{Reason: "target role not found in guild"}
 	}
-	top := -1
-	for _, roleID := range self.Roles {
-		for _, r := range guild.Roles {
-			if r.ID == roleID && r.Position > top {
-				top = r.Position
-			}
-		}
+	r, ok := p.state.Role(gid, rid)
+	if !ok {
+		return ErrForbidden{Reason: "target role not found in guild"}
 	}
-	return top, nil
+	if r.Managed {
+		return ErrForbidden{Reason: "role is managed by an integration and can't be added or removed"}
+	}
+	if r.Position >= botTop {
+		return ErrForbidden{Reason: "target role at/above bot's top role"}
+	}
+	return nil
 }
 
 func hasAnyRole(memberRoles, allowed []string) bool {
