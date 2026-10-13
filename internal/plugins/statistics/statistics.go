@@ -41,6 +41,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	snow "github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -73,7 +75,7 @@ type PrivilegeChecker interface {
 
 type Plugin struct {
 	commands  *core.CommandRouter
-	session   *discordgo.Session
+	guilds    guildReader
 	source    messageSource
 	store     Store
 	privilege PrivilegeChecker
@@ -123,9 +125,16 @@ func New(store Store, gate core.PluginGate, channelName func(guildID, channelID 
 
 func (p *Plugin) Name() string { return "statistics" }
 
+// guildReader is the slice of disgo's REST client guildName uses.
+type guildReader interface {
+	GetGuild(guildID snow.ID, withCounts bool, opts ...rest.RequestOpt) (*discord.RestGuild, error)
+}
+
 func (p *Plugin) Init(deps core.Deps) error {
-	p.session = deps.Session
-	p.source = deps.Session
+	if deps.Rest != nil {
+		p.guilds = deps.Rest
+		p.source = restSource{deps.Rest}
+	}
 	p.privilege = deps.Perms
 	p.sched = deps.Scheduler
 	if deps.Logger != nil {
@@ -674,10 +683,11 @@ func fileFrom(name string, body []byte) *discord.File {
 // active" with no server on it is unidentifiable a week later, but not
 // knowing the name is a reason to be vague and not a reason to give up.
 func (p *Plugin) guildName(guildID string) string {
-	if p.session == nil || guildID == "" {
+	gid, err := snow.Parse(guildID)
+	if p.guilds == nil || err != nil {
 		return "this server"
 	}
-	g, err := p.session.Guild(guildID)
+	g, err := p.guilds.GetGuild(gid, false)
 	if err != nil || g == nil || g.Name == "" {
 		return "this server"
 	}

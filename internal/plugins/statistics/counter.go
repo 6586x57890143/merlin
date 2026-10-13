@@ -10,10 +10,9 @@ import (
 	snow "github.com/disgoorg/snowflake/v2"
 )
 
-// flushEvery is how often the in-memory tallies are written out. discordgo
-// dispatches gateway events serially, so the handlers below only touch a
-// map under a lock; the database sees one statement per table per flush
-// rather than one per message.
+// flushEvery is how often the in-memory tallies are written out. The
+// gateway handlers below only touch a map under a lock; the database sees
+// one statement per table per flush rather than one per message.
 const flushEvery = 10 * time.Second
 
 // flushTimeout bounds one flush; a wedged database must not hold the
@@ -69,6 +68,8 @@ func newCounter() *counter {
 
 // post is what statistics reads of a gateway message.
 type post struct {
+	// id is the message's own, which the backfill pages by.
+	id                           string
 	guildID, channelID, authorID string
 	at                           time.Time
 	// name is the member's nickname, else their display name, else their
