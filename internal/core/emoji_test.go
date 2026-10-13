@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
@@ -130,7 +129,7 @@ func (f *fakeEmojiREST) CreateApplicationEmoji(_ snowflake.ID, c discord.EmojiCr
 func TestSyncEmojiCreatesOnlyWhatIsMissing(t *testing.T) {
 	t.Cleanup(func() { emojiIDs.Store(nil) })
 
-	if url, file := PluginIcon("rotation"); file == nil || !strings.HasPrefix(url, "attachment://") {
+	if url, file := PluginUpload("rotation"); file == nil || !strings.HasPrefix(url, "attachment://") {
 		t.Fatalf("before a sync the icon must be attached, got %q", url)
 	}
 	if PluginEmoji("rotation") != "" {
@@ -148,17 +147,17 @@ func TestSyncEmojiCreatesOnlyWhatIsMissing(t *testing.T) {
 	if got := PluginEmoji(strings.TrimPrefix(all[0].Key, "plugin_")); got != "<:"+all[0].Name+":77>" {
 		t.Errorf("existing emoji renders as %q", got)
 	}
-	if url, file := PluginIcon("rotation"); file == nil || !strings.HasPrefix(url, "attachment://") {
+	if url, file := PluginUpload("rotation"); file == nil || !strings.HasPrefix(url, "attachment://") {
 		t.Error("a refused icon must still go as an attachment")
 	}
-	if url, file := PluginIcon("roles"); file != nil || !strings.HasPrefix(url, "https://cdn.discordapp.com/emojis/") {
+	if url, file := PluginUpload("roles"); file != nil || !strings.HasPrefix(url, "https://cdn.discordapp.com/emojis/") {
 		t.Errorf("a synced icon must come from the CDN, got %q", url)
 	}
-	if PluginComponentEmoji("roles") == nil || PluginComponentEmoji("nonesuch") != nil {
+	if PluginOptionEmoji("roles") == nil || PluginOptionEmoji("nonesuch") != nil {
 		t.Error("component emoji wrong")
 	}
 	pn := Panel{Title: "Roles", Plugin: "roles"}
-	if !strings.Contains(pn.Components()[0].(discordgo.Container).Components[0].(discordgo.Section).Components[0].(discordgo.TextDisplay).Content, PluginEmoji("roles")) {
+	if !strings.Contains(pn.Layout()[0].(discord.ContainerComponent).Components[0].(discord.SectionComponent).Components[0].(discord.TextDisplayComponent).Content, PluginEmoji("roles")) {
 		t.Error("a panel does not lead with its plugin's icon")
 	}
 }

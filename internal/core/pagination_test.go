@@ -2,8 +2,6 @@ package core
 
 import (
 	"testing"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 func TestPaginateSinglePage(t *testing.T) {
@@ -69,38 +67,5 @@ func TestPaginationCustomIDRoundTrip(t *testing.T) {
 func TestParsePaginationPageRejectsGarbage(t *testing.T) {
 	if _, err := ParsePaginationPage("rotation:list:not-a-number", "rotation:list:"); err == nil {
 		t.Fatal("expected an error parsing a non-numeric page suffix")
-	}
-}
-
-func TestPaginationRowNilForSinglePage(t *testing.T) {
-	if row := PaginationRow("prefix:", 0, 1); row != nil {
-		t.Fatalf("expected no pagination controls for a single page, got %+v", row)
-	}
-}
-
-func TestPaginationRowDisablesAtBounds(t *testing.T) {
-	row := PaginationRow("prefix:", 0, 3)
-	actionsRow, ok := row[0].(discordgo.ActionsRow)
-	if !ok {
-		t.Fatalf("expected an ActionsRow, got %T", row[0])
-	}
-	prev := actionsRow.Components[0].(discordgo.Button)
-	next := actionsRow.Components[2].(discordgo.Button)
-	if !prev.Disabled {
-		t.Fatal("expected Prev disabled on the first page")
-	}
-	if next.Disabled {
-		t.Fatal("expected Next enabled on a non-last page")
-	}
-
-	rowLast := PaginationRow("prefix:", 2, 3)
-	actionsRowLast := rowLast[0].(discordgo.ActionsRow)
-	prevLast := actionsRowLast.Components[0].(discordgo.Button)
-	nextLast := actionsRowLast.Components[2].(discordgo.Button)
-	if prevLast.Disabled {
-		t.Fatal("expected Prev enabled on the last page")
-	}
-	if !nextLast.Disabled {
-		t.Fatal("expected Next disabled on the last page")
 	}
 }

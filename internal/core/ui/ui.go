@@ -130,8 +130,10 @@ func Field(id, label, value, placeholder string, paragraph, required bool) disco
 	}}
 }
 
-// PaginationRow is core.PaginationRow: Prev, "page X/Y", Next, or nothing
-// for a single page.
+// PaginationRow is the Prev/Next row for page (0-based) of totalPages, with
+// whichever end is already at its limit disabled and a disabled "Page X/Y"
+// between them for orientation. Nil for a single page: a short list stays
+// as plain as it was before pagination existed.
 func PaginationRow(prefix string, page, totalPages int) []discord.LayoutComponent {
 	if totalPages <= 1 {
 		return nil
