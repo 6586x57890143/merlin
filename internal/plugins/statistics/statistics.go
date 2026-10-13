@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -136,11 +137,11 @@ func (p *Plugin) Init(deps core.Deps) error {
 	// people: handleReport and handleBackfill refuse anybody but the
 	// bootstrap operator. Both are needed, since a guild can lower a tier
 	// with /config permissions set-tier but cannot widen this.
-	deps.Commands.Handle("statistics", "report", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.report"}, p.handleReport)
-	deps.Commands.Handle("statistics", "backfill", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.backfill"}, p.handleBackfill)
-	deps.Commands.Handle("statistics", "channels", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleChannels)
-	deps.Commands.Handle("statistics", "members", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleMembers)
-	deps.Commands.Handle("statistics", "status", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleStatus)
+	deps.Commands.HandleIx("statistics", "report", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.report"}, p.handleReport)
+	deps.Commands.HandleIx("statistics", "backfill", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.backfill"}, p.handleBackfill)
+	deps.Commands.HandleIx("statistics", "channels", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleChannels)
+	deps.Commands.HandleIx("statistics", "members", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleMembers)
+	deps.Commands.HandleIx("statistics", "status", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleStatus)
 	p.registerPanel(deps.Commands)
 	return nil
 }
@@ -324,16 +325,6 @@ func (p *Plugin) operator(userID string) bool {
 	return userID != "" && p.privilege != nil && p.privilege.IsBootstrapAdmin(userID)
 }
 
-func actorOf(i *discordgo.InteractionCreate) string {
-	if i.Member != nil && i.Member.User != nil {
-		return i.Member.User.ID
-	}
-	if i.User != nil {
-		return i.User.ID
-	}
-	return ""
-}
-
 // options are the parsed arguments, validated before anything is deferred so
 // a typo comes back in three seconds rather than after a query.
 type options struct {
@@ -347,21 +338,21 @@ type options struct {
 	showChannels bool
 }
 
-func parseOptions(args map[string]*discordgo.ApplicationCommandInteractionDataOption, now time.Time) (options, error) {
+func parseOptions(args map[string]discord.SlashCommandOption, now time.Time) (options, error) {
 	opts := options{to: now, top: defaultTop}
 
 	arg, ok := args["from"]
 	if !ok {
 		return opts, errors.New("i need a window start")
 	}
-	from, err := parseWhen(arg.StringValue())
+	from, err := parseWhen(arg.String())
 	if err != nil {
 		return opts, err
 	}
 	opts.from = from
 
 	if arg, ok := args["to"]; ok {
-		to, err := parseWhen(arg.StringValue())
+		to, err := parseWhen(arg.String())
 		if err != nil {
 			return opts, err
 		}
@@ -374,37 +365,37 @@ func parseOptions(args map[string]*discordgo.ApplicationCommandInteractionDataOp
 		return opts, errors.New("that window has not happened yet")
 	}
 	if arg, ok := args["channel"]; ok {
-		opts.channelID = arg.ChannelValue(nil).ID
+		opts.channelID = arg.Snowflake().String()
 	}
 	if arg, ok := args["top"]; ok {
-		opts.top = min(maxTop, max(1, int(arg.IntValue())))
+		opts.top = min(maxTop, max(1, arg.Int()))
 	}
 	if arg, ok := args["share"]; ok {
-		opts.share = arg.BoolValue()
+		opts.share = arg.Bool()
 	}
 	if arg, ok := args["show-channels"]; ok {
-		opts.showChannels = arg.BoolValue()
+		opts.showChannels = arg.Bool()
 	}
 	return opts, nil
 }
 
-func (p *Plugin) refuseUnlessOperator(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
-	if p.operator(actorOf(i)) {
+func (p *Plugin) refuseUnlessOperator(ix *core.Ix) bool {
+	if p.operator(ix.UserID) {
 		return true
 	}
-	core.RespondWarn(s, i, "Not yours to run",
+	ix.RespondWarn("Not yours to run",
 		"This one is the operator's alone. It answers who was talking and when, for every member of the server, "+
 			"which is not a question admin should be able to ask on its own.")
 	return false
 }
 
-func (p *Plugin) handleReport(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if !p.refuseUnlessOperator(s, i) {
+func (p *Plugin) handleReport(ctx context.Context, ix *core.Ix) {
+	if !p.refuseUnlessOperator(ix) {
 		return
 	}
-	opts, err := parseOptions(core.LeafArgs(i), p.now())
+	opts, err := parseOptions(ix.Args(), p.now())
 	if err != nil {
-		core.RespondErr(s, i, "That window doesn't work", err)
+		ix.RespondErr("That window doesn't work", err)
 		return
 	}
 	// The query is quick; the png is not always, and the avatar fetches
@@ -412,20 +403,20 @@ func (p *Plugin) handleReport(ctx context.Context, s *discordgo.Session, i *disc
 	// publicly when sharing is not optional: ephemerality is fixed at
 	// acknowledgement, so a private defer cannot be edited into a
 	// channel-visible answer later.
-	ack := core.DeferResponse
+	ack := ix.Defer
 	if opts.share {
-		ack = core.DeferResponsePublic
+		ack = ix.DeferPublic
 	}
-	if err := ack(s, i); err != nil {
+	if err := ack(); err != nil {
 		return
 	}
 
-	rep, err := p.build(ctx, i.GuildID, opts)
+	rep, err := p.build(ctx, ix.GuildID, opts)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Could not read the statistics", err)
+		_ = ix.FollowUpErr("Could not read the statistics", err)
 		return
 	}
-	guild := p.guildName(i.GuildID)
+	guild := p.guildName(ix.GuildID)
 	shown := markdown(rep, guild, opts.from, opts.to, opts.top)
 	full := markdown(rep, guild, opts.from, opts.to, 0)
 
@@ -433,19 +424,19 @@ func (p *Plugin) handleReport(ctx context.Context, s *discordgo.Session, i *disc
 	if rep.partial() {
 		colour = core.ColorWarning
 	}
-	embed := core.NewEmbed(colour, "", core.TruncateEmbedDescription(shown))
-	var files []*discordgo.File
+	embed := core.Embed(colour, "", core.TruncateEmbedDescription(shown))
+	var files []*discord.File
 	if png, err := renderPNG(p.client, rep, guild, opts.from, opts.to, opts.top); err == nil {
-		embed.Image = &discordgo.MessageEmbedImage{URL: imageAttachmentURL}
-		files = append(files, fileFrom(imageAttachmentName, "image/png", png))
+		embed.Image = &discord.EmbedResource{URL: imageAttachmentURL}
+		files = append(files, fileFrom(imageAttachmentName, png))
 	}
 	// The full list rides along whenever the embed is not carrying all of it,
 	// so a report never silently drops the tail of the very thing it is for.
 	if full != shown {
-		files = append(files, fileFrom(listAttachmentName, "text/markdown", []byte(full)))
+		files = append(files, fileFrom(listAttachmentName, []byte(full)))
 	}
-	if err := core.FollowUpEmbedWithFiles(s, i, embed, files...); err != nil {
-		_ = core.FollowUpErr(s, i, "Could not post the report", err)
+	if err := ix.FollowUpEmbedWithFiles(embed, files...); err != nil {
+		_ = ix.FollowUpErr("Could not post the report", err)
 	}
 }
 
@@ -557,20 +548,20 @@ func channelLabel(names map[string]string, id string) string {
 	return id
 }
 
-func (p *Plugin) handleChannels(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts, err := parseOptions(core.LeafArgs(i), p.now())
+func (p *Plugin) handleChannels(ctx context.Context, ix *core.Ix) {
+	opts, err := parseOptions(ix.Args(), p.now())
 	if err != nil {
-		core.RespondErr(s, i, "That window doesn't work", err)
+		ix.RespondErr("That window doesn't work", err)
 		return
 	}
-	totals, err := p.store.ChannelTotals(ctx, i.GuildID, opts.from, opts.to)
+	totals, err := p.store.ChannelTotals(ctx, ix.GuildID, opts.from, opts.to)
 	if err != nil {
-		core.RespondErr(s, i, "Could not read the statistics", err)
+		ix.RespondErr("Could not read the statistics", err)
 		return
 	}
-	names, err := p.store.Channels(ctx, i.GuildID)
+	names, err := p.store.Channels(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Could not read the statistics", err)
+		ix.RespondErr("Could not read the statistics", err)
 		return
 	}
 	var b strings.Builder
@@ -592,18 +583,18 @@ func (p *Plugin) handleChannels(ctx context.Context, s *discordgo.Session, i *di
 	if all > 0 {
 		fmt.Fprintf(&b, "\n`%d` messages over `%d` channels", all, len(totals))
 	}
-	core.RespondInfo(s, i, "Where the traffic went", core.TruncateEmbedDescription(b.String()))
+	ix.RespondInfo("Where the traffic went", core.TruncateEmbedDescription(b.String()))
 }
 
-func (p *Plugin) handleMembers(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	opts, err := parseOptions(core.LeafArgs(i), p.now())
+func (p *Plugin) handleMembers(ctx context.Context, ix *core.Ix) {
+	opts, err := parseOptions(ix.Args(), p.now())
 	if err != nil {
-		core.RespondErr(s, i, "That window doesn't work", err)
+		ix.RespondErr("That window doesn't work", err)
 		return
 	}
-	days, err := p.store.MemberDays(ctx, i.GuildID, opts.from, opts.to)
+	days, err := p.store.MemberDays(ctx, ix.GuildID, opts.from, opts.to)
 	if err != nil {
-		core.RespondErr(s, i, "Could not read the statistics", err)
+		ix.RespondErr("Could not read the statistics", err)
 		return
 	}
 	var b strings.Builder
@@ -624,30 +615,30 @@ func (p *Plugin) handleMembers(ctx context.Context, s *discordgo.Session, i *dis
 			fmt.Fprintf(&b, "`%s` `+%d` `-%d`\n", d.Day.Format("2006-01-02"), d.Joined, d.Departed)
 		}
 	}
-	core.RespondInfo(s, i, "Members", core.TruncateEmbedDescription(b.String()))
+	ix.RespondInfo("Members", core.TruncateEmbedDescription(b.String()))
 }
 
-func (p *Plugin) handleBackfill(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if !p.refuseUnlessOperator(s, i) {
+func (p *Plugin) handleBackfill(ctx context.Context, ix *core.Ix) {
+	if !p.refuseUnlessOperator(ix) {
 		return
 	}
-	arg, ok := core.LeafArgs(i)["from"]
+	arg, ok := ix.Args()["from"]
 	if !ok {
-		core.RespondErr(s, i, "That window doesn't work", errors.New("i need a start date"))
+		ix.RespondErr("That window doesn't work", errors.New("i need a start date"))
 		return
 	}
-	from, err := parseWhen(arg.StringValue())
+	from, err := parseWhen(arg.String())
 	if err != nil {
-		core.RespondErr(s, i, "That window doesn't work", err)
+		ix.RespondErr("That window doesn't work", err)
 		return
 	}
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
-		core.RespondErr(s, i, "Could not read the statistics", err)
+		ix.RespondErr("Could not read the statistics", err)
 		return
 	}
 	if cfg.LiveSince.IsZero() {
-		core.RespondErr(s, i, "Nothing to fill up to", errors.New("counting has not started for this server yet; try again in a minute"))
+		ix.RespondErr("Nothing to fill up to", errors.New("counting has not started for this server yet; try again in a minute"))
 		return
 	}
 	// Up to the top of the hour counting began. The partial hour between
@@ -655,26 +646,27 @@ func (p *Plugin) handleBackfill(ctx context.Context, s *discordgo.Session, i *di
 	// time, rather than being counted by both.
 	until := cfg.LiveSince.Truncate(time.Hour)
 	if !from.Before(until) {
-		core.RespondErr(s, i, "Already counted", fmt.Errorf("live counting has covered everything since `%s` utc", until.Format("2006-01-02 15:04")))
+		ix.RespondErr("Already counted", fmt.Errorf("live counting has covered everything since `%s` utc", until.Format("2006-01-02 15:04")))
 		return
 	}
 	// Listing channels is one call; the walk itself is the job's.
-	if err := core.DeferResponse(s, i); err != nil {
+	if err := ix.Defer(); err != nil {
 		return
 	}
-	n, err := p.queueBackfill(ctx, i.GuildID, from, until)
+	n, err := p.queueBackfill(ctx, ix.GuildID, from, until)
 	if err != nil {
-		_ = core.FollowUpErr(s, i, "Could not start the backfill", err)
+		_ = ix.FollowUpErr("Could not start the backfill", err)
 		return
 	}
-	_ = core.FollowUpOK(s, i, "Backfill queued",
+	_ = ix.FollowUpOK("Backfill queued",
 		fmt.Sprintf("`%d` channels will be read from `%s` to `%s` utc, about a page of a hundred messages a second each. "+
 			"it carries on across restarts; `/statistics status` shows how far it has got.",
 			n, from.Format("2006-01-02"), until.Format("2006-01-02 15:04")))
 }
 
-func fileFrom(name, contentType string, body []byte) *discordgo.File {
-	return &discordgo.File{Name: name, ContentType: contentType, Reader: bytes.NewReader(body)}
+// fileFrom is an upload; Discord types it from the name.
+func fileFrom(name string, body []byte) *discord.File {
+	return discord.NewFile(name, "", bytes.NewReader(body))
 }
 
 // guildName resolves the server's display name for the headline, falling back

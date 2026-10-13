@@ -6,9 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 )
 
 // /statistics status is a panel (core.Panel): what is being counted, since
@@ -24,28 +25,28 @@ var configureSpec = core.PermSpec{Tier: core.TierAdmin, Action: "statistics.conf
 
 func (p *Plugin) registerPanel(commands *core.CommandRouter) {
 	p.commands = commands
-	commands.HandleComponent(p.Name(), panelSet, configureSpec, p.handlePanelSet)
-	commands.HandleModal(p.Name(), formSet, configureSpec, p.handleForm)
+	commands.HandleComponentIx(p.Name(), panelSet, configureSpec, p.handlePanelSet)
+	commands.HandleModalIx(p.Name(), formSet, configureSpec, p.handleForm)
 }
 
-func (p *Plugin) handleStatus(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := core.RespondPanel(s, i, p.panel(ctx, i, "")); err != nil {
+func (p *Plugin) handleStatus(ctx context.Context, ix *core.Ix) {
+	if err := ix.RespondPanel(p.panel(ctx, ix, "")); err != nil {
 		p.log.Error("statistics: panel response failed", "err", err)
 	}
 }
 
-func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, note string) core.Panel {
+func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel {
 	pn := core.Panel{Color: core.ColorInfo, Title: "Statistics", Plugin: p.Name(), Note: note,
 		Line:   "who was talking where, counted by the hour",
 		Footer: "/statistics channels and members read it; only merlin's operator can name people."}
-	cfg, err := p.store.Config(ctx, i.GuildID)
+	cfg, err := p.store.Config(ctx, ix.GuildID)
 	if err != nil {
 		pn.Color = core.ColorError
-		pn.Body = []discordgo.MessageComponent{core.Text("✗ could not read the statistics: " + err.Error())}
+		pn.Parts = []discord.ContainerSubComponent{ui.Text("✗ could not read the statistics: " + err.Error())}
 		return pn
 	}
-	oldest, _ := p.store.OldestHour(ctx, i.GuildID)
-	back, _ := p.store.BackfillStatus(ctx, i.GuildID)
+	oldest, _ := p.store.OldestHour(ctx, ix.GuildID)
+	back, _ := p.store.BackfillStatus(ctx, ix.GuildID)
 
 	rows := [][2]string{{"counting", "not started yet"}}
 	if !cfg.LiveSince.IsZero() {
@@ -65,35 +66,35 @@ func (p *Plugin) panel(ctx context.Context, i *discordgo.InteractionCreate, note
 		}
 		rows = append(rows, [2]string{"backfill", done})
 	}
-	pn.Body = []discordgo.MessageComponent{
-		core.Text(core.Readout(rows)),
-		core.Switch(fmt.Sprintf("hourly counts are kept for **%d** days, then pruned within the hour.", cfg.RetentionDays),
-			core.Button("Change", panelSet+"retention", discordgo.SecondaryButton, !p.commands.Perms().Allows(i, configureSpec))),
+	pn.Parts = []discord.ContainerSubComponent{
+		ui.Text(core.Readout(rows)),
+		ui.Switch(fmt.Sprintf("hourly counts are kept for **%d** days, then pruned within the hour.", cfg.RetentionDays),
+			ui.Button("Change", panelSet+"retention", discord.ButtonStyleSecondary, !p.commands.Perms().AllowsIx(ix, configureSpec))),
 	}
 	return pn
 }
 
-func (p *Plugin) handlePanelSet(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, customID string) {
+func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID string) {
 	if strings.TrimPrefix(customID, panelSet) != "retention" {
-		if err := core.UpdatePanel(s, i, p.panel(ctx, i, "✗ that control is out of date; run /statistics status again")); err != nil {
+		if err := ix.UpdatePanel(p.panel(ctx, ix, "✗ that control is out of date; run /statistics status again")); err != nil {
 			p.log.Error("statistics: panel update failed", "err", err)
 		}
 		return
 	}
-	cfg, _ := p.store.Config(ctx, i.GuildID)
-	if err := core.OpenModal(s, i, formSet+"retention", "Retention",
-		core.Field("days", fmt.Sprintf("days of hourly counts to keep, 1 to %d", maxRetentionDays), strconv.Itoa(cfg.RetentionDays), strconv.Itoa(defaultRetentionDays), false, true)); err != nil {
+	cfg, _ := p.store.Config(ctx, ix.GuildID)
+	if err := ix.OpenModal(formSet+"retention", "Retention",
+		ui.Field("days", fmt.Sprintf("days of hourly counts to keep, 1 to %d", maxRetentionDays), strconv.Itoa(cfg.RetentionDays), strconv.Itoa(defaultRetentionDays), false, true)); err != nil {
 		p.log.Error("statistics: open form failed", "err", err)
 	}
 }
 
-func (p *Plugin) handleForm(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, _ string) {
-	days, err := strconv.Atoi(strings.TrimSpace(core.ModalValues(i)["days"]))
-	note := p.setRetention(ctx, i.GuildID, days)
+func (p *Plugin) handleForm(ctx context.Context, ix *core.Ix, _ string) {
+	days, err := strconv.Atoi(strings.TrimSpace(ix.ModalValues()["days"]))
+	note := p.setRetention(ctx, ix.GuildID, days)
 	if err != nil {
 		note = fmt.Sprintf("✗ retention is a whole number of days, 1 to %d", maxRetentionDays)
 	}
-	if err := core.UpdatePanel(s, i, p.panel(ctx, i, note)); err != nil {
+	if err := ix.UpdatePanel(p.panel(ctx, ix, note)); err != nil {
 		p.log.Error("statistics: panel update failed", "err", err)
 	}
 }

@@ -1,6 +1,7 @@
 package statistics
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 )
 
 var windowStart = time.Date(2026, 9, 1, 14, 0, 0, 0, time.UTC)
@@ -276,16 +278,22 @@ func TestCommandIsNotListedToTheServer(t *testing.T) {
 
 func TestParseOptions(t *testing.T) {
 	now := windowStart.Add(24 * time.Hour)
-	str := func(name, v string) *discordgo.ApplicationCommandInteractionDataOption {
-		return &discordgo.ApplicationCommandInteractionDataOption{
-			Name: name, Type: discordgo.ApplicationCommandOptionString, Value: v,
+	opt := func(name string, typ discord.ApplicationCommandOptionType, v any) discord.SlashCommandOption {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
 		}
+		return discord.SlashCommandOption{Name: name, Type: typ, Value: raw}
 	}
-	args := map[string]*discordgo.ApplicationCommandInteractionDataOption{
-		"from":  str("from", "2026-09-01 14:00"),
-		"to":    str("to", "2026-09-01 18:00"),
-		"top":   {Name: "top", Type: discordgo.ApplicationCommandOptionInteger, Value: float64(500)},
-		"share": {Name: "share", Type: discordgo.ApplicationCommandOptionBoolean, Value: true},
+	str := func(name, v string) discord.SlashCommandOption {
+		return opt(name, discord.ApplicationCommandOptionTypeString, v)
+	}
+	args := map[string]discord.SlashCommandOption{
+		"from":    str("from", "2026-09-01 14:00"),
+		"to":      str("to", "2026-09-01 18:00"),
+		"top":     opt("top", discord.ApplicationCommandOptionTypeInt, 500),
+		"share":   opt("share", discord.ApplicationCommandOptionTypeBool, true),
+		"channel": opt("channel", discord.ApplicationCommandOptionTypeChannel, "555"),
 	}
 	opts, err := parseOptions(args, now)
 	if err != nil {
@@ -297,19 +305,19 @@ func TestParseOptions(t *testing.T) {
 	if opts.top != maxTop {
 		t.Fatalf("top should clamp to %d, got %d", maxTop, opts.top)
 	}
-	if !opts.share {
-		t.Fatal("share was not read")
+	if !opts.share || opts.channelID != "555" {
+		t.Fatalf("share or channel was not read: %+v", opts)
 	}
 
 	// to defaults to now rather than to nothing.
-	only, err := parseOptions(map[string]*discordgo.ApplicationCommandInteractionDataOption{
+	only, err := parseOptions(map[string]discord.SlashCommandOption{
 		"from": str("from", "2026-09-01 14:00"),
 	}, now)
 	if err != nil || !only.to.Equal(now) || only.top != defaultTop {
 		t.Fatalf("defaults: %+v, %v", only, err)
 	}
 
-	for name, bad := range map[string]map[string]*discordgo.ApplicationCommandInteractionDataOption{
+	for name, bad := range map[string]map[string]discord.SlashCommandOption{
 		"no start":        {},
 		"unparseable":     {"from": str("from", "yesterday")},
 		"reversed window": {"from": str("from", "2026-09-01 18:00"), "to": str("to", "2026-09-01 14:00")},
