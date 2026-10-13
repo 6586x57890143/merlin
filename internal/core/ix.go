@@ -98,6 +98,13 @@ func (ix *Ix) RespondEmbed(embed discord.Embed) error {
 	})
 }
 
+// RespondText answers with plain text, privately.
+func (ix *Ix) RespondText(content string) error {
+	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
+		Content: content, Flags: discord.MessageFlagEphemeral, AllowedMentions: noPings(),
+	})
+}
+
 // RespondEmbedWithComponents is RespondEmbed with controls under it.
 func (ix *Ix) RespondEmbedWithComponents(embed discord.Embed, components []discord.LayoutComponent) error {
 	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
