@@ -116,13 +116,13 @@ func TestAuditEmbedCarriesTheFileItReferences(t *testing.T) {
 		t.Fatalf("thumbnail is not an attachment reference: %q", embed.Thumbnail.URL)
 	}
 	var found bool
-	for _, f := range core.EmbedFiles(embed) {
+	for _, f := range core.EmbedUploads(embed) {
 		if f.Name == name {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("embed references %q but EmbedFiles does not supply it", name)
+		t.Errorf("embed references %q but EmbedUploads does not supply it", name)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestValueFieldsMatchWhatWasActuallySupplied(t *testing.T) {
 	if len(only.Fields) != 2 || only.Fields[1].Name != "Details" {
 		t.Errorf("a single value should be one full-width Details field, got %+v", only.Fields)
 	}
-	if only.Fields[1].Inline {
+	if only.Fields[1].Inline != nil && *only.Fields[1].Inline {
 		t.Error("the single-value field should not be inline; there is nothing to sit beside it")
 	}
 	removed := buildEmbed("418", "config.admin_removed", "<@99>", "")

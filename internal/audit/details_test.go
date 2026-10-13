@@ -61,8 +61,9 @@ func TestPairDetailsRenderAsAnAlignedGrid(t *testing.T) {
 		t.Fatalf("fields = %d, want %d", len(e.Fields), len(wants))
 	}
 	for i, f := range e.Fields {
-		if f.Name != wants[i].name || f.Inline != wants[i].inline {
-			t.Errorf("field %d = %q inline=%v, want %q inline=%v", i, f.Name, f.Inline, wants[i].name, wants[i].inline)
+		inline := f.Inline != nil && *f.Inline
+		if f.Name != wants[i].name || inline != wants[i].inline {
+			t.Errorf("field %d = %q inline=%v, want %q inline=%v", i, f.Name, inline, wants[i].name, wants[i].inline)
 		}
 	}
 }
