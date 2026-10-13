@@ -141,6 +141,10 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// The privileged intents are read from the Developer Portal, not
 	// configured: merlin identifies with exactly what is granted, so Discord
 	// never refuses her connection over one.
+	appID, err := snowflake.Parse(cfg.Discord.AppID)
+	if err != nil {
+		return fmt.Errorf("DISCORD_APP_ID: %w", err)
+	}
 	granted, err := core.Probe(ixRest)
 	if err != nil {
 		return err
@@ -357,14 +361,14 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// on every GuildCreate), so nothing here should ever leave a global command
 	// behind. Clears any that pre-Milestone-4 code left registered (a REST
 	// call, doesn't need session.Open() first).
-	if err := commands.PurgeGlobalCommands(session, cfg.Discord.AppID); err != nil {
+	if err := commands.PurgeGlobalCommands(appID); err != nil {
 		log.Error("purge global commands", "err", err)
 	}
 	// Plugin icons as application emoji, in the background: one list call
 	// when nothing changed, and until it lands every icon goes as text or an
 	// attachment, so nothing waits on it.
 	go func() {
-		if err := core.SyncEmoji(session, cfg.Discord.AppID); err != nil {
+		if err := core.SyncEmoji(ixRest, appID); err != nil {
 			log.Warn("sync plugin icons", "err", err)
 		}
 	}()
@@ -405,7 +409,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 			settingsLoaded = false
 		}
 		commandsRegistered := true
-		if err := commands.RegisterGuild(session, cfg.Discord.AppID, gc.ID); err != nil {
+		if err := commands.RegisterGuild(appID, snowflake.MustParse(gc.ID)); err != nil {
 			log.Error("register commands for guild", "guild", gc.ID, "err", err)
 			commandsRegistered = false
 		}

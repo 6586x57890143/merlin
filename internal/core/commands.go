@@ -79,7 +79,8 @@ type CommandRouter struct {
 	rest rest.Rest
 
 	topLevel       []*discordgo.ApplicationCommand
-	topLevelPlugin map[string]string // top-level command name -> owning plugin name
+	creates        []discord.ApplicationCommandCreate // topLevel as disgo sends it, from Finalize
+	topLevelPlugin map[string]string                  // top-level command name -> owning plugin name
 	leaves         map[string]*registeredLeaf
 	components     map[string]*registeredComponent // CustomID prefix -> handler
 	modals         map[string]*registeredModal     // CustomID prefix -> handler
@@ -301,6 +302,11 @@ func (r *CommandRouter) Finalize() error {
 			return err
 		}
 	}
+	c, err := creates(r.topLevel)
+	if err != nil {
+		return err
+	}
+	r.creates = c
 	return nil
 }
 
@@ -366,49 +372,6 @@ func validateOptions(path string, opts []*discordgo.ApplicationCommandOption) er
 		if err := validateOptions(p, o.Options); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-// RegisterGuild performs exactly one ApplicationCommandBulkOverwrite for
-// guildID with the full merged command set: a single writer across every
-// plugin, so two plugins independently bulk-overwriting can't silently wipe
-// out each other's commands (the bug this router replaces). Scoped
-// per-guild rather than global so commands appear instantly instead of
-// waiting on Discord's up-to-an-hour global-propagation delay. Call once per
-// guild the bot is in at startup, and again whenever it joins a new one
-// (both naturally driven by discordgo's GuildCreate event, see
-// cmd/bot/main.go).
-func (r *CommandRouter) RegisterGuild(s *discordgo.Session, appID, guildID string) error {
-	if _, err := s.ApplicationCommandBulkOverwrite(appID, guildID, r.topLevel); err != nil {
-		return fmt.Errorf("register commands for guild %s: %w", guildID, err)
-	}
-	return nil
-}
-
-// PurgeGlobalCommands removes every application command currently registered
-// in Discord's global scope. This bot registers exclusively per-guild
-// (RegisterGuild), and nothing in this codebase should ever create a global
-// command, but pre-Milestone-4 code once did (a global "/admin" from the
-// original Scheduler plugin, a global "/ping" from the original ping plugin,
-// both via session.ApplicationCommandCreate(..., "", cmd) with an empty
-// guildID). Global commands are a completely separate scope from any guild's
-// commands, so RegisterGuild's per-guild BulkOverwrite never touched them:
-// they've sat there as duplicate/orphaned entries in every guild's command
-// list ever since, one of them ("/admin") pointing at a handler that no
-// longer exists.
-//
-// Pass an explicit empty (non-nil) slice, not nil: discordgo marshals a nil
-// slice as JSON `null`, which is not the same request as an empty array `[]`
-// and may not clear anything, the exact class of bug already fixed once in
-// this codebase for channel permission overwrites (see core.channels.go).
-//
-// Call once at startup, before opening the session. Bulk-overwriting an
-// already-empty global scope is a harmless no-op, so this needs no
-// one-time-only guard: every boot just re-confirms the invariant.
-func (r *CommandRouter) PurgeGlobalCommands(s *discordgo.Session, appID string) error {
-	if _, err := s.ApplicationCommandBulkOverwrite(appID, "", []*discordgo.ApplicationCommand{}); err != nil {
-		return fmt.Errorf("purge global commands: %w", err)
 	}
 	return nil
 }
@@ -528,7 +491,7 @@ func (r *CommandRouter) dispatchComponent(ix *Ix, customID string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := handlerCtx(ix, 30*time.Second)
 	defer cancel()
 	timed(matched.pluginName, ix, func() { matched.handler(ctx, ix, customID) })
 }
@@ -583,7 +546,7 @@ func (r *CommandRouter) dispatchModal(ix *Ix, customID string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := handlerCtx(ix, 30*time.Second)
 	defer cancel()
 	timed(matched.pluginName, ix, func() { matched.handler(ctx, ix, customID) })
 }
@@ -635,7 +598,7 @@ func (r *CommandRouter) dispatchCommand(ix *Ix, i discord.ApplicationCommandInte
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := handlerCtx(ix, 30*time.Second)
 	defer cancel()
 	timed(plugin, ix, func() { leaf.handler(ctx, ix) })
 }
@@ -676,7 +639,7 @@ func (r *CommandRouter) dispatchAutocomplete(ix *Ix, i discord.AutocompleteInter
 	var focusedValue string
 	_ = json.Unmarshal(focused.Value, &focusedValue)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := handlerCtx(ix, 5*time.Second)
 	defer cancel()
 	choices := leaf.autocomplete(ctx, ix, focused.Name, focusedValue)
 	if len(choices) > 25 {

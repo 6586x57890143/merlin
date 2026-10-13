@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sync/atomic"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
@@ -33,6 +34,10 @@ type Ix struct {
 	// UserID is whoever the interaction is from, and ChannelID the channel
 	// it came from.
 	UserID, ChannelID string
+	// answering is set once a first response is on its way, which is what
+	// lets the handler's context outlive Discord's response window
+	// (handlerCtx).
+	answering atomic.Bool
 }
 
 // NewIx decodes raw, an INTERACTION_CREATE's data, as the gateway would.
@@ -91,7 +96,14 @@ func NewRest(token string, client *http.Client) rest.Rest {
 }
 
 func (ix *Ix) respond(t discord.InteractionResponseType, data discord.InteractionResponseData) error {
-	return ix.Rest.CreateInteractionResponse(ix.I.ID(), ix.I.Token(), discord.InteractionResponse{Type: t, Data: data})
+	// Set before the request, so a response sent at the window's last
+	// moment does not have its handler's context cancelled under it.
+	ix.answering.Store(true)
+	err := ix.Rest.CreateInteractionResponse(ix.I.ID(), ix.I.Token(), discord.InteractionResponse{Type: t, Data: data})
+	if err != nil {
+		ix.answering.Store(false)
+	}
+	return err
 }
 
 func (ix *Ix) edit(m discord.MessageUpdate) error {

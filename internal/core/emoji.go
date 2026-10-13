@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"embed"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,6 +11,9 @@ import (
 	"sync/atomic"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 // Every plugin has an icon: a pixel-art tile drawn by tools/icons into
@@ -99,10 +101,10 @@ func PluginIcon(plugin string) (string, *discordgo.File) {
 	return "attachment://" + key + ".png", &discordgo.File{Name: key + ".png", ContentType: "image/png", Reader: bytes.NewReader(png)}
 }
 
-// EmojiSession is the REST SyncEmoji calls.
-type EmojiSession interface {
-	ApplicationEmojis(appID string, options ...discordgo.RequestOption) ([]*discordgo.Emoji, error)
-	ApplicationEmojiCreate(appID string, data *discordgo.EmojiParams, options ...discordgo.RequestOption) (*discordgo.Emoji, error)
+// EmojiREST is the REST SyncEmoji calls; disgo's client satisfies it.
+type EmojiREST interface {
+	GetApplicationEmojis(appID snowflake.ID, opts ...rest.RequestOpt) ([]discord.Emoji, error)
+	CreateApplicationEmoji(appID snowflake.ID, create discord.EmojiCreate, opts ...rest.RequestOpt) (*discord.Emoji, error)
 }
 
 // SyncEmoji makes sure every icon is uploaded to appID, creating those
@@ -112,14 +114,14 @@ type EmojiSession interface {
 //
 // ponytail: a redrawn icon leaves its old emoji behind; an application holds
 // 2000, so pruning the stale ones waits until that is near.
-func SyncEmoji(s EmojiSession, appID string) error {
-	have, err := s.ApplicationEmojis(appID)
+func SyncEmoji(s EmojiREST, appID snowflake.ID) error {
+	have, err := s.GetApplicationEmojis(appID)
 	if err != nil {
 		return fmt.Errorf("listing application emoji: %w", err)
 	}
 	byName := make(map[string]string, len(have))
 	for _, e := range have {
-		byName[e.Name] = e.ID
+		byName[e.Name] = e.ID.String()
 	}
 	ids := map[string]emojiRef{}
 	var errs []error
@@ -128,15 +130,15 @@ func SyncEmoji(s EmojiSession, appID string) error {
 			ids[e.Key] = emojiRef{id, e.Name}
 			continue
 		}
-		made, err := s.ApplicationEmojiCreate(appID, &discordgo.EmojiParams{
+		made, err := s.CreateApplicationEmoji(appID, discord.EmojiCreate{
 			Name:  e.Name,
-			Image: "data:image/png;base64," + base64.StdEncoding.EncodeToString(e.PNG),
+			Image: *discord.NewIconRaw(discord.IconTypePNG, e.PNG),
 		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Name, err))
 			continue
 		}
-		ids[e.Key] = emojiRef{made.ID, e.Name}
+		ids[e.Key] = emojiRef{made.ID.String(), e.Name}
 	}
 	emojiIDs.Store(&ids)
 	return errors.Join(errs...)
