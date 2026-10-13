@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
 	"github.com/disgoorg/snowflake/v2"
@@ -413,7 +415,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		statisticsPlugin.SyncGuild(guildCtx, gc.ID)
 		// Whoever is in voice as the guild arrives starts their clock now;
 		// GUILD_VOICE_STATES is always requested, so this list is complete.
-		statisticsPlugin.SyncVoice(gc.ID, gc.VoiceStates)
+		if gid, err := snowflake.Parse(gc.ID); err == nil {
+			statisticsPlugin.SyncVoice(gc.ID, slices.Collect(gw.Caches.VoiceStates(gid)))
+		}
 		if settingsLoaded {
 			// Rotation, unlike the sweep, derives which jobs should exist from
 			// settings, and reconciling against fail-closed defaults would read as
@@ -500,17 +504,17 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 
 	// Every message is counted (author, channel, hour; never text), which
 	// GUILD_MESSAGES delivers without any privileged intent. A map write
-	// under a lock, so it does not hold up the handlers behind it.
-	on(fromRaw, gateway.EventTypeMessageCreate, func(mc *discordgo.MessageCreate) {
-		statisticsPlugin.HandleMessage(mc.Message)
-	})
+	// under a lock.
+	onMessage := []func(discord.Message){statisticsPlugin.HandleMessage}
+	var onEdit []func(discord.Message)
 	// Voice time is booked from channel changes (member, channel, hour;
-	// never a session log). Same map write under the same lock.
-	// The typed event, not the raw one: only the cache knows the state
-	// before it, which is how a move is told from a mute.
-	voiceListener := bot.NewListenerFunc(func(e *events.GuildVoiceStateUpdate) {
-		statisticsPlugin.HandleVoiceState(voiceUpdate(e))
-	})
+	// never a session log). Same map write under the same lock. The state
+	// before is the cache's, which is how a move is told from a mute.
+	typed := []bot.EventListener{
+		bot.NewListenerFunc(func(e *events.GuildVoiceStateUpdate) {
+			statisticsPlugin.HandleVoiceState(e.VoiceState, e.OldVoiceState, e.Member)
+		}),
+	}
 
 	// Message scanning. Registered only when the intent was actually
 	// requested, so the handler's presence always matches reality: without
@@ -519,18 +523,14 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// entirely useless filter.
 	if cfg.MessageContentIntent {
 		log.Info("MESSAGE_CONTENT intent requested: AI moderation can read messages")
-		on(fromRaw, gateway.EventTypeMessageCreate, func(mc *discordgo.MessageCreate) {
-			// Returns immediately; the paid work happens on aimod's own batch
-			// timer, so a busy server's messages never pile up goroutines
-			// waiting on a model.
-			aimodPlugin.HandleMessage(mc.Message)
-		})
+		// Returns immediately; the paid work happens on aimod's own batch
+		// timer, so a busy server's messages never pile up goroutines
+		// waiting on a model.
+		onMessage = append(onMessage, aimodPlugin.HandleMessage)
 		// Edits, too, and this is not polish. Without it the whole plugin has
 		// a one-step bypass: post something innocuous, wait for it to be
 		// cleared, then edit it into whatever you like. Nothing looked again.
-		on(fromRaw, gateway.EventTypeMessageUpdate, func(mu *discordgo.MessageUpdate) {
-			aimodPlugin.HandleMessageEdit(mu.Message)
-		})
+		onEdit = append(onEdit, aimodPlugin.HandleMessageEdit)
 	} else {
 		log.Info("MESSAGE_CONTENT intent not requested: AI moderation will scan nothing. " +
 			"Set MERLIN_ENABLE_MESSAGE_CONTENT_INTENT=1 and enable Message Content Intent in the Developer Portal.")
@@ -642,11 +642,22 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		log.Info("left guild, unregistered its jobs", "guild", gd.ID, "jobs", dropped)
 	})
 
-	gw.EventManager.AddEventListeners(
+	typed = append(typed,
+		bot.NewListenerFunc(func(e *events.MessageCreate) {
+			for _, f := range onMessage {
+				f(e.Message)
+			}
+		}),
+		bot.NewListenerFunc(func(e *events.MessageUpdate) {
+			for _, f := range onEdit {
+				f(e.Message)
+			}
+		}),
+	)
+	gw.EventManager.AddEventListeners(append(typed,
 		bot.NewListenerFunc(commands.OnInteraction),
 		bot.NewListenerFunc(fromRaw.OnRaw),
-		voiceListener,
-	)
+	)...)
 	if err := core.OpenGateway(ctx, gw); err != nil {
 		return err
 	}

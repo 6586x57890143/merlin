@@ -210,7 +210,7 @@ func TestTriageOnSkipsTheModelCall(t *testing.T) {
 
 	trainTriage(p.triageFor(context.Background(), "g1"), 80)
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: triageClean[0],
 		Author:  &discordgo.User{ID: "u1", Username: "someguy"},
@@ -237,7 +237,7 @@ func TestTriagePassesThroughWhatItIsUnsureOf(t *testing.T) {
 
 	trainTriage(p.triageFor(context.Background(), "g1"), 80)
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1",
 		Content: triageFlagged[0],
 		Author:  &discordgo.User{ID: "u1", Username: "someguy"},

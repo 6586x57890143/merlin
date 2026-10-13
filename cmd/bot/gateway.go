@@ -5,10 +5,8 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
-	"github.com/disgoorg/snowflake/v2"
 )
 
 // legacy routes the gateway events whose handlers still take discordgo's
@@ -50,40 +48,4 @@ func (l *legacy) OnRaw(e *events.Raw) {
 	for _, h := range hs {
 		h(raw)
 	}
-}
-
-// voiceUpdate is a voice state change in discordgo's shape, with the state
-// before it, which only the gateway cache knows and which tells a move from
-// a mute.
-func voiceUpdate(e *events.GuildVoiceStateUpdate) *discordgo.VoiceStateUpdate {
-	vs := e.VoiceState
-	out := &discordgo.VoiceStateUpdate{VoiceState: &discordgo.VoiceState{
-		GuildID: vs.GuildID.String(), UserID: vs.UserID.String(), ChannelID: idOf(vs.ChannelID),
-	}}
-	if e.OldVoiceState.UserID != 0 {
-		out.BeforeUpdate = &discordgo.VoiceState{
-			GuildID: vs.GuildID.String(), UserID: vs.UserID.String(), ChannelID: idOf(e.OldVoiceState.ChannelID),
-		}
-	}
-	if u := e.Member.User; u.ID != 0 {
-		out.Member = &discordgo.Member{
-			GuildID: vs.GuildID.String(), Nick: str(e.Member.Nick),
-			User: &discordgo.User{ID: u.ID.String(), Username: u.Username, GlobalName: str(u.GlobalName), Avatar: str(u.Avatar), Bot: u.Bot},
-		}
-	}
-	return out
-}
-
-func idOf(id *snowflake.ID) string {
-	if id == nil {
-		return ""
-	}
-	return id.String()
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

@@ -103,7 +103,7 @@ func TestShouldSkip(t *testing.T) {
 			if tc.msg != nil {
 				tc.msg(m)
 			}
-			if got := p.shouldSkip(tc.cfg, m, testNow); got != tc.want {
+			if got := p.shouldSkipGo(tc.cfg, m, testNow); got != tc.want {
 				t.Errorf("shouldSkip = %q, want %q", got, tc.want)
 			}
 		})
@@ -118,25 +118,25 @@ func TestCleanDuplicateTextIsScannedOnce(t *testing.T) {
 	cfg := Config{GuildID: "g1", Mode: ModeEnforce}
 	const line = "join my server for free nitro now"
 
-	if got := p.shouldSkip(cfg, msg(line), testNow); got != skipNone {
+	if got := p.shouldSkipGo(cfg, msg(line), testNow); got != skipNone {
 		t.Fatalf("first sighting = %q, want it scanned", got)
 	}
 	// Nothing is deduped until a scan has actually cleared it.
-	if got := p.shouldSkip(cfg, msg(line), testNow); got != skipNone {
+	if got := p.shouldSkipGo(cfg, msg(line), testNow); got != skipNone {
 		t.Fatalf("second sighting before any verdict = %q, want it scanned too", got)
 	}
 	p.dedupe.markClean("g1", line, testNow)
 
-	if got := p.shouldSkip(cfg, msg(line), testNow.Add(time.Minute)); got != skipDuplicate {
+	if got := p.shouldSkipGo(cfg, msg(line), testNow.Add(time.Minute)); got != skipDuplicate {
 		t.Errorf("repeat of cleared text = %q, want skipDuplicate", got)
 	}
 	// Case and surrounding whitespace are not a way around it.
-	if got := p.shouldSkip(cfg, msg("  JOIN MY SERVER FOR FREE NITRO NOW  "), testNow.Add(2*time.Minute)); got != skipDuplicate {
+	if got := p.shouldSkipGo(cfg, msg("  JOIN MY SERVER FOR FREE NITRO NOW  "), testNow.Add(2*time.Minute)); got != skipDuplicate {
 		t.Errorf("case variant = %q, want skipDuplicate", got)
 	}
 	// Past the window it is a fresh message again: the same words genuinely
 	// can mean something different in a different conversation.
-	if got := p.shouldSkip(cfg, msg(line), testNow.Add(dedupeWindow+time.Second)); got != skipNone {
+	if got := p.shouldSkipGo(cfg, msg(line), testNow.Add(dedupeWindow+time.Second)); got != skipNone {
 		t.Errorf("after the window = %q, want it scanned again", got)
 	}
 }
@@ -161,7 +161,7 @@ func TestRepeatedViolationIsActedOnWithoutPayingAgain(t *testing.T) {
 
 	const line = "a message that trips the filter every single time"
 	send := func(id string) {
-		p.HandleMessage(&discordgo.Message{
+		p.handleGo(&discordgo.Message{
 			ID: id, GuildID: "g1", ChannelID: "c1", Content: line,
 			Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
 		})
@@ -274,7 +274,7 @@ func TestCachedVerdictHonoursACurrentPolicyChange(t *testing.T) {
 	cfg.BucketActions[BucketGore] = ActionOff
 	store.setConfig(cfg)
 
-	p.HandleMessage(&discordgo.Message{
+	p.handleGo(&discordgo.Message{
 		ID: "m1", GuildID: "g1", ChannelID: "c1", Content: line,
 		Author: &discordgo.User{ID: "u1"}, Member: &discordgo.Member{},
 	})

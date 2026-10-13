@@ -11,8 +11,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // The free rungs of the ladder. Everything in this file runs in-process,
@@ -254,7 +252,7 @@ func (c *dedupeCache) sweepLocked(now time.Time) {
 
 // shouldSkip runs rung 0: everything that can be decided from the message
 // and the guild's config alone, with no scanning and no cost.
-func (p *Plugin) shouldSkip(cfg Config, m *discordgo.Message, now time.Time) skipReason {
+func (p *Plugin) shouldSkip(cfg Config, m message, now time.Time) skipReason {
 	if cfg.Mode == ModeOff {
 		return skipMode
 	}
@@ -262,20 +260,18 @@ func (p *Plugin) shouldSkip(cfg Config, m *discordgo.Message, now time.Time) ski
 	// the loop guard: a rewrite reposts through a webhook, that repost comes
 	// straight back as a MessageCreate, and without this the plugin would
 	// classify its own output forever.
-	if m.WebhookID != "" {
+	if m.Webhook {
 		return skipWebhook
 	}
-	if m.Author == nil || m.Author.Bot {
+	if m.AuthorID == "" || m.Bot {
 		return skipBot
 	}
 	if slices.Contains(cfg.ExemptChannelIDs, m.ChannelID) {
 		return skipChannel
 	}
-	if m.Member != nil {
-		for _, roleID := range m.Member.Roles {
-			if slices.Contains(cfg.ExemptRoleIDs, roleID) {
-				return skipRole
-			}
+	for _, roleID := range m.RoleIDs {
+		if slices.Contains(cfg.ExemptRoleIDs, roleID) {
+			return skipRole
 		}
 	}
 	// Not m.Content: a forwarded message carries its text in a snapshot and
@@ -289,7 +285,7 @@ func (p *Plugin) shouldSkip(cfg Config, m *discordgo.Message, now time.Time) ski
 	if len([]rune(content)) < minScanLen {
 		return skipShort
 	}
-	if p.dedupe.seenClean(m.GuildID, m.Author.ID, content, now) {
+	if p.dedupe.seenClean(m.GuildID, m.AuthorID, content, now) {
 		return skipDuplicate
 	}
 	return skipNone
