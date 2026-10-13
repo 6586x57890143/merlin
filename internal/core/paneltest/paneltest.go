@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 // Wire records every request a session makes.
@@ -50,13 +48,4 @@ func (w *Wire) Answered() bool {
 		}
 	}
 	return false
-}
-
-// Session is a discordgo session that sends nothing anywhere.
-func Session() (*discordgo.Session, *Wire) {
-	w := &Wire{}
-	s, _ := discordgo.New("Bot test")
-	s.Client = &http.Client{Transport: w}
-	s.State.User = &discordgo.User{ID: "bot"}
-	return s, w
 }

@@ -15,12 +15,10 @@ import (
 // 123456789012345678.
 const testToken = "MTIzNDU2Nzg5MDEyMzQ1Njc4.Xxxxxx.yyyyyyyyyyyyyyyyyyyyyyyyyyy"
 
-// The REST session knows who the bot is before any gateway does, for the
-// plugins that ask its state.
-func TestNewSessionKnowsTheBotFromItsToken(t *testing.T) {
-	s, err := NewSession(testToken)
-	if err != nil || s.State.User == nil || s.State.User.ID != "123456789012345678" {
-		t.Fatalf("session user %+v, err %v", s.State.User, err)
+// merlin knows who she is from her token, before any gateway does.
+func TestSelfIDReadsTheBotFromItsToken(t *testing.T) {
+	if id, err := SelfID(testToken); err != nil || id != 123456789012345678 {
+		t.Fatalf("self %d, err %v", id, err)
 	}
 	if _, err := SelfID("not a token"); err == nil {
 		t.Error("a token without an ID read as one")

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/cache"
@@ -22,7 +21,7 @@ import (
 // the ones the Developer Portal has granted (Granted).
 //
 // A struct rather than two positional bools, because the call site is one
-// line in main.go and "NewSession(token, true, false)" is unreadable at
+// line in main.go and "NewGateway(token, true, false)" is unreadable at
 // exactly the place where getting it wrong means either a bot that silently
 // cannot do its job or one asking to read every message in every server it
 // is in.
@@ -31,23 +30,6 @@ type Intents struct {
 	Members bool
 	// MessageContent enables the aimod plugin to read messages at all.
 	MessageContent bool
-}
-
-// NewSession builds the *discordgo.Session every plugin still sends REST
-// through. It never connects: the gateway is disgo's (NewGateway). Its
-// state carries one thing, the bot's own user, read from the token, for the
-// plugins that still ask session.State who the bot is.
-func NewSession(token string) (*discordgo.Session, error) {
-	s, err := discordgo.New("Bot " + token)
-	if err != nil {
-		return nil, fmt.Errorf("create session: %w", err)
-	}
-	self, err := SelfID(token)
-	if err != nil {
-		return nil, err
-	}
-	s.State.User = &discordgo.User{ID: self.String(), Bot: true}
-	return s, nil
 }
 
 // SelfID is the bot's own user ID, which a bot token begins with.
@@ -111,13 +93,11 @@ func GatewayIntents(intents Intents) gateway.Intents {
 // NewGateway builds merlin's one gateway connection, unopened: disgo, with
 // zstd transport compression (its default), no raw events (each would be
 // a second dispatch of every gateway event), and every listener run on its
-// own goroutine, as discordgo ran them, so a slow
-// handler never holds up the connection.
+// own goroutine, so a slow handler never holds up the connection.
 //
 // The cache keeps what merlin reads: guilds and their roles (authorization
 // and the role hierarchy), channels (statistics' channel names), voice
-// states, and of members only the bot's own, for its top role. discordgo's
-// state kept every member it saw.
+// states, and of members only the bot's own, for its top role.
 func NewGateway(token string, intents Intents, log *slog.Logger, listeners ...bot.EventListener) (*bot.Client, error) {
 	self, err := SelfID(token)
 	if err != nil {

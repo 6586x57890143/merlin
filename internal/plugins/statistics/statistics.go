@@ -24,7 +24,7 @@
 // and the same shape, as /aimod moderate-user and the tip jar's address.
 //
 // Counting needs the unprivileged GUILD_MESSAGES intent, which
-// core.NewSession now always requests. Without MESSAGE_CONTENT the events
+// core.GatewayIntents always requests. Without MESSAGE_CONTENT the events
 // carry no text, and nothing here reads any.
 package statistics
 

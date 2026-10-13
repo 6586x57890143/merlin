@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 
@@ -21,8 +20,8 @@ import (
 	"github.com/6586x57890143/merlin/internal/core/ui"
 )
 
-// The slash-command handlers are driven end to end against a discordgo
-// session whose transport records every REST call and answers it with an
+// The slash-command handlers are driven end to end against a REST client
+// whose transport records every REST call and answers it with an
 // empty success, the same shape aimod's handler tests use. The assertions
 // are about what the handler did (records, role edits, audit rows) plus the
 // title of what it said, read back off the recorded request body. No
@@ -124,18 +123,18 @@ func rolesInteraction(group, sub string, args ...map[string]any) *core.Ix {
 	return decodeIx(2, "7000001", "7000101", map[string]any{"id": "6", "name": "roles", "type": 1, "options": top}, nil)
 }
 
-func optOf(name string, typ discordgo.ApplicationCommandOptionType, value string) map[string]any {
+func optOf(name string, typ discord.ApplicationCommandOptionType, value string) map[string]any {
 	return map[string]any{"name": name, "type": int(typ), "value": value}
 }
 
 func strArg(name, v string) map[string]any {
-	return optOf(name, discordgo.ApplicationCommandOptionString, v)
+	return optOf(name, discord.ApplicationCommandOptionTypeString, v)
 }
 func userArg(name, v string) map[string]any {
-	return optOf(name, discordgo.ApplicationCommandOptionUser, v)
+	return optOf(name, discord.ApplicationCommandOptionTypeUser, v)
 }
 func roleArg(name, v string) map[string]any {
-	return optOf(name, discordgo.ApplicationCommandOptionRole, v)
+	return optOf(name, discord.ApplicationCommandOptionTypeRole, v)
 }
 
 // setOn clicks a /roles settings control as actor: picked is what the

@@ -22,9 +22,9 @@ golangci-lint run   # if installed locally; otherwise CI will run it
 - Plugins communicate only through `core.EventBus`, never by importing each
   other's packages.
 - One top-level slash command per plugin (`/rotation`, `/scheduler`, ...),
-  registered via `core.CommandRouter.RegisterCommand`/`Handle` during
-  `Init`. Never call `session.AddHandler` or `discordgo.ApplicationCommand*`
-  directly from a plugin (see `spec.MD` §4a). Every leaf handler requires an
+  registered via `core.CommandRouter.RegisterCommand`/`HandleIx` during
+  `Init`. Never set commands or listen for interactions directly from a
+  plugin (see `spec.MD` §4a). Every leaf handler requires an
   explicit `core.PermSpec{Tier, Action}`; `Finalize()` fails startup if any
   registered subcommand is missing one, so an ungated command is a build-time
   failure, not a runtime surprise.

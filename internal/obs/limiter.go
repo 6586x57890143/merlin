@@ -18,10 +18,6 @@ type limiter struct {
 // Limiter wraps inner, recording each request's wait for its bucket as wait
 // against its route, so /perf splits Discord's pacing from the round trip
 // the transport times. From skua.
-//
-// ponytail: a 429 on this client is counted twice, once as the Retry-After
-// the transport saw and once as the wait it caused here; the transport's
-// half goes when nothing sends through discordgo.
 func Limiter(inner rest.RateLimiter, rec *Recorder) rest.RateLimiter {
 	return &limiter{RateLimiter: inner, rec: rec}
 }
