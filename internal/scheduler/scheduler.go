@@ -18,9 +18,11 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
 	"github.com/robfig/cron/v3"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/core/ui"
 	"github.com/6586x57890143/merlin/internal/obs"
 )
 
@@ -117,7 +119,7 @@ type Scheduler struct {
 	log      *slog.Logger
 	settings statusChannelResolver
 
-	session  *discordgo.Session
+	rest     rest.Rest
 	commands *core.CommandRouter
 
 	cron *cron.Cron
@@ -135,7 +137,7 @@ type Scheduler struct {
 
 	// alertFunc, if set, replaces the default "post to the guild's
 	// status channel" behavior. Tests inject a fake so they don't need a
-	// live Discord session.
+	// live Discord connection.
 	alertFunc func(ctx context.Context, jobKey string, failures int, cause error) error
 }
 
@@ -153,7 +155,7 @@ func New(store JobStateStore, settings statusChannelResolver, log *slog.Logger) 
 func (s *Scheduler) Name() string { return "scheduler" }
 
 func (s *Scheduler) Init(deps core.Deps) error {
-	s.session = deps.Session
+	s.rest = deps.Rest
 	s.commands = deps.Commands
 
 	cmd := &discordgo.ApplicationCommand{
@@ -455,8 +457,8 @@ func (s *Scheduler) alert(ctx context.Context, jobKey string, failures int, caus
 		s.log.Error("scheduler: alert: job key has no guild prefix, cannot route alert", "job", jobKey)
 		return
 	}
-	channelID := s.settings.StatusChannelID(guildID)
-	if channelID == "" {
+	channelID := core.ID(s.settings.StatusChannelID(guildID))
+	if channelID == 0 {
 		s.log.Error("scheduler: alert: no status channel configured", "job", jobKey)
 		return
 	}
@@ -475,22 +477,22 @@ func (s *Scheduler) alert(ctx context.Context, jobKey string, failures int, caus
 	// The guild prefix is stripped from the job name: it is noise inside the
 	// guild's own status channel, and jobsForGuild already presents job names
 	// that way.
-	embed := core.NewEmbed(core.ColorError, "Scheduled job is failing", "",
-		&discordgo.MessageEmbedField{Name: "Job", Value: jobName, Inline: true},
-		&discordgo.MessageEmbedField{Name: "Consecutive failures", Value: strconv.Itoa(failures), Inline: true},
-		&discordgo.MessageEmbedField{Name: "Last error", Value: core.TruncateEmbedField(causeText)},
+	embed := core.Embed(core.ColorError, "Scheduled job is failing", "",
+		discord.EmbedField{Name: "Job", Value: jobName, Inline: core.Inline()},
+		discord.EmbedField{Name: "Consecutive failures", Value: strconv.Itoa(failures), Inline: core.Inline()},
+		discord.EmbedField{Name: "Last error", Value: core.TruncateEmbedField(causeText)},
 	)
 	// Mentions suppressed for the same reason discordguard.GuildOps
 	// suppresses them, and spelled out here because this send is on the raw
-	// session rather than through the guard: the error text is arbitrary, and
+	// REST client rather than through the guard: the error text is arbitrary, and
 	// one carrying a channel topic, a role name, or any other guild-supplied
 	// text would otherwise ping whatever it names, repeatedly, since a wedged
 	// job alerts on every failure past the threshold. An alert about a
 	// problem must not become part of one.
-	if _, err := s.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Embed:           embed,
-		Files:           core.EmbedFiles(embed),
-		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	if _, err := s.rest.CreateMessage(channelID, discord.MessageCreate{
+		Embeds:          []discord.Embed{embed},
+		Files:           core.EmbedUploads(embed),
+		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
 	}); err != nil {
 		s.log.Error("scheduler: alert: send failed", "job", jobKey, "err", err)
 	}
@@ -525,7 +527,7 @@ func (s *Scheduler) handleList(ctx context.Context, ix *core.Ix) {
 		return
 	}
 	embed, components := s.renderJobsPage(lines, 0)
-	if err := ix.RespondEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+	if err := ix.RespondEmbedWithComponents(embed, components); err != nil {
 		s.log.Error("scheduler: list response failed", "err", err)
 	}
 }
@@ -541,7 +543,7 @@ func (s *Scheduler) handleListPage(ctx context.Context, ix *core.Ix, customID st
 		page = 0
 	}
 	embed, components := s.renderJobsPage(s.jobLines(ctx, ix.GuildID), page)
-	if err := ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+	if err := ix.UpdateEmbedWithComponents(embed, components); err != nil {
 		s.log.Error("scheduler: list page update failed", "err", err)
 	}
 }
@@ -628,10 +630,10 @@ func (s *Scheduler) jobLines(ctx context.Context, guildID string) []string {
 	return lines
 }
 
-func (s *Scheduler) renderJobsPage(lines []string, page int) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+func (s *Scheduler) renderJobsPage(lines []string, page int) (discord.Embed, []discord.LayoutComponent) {
 	pageLines, clampedPage, totalPages := core.Paginate(lines, page)
-	embed := core.NewEmbed(core.ColorInfo, "Registered jobs", strings.Join(pageLines, "\n"))
-	return embed, core.PaginationRow(schedulerListComponentPrefix, clampedPage, totalPages)
+	embed := core.Embed(core.ColorInfo, "Registered jobs", strings.Join(pageLines, "\n"))
+	return embed, ui.PaginationRow(schedulerListComponentPrefix, clampedPage, totalPages)
 }
 
 // handleRunNow defers before running: a rotation walks a guild's channels and
