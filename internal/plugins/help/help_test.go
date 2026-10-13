@@ -7,11 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
-
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/6586x57890143/merlin/internal/fleet"
+	"github.com/disgoorg/disgo/discord"
 )
 
 type toggles struct {
@@ -63,10 +62,10 @@ func setup(t *testing.T) (*Plugin, *toggles, *audit) {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := core.NewCommandRouter(core.NewPermissions(nil, auth{}, boss), auth{}, log)
-	router.RegisterCommand("rotation", &discordgo.ApplicationCommand{Name: "rotation", Description: "x", Options: []*discordgo.ApplicationCommandOption{
-		{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "list", Description: "x"},
-		{Type: discordgo.ApplicationCommandOptionSubCommandGroup, Name: "configure", Description: "x", Options: []*discordgo.ApplicationCommandOption{
-			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "add", Description: "x"},
+	router.RegisterCommand("rotation", discord.SlashCommandCreate{Name: "rotation", Description: "x", Options: []discord.ApplicationCommandOption{
+		discord.ApplicationCommandOptionSubCommand{Name: "list", Description: "x"},
+		discord.ApplicationCommandOptionSubCommandGroup{Name: "configure", Description: "x", Options: []discord.ApplicationCommandOptionSubCommand{
+			{Name: "add", Description: "x"},
 		}},
 	}})
 	router.HandleIx("rotation", "list", core.PermSpec{Tier: core.TierMod, Action: "rotation.list"}, nil)
