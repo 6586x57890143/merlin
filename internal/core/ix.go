@@ -18,13 +18,10 @@ import (
 // of what Discord sent, the REST client its answer goes through, and the
 // guild and member as the string IDs merlin's settings are keyed by.
 //
-// It is how plugins move off discordgo one at a time (spec.MD, the disgo
-// port). The router still reads discordgo's copy of the same interaction
-// for the plugin gate and Authorize, so neither check moves while plugins
-// do; a handler registered with HandleIx, HandleComponentIx or
-// HandleModalIx gets an Ix instead of a session and an InteractionCreate.
-// The response methods below are the discordgo helpers' counterparts, with
-// the same flags, the same attachments and the same no-pings rule.
+// A handler registered with HandleIx, HandleComponentIx or HandleModalIx
+// gets one, after the router's plugin gate and Authorize. Every response
+// method below carries merlin's flags, the attachments its embeds point at
+// and the no-pings rule.
 type Ix struct {
 	I discord.Interaction
 	// Rest answers the interaction. Every response call is authorised by the

@@ -58,7 +58,9 @@ func (a answer) RoundTrip(r *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: a.status, Header: a.header, Body: io.NopCloser(strings.NewReader("{}")), Request: r}, nil
 }
 
-func TestTransportTimesRequestsAndRecordsPushback(t *testing.T) {
+// The transport times the round trip only: a 429's wait is the limiter's
+// to record, so counting it here as well would count it twice.
+func TestTransportTimesRequests(t *testing.T) {
 	r := New()
 	c := &http.Client{Transport: Transport(answer{429, http.Header{"Retry-After": {"1.5"}}}, r)}
 	resp, err := c.Post("https://discord.com/api/v10/channels/1/messages", "application/json", nil)
@@ -78,8 +80,8 @@ func TestTransportTimesRequestsAndRecordsPushback(t *testing.T) {
 	if http_.N != 1 || http_.Who != "post channels/messages" {
 		t.Errorf("http row %+v", http_)
 	}
-	if wait.N != 1 || wait.Max != 1500*time.Millisecond {
-		t.Errorf("wait row %+v", wait)
+	if wait.N != 0 {
+		t.Errorf("the transport recorded a wait: %+v", wait)
 	}
 }
 

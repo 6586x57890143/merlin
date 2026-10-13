@@ -160,8 +160,8 @@ func ids(ss []string) []snowflake.ID {
 // SyncGuild reconciles guildID's Scheduler jobs against its current
 // settings. Call once per guild right after internal/settings.Store.Refresh:
 // at startup for every guild the bot is already in, and again whenever
-// the bot joins a new one (both driven by discordgo's GuildCreate event; see
-// cmd/bot/main.go).
+// the bot joins a new one (both driven by the gateway's guild events; see
+// guildUp in cmd/bot/main.go).
 func (p *Plugin) SyncGuild(ctx context.Context, guildID string) {
 	p.reconcile(ctx, guildID)
 }

@@ -5,8 +5,7 @@
 A Discord moderation bot in Go, built for **The Melting Pot**, a free-speech
 server that draws mass-reporting and brigading. One binary and Postgres, with
 features compiled in as plugins. Built on [disgo](https://github.com/disgoorg/disgo)
-and [pgx v5](https://github.com/jackc/pgx); the last of its REST calls are moving
-over from discordgo.
+and [pgx v5](https://github.com/jackc/pgx).
 
 - Channel rotation, jail and vacation, timed role grants, contests with a voting
   gallery, per-member rapsheets, and optional AI moderation held to Discord's own

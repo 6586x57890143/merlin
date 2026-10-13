@@ -9,10 +9,9 @@
 // A sample costs one read lock, a map lookup and a few atomic adds and
 // allocates nothing (BenchmarkAdd), so it is always on.
 //
-// Wait is the one stage that differs from skua's. discordgo's rate limiter
-// is not pluggable, so the time spent queued behind a bucket cannot be seen
-// from outside; what can is every 429 and the Retry-After it carries, which
-// is the part of waiting that means Discord pushed back.
+// Wait is the time a request spent queued behind its rate limit bucket,
+// recorded by Limiter around disgo's limiter. A 429's Retry-After is held
+// there too, so it is counted once, as the wait it caused.
 package obs
 
 import (
@@ -178,8 +177,8 @@ type transport struct {
 	rec   *Recorder
 }
 
-// Transport wraps inner, recording each request's round trip as http and
-// each 429's Retry-After as wait, against the request's route.
+// Transport wraps inner, recording each request's round trip as http
+// against its route.
 func Transport(inner http.RoundTripper, rec *Recorder) http.RoundTripper {
 	if inner == nil {
 		inner = http.DefaultTransport
@@ -190,13 +189,7 @@ func Transport(inner http.RoundTripper, rec *Recorder) http.RoundTripper {
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
 	resp, err := t.inner.RoundTrip(req)
-	route := Route(req.Method, req.URL.Path)
-	t.rec.Add(route, HTTP, time.Since(start))
-	if err == nil && resp.StatusCode == http.StatusTooManyRequests {
-		if secs, perr := strconv.ParseFloat(resp.Header.Get("Retry-After"), 64); perr == nil {
-			t.rec.Add(route, Wait, time.Duration(secs*float64(time.Second)))
-		}
-	}
+	t.rec.Add(Route(req.Method, req.URL.Path), HTTP, time.Since(start))
 	return resp, err
 }
 
