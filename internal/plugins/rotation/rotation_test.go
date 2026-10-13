@@ -521,7 +521,7 @@ func intToID(i int) string { return strconv.Itoa(5000 + i) }
 
 // denyEveryone/botOverwriteAllow's own regression tests moved to
 // internal/core/channels_test.go; the logic now lives in
-// core.DenyEveryoneExceptBot, shared with adminconfig's setup channels.
+// core.DenyEveryone, shared with adminconfig's setup channels.
 
 // TestReconcileJobKeyStableAcrossRetarget is a regression test for a bug
 // that shipped in the previous fix: reconcile used to build the Scheduler

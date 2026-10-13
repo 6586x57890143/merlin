@@ -6,25 +6,13 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/rest"
 )
 
-// restErr returns error, not *discordgo.RESTError, so a %w call site takes a
-// plain error. discordgo declares Error() on the value receiver, which go vet
-// (1.27+) flags as a %w operand because errors.Is would then compare pointers;
-// every consumer here goes through errors.As, exactly as the production paths do.
-func restErr(status int, code int) error {
-	e := &discordgo.RESTError{Response: &http.Response{StatusCode: status}}
-	if code != 0 {
-		e.Message = &discordgo.APIErrorMessage{Code: code, Message: "test"}
-	}
-	return e
-}
-
-// disgoErr is restErr as disgo's REST client returns it.
-func disgoErr(status, code int) error {
-	return &rest.Error{Response: &http.Response{StatusCode: status}, Code: rest.JSONErrorCode(code)}
+// restErr is a Discord error as disgo's REST client returns it; code 0 is
+// one whose body had no code.
+func restErr(status int, code rest.JSONErrorCode) error {
+	return &rest.Error{Response: &http.Response{StatusCode: status}, Code: code}
 }
 
 // TestIsUnknownResource pins down the distinction every cleanup path in this
@@ -38,25 +26,19 @@ func TestIsUnknownResource(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"unknown channel", restErr(http.StatusNotFound, discordgo.ErrCodeUnknownChannel), true},
-		{"unknown member", restErr(http.StatusNotFound, discordgo.ErrCodeUnknownMember), true},
-		{"unknown role", restErr(http.StatusNotFound, discordgo.ErrCodeUnknownRole), true},
-		{"unknown message", restErr(http.StatusNotFound, discordgo.ErrCodeUnknownMessage), true},
-		{"404 with no parsed body", restErr(http.StatusNotFound, 0), true},
-		{"wrapped unknown channel", fmt.Errorf("fetch: %w", restErr(http.StatusNotFound, discordgo.ErrCodeUnknownChannel)), true},
+		{"unknown channel", restErr(http.StatusNotFound, rest.JSONErrorCodeUnknownChannel), true},
+		{"unknown member", restErr(http.StatusNotFound, rest.JSONErrorCodeUnknownMember), true},
+		{"unknown role", restErr(http.StatusNotFound, rest.JSONErrorCodeUnknownRole), true},
+		{"unknown message", restErr(http.StatusNotFound, rest.JSONErrorCodeUnknownMessage), true},
+		{"404 with no code", restErr(http.StatusNotFound, 0), true},
+		{"wrapped unknown channel", fmt.Errorf("fetch: %w", restErr(http.StatusNotFound, rest.JSONErrorCodeUnknownChannel)), true},
 
 		{"rate limited", restErr(http.StatusTooManyRequests, 0), false},
 		{"server error", restErr(http.StatusInternalServerError, 0), false},
-		{"missing permissions", restErr(http.StatusForbidden, discordgo.ErrCodeMissingPermissions), false},
-		{"missing access", restErr(http.StatusForbidden, discordgo.ErrCodeMissingAccess), false},
+		{"missing permissions", restErr(http.StatusForbidden, rest.JSONErrorCodeLackPermissionsToPerformAction), false},
+		{"missing access", restErr(http.StatusForbidden, rest.JSONErrorCodeMissingAccess), false},
 		{"plain error", errors.New("dial tcp: connection refused"), false},
 		{"nil", nil, false},
-
-		{"disgo: unknown channel", disgoErr(http.StatusNotFound, discordgo.ErrCodeUnknownChannel), true},
-		{"disgo: 404 with no code", disgoErr(http.StatusNotFound, 0), true},
-		{"disgo: wrapped unknown role", fmt.Errorf("edit: %w", disgoErr(http.StatusNotFound, discordgo.ErrCodeUnknownRole)), true},
-		{"disgo: rate limited", disgoErr(http.StatusTooManyRequests, 0), false},
-		{"disgo: missing permissions", disgoErr(http.StatusForbidden, discordgo.ErrCodeMissingPermissions), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsUnknownResource(tc.err); got != tc.want {
@@ -71,7 +53,7 @@ func TestIsUnknownResource(t *testing.T) {
 // this," but the thing still exists and access may be restored, so the
 // tracking row must survive.
 func TestIsUnknownResourceIgnoresPermissionDenials(t *testing.T) {
-	if IsUnknownResource(restErr(http.StatusForbidden, discordgo.ErrCodeMissingPermissions)) {
+	if IsUnknownResource(restErr(http.StatusForbidden, rest.JSONErrorCodeLackPermissionsToPerformAction)) {
 		t.Error("a permission denial must not be treated as the resource being gone")
 	}
 }

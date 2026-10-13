@@ -809,7 +809,7 @@ func (f *fakeRanker) CanModerate(_ string, actor *core.Actor, targetUserID strin
 
 func (f *fakeRanker) IsBootstrapAdmin(userID string) bool { return userID == f.bootstrap }
 
-func (f *fakeRanker) AuthorizeIx(*core.Ix, core.PermSpec) error { return f.authErr }
+func (f *fakeRanker) Authorize(*core.Ix, core.PermSpec) error { return f.authErr }
 
 // --- audit / voice / gate ----------------------------------------------------
 

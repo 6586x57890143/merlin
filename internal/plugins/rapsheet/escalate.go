@@ -305,7 +305,7 @@ func (p *Plugin) handleSuggestion(ctx context.Context, ix *core.Ix, customID str
 	// here for the one action that would otherwise let a button do what the
 	// command refuses.
 	if rec.Action == ActionBan {
-		if err := p.perms.AuthorizeIx(ix, core.PermSpec{Tier: core.TierAdmin, Action: actionBan}); err != nil {
+		if err := p.perms.Authorize(ix, core.PermSpec{Tier: core.TierAdmin, Action: actionBan}); err != nil {
 			// Still open: the buttons stay for an admin.
 			p.settle(ix, sug, rec, fmt.Sprintf("%s tried to apply this, but a ban needs an admin.", core.MentionUser(actorID(ix))), false)
 			return

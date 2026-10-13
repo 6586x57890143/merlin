@@ -416,5 +416,5 @@ func (p *Plugin) grantModRolesChannelAccess(guildID string) {
 // defaults in a typical guild. Unlike rotation's staging channel, this
 // never needs Manage Messages, so there's no risk of Discord rejecting the
 // overwrite for granting a bit the bot doesn't actually hold (see
-// core.DenyEveryoneExceptBot's doc comment for why that matters).
+// core.DenyEveryone's doc comment for why that matters).
 const botChannelAllow = discord.PermissionViewChannel | discord.PermissionSendMessages | discord.PermissionEmbedLinks
