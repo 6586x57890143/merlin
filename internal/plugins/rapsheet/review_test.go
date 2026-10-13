@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/disgoorg/disgo/discord"
 )
 
 type fakeReviewer struct {
@@ -38,7 +39,7 @@ func TestSummaryAsksTheModelWithLedgerTextOnly(t *testing.T) {
 		ActorID: "system", Reason: "message removed automatically: a slur", Source: SourceAIMod, Ref: "9", CreatedAt: testNow.Add(-48 * time.Hour)})
 
 	rt := stubSession()
-	h.p.handleSummary(context.Background(), withResolved(interaction("summary", userOpt("user", "1001")), &discordgo.User{ID: "1001", Username: "dana"}))
+	h.p.handleSummary(context.Background(), withResolved(interaction("summary", userOpt("user", "1001")), &discord.User{ID: core.ID("1001"), Username: "dana"}))
 	if rev.calls != 1 {
 		t.Fatalf("model calls = %d", rev.calls)
 	}
@@ -104,15 +105,15 @@ func TestWeeklyReviewRunsOnlyWhereItCanAndPostsToTheModChannel(t *testing.T) {
 	}
 
 	// Nothing on record: nothing posted, no model call.
-	if err := h.sched.RunNow(context.Background(), reviewKey(testGuild)); err != nil || rev.calls != 0 || len(h.ops.sentTo("mods")) != 0 {
-		t.Errorf("empty month: err %v calls %d posts %d", err, rev.calls, len(h.ops.sentTo("mods")))
+	if err := h.sched.RunNow(context.Background(), reviewKey(testGuild)); err != nil || rev.calls != 0 || len(h.ops.sentTo("7300020")) != 0 {
+		t.Errorf("empty month: err %v calls %d posts %d", err, rev.calls, len(h.ops.sentTo("7300020")))
 	}
 	seedEntries(h, "1001", 3)
 	seedEntries(h, "1002", 2)
 	if err := h.sched.RunNow(context.Background(), reviewKey(testGuild)); err != nil {
 		t.Fatalf("review: %v", err)
 	}
-	posts := h.ops.sentTo("mods")
+	posts := h.ops.sentTo("7300020")
 	if rev.calls != 1 || len(posts) != 1 || !strings.Contains(posts[0].Embeds[0].Description, "Otherwise consistent") || !strings.Contains(posts[0].Embeds[0].Description, "5 entries") {
 		t.Errorf("calls %d posts %+v", rev.calls, posts)
 	}
@@ -148,13 +149,13 @@ func TestAltNoticeCarriesASecondOpinionWhenThereIsAModel(t *testing.T) {
 	base := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
 	banned := snowflakeAt(base)
 	h.ops.addMember(banned)
-	h.ops.users[banned] = &discordgo.User{ID: banned, Username: "dana_k", Avatar: "abc123"}
+	h.ops.users[banned] = &discord.User{ID: core.ID(banned), Username: "dana_k", Avatar: strp("abc123")}
 	stubSession()
 	h.p.handleBan(context.Background(), withResolved(banCmd(banned, strOpt("duration", "7d")), h.ops.users[banned]))
 
-	h.p.HandleMemberJoin(context.Background(), testGuild, &discordgo.Member{
-		User: &discordgo.User{ID: snowflakeAt(base.Add(48 * time.Hour)), Username: "danak2", Avatar: "abc123"}, JoinedAt: testNow.Add(2 * time.Minute)})
-	posts := h.ops.sentTo("mods")
+	h.p.HandleMemberJoin(context.Background(), testGuild, discord.Member{
+		User: discord.User{ID: core.ID(snowflakeAt(base.Add(48 * time.Hour))), Username: "danak2", Avatar: strp("abc123")}, JoinedAt: ptrTime(testNow.Add(2 * time.Minute))})
+	posts := h.ops.sentTo("7300020")
 	if len(posts) != 1 || !strings.Contains(posts[0].Embeds[0].Description, "A model's read") || !strings.Contains(posts[0].Embeds[0].Description, "Strong:") {
 		t.Fatalf("posts = %+v", posts)
 	}
@@ -167,9 +168,9 @@ func TestAltNoticeCarriesASecondOpinionWhenThereIsAModel(t *testing.T) {
 	}
 	// A failing model costs the opinion and nothing else.
 	rev.err = errors.New("exploded")
-	h.p.HandleMemberJoin(context.Background(), testGuild, &discordgo.Member{
-		User: &discordgo.User{ID: snowflakeAt(base.Add(72 * time.Hour)), Username: "danak3", Avatar: "abc123"}, JoinedAt: testNow.Add(3 * time.Minute)})
-	if posts := h.ops.sentTo("mods"); len(posts) != 2 || strings.Contains(posts[1].Embeds[0].Description, "A model's read") {
+	h.p.HandleMemberJoin(context.Background(), testGuild, discord.Member{
+		User: discord.User{ID: core.ID(snowflakeAt(base.Add(72 * time.Hour))), Username: "danak3", Avatar: strp("abc123")}, JoinedAt: ptrTime(testNow.Add(3 * time.Minute))})
+	if posts := h.ops.sentTo("7300020"); len(posts) != 2 || strings.Contains(posts[1].Embeds[0].Description, "A model's read") {
 		t.Errorf("second notice = %+v", posts)
 	}
 }

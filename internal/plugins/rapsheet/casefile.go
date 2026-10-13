@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -36,16 +36,16 @@ const (
 
 	// caseFileBotAllow is what merlin needs in the forum: to see it, open
 	// posts, write in them, edit its own messages, and attach the mood icon.
-	caseFileBotAllow = discordgo.PermissionViewChannel | discordgo.PermissionSendMessages |
-		discordgo.PermissionSendMessagesInThreads | discordgo.PermissionCreatePublicThreads |
-		discordgo.PermissionReadMessageHistory | discordgo.PermissionEmbedLinks | discordgo.PermissionAttachFiles
+	caseFileBotAllow = discord.PermissionViewChannel | discord.PermissionSendMessages |
+		discord.PermissionSendMessagesInThreads | discord.PermissionCreatePublicThreads |
+		discord.PermissionReadMessageHistory | discord.PermissionEmbedLinks | discord.PermissionAttachFiles
 
 	// caseFileModAllow is what a mod role gets: read, and talk in the
 	// threads. Not the right to open posts, since a post that is not a case
 	// file confuses the mirror, and not manage, since deleting a case file
 	// deletes nothing from the ledger and only breaks the link.
-	caseFileModAllow = discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory |
-		discordgo.PermissionSendMessagesInThreads
+	caseFileModAllow = discord.PermissionViewChannel | discord.PermissionReadMessageHistory |
+		discord.PermissionSendMessagesInThreads
 
 	// threadAutoArchive is Discord's longest: a week. The mirror sends into
 	// an archived thread anyway (Discord unarchives on send), so this only
@@ -63,50 +63,27 @@ const (
 	mirrorTimeout = 20 * time.Second
 )
 
-// botUserID resolves merlin's own id once. Init runs before the session
-// opens, so it cannot be read off the session's state at that point.
-func (p *Plugin) botUserID(guildID string) (string, error) {
-	p.mu.Lock()
-	id := p.botID
-	p.mu.Unlock()
-	if id != "" {
-		return id, nil
-	}
-	u, err := p.ops(guildID).User("@me")
-	if err != nil {
-		return "", fmt.Errorf("rapsheet: resolve bot user: %w", err)
-	}
-	p.mu.Lock()
-	p.botID = u.ID
-	p.mu.Unlock()
-	return u.ID, nil
-}
-
 // createForum makes the case-file forum: hidden from @everyone, readable
 // by the guild's mod roles, writable by merlin.
-func (p *Plugin) createForum(guildID string) (*discordgo.Channel, error) {
-	channels, err := p.ops(guildID).GuildChannels(guildID)
+func (p *Plugin) createForum(guildID string) (discord.GuildChannel, error) {
+	channels, err := p.ops(guildID).GetGuildChannels(core.ID(guildID))
 	if err != nil {
 		return nil, fmt.Errorf("list channels: %w", err)
 	}
 	if len(channels) >= 500-channelCapHeadroom {
 		return nil, fmt.Errorf("this server has %d channels, too close to Discord's 500 cap to add one", len(channels))
 	}
-	botID, err := p.botUserID(guildID)
-	if err != nil {
-		return nil, err
-	}
-	overwrites := core.DenyEveryoneExceptBot(nil, guildID, botID, caseFileBotAllow)
+	overwrites := core.DenyEveryone(nil, core.ID(guildID), p.botID, caseFileBotAllow)
 	for _, roleID := range p.modRoles.ModRoleIDs(guildID) {
-		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
-			ID: roleID, Type: discordgo.PermissionOverwriteTypeRole, Allow: caseFileModAllow,
-		})
+		overwrites = append(overwrites, discord.RolePermissionOverwrite{RoleID: core.ID(roleID), Allow: caseFileModAllow})
 	}
-	ch, err := p.ops(guildID).GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+	ch, err := p.ops(guildID).CreateGuildChannel(core.ID(guildID), discord.GuildForumChannelCreate{
 		Name:                 caseFileForumName,
-		Type:                 discordgo.ChannelTypeGuildForum,
 		Topic:                "One post per member with a moderation record, kept by merlin. Talk in the threads; the entries themselves are edited with /rapsheet.",
 		PermissionOverwrites: overwrites,
+		// disgo sends this field whether set or not; an empty list rather
+		// than the null it would otherwise be.
+		AvailableTags: []discord.ChannelTag{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create forum: %w", err)
@@ -147,12 +124,12 @@ func (p *Plugin) mirrorNow(ctx context.Context, cfg Config, e Entry) error {
 		}
 	}
 	embed := entryEmbed(e)
-	send := &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, Files: core.EmbedFiles(embed)}
+	send := discord.MessageCreate{Embeds: []discord.Embed{embed}, Files: core.EmbedUploads(embed)}
 
 	if cf.ThreadID != "" {
-		msg, err := p.ops(e.GuildID).ChannelMessageSendComplex(cf.ThreadID, send)
+		msg, err := p.ops(e.GuildID).CreateMessage(core.ID(cf.ThreadID), send)
 		if err == nil {
-			return p.store.SetThreadMessage(ctx, e.ID, msg.ID)
+			return p.store.SetThreadMessage(ctx, e.ID, msg.ID.String())
 		}
 		if !core.IsUnknownResource(err) {
 			return err
@@ -164,10 +141,11 @@ func (p *Plugin) mirrorNow(ctx context.Context, cfg Config, e Entry) error {
 		}
 	}
 
-	th, err := p.ops(e.GuildID).ForumThreadStartComplex(cfg.ForumChannelID, &discordgo.ThreadStart{
+	th, err := p.ops(e.GuildID).CreatePostInThreadChannel(core.ID(cfg.ForumChannelID), discord.ThreadChannelPostCreate{
 		Name:                threadName(cf, e.UserID),
 		AutoArchiveDuration: threadAutoArchive,
-	}, send)
+		Message:             send,
+	})
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			p.log.Warn("rapsheet: case-file forum is gone, unsetting it; choose another on /rapsheet settings",
@@ -179,11 +157,11 @@ func (p *Plugin) mirrorNow(ctx context.Context, cfg Config, e Entry) error {
 		}
 		return err
 	}
-	if err := p.store.SetCaseThread(ctx, e.GuildID, e.UserID, th.ID); err != nil {
+	if err := p.store.SetCaseThread(ctx, e.GuildID, e.UserID, th.ID().String()); err != nil {
 		return err
 	}
 	// A forum post's starter message shares the thread's id.
-	return p.store.SetThreadMessage(ctx, e.ID, th.ID)
+	return p.store.SetThreadMessage(ctx, e.ID, th.ID().String())
 }
 
 // remirror edits e's mirrored message after a void or a reason change. An
@@ -206,18 +184,17 @@ func (p *Plugin) remirror(cfg Config, e Entry) {
 			return
 		}
 		embed := entryEmbed(e)
-		files := core.EmbedFiles(embed)
-		attachments := make([]*discordgo.MessageAttachment, 0, len(files))
-		for _, f := range files {
-			attachments = append(attachments, &discordgo.MessageAttachment{Filename: f.Name})
+		files := core.EmbedUploads(embed)
+		attachments := make([]discord.AttachmentUpdate, 0, len(files))
+		for i := range files {
+			attachments = append(attachments, discord.AttachmentCreate{ID: i})
 		}
-		_, err = p.ops(e.GuildID).ChannelMessageEditComplex(&discordgo.MessageEdit{
-			Channel: cf.ThreadID,
-			ID:      e.ThreadMessageID,
-			Embeds:  &[]*discordgo.MessageEmbed{embed},
-			Files:   files,
+		_, err = p.ops(e.GuildID).UpdateMessage(core.ID(cf.ThreadID), core.ID(e.ThreadMessageID), discord.MessageUpdate{
+			Embeds: &[]discord.Embed{embed},
+			Files:  files,
 			// Replaced, not appended: the mood icon changes with the colour
-			// and an edit that keeps the old attachment shows two.
+			// and an edit that keeps the old attachment shows two. Only the
+			// new uploads are listed, so the old ones go.
 			Attachments: &attachments,
 		})
 		if err != nil {
@@ -254,7 +231,7 @@ func threadName(cf CaseFile, userID string) string {
 
 // entryEmbed is one entry as a case-file message. The same words the sheet
 // uses, laid out as fields so a thread reads as a log.
-func entryEmbed(e Entry) *discordgo.MessageEmbed {
+func entryEmbed(e Entry) discord.Embed {
 	title := fmt.Sprintf("#%d · %s", e.ID, kindWords(e))
 	color := core.ColorInfo
 	switch e.Kind {
@@ -269,39 +246,39 @@ func entryEmbed(e Entry) *discordgo.MessageEmbed {
 		title = "~~" + title + "~~ (voided)"
 		color = core.ColorPrimary
 	}
-	fields := []*discordgo.MessageEmbedField{
-		{Name: "Member", Value: core.MentionUser(e.UserID), Inline: true},
-		{Name: "By", Value: actorWords(e.ActorID, false), Inline: true},
+	fields := []discord.EmbedField{
+		{Name: "Member", Value: core.MentionUser(e.UserID), Inline: core.Inline()},
+		{Name: "By", Value: actorWords(e.ActorID, false), Inline: core.Inline()},
 	}
 	if e.Points > 0 {
 		// One field, so the row stays three across: Discord lays inline
 		// fields out three to a row and a fourth drops to a row of its own.
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Offence", Value: fmt.Sprintf("%s · %d pts", categoryLabel(e.Category), e.Points), Inline: true})
+		fields = append(fields, discord.EmbedField{Name: "Offence", Value: fmt.Sprintf("%s · %d pts", categoryLabel(e.Category), e.Points), Inline: core.Inline()})
 	}
 	if e.EndsAt != nil {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Until", Value: absoluteTimestamp(*e.EndsAt), Inline: true})
+		fields = append(fields, discord.EmbedField{Name: "Until", Value: absoluteTimestamp(*e.EndsAt), Inline: core.Inline()})
 	}
 	if e.Source != SourceCommand {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Source", Value: string(e.Source), Inline: true})
+		fields = append(fields, discord.EmbedField{Name: "Source", Value: string(e.Source), Inline: core.Inline()})
 	}
 	if e.Voided() {
 		v := "by " + actorWords(e.VoidedBy, false)
 		if e.VoidReason != "" {
 			v += ": " + e.VoidReason
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Voided", Value: core.TruncateEmbedField(v)})
+		fields = append(fields, discord.EmbedField{Name: "Voided", Value: core.TruncateEmbedField(v)})
 	}
 	desc := strings.TrimSpace(e.Reason)
 	if desc == "" {
 		desc = "(no reason given)"
 	}
-	embed := core.NewEmbed(color, title, core.TruncateEmbedDescription(desc), fields...)
+	embed := core.Embed(color, title, core.TruncateEmbedDescription(desc), fields...)
 	// No divider. A forum shows a post's image as its preview in the post
 	// list, so the rule NewEmbed pins made every case file a grey line; with
 	// it gone the only upload is the mood icon, and that is what the list shows.
 	embed.Image = nil
 	if e.Voided() {
-		embed = core.WithMood(embed, core.MoodIdle)
+		core.SetMood(&embed, core.MoodIdle)
 	}
 	return embed
 }

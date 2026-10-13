@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -339,13 +338,17 @@ func (p *Plugin) setAltHints(ctx context.Context, ix *core.Ix, on bool) string {
 func (p *Plugin) setForum(ctx context.Context, ix *core.Ix, channelID string) string {
 	cfg := p.config(ctx, ix.GuildID)
 	var (
-		forum *discordgo.Channel
+		forum discord.GuildChannel
 		err   error
 	)
 	if channelID != "" {
-		forum, err = p.ops(ix.GuildID).Channel(channelID)
-		if err == nil && forum.Type != discordgo.ChannelTypeGuildForum {
-			err = fmt.Errorf("%s is not a forum channel", core.MentionChannel(forum.ID))
+		var c discord.Channel
+		c, err = p.ops(ix.GuildID).GetChannel(core.ID(channelID))
+		if err == nil {
+			var ok bool
+			if forum, ok = c.(discord.GuildChannel); !ok || forum.Type() != discord.ChannelTypeGuildForum {
+				err = fmt.Errorf("%s is not a forum channel", core.MentionChannel(channelID))
+			}
 		}
 	} else {
 		forum, err = p.createForum(ix.GuildID)
@@ -354,15 +357,15 @@ func (p *Plugin) setForum(ctx context.Context, ix *core.Ix, channelID string) st
 		return "✗ Case files: " + err.Error()
 	}
 	old := cfg.ForumChannelID
-	cfg.ForumChannelID = forum.ID
+	cfg.ForumChannelID = forum.ID().String()
 	if err := p.store.SetConfig(ctx, cfg); err != nil {
 		return "✗ Case files: " + err.Error()
 	}
 	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "rapsheet.configured",
-		core.MentionChannel(old), "forum="+core.MentionChannel(forum.ID)); err != nil {
+		core.MentionChannel(old), "forum="+core.MentionChannel(cfg.ForumChannelID)); err != nil {
 		p.log.Error("rapsheet: audit configure forum", "guild", ix.GuildID, "err", err)
 	}
-	msg := fmt.Sprintf("✓ Case files will be kept in %s. Each member gets a post the first time they are on record.", core.MentionChannel(forum.ID))
+	msg := fmt.Sprintf("✓ Case files will be kept in %s. Each member gets a post the first time they are on record.", core.MentionChannel(cfg.ForumChannelID))
 	if channelID == "" {
 		msg += " It is hidden from @everyone and readable by the mod roles."
 	} else {

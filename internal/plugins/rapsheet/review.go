@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/scheduler"
@@ -173,11 +173,11 @@ func (p *Plugin) handleSummary(ctx context.Context, ix *core.Ix) {
 		_ = ix.FollowUpErr("Summary", fmt.Errorf("the model did not answer: %w", err))
 		return
 	}
-	embed := core.NewEmbed(core.ColorInfo, "Summary: "+name, core.TruncateEmbedDescription(strings.TrimSpace(out)),
-		&discordgo.MessageEmbedField{Name: "Score", Value: fmt.Sprintf("%.0f (%s)", sh.Score, recWords(sh.Rec)), Inline: true},
-		&discordgo.MessageEmbedField{Name: "Entries", Value: entryCountWords(sh.Entries), Inline: true},
-		&discordgo.MessageEmbedField{Name: "Written by", Value: "a model, from this member's record; `/rapsheet view` is the record itself"})
-	if err := ix.FollowUpEmbed(core.EmbedOf(embed)); err != nil {
+	embed := core.Embed(core.ColorInfo, "Summary: "+name, core.TruncateEmbedDescription(strings.TrimSpace(out)),
+		discord.EmbedField{Name: "Score", Value: fmt.Sprintf("%.0f (%s)", sh.Score, recWords(sh.Rec)), Inline: core.Inline()},
+		discord.EmbedField{Name: "Entries", Value: entryCountWords(sh.Entries), Inline: core.Inline()},
+		discord.EmbedField{Name: "Written by", Value: "a model, from this member's record; `/rapsheet view` is the record itself"})
+	if err := ix.FollowUpEmbed(embed); err != nil {
 		p.log.Error("rapsheet: summary follow-up", "err", err)
 	}
 }
@@ -222,7 +222,7 @@ func (p *Plugin) plainInsteadOfSummary(ctx context.Context, ix *core.Ix, cfg Con
 	}
 	embed.Title = "Summary unavailable: " + name
 	embed.Description = core.TruncateEmbedDescription("No summary: " + why + "\n\n" + embed.Description)
-	if err := ix.FollowUpEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+	if err := ix.FollowUpEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("rapsheet: plain summary follow-up", "err", err)
 	}
 }
@@ -299,11 +299,11 @@ func (p *Plugin) weeklyReview(ctx context.Context, guildID string) error {
 	if r := []rune(out); len(r) > reviewMaxChars {
 		out = string(r[:reviewMaxChars-3]) + "..."
 	}
-	embed := core.NewEmbed(core.ColorInfo, "Weekly rapsheet review: the last 30 days",
+	embed := core.Embed(core.ColorInfo, "Weekly rapsheet review: the last 30 days",
 		fmt.Sprintf("%d entries in the last 30 days, so most of this week's post overlaps last week's on purpose: a pattern is a month long, not a week. What a model reading them noticed:\n\n%s\n\n"+
 			"Read it as a prompt to look, not a verdict. `/rapsheet view` is the record, and a case number is the entry's line on the sheet and in the case-file thread.", len(entries), out))
-	if _, err := p.ops(guildID).ChannelMessageSendComplex(cfg.ModChannelID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed}, Files: core.EmbedFiles(embed),
+	if _, err := p.ops(guildID).CreateMessage(core.ID(cfg.ModChannelID), discord.MessageCreate{
+		Embeds: []discord.Embed{embed}, Files: core.EmbedUploads(embed),
 	}); err != nil {
 		return fmt.Errorf("rapsheet review: post: %w", err)
 	}
@@ -316,7 +316,7 @@ const opinionSystem = `A member has just joined a Discord server and some cheap 
 
 // altOpinion asks the model for a line under the Link button. Best effort,
 // short timeout; "" on any failure, and the notice goes out without it.
-func (p *Plugin) altOpinion(ctx context.Context, cfg Config, joiner *discordgo.User, joinedAt time.Time, h AltHint, candidate CaseFile) string {
+func (p *Plugin) altOpinion(ctx context.Context, cfg Config, joiner *discord.User, joinedAt time.Time, h AltHint, candidate CaseFile) string {
 	if p.reviewer == nil {
 		return ""
 	}
@@ -325,13 +325,13 @@ func (p *Plugin) altOpinion(ctx context.Context, cfg Config, joiner *discordgo.U
 	signals := strings.ReplaceAll(strings.Join(h.Signals, "; "), core.MentionUser(candidate.UserID), "the account on record")
 	var b strings.Builder
 	fmt.Fprintf(&b, "Signals the bot found: %s (score %d).\n", signals, h.Score)
-	if made, err := discordgo.SnowflakeTimestamp(joiner.ID); err == nil {
+	if made, err := idTime(joiner.ID.String()); err == nil {
 		fmt.Fprintf(&b, "Joiner's account was created %s and joined %s.\n", agoWords(joinedAt.Sub(made)), agoWords(p.now().Sub(joinedAt)))
 	}
-	if made, err := discordgo.SnowflakeTimestamp(candidate.UserID); err == nil {
+	if made, err := idTime(candidate.UserID); err == nil {
 		fmt.Fprintf(&b, "Account on record was created %s.\n", agoWords(p.now().Sub(made)))
 	}
-	fmt.Fprintf(&b, "Names: joiner %q / %q, on record %q / %q.\n", joiner.Username, joiner.GlobalName, candidate.Username, candidate.GlobalName)
+	fmt.Fprintf(&b, "Names: joiner %q / %q, on record %q / %q.\n", joiner.Username, deref(joiner.GlobalName), candidate.Username, candidate.GlobalName)
 	if sh, err := p.loadSheet(ctx, cfg, cfg.GuildID, candidate.UserID); err == nil {
 		fmt.Fprintf(&b, "Record of the account on record (score %.0f):\n%s", sh.Score, sheetText(sh.Entries, p.now(), cfg.HalfLife))
 	}

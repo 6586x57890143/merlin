@@ -2,12 +2,14 @@ package rapsheet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -17,12 +19,12 @@ import (
 
 func TestTimeoutAppliesRecordsAndTells(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	rt := stubSession()
 	h.p.handleTimeout(context.Background(), interaction("timeout",
-		userOpt("user", "u1"), strOpt("duration", "2h"), strOpt("category", "spam"), strOpt("reason", "flooding")))
+		userOpt("user", "7300007"), strOpt("duration", "2h"), strOpt("category", "spam"), strOpt("reason", "flooding")))
 
-	until, ok := h.ops.timeouts["u1"]
+	until, ok := h.ops.timeouts["7300007"]
 	if !ok || until == nil || !until.Equal(testNow.Add(2*time.Hour)) {
 		t.Fatalf("timeout applied = %v %v", until, ok)
 	}
@@ -41,10 +43,10 @@ func TestTimeoutAppliesRecordsAndTells(t *testing.T) {
 func TestTimeoutValidatesItsDuration(t *testing.T) {
 	for _, d := range []string{"29d", "nonsense", "0m"} {
 		h := newHarness()
-		h.ops.addMember("u1")
+		h.ops.addMember("7300007")
 		stubSession()
 		h.p.handleTimeout(context.Background(), interaction("timeout",
-			userOpt("user", "u1"), strOpt("duration", d), strOpt("category", "spam"), strOpt("reason", "r")))
+			userOpt("user", "7300007"), strOpt("duration", d), strOpt("category", "spam"), strOpt("reason", "r")))
 		if len(h.store.all()) != 0 || len(h.ops.timeouts) != 0 {
 			t.Errorf("duration %q was accepted", d)
 		}
@@ -53,11 +55,11 @@ func TestTimeoutValidatesItsDuration(t *testing.T) {
 
 func TestARefusedTimeoutVoidsItsEntry(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	h.ops.timeoutErr = errors.New("missing permissions")
 	rt := stubSession()
 	h.p.handleTimeout(context.Background(), interaction("timeout",
-		userOpt("user", "u1"), strOpt("duration", "2h"), strOpt("category", "spam"), strOpt("reason", "r")))
+		userOpt("user", "7300007"), strOpt("duration", "2h"), strOpt("category", "spam"), strOpt("reason", "r")))
 	e := h.store.all()[0]
 	if !e.Voided() || !strings.Contains(e.VoidReason, "missing permissions") {
 		t.Errorf("entry = %+v", e)
@@ -74,7 +76,7 @@ func TestTimeoutOfSomebodyWhoLeftIsRefused(t *testing.T) {
 	h := newHarness()
 	rt := stubSession()
 	h.p.handleTimeout(context.Background(), interaction("timeout",
-		userOpt("user", "gone"), strOpt("duration", "2h"), strOpt("category", "spam"), strOpt("reason", "r")))
+		userOpt("user", "7300017"), strOpt("duration", "2h"), strOpt("category", "spam"), strOpt("reason", "r")))
 	if len(h.store.all()) != 0 || !strings.Contains(rt.said(), "not in this server") {
 		t.Errorf("entries %d said %s", len(h.store.all()), rt.said())
 	}
@@ -82,13 +84,13 @@ func TestTimeoutOfSomebodyWhoLeftIsRefused(t *testing.T) {
 
 func TestVoidingAStandingTimeoutLiftsIt(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	stubSession()
 	h.p.handleTimeout(context.Background(), interaction("timeout",
-		userOpt("user", "u1"), strOpt("duration", "2h"), strOpt("category", "spam"), strOpt("reason", "r")))
+		userOpt("user", "7300007"), strOpt("duration", "2h"), strOpt("category", "spam"), strOpt("reason", "r")))
 	rt := stubSession()
 	h.p.handleVoid(context.Background(), interaction("void", intOpt("case", 1), strOpt("reason", "mistake")))
-	if until, ok := h.ops.timeouts["u1"]; !ok || until != nil {
+	if until, ok := h.ops.timeouts["7300007"]; !ok || until != nil {
 		t.Errorf("timeout not cleared: %v %v", until, ok)
 	}
 	if !strings.Contains(rt.said(), "timeout was lifted") {
@@ -100,10 +102,10 @@ func TestVoidingAStandingTimeoutLiftsIt(t *testing.T) {
 
 func TestKickTellsThenRemoves(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	stubSession()
-	h.p.handleKick(context.Background(), interaction("kick", userOpt("user", "u1"), strOpt("category", "server_rule"), strOpt("reason", "r")))
-	if len(h.ops.kicked) != 1 || h.ops.kicked[0] != "u1" {
+	h.p.handleKick(context.Background(), interaction("kick", userOpt("user", "7300007"), strOpt("category", "server_rule"), strOpt("reason", "r")))
+	if len(h.ops.kicked) != 1 || h.ops.kicked[0] != "7300007" {
 		t.Fatalf("kicked = %v", h.ops.kicked)
 	}
 	if h.ops.dmOpen != 1 || h.voice.keys[0] != voice.KeyKickNotice {
@@ -119,12 +121,12 @@ func TestKickTellsThenRemoves(t *testing.T) {
 
 func TestKickRefusesStaffAndTheAbsent(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("admin-1")
-	h.ranker.admins["admin-1"] = true
+	h.ops.addMember("7300006")
+	h.ranker.admins["7300006"] = true
 	stubSession()
-	h.p.handleKick(context.Background(), interaction("kick", userOpt("user", "admin-1"), strOpt("category", "spam"), strOpt("reason", "r")))
+	h.p.handleKick(context.Background(), interaction("kick", userOpt("user", "7300006"), strOpt("category", "spam"), strOpt("reason", "r")))
 	rt := stubSession()
-	h.p.handleKick(context.Background(), interaction("kick", userOpt("user", "gone"), strOpt("category", "spam"), strOpt("reason", "r")))
+	h.p.handleKick(context.Background(), interaction("kick", userOpt("user", "7300017"), strOpt("category", "spam"), strOpt("reason", "r")))
 	if len(h.ops.kicked) != 0 || len(h.store.all()) != 0 || !strings.Contains(rt.said(), "not in this server") {
 		t.Errorf("kicked %v entries %d said %s", h.ops.kicked, len(h.store.all()), rt.said())
 	}
@@ -139,11 +141,11 @@ func banCmd(user string, opts ...map[string]any) *core.Ix {
 
 func TestTemporaryBanTellsBansAndArmsTheSweep(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	rt := stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", strOpt("duration", "7d"), intOpt("delete_message_days", 1)))
+	h.p.handleBan(context.Background(), banCmd("7300007", strOpt("duration", "7d"), intOpt("delete_message_days", 1)))
 
-	if reason, ok := h.ops.bans["u1"]; !ok || !strings.HasPrefix(reason, "rapsheet #1: ") {
+	if reason, ok := h.ops.bans["7300007"]; !ok || !strings.HasPrefix(reason, "rapsheet #1: ") {
 		t.Fatalf("ban = %q %v", reason, ok)
 	}
 	if h.voice.keys[0] != voice.KeyBanNotice || h.ops.dmOpen != 1 {
@@ -163,27 +165,27 @@ func TestTemporaryBanTellsBansAndArmsTheSweep(t *testing.T) {
 
 func TestPermanentBanNeedsSayingSoAndArmsNoSweep(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 
 	rt := stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1"))
+	h.p.handleBan(context.Background(), banCmd("7300007"))
 	if len(h.ops.bans) != 0 || !strings.Contains(rt.said(), "permanent: true") {
 		t.Errorf("a ban with neither duration nor permanent went through: %s", rt.said())
 	}
 	rt2 := stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", strOpt("duration", "7d"), boolOpt("permanent", true)))
+	h.p.handleBan(context.Background(), banCmd("7300007", strOpt("duration", "7d"), boolOpt("permanent", true)))
 	if len(h.ops.bans) != 0 || !strings.Contains(rt2.said(), "not both") {
 		t.Errorf("a ban with both went through: %s", rt2.said())
 	}
 	rt3 := stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", strOpt("duration", "400d")))
+	h.p.handleBan(context.Background(), banCmd("7300007", strOpt("duration", "400d")))
 	if len(h.ops.bans) != 0 || !strings.Contains(rt3.said(), "at most") {
 		t.Errorf("an over-long ban went through: %s", rt3.said())
 	}
 
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", boolOpt("permanent", true)))
-	if _, ok := h.ops.bans["u1"]; !ok {
+	h.p.handleBan(context.Background(), banCmd("7300007", boolOpt("permanent", true)))
+	if _, ok := h.ops.bans["7300007"]; !ok {
 		t.Fatal("permanent ban not applied")
 	}
 	e := h.store.all()[0]
@@ -201,12 +203,12 @@ func TestPermanentBanNeedsSayingSoAndArmsNoSweep(t *testing.T) {
 func TestBanWorksOnSomebodyWhoAlreadyLeftAndRefusesADoubleBan(t *testing.T) {
 	h := newHarness()
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("gone", strOpt("duration", "1d")))
-	if _, ok := h.ops.bans["gone"]; !ok {
+	h.p.handleBan(context.Background(), banCmd("7300017", strOpt("duration", "1d")))
+	if _, ok := h.ops.bans["7300017"]; !ok {
 		t.Fatal("could not ban somebody who left")
 	}
 	rt := stubSession()
-	h.p.handleBan(context.Background(), banCmd("gone", strOpt("duration", "2d")))
+	h.p.handleBan(context.Background(), banCmd("7300017", strOpt("duration", "2d")))
 	if len(h.store.all()) != 1 || !strings.Contains(rt.said(), "already banned") {
 		t.Errorf("entries %d said %s", len(h.store.all()), rt.said())
 	}
@@ -214,10 +216,10 @@ func TestBanWorksOnSomebodyWhoAlreadyLeftAndRefusesADoubleBan(t *testing.T) {
 
 func TestARefusedBanVoidsItsEntry(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	h.ops.banErr = errors.New("missing permissions")
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", strOpt("duration", "1d")))
+	h.p.handleBan(context.Background(), banCmd("7300007", strOpt("duration", "1d")))
 	if e := h.store.all()[0]; !e.Voided() || e.Standing(testNow) {
 		t.Errorf("entry = %+v", e)
 	}
@@ -228,13 +230,13 @@ func TestARefusedBanVoidsItsEntry(t *testing.T) {
 
 func TestUnbanLiftsTheLedgersBanTooAndDisarmsTheSweep(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", strOpt("duration", "7d")))
+	h.p.handleBan(context.Background(), banCmd("7300007", strOpt("duration", "7d")))
 
 	rt := stubSession()
-	h.p.handleUnban(context.Background(), interaction("unban", userOpt("user", "u1"), strOpt("reason", "appeal accepted")))
-	if _, still := h.ops.bans["u1"]; still {
+	h.p.handleUnban(context.Background(), interaction("unban", userOpt("user", "7300007"), strOpt("reason", "appeal accepted")))
+	if _, still := h.ops.bans["7300007"]; still {
 		t.Fatal("still banned")
 	}
 	entries := h.store.all()
@@ -250,7 +252,7 @@ func TestUnbanLiftsTheLedgersBanTooAndDisarmsTheSweep(t *testing.T) {
 
 	// Unbanning somebody who is not banned says so and writes nothing.
 	rt3 := stubSession()
-	h.p.handleUnban(context.Background(), interaction("unban", userOpt("user", "u9"), strOpt("reason", "r")))
+	h.p.handleUnban(context.Background(), interaction("unban", userOpt("user", "7300015"), strOpt("reason", "r")))
 	if len(h.store.all()) != 2 || !strings.Contains(rt3.said(), "not banned") {
 		t.Errorf("entries %d said %s", len(h.store.all()), rt3.said())
 	}
@@ -260,18 +262,18 @@ func TestUnbanLiftsTheLedgersBanTooAndDisarmsTheSweep(t *testing.T) {
 
 func TestTheSweepLiftsServedBansAndOnlyThose(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
-	h.ops.addMember("u2")
+	h.ops.addMember("7300007")
+	h.ops.addMember("7300008")
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", strOpt("duration", "1h")))
+	h.p.handleBan(context.Background(), banCmd("7300007", strOpt("duration", "1h")))
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("u2", strOpt("duration", "3h")))
+	h.p.handleBan(context.Background(), banCmd("7300008", strOpt("duration", "3h")))
 
 	h.p.now = func() time.Time { return testNow.Add(2 * time.Hour) }
 	if err := h.sched.RunNow(context.Background(), sweepKey(testGuild)); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if len(h.ops.unbanned) != 1 || h.ops.unbanned[0] != "u1" {
+	if len(h.ops.unbanned) != 1 || h.ops.unbanned[0] != "7300007" {
 		t.Fatalf("unbanned = %v, want just u1", h.ops.unbanned)
 	}
 	entries := h.store.all()
@@ -284,7 +286,7 @@ func TestTheSweepLiftsServedBansAndOnlyThose(t *testing.T) {
 			unban = &entries[i]
 		}
 	}
-	if unban == nil || unban.ActorID != core.ActorSystem || unban.Source != SourceSweep || unban.UserID != "u1" {
+	if unban == nil || unban.ActorID != core.ActorSystem || unban.Source != SourceSweep || unban.UserID != "7300007" {
 		t.Errorf("unban entry = %+v", unban)
 	}
 	if !h.sched.has(sweepKey(testGuild)) {
@@ -300,14 +302,14 @@ func TestTheSweepLiftsServedBansAndOnlyThose(t *testing.T) {
 
 func TestTheSweepUntracksABanAHumanAlreadyLiftedAndRetriesATransientFailure(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
-	h.ops.addMember("u2")
+	h.ops.addMember("7300007")
+	h.ops.addMember("7300008")
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", strOpt("duration", "1h")))
+	h.p.handleBan(context.Background(), banCmd("7300007", strOpt("duration", "1h")))
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("u2", strOpt("duration", "1h")))
+	h.p.handleBan(context.Background(), banCmd("7300008", strOpt("duration", "1h")))
 	// A human unbanned u1 in the client.
-	delete(h.ops.bans, "u1")
+	delete(h.ops.bans, "7300007")
 	h.p.now = func() time.Time { return testNow.Add(2 * time.Hour) }
 
 	h.ops.unbanErr = errors.New("discord is down")
@@ -334,7 +336,7 @@ func TestTheSweepUntracksABanAHumanAlreadyLiftedAndRetriesATransientFailure(t *t
 			unbans++
 		}
 	}
-	if unbans != 1 || len(h.ops.unbanned) != 1 || h.ops.unbanned[0] != "u2" {
+	if unbans != 1 || len(h.ops.unbanned) != 1 || h.ops.unbanned[0] != "7300008" {
 		t.Errorf("the human's unban must not be recorded again: unbans=%d unbanned=%v", unbans, h.ops.unbanned)
 	}
 }
@@ -346,7 +348,7 @@ func TestSyncGuildArmsTheSweepOnlyWhereABanIsPending(t *testing.T) {
 		t.Error("no bans, job registered")
 	}
 	ends := testNow.Add(time.Hour)
-	_, _ = h.store.Insert(context.Background(), Entry{GuildID: testGuild, UserID: "u1", Kind: KindBan, ActorID: modID, Source: SourceCommand, Duration: time.Hour, EndsAt: &ends})
+	_, _ = h.store.Insert(context.Background(), Entry{GuildID: testGuild, UserID: "7300007", Kind: KindBan, ActorID: modID, Source: SourceCommand, Duration: time.Hour, EndsAt: &ends})
 	h.p.SyncGuild(context.Background(), testGuild)
 	if !h.sched.has(sweepKey(testGuild)) {
 		t.Error("a pending ban on restart should arm the sweep")
@@ -359,37 +361,51 @@ func TestSyncGuildArmsTheSweepOnlyWhereABanIsPending(t *testing.T) {
 
 // --- Discord's own audit log -----------------------------------------------------------------
 
-func auditEvent(actor, target string, action discordgo.AuditLogAction, reason string, changes ...*discordgo.AuditLogChange) *discordgo.GuildAuditLogEntryCreate {
-	return &discordgo.GuildAuditLogEntryCreate{GuildID: testGuild, AuditLogEntry: &discordgo.AuditLogEntry{
-		ID: "log-" + target + "-" + string(rune('0'+int(action)%10)), UserID: actor, TargetID: target,
-		ActionType: &action, Reason: reason, Changes: changes,
-	}}
+func auditEvent(actor, target string, action discord.AuditLogEvent, reason string, changes ...discord.AuditLogChange) discord.AuditLogEntry {
+	t := core.ID(target)
+	e := discord.AuditLogEntry{
+		ID: core.ID(target + strconv.Itoa(int(action)%10)), UserID: core.ID(actor), TargetID: &t,
+		ActionType: action, Changes: changes,
+	}
+	if reason != "" {
+		e.Reason = &reason
+	}
+	return e
+}
+
+// change is one audit-log change of key to v, as Discord writes it.
+func change(key discord.AuditLogChangeKey, v any) discord.AuditLogChange {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return discord.AuditLogChange{Key: key, NewValue: raw}
 }
 
 func TestBansKicksAndTimeoutsDoneThroughDiscordAreRecorded(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
-	h.p.HandleAuditLogEntry(ctx, "merlin-1", auditEvent("mod-2", "u1", discordgo.AuditLogActionMemberBanAdd, "raiding"))
-	h.p.HandleAuditLogEntry(ctx, "merlin-1", auditEvent("mod-2", "u2", discordgo.AuditLogActionMemberKick, ""))
+	h.p.HandleAuditLogEntry(ctx, testGuild, auditEvent("7300005", "7300007", discord.AuditLogEventMemberBanAdd, "raiding"))
+	h.p.HandleAuditLogEntry(ctx, testGuild, auditEvent("7300005", "7300008", discord.AuditLogEventMemberKick, ""))
 	until := testNow.Add(time.Hour).Format(time.RFC3339Nano)
-	key := discordgo.AuditLogChangeKeyCommunicationDisabledUntil
-	h.p.HandleAuditLogEntry(ctx, "merlin-1", auditEvent("mod-2", "u3", discordgo.AuditLogActionMemberUpdate, "",
-		&discordgo.AuditLogChange{Key: &key, NewValue: until}))
+	key := discord.AuditLogChangeKeyCommunicationDisabledUntil
+	h.p.HandleAuditLogEntry(ctx, testGuild, auditEvent("7300005", "7300009", discord.AuditLogEventMemberUpdate, "",
+		change(key, until)))
 	// A member update that is not a timeout is ignored.
-	nick := discordgo.AuditLogChangeKeyNick
-	h.p.HandleAuditLogEntry(ctx, "merlin-1", auditEvent("mod-2", "u4", discordgo.AuditLogActionMemberUpdate, "",
-		&discordgo.AuditLogChange{Key: &nick, NewValue: "new nick"}))
+	nick := discord.AuditLogChangeKeyNick
+	h.p.HandleAuditLogEntry(ctx, testGuild, auditEvent("7300005", "7300010", discord.AuditLogEventMemberUpdate, "",
+		change(nick, "new nick")))
 	// So is anything merlin did herself.
-	h.p.HandleAuditLogEntry(ctx, "merlin-1", auditEvent("merlin-1", "u5", discordgo.AuditLogActionMemberBanAdd, "rapsheet #9"))
+	h.p.HandleAuditLogEntry(ctx, testGuild, auditEvent("7300003", "7300011", discord.AuditLogEventMemberBanAdd, "rapsheet #9"))
 	// And a redelivery.
-	h.p.HandleAuditLogEntry(ctx, "merlin-1", auditEvent("mod-2", "u1", discordgo.AuditLogActionMemberBanAdd, "raiding"))
+	h.p.HandleAuditLogEntry(ctx, testGuild, auditEvent("7300005", "7300007", discord.AuditLogEventMemberBanAdd, "raiding"))
 
 	entries := h.store.all()
 	if len(entries) != 3 {
 		t.Fatalf("entries = %d, want 3: %+v", len(entries), entries)
 	}
 	ban, kick, timeout := entries[0], entries[1], entries[2]
-	if ban.Kind != KindBan || ban.EndsAt != nil || ban.ActorID != "mod-2" || ban.Reason != "raiding" || ban.Source != SourceDiscord || ban.Points != 25 {
+	if ban.Kind != KindBan || ban.EndsAt != nil || ban.ActorID != "7300005" || ban.Reason != "raiding" || ban.Source != SourceDiscord || ban.Points != 25 {
 		t.Errorf("ban = %+v", ban)
 	}
 	if kick.Kind != KindKick || kick.Reason != "kicked through Discord" {
@@ -405,18 +421,18 @@ func TestBansKicksAndTimeoutsDoneThroughDiscordAreRecorded(t *testing.T) {
 
 func TestAnUnbanThroughDiscordLiftsTheLedgersBan(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("u1")
+	h.ops.addMember("7300007")
 	stubSession()
-	h.p.handleBan(context.Background(), banCmd("u1", strOpt("duration", "7d")))
-	h.p.HandleAuditLogEntry(context.Background(), "merlin-1", auditEvent("mod-2", "u1", discordgo.AuditLogActionMemberBanRemove, "appeal"))
+	h.p.handleBan(context.Background(), banCmd("7300007", strOpt("duration", "7d")))
+	h.p.HandleAuditLogEntry(context.Background(), testGuild, auditEvent("7300005", "7300007", discord.AuditLogEventMemberBanRemove, "appeal"))
 	entries := h.store.all()
-	if entries[0].LiftedAt == nil || entries[1].Kind != KindUnban || entries[1].ActorID != "mod-2" {
+	if entries[0].LiftedAt == nil || entries[1].Kind != KindUnban || entries[1].ActorID != "7300005" {
 		t.Errorf("entries = %+v", entries)
 	}
 	// A cleared timeout arrives as a release.
-	key := discordgo.AuditLogChangeKeyCommunicationDisabledUntil
-	h.p.HandleAuditLogEntry(context.Background(), "merlin-1", auditEvent("mod-2", "u3", discordgo.AuditLogActionMemberUpdate, "",
-		&discordgo.AuditLogChange{Key: &key, NewValue: nil}))
+	key := discord.AuditLogChangeKeyCommunicationDisabledUntil
+	h.p.HandleAuditLogEntry(context.Background(), testGuild, auditEvent("7300005", "7300009", discord.AuditLogEventMemberUpdate, "",
+		change(key, nil)))
 	if last := h.store.all()[2]; last.Kind != KindRelease {
 		t.Errorf("cleared timeout = %+v", last)
 	}
@@ -425,11 +441,11 @@ func TestAnUnbanThroughDiscordLiftsTheLedgersBan(t *testing.T) {
 func TestAuditLogIngestionRespectsTheGateAndIgnoresJunk(t *testing.T) {
 	h := newHarness()
 	h.p.gate = fakeGate{disabled: map[string]bool{testGuild: true}}
-	h.p.HandleAuditLogEntry(context.Background(), "merlin-1", auditEvent("mod-2", "u1", discordgo.AuditLogActionMemberBanAdd, "r"))
+	h.p.HandleAuditLogEntry(context.Background(), testGuild, auditEvent("7300005", "7300007", discord.AuditLogEventMemberBanAdd, "r"))
 	h.p.gate = nil
-	h.p.HandleAuditLogEntry(context.Background(), "merlin-1", nil)
-	h.p.HandleAuditLogEntry(context.Background(), "merlin-1", &discordgo.GuildAuditLogEntryCreate{GuildID: testGuild, AuditLogEntry: &discordgo.AuditLogEntry{}})
-	h.p.HandleAuditLogEntry(context.Background(), "merlin-1", auditEvent("mod-2", "c1", discordgo.AuditLogActionChannelDelete, ""))
+	h.p.HandleAuditLogEntry(context.Background(), testGuild, discord.AuditLogEntry{})
+	h.p.HandleAuditLogEntry(context.Background(), "", auditEvent("7300005", "7300007", discord.AuditLogEventMemberBanAdd, "r"))
+	h.p.HandleAuditLogEntry(context.Background(), testGuild, auditEvent("7300005", "7300027", discord.AuditLogEventChannelDelete, ""))
 	if n := len(h.store.all()); n != 0 {
 		t.Errorf("%d entries from ignored events", n)
 	}
@@ -437,14 +453,14 @@ func TestAuditLogIngestionRespectsTheGateAndIgnoresJunk(t *testing.T) {
 
 func TestStatusReportsTheAuditLogPermission(t *testing.T) {
 	h := newHarness()
-	h.ops.addMember("merlin-1", "bot-role")
-	h.ops.roles = []*discordgo.Role{{ID: testGuild}, {ID: "bot-role", Permissions: discordgo.PermissionManageRoles}}
+	h.ops.addMember("7300003", "7300019")
+	h.ops.roles = []discord.Role{{ID: core.ID(testGuild)}, {ID: core.ID("7300019"), Permissions: discord.PermissionManageRoles}}
 	rt := stubSession()
 	h.p.handleStatus(context.Background(), interaction("status"))
 	if !strings.Contains(rt.said(), "does not hold View Audit Log") {
 		t.Errorf("got %s", rt.said())
 	}
-	h.ops.roles[1].Permissions |= discordgo.PermissionViewAuditLogs
+	h.ops.roles[1].Permissions |= discord.PermissionViewAuditLog
 	rt2 := stubSession()
 	h.p.handleStatus(context.Background(), interaction("status"))
 	if !strings.Contains(rt2.said(), "View Audit Log held") {

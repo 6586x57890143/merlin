@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/voice"
@@ -28,14 +28,14 @@ func (p *Plugin) notifyWarned(ctx context.Context, guildID, userID string, categ
 }
 
 // reasonFields is the "what for" block every notice carries.
-func reasonFields(category Category, reason string) []*discordgo.MessageEmbedField {
-	fields := []*discordgo.MessageEmbedField{{
+func reasonFields(category Category, reason string) []discord.EmbedField {
+	fields := []discord.EmbedField{{
 		Name:   "Category",
 		Value:  categoryLabel(category),
-		Inline: true,
+		Inline: core.Inline(),
 	}}
 	if reason != "" {
-		fields = append(fields, &discordgo.MessageEmbedField{
+		fields = append(fields, discord.EmbedField{
 			Name:  "Reason given",
 			Value: core.TruncateEmbedField(reason),
 		})
@@ -46,14 +46,14 @@ func reasonFields(category Category, reason string) []*discordgo.MessageEmbedFie
 // nextStepField is the "what now" line for a member who is still in the
 // server: where to take it up, and where to see their own record. A ban
 // gets none, because a banned member can reach neither.
-func nextStepField() *discordgo.MessageEmbedField {
-	return &discordgo.MessageEmbedField{
+func nextStepField() discord.EmbedField {
+	return discord.EmbedField{
 		Name:  "What now",
 		Value: "If you think this was a mistake, a moderator in the server can look at it. `/rapsheet me` there shows everything on your record.",
 	}
 }
 
-func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, title string, color int, vars map[string]string, fields ...*discordgo.MessageEmbedField) {
+func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, title string, color int, vars map[string]string, fields ...discord.EmbedField) {
 	body := p.speaker.Line(ctx, guildID, key, vars)
 	if body == "" {
 		// Nothing renderable to say. Saying nothing is strictly better than
@@ -61,16 +61,16 @@ func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, 
 		p.log.Error("rapsheet: no line for member notice", "key", key, "guild", guildID)
 		return
 	}
-	ch, err := p.ops(guildID).UserChannelCreate(userID)
+	ch, err := p.ops(guildID).CreateDMChannel(core.ID(userID))
 	if err != nil {
 		// Closed DMs are the ordinary case here, not an incident.
 		p.log.Info("rapsheet: could not open a DM to notify member", "guild", guildID, "user", userID, "err", err)
 		return
 	}
-	embed := core.NewEmbed(color, title, body, fields...)
-	if _, err := p.ops(guildID).ChannelMessageSendComplex(ch.ID, &discordgo.MessageSend{
-		Embed: embed,
-		Files: core.EmbedFiles(embed),
+	embed := core.Embed(color, title, body, fields...)
+	if _, err := p.ops(guildID).CreateMessage(ch.ID(), discord.MessageCreate{
+		Embeds: []discord.Embed{embed},
+		Files:  core.EmbedUploads(embed),
 	}); err != nil {
 		p.log.Info("rapsheet: could not deliver member notice", "guild", guildID, "user", userID, "err", err)
 	}
@@ -79,7 +79,7 @@ func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, 
 // guildName resolves guildID's display name for a DM, falling back to
 // "this server" rather than failing the notice.
 func (p *Plugin) guildName(guildID string) string {
-	g, err := p.ops(guildID).Guild(guildID)
+	g, err := p.ops(guildID).GetGuild(core.ID(guildID))
 	if err != nil || g == nil || g.Name == "" {
 		return "this server"
 	}

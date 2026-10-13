@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
@@ -184,10 +184,10 @@ func (p *Plugin) suggest(ctx context.Context, cfg Config, trigger Entry, rec Rec
 		standingLine = "Already " + standingWords(st) + " (#" + strconv.FormatInt(st.ID, 10) + ")."
 	}
 	embed, components := suggestionEmbed(e, rec, sh.Score, tippedLine(trigger, p.now(), cfg.HalfLife), standingLine, "", false)
-	if _, err := p.ops(cfg.GuildID).ChannelMessageSendComplex(cfg.ModChannelID, &discordgo.MessageSend{
-		Embeds:     []*discordgo.MessageEmbed{embed},
+	if _, err := p.ops(cfg.GuildID).CreateMessage(core.ID(cfg.ModChannelID), discord.MessageCreate{
+		Embeds:     []discord.Embed{embed},
 		Components: components,
-		Files:      core.EmbedFiles(embed),
+		Files:      core.EmbedUploads(embed),
 	}); err != nil {
 		p.log.Error("rapsheet: post suggestion", "guild", cfg.GuildID, "channel", cfg.ModChannelID, "err", err)
 		return fmt.Sprintf("The ladder reached %s; the suggestion could not be posted in %s.", recWords(rec), core.MentionChannel(cfg.ModChannelID))
@@ -216,7 +216,7 @@ func tippedLine(trigger Entry, now time.Time, halfLife time.Duration) string {
 // drops the buttons and the invitation to click them, which happens once
 // the suggestion has been applied or dismissed and never for a note that
 // leaves it open (a mod without the rank to apply a ban).
-func suggestionEmbed(e Entry, rec Recommendation, score float64, tipped, standingLine, note string, settled bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+func suggestionEmbed(e Entry, rec Recommendation, score float64, tipped, standingLine, note string, settled bool) (discord.Embed, []discord.LayoutComponent) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s's record has reached **%.0f points**, which puts them at **%s** on the ladder.", core.MentionUser(e.UserID), score, recWords(rec))
 	if tipped != "" {
@@ -241,14 +241,14 @@ func suggestionEmbed(e Entry, rec Recommendation, score float64, tipped, standin
 	if settled {
 		color = core.ColorInfo
 	}
-	embed := core.NewEmbed(color, "Ladder: "+recWords(rec), core.TruncateEmbedDescription(b.String()))
+	embed := core.Embed(color, "Ladder: "+recWords(rec), core.TruncateEmbedDescription(b.String()))
 	if settled {
 		return embed, nil
 	}
 	id := strconv.FormatInt(e.ID, 10)
-	return embed, []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-		discordgo.Button{Label: "Apply " + recWords(rec), Style: discordgo.DangerButton, CustomID: suggestApplyPrefix + id},
-		discordgo.Button{Label: "Dismiss", Style: discordgo.SecondaryButton, CustomID: suggestDismissPrefix + id},
+	return embed, []discord.LayoutComponent{discord.ActionRowComponent{Components: []discord.InteractiveComponent{
+		discord.ButtonComponent{Label: "Apply " + recWords(rec), Style: discord.ButtonStyleDanger, CustomID: suggestApplyPrefix + id},
+		discord.ButtonComponent{Label: "Dismiss", Style: discord.ButtonStyleSecondary, CustomID: suggestDismissPrefix + id},
 	}}}
 }
 
@@ -388,7 +388,7 @@ func (p *Plugin) settle(ix *core.Ix, sug Entry, rec Recommendation, outcome stri
 		}
 	}
 	embed, components := suggestionEmbed(sug, rec, score, tipped, "", outcome, settled)
-	if err := ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+	if err := ix.UpdateEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("rapsheet: update suggestion message", "guild", ix.GuildID, "err", err)
 	}
 }
@@ -423,15 +423,15 @@ func (p *Plugin) applyLadder(ctx context.Context, cfg Config, userID string, rec
 	if p.perms.IsBootstrapAdmin(userID) {
 		return "", errors.New("the bootstrap operator cannot be actioned automatically")
 	}
-	member, err := p.ops(cfg.GuildID).GuildMember(cfg.GuildID, userID)
+	member, err := p.ops(cfg.GuildID).GetMember(core.ID(cfg.GuildID), core.ID(userID))
 	present := err == nil
 	if err != nil {
 		if !core.IsUnknownResource(err) {
 			return "", fmt.Errorf("look up member: %w", err)
 		}
-		member = &discordgo.Member{User: &discordgo.User{ID: userID}}
+		member = &discord.Member{User: discord.User{ID: core.ID(userID)}}
 	}
-	if err := p.perms.CanModerate(cfg.GuildID, nil, userID, member.Roles); err != nil {
+	if err := p.perms.CanModerate(cfg.GuildID, nil, userID, core.IDStrings(member.RoleIDs)); err != nil {
 		return "", fmt.Errorf("refused: %w", err)
 	}
 	if !present && rec.Action != ActionBan {
@@ -476,7 +476,7 @@ func (p *Plugin) applyLadder(ctx context.Context, cfg Config, userID string, rec
 			applyErr = p.jailer.JailAutomatic(ctx, cfg.GuildID, userID, rec.Duration, reason, false)
 		}
 	case ActionTimeout:
-		applyErr = p.ops(cfg.GuildID).GuildMemberTimeout(cfg.GuildID, userID, e.EndsAt)
+		applyErr = p.ops(cfg.GuildID).TimeoutMember(core.ID(cfg.GuildID), core.ID(userID), e.EndsAt)
 		if applyErr == nil {
 			p.dm(ctx, cfg.GuildID, userID, voice.KeyTimeoutNotice, "Timed out", core.ColorWarning,
 				map[string]string{"guild": guild, "until": relativeTimestamp(*e.EndsAt)}, reasonFields(CategoryServerRule, "your record reached "+recWords(rec))...)
@@ -484,7 +484,7 @@ func (p *Plugin) applyLadder(ctx context.Context, cfg Config, userID string, rec
 	case ActionBan:
 		p.dm(ctx, cfg.GuildID, userID, voice.KeyBanNotice, "Banned", core.ColorError,
 			map[string]string{"guild": guild, "until": relativeTimestamp(*e.EndsAt)}, reasonFields(CategoryServerRule, "your record reached "+recWords(rec))...)
-		applyErr = p.ops(cfg.GuildID).GuildBanCreateWithReason(cfg.GuildID, userID, reason, 0)
+		applyErr = p.ops(cfg.GuildID).AddBan(core.ID(cfg.GuildID), core.ID(userID), time.Duration(0)*24*time.Hour, reason)
 	}
 
 	switch {

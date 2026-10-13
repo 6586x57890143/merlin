@@ -46,9 +46,9 @@ func TestConvertedMessagesAreTheSameJSON(t *testing.T) {
 	}
 }
 
-// The member a still-discordgo check reads must be the one who clicked:
-// same ID, same roles, same nick, the Administrator bit intact.
-func TestMemberGoIsTheInvoker(t *testing.T) {
+// The actor a rank check reads must be the one who clicked, roles and all,
+// and a resolved user is the one Discord sent.
+func TestActorIsTheInvoker(t *testing.T) {
 	ix, _ := paneltest.IxCommand(t, "11", "x", func(p map[string]any) {
 		m := p["member"].(map[string]any)
 		m["roles"] = []any{"21", "22"}
@@ -58,14 +58,14 @@ func TestMemberGoIsTheInvoker(t *testing.T) {
 			"31": map[string]any{"id": "31", "username": "target", "global_name": "Target"},
 		}}
 	})
-	m := ix.MemberGo()
-	if m == nil || m.User == nil || m.User.ID != "11" || m.Nick != "bird" || !reflect.DeepEqual(m.Roles, []string{"21", "22"}) {
-		t.Fatalf("member %+v", m)
+	a := ix.Actor()
+	if a == nil || a.ID != "11" || !reflect.DeepEqual(a.RoleIDs, []string{"21", "22"}) {
+		t.Fatalf("actor %+v", a)
 	}
-	if u := ix.ResolvedUserGo("31"); u == nil || u.ID != "31" || u.Username != "target" || u.GlobalName != "Target" {
+	if u := ix.ResolvedUser("31"); u == nil || u.ID != 31 || u.Username != "target" || u.GlobalName == nil || *u.GlobalName != "Target" {
 		t.Fatalf("resolved %+v", u)
 	}
-	if ix.ResolvedUserGo("32") != nil {
+	if ix.ResolvedUser("32") != nil {
 		t.Fatal("resolved a user Discord did not send")
 	}
 }

@@ -252,8 +252,8 @@ func actorID(ix *core.Ix) string {
 
 // resolvedUser is the user object Discord attached to a User option, free
 // with the interaction, or nil for an id it did not resolve.
-func resolvedUser(ix *core.Ix, userID string) *discordgo.User {
-	return ix.ResolvedUserGo(userID)
+func resolvedUser(ix *core.Ix, userID string) *discord.User {
+	return ix.ResolvedUser(userID)
 }
 
 // viewTarget reads /rapsheet view's user input: an @mention (<@id> or
@@ -265,7 +265,7 @@ func resolvedUser(ix *core.Ix, userID string) *discordgo.User {
 // the sheet, and it is the only thing that tells a typo from somebody
 // with a clean record: Discord saying the account does not exist refuses;
 // any other failure renders without a name rather than blocking a read.
-func (p *Plugin) viewTarget(ix *core.Ix, o discord.SlashCommandOption) (string, *discordgo.User, error) {
+func (p *Plugin) viewTarget(ix *core.Ix, o discord.SlashCommandOption) (string, *discord.User, error) {
 	if o.Type == discord.ApplicationCommandOptionTypeUser {
 		id := o.String()
 		return id, resolvedUser(ix, id), nil
@@ -275,7 +275,7 @@ func (p *Plugin) viewTarget(ix *core.Ix, o discord.SlashCommandOption) (string, 
 	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
 		return "", nil, fmt.Errorf("%q is not a member or a user ID; use @name, or paste the numeric ID", raw)
 	}
-	u, err := p.ops(ix.GuildID).User(id)
+	u, err := p.ops(ix.GuildID).GetUser(core.ID(id))
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			return "", nil, fmt.Errorf("no Discord account has the ID %s", id)
@@ -289,10 +289,10 @@ func (p *Plugin) viewTarget(ix *core.Ix, o discord.SlashCommandOption) (string, 
 // displayName is how the sheet titles its subject: the case file's snapshot
 // when there is one, the resolved user otherwise, the bare id as a last
 // resort. Never a REST call for a title.
-func displayName(u *discordgo.User, cf *CaseFile, userID string) string {
+func displayName(u *discord.User, cf *CaseFile, userID string) string {
 	if u != nil {
-		if u.GlobalName != "" {
-			return u.GlobalName + " (" + u.Username + ")"
+		if g := deref(u.GlobalName); g != "" {
+			return g + " (" + u.Username + ")"
 		}
 		return u.Username
 	}
@@ -327,7 +327,7 @@ func (p *Plugin) handleView(ctx context.Context, ix *core.Ix) {
 		ix.RespondErr("Rapsheet", err)
 		return
 	}
-	if err := ix.RespondEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+	if err := ix.RespondEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("rapsheet: view response", "err", err)
 	}
 }
@@ -336,13 +336,13 @@ func (p *Plugin) handleView(ctx context.Context, ix *core.Ix) {
 // privately, because Discord will not forward an ephemeral message. It is
 // the mod view with the linked-accounts and alt-hint lines left off (see
 // view.go), since a channel post can be forwarded anywhere.
-func (p *Plugin) postView(ctx context.Context, ix *core.Ix, userID string, u *discordgo.User, page int) {
+func (p *Plugin) postView(ctx context.Context, ix *core.Ix, userID string, u *discord.User, page int) {
 	embed, components, err := p.renderFor(ctx, ix.GuildID, userID, u, page, false, true)
 	if err != nil {
 		ix.RespondErr("Rapsheet", err)
 		return
 	}
-	err = ix.RespondPublic(core.EmbedOf(embed), core.LayoutOf(components))
+	err = ix.RespondPublic(embed, components)
 	if err != nil {
 		p.log.Error("rapsheet: public view response", "err", err)
 	}
@@ -370,19 +370,19 @@ func (p *Plugin) turnPage(ctx context.Context, ix *core.Ix, customID, prefix str
 		p.log.Error("rapsheet: sheet page", "err", err)
 		return
 	}
-	if err := ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+	if err := ix.UpdateEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("rapsheet: sheet page update", "err", err)
 	}
 }
 
 func (p *Plugin) handleMe(ctx context.Context, ix *core.Ix) {
 	userID := actorID(ix)
-	embed, components, err := p.renderFor(ctx, ix.GuildID, userID, ix.MemberGo().User, 0, true, false)
+	embed, components, err := p.renderFor(ctx, ix.GuildID, userID, invoker(ix), 0, true, false)
 	if err != nil {
 		ix.RespondErr("Your record", err)
 		return
 	}
-	if err := ix.RespondEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+	if err := ix.RespondEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("rapsheet: me response", "err", err)
 	}
 }
@@ -396,23 +396,23 @@ func (p *Plugin) handleMePage(ctx context.Context, ix *core.Ix, customID string)
 	// The subject is whoever clicked, never anything in the CustomID: a
 	// member paging their own sheet must not be able to page somebody
 	// else's by editing a button id.
-	embed, components, err := p.renderFor(ctx, ix.GuildID, actorID(ix), ix.MemberGo().User, page, true, false)
+	embed, components, err := p.renderFor(ctx, ix.GuildID, actorID(ix), invoker(ix), page, true, false)
 	if err != nil {
 		p.log.Error("rapsheet: me page", "err", err)
 		return
 	}
-	if err := ix.UpdateEmbedWithComponents(core.EmbedOf(embed), core.LayoutOf(components)); err != nil {
+	if err := ix.UpdateEmbedWithComponents(embed, components); err != nil {
 		p.log.Error("rapsheet: me page update", "err", err)
 	}
 }
 
 // renderFor loads and renders one member's sheet for either audience;
 // hideAlts drops the linked-accounts and alt-hint lines from the mod view.
-func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *discordgo.User, page int, forMember, hideAlts bool) (*discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
+func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *discord.User, page int, forMember, hideAlts bool) (discord.Embed, []discord.LayoutComponent, error) {
 	cfg := p.config(ctx, guildID)
 	sh, err := p.loadSheet(ctx, cfg, guildID, userID)
 	if err != nil {
-		return nil, nil, err
+		return discord.Embed{}, nil, err
 	}
 	var cfPtr *CaseFile
 	if cf, ok, err := p.store.CaseFile(ctx, guildID, userID); err == nil && ok {
@@ -446,22 +446,22 @@ func (p *Plugin) renderFor(ctx context.Context, guildID, userID string, u *disco
 // thing to record, so the rank check runs on an empty role set (which still
 // refuses the bootstrap operator and DB-listed admins) and the caller
 // decides whether its action makes sense for an absent member.
-func (p *Plugin) checkTarget(_ context.Context, ix *core.Ix, userID string) (member *discordgo.Member, present bool, err error) {
+func (p *Plugin) checkTarget(_ context.Context, ix *core.Ix, userID string) (member *discord.Member, present bool, err error) {
 	if userID == actorID(ix) {
 		return nil, false, errors.New("you cannot put an entry on your own sheet")
 	}
 	if u := resolvedUser(ix, userID); u != nil && u.Bot {
 		return nil, false, errors.New("that is a bot")
 	}
-	member, err = p.ops(ix.GuildID).GuildMember(ix.GuildID, userID)
+	member, err = p.ops(ix.GuildID).GetMember(core.ID(ix.GuildID), core.ID(userID))
 	present = err == nil
 	if err != nil {
 		if !core.IsUnknownResource(err) {
 			return nil, false, fmt.Errorf("look up member: %w", err)
 		}
-		member = &discordgo.Member{User: &discordgo.User{ID: userID}}
+		member = &discord.Member{User: discord.User{ID: core.ID(userID)}}
 	}
-	if err := p.perms.CanModerate(ix.GuildID, ix.Actor(), userID, member.Roles); err != nil {
+	if err := p.perms.CanModerate(ix.GuildID, ix.Actor(), userID, core.IDStrings(member.RoleIDs)); err != nil {
 		var forbidden core.ErrForbidden
 		if errors.As(err, &forbidden) {
 			if strings.Contains(forbidden.Reason, "bootstrap") {
@@ -584,14 +584,14 @@ func (p *Plugin) canAmend(guildID string, actor *core.Actor, e Entry) error {
 	if e.ActorID == core.ActorSystem || e.ActorID == "" || (actor != nil && e.ActorID == actor.ID) {
 		return nil
 	}
-	recorder, err := p.ops(guildID).GuildMember(guildID, e.ActorID)
+	recorder, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(e.ActorID))
 	if err != nil {
 		if core.IsUnknownResource(err) {
 			return nil
 		}
 		return fmt.Errorf("look up who recorded #%d: %w", e.ID, err)
 	}
-	if err := p.perms.CanModerate(guildID, actor, e.ActorID, recorder.Roles); err != nil {
+	if err := p.perms.CanModerate(guildID, actor, e.ActorID, core.IDStrings(recorder.RoleIDs)); err != nil {
 		return fmt.Errorf("case #%d was recorded by %s, who outranks you", e.ID, core.MentionUser(e.ActorID))
 	}
 	return nil
@@ -651,7 +651,7 @@ func (p *Plugin) handleVoid(ctx context.Context, ix *core.Ix) {
 		// A timeout is this plugin's own to lift, so voiding its record
 		// lifts it: a struck-through timeout that stays in force would be
 		// the sheet saying one thing and Discord doing another.
-		if err := p.ops(ix.GuildID).GuildMemberTimeout(ix.GuildID, e.UserID, nil); err != nil {
+		if err := p.ops(ix.GuildID).TimeoutMember(core.ID(ix.GuildID), core.ID(e.UserID), nil); err != nil {
 			msg += fmt.Sprintf(" The timeout itself could not be lifted (%v); clear it by hand.", err)
 		} else {
 			msg += " The timeout was lifted."

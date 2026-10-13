@@ -62,30 +62,9 @@ func (ix *Ix) Actor() *Actor {
 	return &Actor{ID: ix.UserID, RoleIDs: IDStrings(m.RoleIDs)}
 }
 
-// MemberGo is the invoking member on discordgo's types, for the checks that
-// still take one until they move (Permissions.CanModerate reads its user ID
-// and roles), nil outside a server. Its user ID is Ix.UserID, merlin's key
-// for whoever the interaction is from, which is the decoded member's own.
-func (ix *Ix) MemberGo() *discordgo.Member {
-	m := ix.Member()
-	if m == nil {
-		return nil
-	}
-	var out discordgo.Member
-	raw, err := json.Marshal(m)
-	if err != nil || json.Unmarshal(raw, &out) != nil {
-		return nil
-	}
-	if out.User == nil {
-		out.User = &discordgo.User{}
-	}
-	out.User.ID = ix.UserID
-	return &out
-}
-
-// ResolvedUserGo is the user a command's user option named, as Discord
-// resolved it on the interaction, on discordgo's types; nil if it did not.
-func (ix *Ix) ResolvedUserGo(id string) *discordgo.User {
+// ResolvedUser is the user a command's user option named, as Discord
+// resolved it on the interaction; nil if it did not.
+func (ix *Ix) ResolvedUser(id string) *discord.User {
 	c, ok := ix.I.(discord.ApplicationCommandInteraction)
 	if !ok {
 		return nil
@@ -95,15 +74,9 @@ func (ix *Ix) ResolvedUserGo(id string) *discordgo.User {
 		return nil
 	}
 	for sf, u := range d.Resolved.Users {
-		if sf.String() != id {
-			continue
+		if sf.String() == id {
+			return &u
 		}
-		var out discordgo.User
-		raw, err := json.Marshal(u)
-		if err != nil || json.Unmarshal(raw, &out) != nil {
-			return nil
-		}
-		return &out
 	}
 	return nil
 }
