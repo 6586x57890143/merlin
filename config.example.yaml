@@ -4,7 +4,7 @@
 # here anymore: mod roles, admins, permission whitelists, and rotation
 # settings are all DB-backed (internal/settings) and configured entirely
 # through Discord commands (/config, /rotation configure) once the bot is
-# running. See README.md's "First-time setup" section.
+# running. See "First run" in docs/install.md.
 log_level: info
 
 # One-time migration helper only: if you're upgrading from a pre-Milestone-4

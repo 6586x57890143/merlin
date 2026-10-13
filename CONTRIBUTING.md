@@ -47,8 +47,9 @@ Three docs, three distinct jobs, so don't blur them:
   subsection describing the diff (the `§4a`/`§4b`/`§4c` sprawl this
   guardrail replaces). `spec.MD` describes the current state of the design;
   historical narrative belongs in commit messages and PR descriptions.
-- `README.md` is orientation and operation only: what this is, how to
-  run/test/deploy it, a short per-plugin pointer into `spec.MD` for depth.
+- `README.md` is a page of orientation: what this is and links into
+  `docs/`, which is operation (what each plugin does, installing, running,
+  deploying, incidents), with pointers into `spec.MD` for depth.
   If an explanation needs more than 2-3 sentences, it's a `spec.MD` section;
   link to it, don't duplicate it inline.
 - Code comments carry the local WHY for a specific piece of code (per the

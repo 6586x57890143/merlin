@@ -4,7 +4,7 @@ services:
     # editing one line in deployed-tag.env and re-running compose, instead of
     # hoping a mutable tag still points where you think it does. The default
     # keeps a hand-run `docker compose up` working on a host that has never
-    # been deployed to. See README's Runbook.
+    # been deployed to. See docs/incidents.md.
     image: ghcr.io/6586x57890143/merlin:${MERLIN_IMAGE_TAG:-latest}
     read_only: true
     cap_drop:
