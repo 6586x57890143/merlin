@@ -1226,7 +1226,7 @@ with thresholds that cannot be changed.
   the reason the mod typed, so there is no race against the audit log being
   written. merlin's own actions are told apart by the actor and skipped.
   Discord delivers nothing without View Audit Log, so `/rapsheet status`
-  checks for it; the README's third invite link grants it. The timeout
+  checks for it; the third invite link in docs/install.md grants it. The timeout
   parser compares against the plugin's injected clock, not the wall clock.
 - **Case files are a view, lazily created.** `configure forum` points at a
   forum or creates `#rapsheets` (hidden from @everyone, readable by the mod

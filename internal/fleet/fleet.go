@@ -21,8 +21,8 @@ import (
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
-// Perms is what merlin's plugins use between them: README's widest install
-// link (the base three, AI moderation's and rapsheet's), so cygnet can grant
+// Perms is what merlin's plugins use between them: docs/install.md's widest
+// install link (the base three, AI moderation's and rapsheet's), so cygnet can grant
 // the lot to a server she runs.
 //
 // ponytail: one constant, as merlin's plugins don't declare what they use;
