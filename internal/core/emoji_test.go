@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"image/png"
 	"os"
@@ -11,6 +12,9 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 // nameMethod is a plugin's Name, which is what its icon is looked up by.
@@ -100,25 +104,25 @@ func TestIconsAreOnTheirGrid(t *testing.T) {
 	}
 }
 
-type fakeEmojiSession struct {
-	have    []*discordgo.Emoji
+type fakeEmojiREST struct {
+	have    []discord.Emoji
 	created []string
 	failOn  string
 }
 
-func (f *fakeEmojiSession) ApplicationEmojis(string, ...discordgo.RequestOption) ([]*discordgo.Emoji, error) {
+func (f *fakeEmojiREST) GetApplicationEmojis(snowflake.ID, ...rest.RequestOpt) ([]discord.Emoji, error) {
 	return f.have, nil
 }
 
-func (f *fakeEmojiSession) ApplicationEmojiCreate(_ string, p *discordgo.EmojiParams, _ ...discordgo.RequestOption) (*discordgo.Emoji, error) {
-	if strings.HasPrefix(p.Name, f.failOn) && f.failOn != "" {
+func (f *fakeEmojiREST) CreateApplicationEmoji(_ snowflake.ID, c discord.EmojiCreate, _ ...rest.RequestOpt) (*discord.Emoji, error) {
+	if strings.HasPrefix(c.Name, f.failOn) && f.failOn != "" {
 		return nil, errors.New("refused")
 	}
-	if !strings.HasPrefix(p.Image, "data:image/png;base64,") {
-		return nil, errors.New("not a data URI")
+	if b, _ := json.Marshal(c.Image); !strings.HasPrefix(string(b), `"data:image/png;base64,`) {
+		return nil, errors.New("not a data URI: " + string(b))
 	}
-	f.created = append(f.created, p.Name)
-	return &discordgo.Emoji{ID: "new-" + p.Name, Name: p.Name}, nil
+	f.created = append(f.created, c.Name)
+	return &discord.Emoji{ID: snowflake.ID(1000 + len(f.created)), Name: c.Name}, nil
 }
 
 // The sync uploads only what is missing, and an icon it could not upload
@@ -134,14 +138,14 @@ func TestSyncEmojiCreatesOnlyWhatIsMissing(t *testing.T) {
 	}
 
 	all := Emojis()
-	f := &fakeEmojiSession{have: []*discordgo.Emoji{{ID: "old", Name: all[0].Name}}, failOn: "plugin_rotation"}
-	if err := SyncEmoji(f, "app"); err == nil {
+	f := &fakeEmojiREST{have: []discord.Emoji{{ID: 77, Name: all[0].Name}}, failOn: "plugin_rotation"}
+	if err := SyncEmoji(f, 2); err == nil {
 		t.Error("a refused upload was not reported")
 	}
 	if len(f.created) != len(all)-2 {
 		t.Errorf("created %d, want every icon but the one present and the one refused", len(f.created))
 	}
-	if got := PluginEmoji(strings.TrimPrefix(all[0].Key, "plugin_")); got != "<:"+all[0].Name+":old>" {
+	if got := PluginEmoji(strings.TrimPrefix(all[0].Key, "plugin_")); got != "<:"+all[0].Name+":77>" {
 		t.Errorf("existing emoji renders as %q", got)
 	}
 	if url, file := PluginIcon("rotation"); file == nil || !strings.HasPrefix(url, "attachment://") {
