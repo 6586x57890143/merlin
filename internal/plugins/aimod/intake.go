@@ -59,6 +59,16 @@ func (p *Plugin) HandleMessage(m discord.Message) {
 	if !p.scanning || m.GuildID == nil {
 		return
 	}
+	// Most guilds run with aimod off, and every message they send lands
+	// here. Answer that from the cached config before building a message
+	// view, so it costs a map read. Off skips everything handle does,
+	// including its debug line: a guild that scans nothing has no miss to
+	// explain.
+	if cs, ok := p.store.(*cachingStore); ok {
+		if mode, fresh := cs.cachedMode(*m.GuildID); fresh && mode == ModeOff {
+			return
+		}
+	}
 	p.handle(gatewayMessage(m))
 }
 

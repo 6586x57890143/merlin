@@ -2,8 +2,11 @@ package aimod
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/disgoorg/snowflake/v2"
 )
 
 // configTTL is how long a guild's config is reused before being re-read.
@@ -88,6 +91,21 @@ func (c *cachingStore) Config(ctx context.Context, guildID string) (Config, erro
 	c.entries[guildID] = cachedConfig{cfg: cfg, readAt: now}
 	c.mu.Unlock()
 	return cfg, nil
+}
+
+// cachedMode is the guild's mode from a fresh cached config, keyed on the
+// gateway's snowflake so the per-message path can drop a guild with aimod
+// off without formatting an ID. Indexing with string(key) of a stack buffer
+// does not allocate. A miss or a stale entry is not an answer: the caller
+// takes the ordinary path, which reads through.
+func (c *cachingStore) cachedMode(guildID snowflake.ID) (Mode, bool) {
+	var buf [20]byte
+	key := strconv.AppendUint(buf[:0], uint64(guildID), 10)
+	now := c.now()
+	c.mu.RLock()
+	e, ok := c.entries[string(key)]
+	c.mu.RUnlock()
+	return e.cfg.Mode, ok && now.Sub(e.readAt) < configTTL
 }
 
 func (c *cachingStore) invalidate(guildID string) {

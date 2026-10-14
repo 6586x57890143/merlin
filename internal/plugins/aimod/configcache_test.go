@@ -162,3 +162,36 @@ func TestReadErrorsAreNotCachedOrMasked(t *testing.T) {
 		t.Errorf("Config after recovery: %v", err)
 	}
 }
+
+// cachedMode is how HandleMessage drops a guild with aimod off unread, so
+// it must answer only from a fresh entry: a mode switched on by command, or
+// changed outside the process, has to reach the next message.
+func TestCachedModeAnswersOnlyFromAFreshEntry(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCaching(t)
+	if _, fresh := c.cachedMode(1); fresh {
+		t.Fatal("answered for a guild never read")
+	}
+	if err := c.Store.SetMode(ctx, "1", ModeOff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Config(ctx, "1"); err != nil {
+		t.Fatal(err)
+	}
+	if mode, fresh := c.cachedMode(1); !fresh || mode != ModeOff {
+		t.Fatalf("cachedMode = %q, %v; want off from the entry just read", mode, fresh)
+	}
+	if err := c.SetMode(ctx, "1", ModeEnforce); err != nil {
+		t.Fatal(err)
+	}
+	if _, fresh := c.cachedMode(1); fresh {
+		t.Fatal("still answered after SetMode invalidated the guild")
+	}
+	if _, err := c.Config(ctx, "1"); err != nil {
+		t.Fatal(err)
+	}
+	c.now = func() time.Time { return testNow.Add(configTTL) }
+	if _, fresh := c.cachedMode(1); fresh {
+		t.Fatal("answered from an entry past configTTL")
+	}
+}

@@ -14,9 +14,11 @@ func BenchmarkHandleMessageModeOff(b *testing.B) {
 	store := newFakeStore()
 	store.setConfig(Config{GuildID: "1", Mode: ModeOff})
 	p := testPlugin(b, store, nil, &fakeOps{}, &fakeAudit{})
+	p.store = NewCachingStore(store) // as cmd/bot wires it
 	gid := snowflake.ID(1)
 	m := discord.Message{ID: 1, GuildID: &gid, ChannelID: 2, Content: cleanMessages[1],
 		Author: discord.User{ID: 175928847299117063}}
+	p.HandleMessage(m) // reads the config through, as the guild's first message does
 	b.ReportAllocs()
 	for b.Loop() {
 		p.HandleMessage(m)
