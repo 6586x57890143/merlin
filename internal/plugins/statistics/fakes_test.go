@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+// bucketKey is a table cell as the store keys it, IDs as text.
+type bucketKey struct {
+	guildID, channelID, userID string
+	hour                       time.Time
+}
+
 // fakeStore is Store in memory, keyed the way the tables are, so the
 // counter, the backfill and the report can be exercised against exactly the
 // semantics the SQL has: additive live writes, replace-the-hour backfill

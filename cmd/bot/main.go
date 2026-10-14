@@ -321,12 +321,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry.Register(rapsheetPlugin)
 	// Channel names come off the gateway cache, the only piece of it this
 	// plugin reads; the counting itself is wired below.
-	statisticsPlugin := statistics.New(statistics.NewPostgresStore(db.Pool), settingsStore, func(guildID, channelID string) string {
-		id, err := snowflake.Parse(channelID)
-		if err != nil {
-			return ""
-		}
-		if ch, ok := gw.Caches.Channel(id); ok && ch.GuildID().String() == guildID {
+	statisticsPlugin := statistics.New(statistics.NewPostgresStore(db.Pool), settingsStore, func(guildID, channelID snowflake.ID) string {
+		if ch, ok := gw.Caches.Channel(channelID); ok && ch.GuildID() == guildID {
 			return ch.Name()
 		}
 		return ""
