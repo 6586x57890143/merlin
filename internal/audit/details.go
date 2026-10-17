@@ -1,14 +1,8 @@
 package audit
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
-
-	"github.com/disgoorg/disgo/discord"
-
-	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // item is one piece of a key=value detail: a pair, or (key "") a run of
@@ -22,9 +16,9 @@ type item struct{ key, val string }
 // which is the right shape for the durable row (greppable, and every
 // existing entry already has it) and the wrong one for a moderator reading
 // the channel: it wrapped into a single run-on line with the quoting and the
-// brackets left in. Parsing it at render time is the same split FormatActor
-// makes: the row stays machine-shaped and the embed reads as a layout, so no
-// stored row changes.
+// brackets left in. toEntry parses it into the ledger entry's fields, the
+// same split FormatActor makes: the strings stay as written in the row and
+// the card reads as fields.
 //
 // It is deliberately forgiving: words that are not a pair stay as prose in
 // their original order, a quoted value that does not unquote is left as
@@ -63,84 +57,6 @@ func parseDetail(v string) (items []item, ok bool) {
 	return items, ok
 }
 
-// readable is parseDetail flattened to one labelled line per pair, for the
-// Before/After columns, where there is no room for a grid.
-func readable(v string) string {
-	items, ok := parseDetail(v)
-	if !ok {
-		return v
-	}
-	lines := make([]string, 0, len(items))
-	for _, it := range items {
-		if it.key == "" {
-			lines = append(lines, it.val)
-		} else {
-			lines = append(lines, "**"+label(it.key)+"** "+it.val)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-// maxColumnText is the most visible text that fits a grid column on one
-// line. An audit embed with a thumbnail is about 400px wide on desktop, so a
-// third of it holds roughly this many characters; anything longer wraps into
-// a tall strip that drags its whole row out of line with the one above.
-const maxColumnText = 16
-
-// gridColumns is how many inline fields Discord puts in a row.
-const gridColumns = 3
-
-var (
-	maskedLink = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
-	mentionTag = regexp.MustCompile(`<(?:@&?|#)\d+>`)
-)
-
-// visibleLen estimates how wide a value renders: a masked link shows only
-// its text, and a mention shows as a pill of roughly a name's width.
-func visibleLen(v string) int {
-	v = maskedLink.ReplaceAllString(v, "$1")
-	v = mentionTag.ReplaceAllString(v, "@abcdefghij")
-	return utf8.RuneCountInString(v)
-}
-
-// gridLayout turns a detail into the embed's description and fields.
-//
-// The reason is the sentence a moderator actually reads, so it leads, as a
-// quote in the description beside the mood icon; prose goes there too. The
-// lead fields (the actor) and every short pair form a grid, padded to whole
-// rows: Discord divides each row by the number of inline fields in it, so a
-// row of two is split in halves under a row split in thirds and nothing
-// lines up. Values too wide for a column go underneath at full width, where
-// they read on one line and cannot pull the grid above out of line.
-func gridLayout(lead []discord.EmbedField, items []item) (description string, fields []discord.EmbedField) {
-	var desc []string
-	var wide []discord.EmbedField
-	grid := lead
-	for i := range grid {
-		grid[i].Inline = core.Inline()
-	}
-	for _, it := range items {
-		switch it.key {
-		case "":
-			desc = append(desc, it.val)
-		case "reason":
-			desc = append(desc, "> "+strings.ReplaceAll(it.val, "\n", "\n> "))
-		default:
-			f := discord.EmbedField{Name: label(it.key), Value: core.TruncateEmbedField(it.val)}
-			if visibleLen(it.val) <= maxColumnText && !strings.Contains(it.val, "\n") {
-				f.Inline = core.Inline()
-				grid = append(grid, f)
-			} else {
-				wide = append(wide, f)
-			}
-		}
-	}
-	for len(grid)%gridColumns != 0 {
-		grid = append(grid, discord.EmbedField{Name: "\u200b", Value: "\u200b", Inline: core.Inline()})
-	}
-	return core.TruncateEmbedDescription(strings.Join(desc, "\n")), append(grid, wide...)
-}
-
 // pair reads one key=value token off the front of s, returning how many bytes
 // it consumed. Values are a Go-quoted string (what %q wrote), a bracketed
 // list (what %v of a slice, or "[%s]" of MentionRoles, wrote), or a bare word.
@@ -177,21 +93,4 @@ func pair(s string) (key, val string, n int, ok bool) {
 		val, _, _ = strings.Cut(rest, " ")
 		return key, val, i + 1 + len(val), true
 	}
-}
-
-// labels covers the keys whose mechanical rendering would mislead or read
-// badly. Everything else is de-underscored, the same fallback humanize gives
-// actions.
-var labels = map[string]string{
-	"user":               "Member",
-	"restored":           "Roles restored",
-	"unmanageable_roles": "Kept (merlin can't remove)",
-	"linked_to":          "Linked to",
-}
-
-func label(key string) string {
-	if l, ok := labels[key]; ok {
-		return l
-	}
-	return upperFirst(strings.ReplaceAll(key, "_", " "))
 }
