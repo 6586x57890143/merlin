@@ -209,7 +209,8 @@ func moodOf(m meta) ledger.Mood {
 var moduleIcons = map[string]string{"archive": "rotation", "channel": "rotation", "config": "adminconfig"}
 
 // brand is how merlin's cards look: her name, each plugin's icon, her
-// palette.
+// palette, her face for the mood and her rule, which keeps every card the
+// one width the embeds were.
 var brand = ledger.Brand{
 	Name: bird,
 	Emoji: func(module string) string {
@@ -231,4 +232,14 @@ var brand = ledger.Brand{
 		}
 		return core.ColorInfo
 	},
+	Thumbnail: func(m ledger.Mood) string { return core.MoodURL(faces[m]) },
+	Rule:      core.RuleURL,
+}
+
+// faces is which drawing of merlin each ledger mood wears, the same six the
+// embeds carried: danger wears the error face, as the error colour always
+// did.
+var faces = map[ledger.Mood]core.Mood{
+	ledger.MoodOK: core.MoodOK, ledger.MoodInfo: core.MoodInfo, ledger.MoodWarn: core.MoodWarn,
+	ledger.MoodError: core.MoodError, ledger.MoodDanger: core.MoodError, ledger.MoodIdle: core.MoodIdle,
 }

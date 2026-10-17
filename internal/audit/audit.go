@@ -93,6 +93,7 @@ func (w *Writer) post(_ context.Context, guildID string, card discord.ContainerC
 	}
 	msg, err := w.rest.CreateMessage(channelID, discord.MessageCreate{
 		Components:      []discord.LayoutComponent{card},
+		Files:           core.CardUploads(card),
 		Flags:           discord.MessageFlagIsComponentsV2,
 		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
 	})
@@ -107,7 +108,11 @@ func (w *Writer) edit(_ context.Context, _ string, ref string, card discord.Cont
 	ch, msg, _ := strings.Cut(ref, "/")
 	components := []discord.LayoutComponent{card}
 	if _, err := w.rest.UpdateMessage(core.ID(ch), core.ID(msg), discord.MessageUpdate{
-		Components:      &components,
+		Components: &components,
+		// Replaced, not added to: an edit that only uploaded would pile
+		// another copy of each image onto the message every time it grew.
+		Files:           core.CardUploads(card),
+		Attachments:     &[]discord.AttachmentUpdate{},
 		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
 	}); err != nil {
 		return fmt.Errorf("audit: edit card: %w", err)
