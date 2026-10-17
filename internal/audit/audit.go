@@ -1,19 +1,23 @@
-// Package audit implements core.AuditWriter: every config/state change gets
-// written to an append-only DB table and posted as an embed to the guild's
-// #bird-audit-log channel (spec.MD Design Principle 4, "config changes are
-// audited, not silent").
+// Package audit implements core.AuditWriter: every config or state change is
+// one entry in the guild's ledger chain (audit_log, cygnet/ledger) and one
+// card in its log channel (spec.MD Design Principle 4, "config changes are
+// audited, not silent"). A run of the same action by the same actor shares
+// a card that edits itself as it grows, so a jail of five members or a sweep
+// of three archives is one card in the channel and five or three rows here.
 package audit
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
-	"github.com/disgoorg/snowflake/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/6586x57890143/cygnet/ledger"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -41,70 +45,72 @@ const (
 // Writer implements core.AuditWriter.
 type Writer struct {
 	pool     *pgxpool.Pool
+	store    *Store
 	rest     rest.Rest
 	settings channelResolver
+	cards    *ledger.Batcher
+	now      func() time.Time
 }
 
 func New(pool *pgxpool.Pool, r rest.Rest, settings channelResolver) *Writer {
-	return &Writer{pool: pool, rest: r, settings: settings}
+	w := &Writer{pool: pool, store: NewStore(pool), rest: r, settings: settings, now: time.Now}
+	w.cards = &ledger.Batcher{Brand: brand, Post: w.post, Edit: w.edit, Now: func() time.Time { return w.now() }}
+	return w
 }
 
-// Record inserts an append-only audit_log row and posts a matching embed to
-// the guild's configured AuditLogChannelID. Both the DB write and the
-// Discord post must succeed for a nil error, but the DB row (the actual
-// durable audit trail spec.MD Design Principle 4 requires) is written
-// first and independently of the embed post. Callers should log a non-nil
-// error and continue rather than fail the action that triggered it: a
-// missing/deleted #bird-audit-log channel means the live notification was
-// missed, not that the underlying action (or the audit trail itself) failed.
-// See every call site (rotation/execute.go, sweep.go, adminconfig.go,
-// rotation/configure.go) for the consistent policy this implies.
+// Record writes one entry to the guild's chain and shows it in the guild's
+// log channel. Both must succeed for a nil error, but the row (the durable
+// trail spec.MD Design Principle 4 requires) is written first and
+// independently of the card. Callers log a non-nil error and carry on
+// rather than fail the action that triggered it: a missing or deleted log
+// channel means the live notice was missed, not that the action or its
+// record failed. Every call site follows that policy.
 func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue, newValue string) error {
-	if _, err := w.pool.Exec(ctx, `
-		INSERT INTO audit_log (guild_id, actor_id, action, old_value, new_value)
-		VALUES ($1, $2, $3, $4, $5)
-	`, guildID, actorID, action, oldValue, newValue); err != nil {
-		return fmt.Errorf("audit: record: %w", err)
+	e := toEntry(guildID, actorID, action, oldValue, newValue, w.now().UTC())
+	r, err := w.store.appendRaw(ctx, e, oldValue, newValue)
+	if err != nil {
+		return err
 	}
+	return w.cards.Add(ctx, r.Entry)
+}
 
+// post sends a new card to guildID's log channel and returns
+// "<channel>/<message>", which is what edit needs back.
+//
+// Sent on the raw REST client rather than through discordguard, on purpose.
+// The guard refuses writes when a guild is paused or in dry-run, which
+// would silence the log at exactly the moment somebody hit the emergency
+// stop and most wants to know what the bot is doing, and would guarantee
+// the rotation.dryrun and archive.dryrun entries (which exist because the
+// guild is in dry-run) were never posted. This is a record of what
+// happened, not an action, and it is not the guard's to refuse. So
+// AllowedMentions is spelled out as an empty parse list here: the card
+// mentions members by design and must ping none of them.
+func (w *Writer) post(_ context.Context, guildID string, card discord.ContainerComponent) (string, error) {
 	channelID := core.ID(w.settings.AuditLogChannelID(guildID))
 	if channelID == 0 {
-		return fmt.Errorf("audit: guild %s has no audit log channel configured", guildID)
+		return "", fmt.Errorf("audit: guild %s has no audit log channel configured", guildID)
 	}
-
-	// No embed timestamp, matching core.Embed: it only ever repeated the
-	// clock Discord already draws on the message itself. The audit trail's
-	// real timestamp is the row written above, which is the copy that
-	// survives the channel being deleted.
-	return w.post(channelID, buildEmbed(actorID, action, oldValue, newValue))
+	msg, err := w.rest.CreateMessage(channelID, discord.MessageCreate{
+		Components:      []discord.LayoutComponent{card},
+		Flags:           discord.MessageFlagIsComponentsV2,
+		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("audit: post card: %w", err)
+	}
+	return channelID.String() + "/" + msg.ID.String(), nil
 }
 
-// post sends one audit embed to channelID.
-func (w *Writer) post(channelID snowflake.ID, embed discord.Embed) error {
-	// Sent on the raw REST client rather than through discordguard, deliberately.
-	// The guard refuses writes when a guild is paused or in dry-run, which
-	// would mean the audit trail goes silent at exactly the moment somebody
-	// has hit the emergency stop and most wants to know what the bot is
-	// doing. Worse, the rotation.dryrun and archive.dryrun records exist
-	// *because* the guild is in dry-run, so routing them through the guard
-	// would guarantee they were never posted. This is a record of what
-	// happened, not an action, and it is not the guard's to refuse.
-	//
-	// AllowedMentions is therefore an explicit empty parse list, the same
-	// way the guard's sends are and for the same reason: old/new
-	// values interpolate guild-supplied text (channel names, sticky content,
-	// jail reasons) and now carry mentions by design. Mentions inside an
-	// embed do not notify anyone in any case, so this is belt and braces on
-	// a policy the codebase states absolutely.
-	//
-	// Files carries the mood thumbnail the embed points at; without it the
-	// attachment:// URL points at nothing and renders as a broken frame.
-	if _, err := w.rest.CreateMessage(channelID, discord.MessageCreate{
-		Embeds:          []discord.Embed{embed},
-		Files:           core.EmbedUploads(embed),
+// edit replaces the card post returned ref for.
+func (w *Writer) edit(_ context.Context, _ string, ref string, card discord.ContainerComponent) error {
+	ch, msg, _ := strings.Cut(ref, "/")
+	components := []discord.LayoutComponent{card}
+	if _, err := w.rest.UpdateMessage(core.ID(ch), core.ID(msg), discord.MessageUpdate{
+		Components:      &components,
 		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
 	}); err != nil {
-		return fmt.Errorf("audit: post embed: %w", err)
+		return fmt.Errorf("audit: edit card: %w", err)
 	}
 	return nil
 }

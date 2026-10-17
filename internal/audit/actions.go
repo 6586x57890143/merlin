@@ -4,8 +4,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/disgoorg/disgo/discord"
-
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
@@ -229,48 +227,4 @@ func upperFirst(s string) string {
 	r := []rune(s)
 	r[0] = unicode.ToUpper(r[0])
 	return string(r)
-}
-
-// buildEmbed renders one audit entry.
-//
-// Pure, and separate from Record's database write and Discord send, so the
-// parts most likely to be got wrong (titles, colours, actor rendering and
-// truncation) can be asserted without either.
-func buildEmbed(actorID, action, oldValue, newValue string) discord.Embed {
-	m := metaFor(action)
-	embed := core.Embed(m.color, m.title, "")
-	if m.mood != core.MoodNone {
-		core.SetMood(&embed, m.mood)
-	}
-
-	embed.Fields = []discord.EmbedField{
-		{Name: "Actor", Value: core.FormatActor(actorID), Inline: core.Inline()},
-	}
-
-	// Truncated because an embed field over 1024 bytes doesn't get trimmed by
-	// Discord, it fails the entire message, so a single long value (a sweep
-	// listing many channel IDs, a rotation config with a long sticky) would
-	// silently cost the guild its live audit notification for that action.
-	// The durable row is already written in full and is unaffected.
-	if items, ok := parseDetail(newValue); ok && oldValue == "" {
-		embed.Description, embed.Fields = gridLayout(embed.Fields, items)
-		return embed
-	}
-	oldValue, newValue = readable(oldValue), readable(newValue)
-	switch {
-	case oldValue != "" && newValue != "":
-		embed.Fields = append(embed.Fields,
-			discord.EmbedField{Name: "Before", Value: core.TruncateEmbedField(oldValue), Inline: core.Inline()},
-			discord.EmbedField{Name: "After", Value: core.TruncateEmbedField(newValue), Inline: core.Inline()},
-		)
-	case newValue != "":
-		// Not inline: with nothing to sit beside, a half-width field just
-		// leaves a gap, and these carry the detail worth reading.
-		embed.Fields = append(embed.Fields,
-			discord.EmbedField{Name: "Details", Value: core.TruncateEmbedField(newValue)})
-	case oldValue != "":
-		embed.Fields = append(embed.Fields,
-			discord.EmbedField{Name: "Removed", Value: core.TruncateEmbedField(oldValue)})
-	}
-	return embed
 }
