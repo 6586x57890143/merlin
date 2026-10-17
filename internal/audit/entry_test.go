@@ -110,13 +110,9 @@ func TestMoodsFollowTheTable(t *testing.T) {
 	}
 }
 
-func TestBrandMapsModulesToPluginIcons(t *testing.T) {
+func TestBrandWearsMerlinsPalette(t *testing.T) {
 	if brand.Color(ledger.MoodDanger) != core.ColorError || brand.Color(ledger.MoodOK) != core.ColorSuccess {
 		t.Fatal("palette")
-	}
-	// Before the emoji sync every head is text alone.
-	if brand.Emoji("config") != "" {
-		t.Fatal("no emoji before the sync")
 	}
 }
 

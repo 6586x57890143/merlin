@@ -86,15 +86,15 @@ func (w *Writer) Record(ctx context.Context, guildID, actorID, action, oldValue,
 // happened, not an action, and it is not the guard's to refuse. So
 // AllowedMentions is spelled out as an empty parse list here: the card
 // mentions members by design and must ping none of them.
-func (w *Writer) post(_ context.Context, guildID string, card discord.ContainerComponent) (string, error) {
+func (w *Writer) post(_ context.Context, guildID string, card ledger.Card) (string, error) {
 	channelID := core.ID(w.settings.AuditLogChannelID(guildID))
 	if channelID == 0 {
 		return "", fmt.Errorf("audit: guild %s has no audit log channel configured", guildID)
 	}
 	msg, err := w.rest.CreateMessage(channelID, discord.MessageCreate{
-		Components:      []discord.LayoutComponent{card},
-		Files:           core.CardUploads(card),
-		Flags:           discord.MessageFlagIsComponentsV2,
+		Embeds:          []discord.Embed{card.Embed},
+		Components:      rows(card),
+		Files:           core.EmbedUploads(card.Embed),
 		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
 	})
 	if err != nil {
@@ -104,20 +104,30 @@ func (w *Writer) post(_ context.Context, guildID string, card discord.ContainerC
 }
 
 // edit replaces the card post returned ref for.
-func (w *Writer) edit(_ context.Context, _ string, ref string, card discord.ContainerComponent) error {
+func (w *Writer) edit(_ context.Context, _ string, ref string, card ledger.Card) error {
 	ch, msg, _ := strings.Cut(ref, "/")
-	components := []discord.LayoutComponent{card}
+	components := rows(card)
 	if _, err := w.rest.UpdateMessage(core.ID(ch), core.ID(msg), discord.MessageUpdate{
+		Embeds:     &[]discord.Embed{card.Embed},
 		Components: &components,
 		// Replaced, not added to: an edit that only uploaded would pile
 		// another copy of each image onto the message every time it grew.
-		Files:           core.CardUploads(card),
+		Files:           core.EmbedUploads(card.Embed),
 		Attachments:     &[]discord.AttachmentUpdate{},
 		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
 	}); err != nil {
 		return fmt.Errorf("audit: edit card: %w", err)
 	}
 	return nil
+}
+
+// rows is the card's buttons as the message's components, empty when it has
+// none (an edit sends it as is, clearing a row the card no longer has).
+func rows(card ledger.Card) []discord.LayoutComponent {
+	if card.Buttons == nil {
+		return []discord.LayoutComponent{}
+	}
+	return []discord.LayoutComponent{*card.Buttons}
 }
 
 // StartRetention prunes audit_log past auditRetention until ctx is
