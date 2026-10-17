@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/disgoorg/disgo/discord"
 
@@ -283,9 +282,10 @@ func (p *Plugin) record(ctx context.Context, ix *core.Ix, action, name string) {
 	}
 }
 
-// grid is a plugin's commands as a code block: each command, its
+// grid is a plugin's commands, one a line: each command in bold, its
 // subcommands branching below it, and who may run each when that isn't
-// everyone. Kept narrow, since a phone fits about 32 columns of code block.
+// everyone. Plain lines, not a code block, which is for what somebody
+// copies; a branch line stays short enough never to wrap.
 func (p *Plugin) grid(plugin string) string {
 	var rows [][2]string
 	for _, cmd := range p.commands.CommandsOf(plugin) {
@@ -301,10 +301,10 @@ func (p *Plugin) grid(plugin string) string {
 			}
 		}
 		if len(leaves) == 0 {
-			rows = append(rows, [2]string{"/" + cmd.Name, tierWord(p.commands.LeafTier(cmd.Name, ""))})
+			rows = append(rows, [2]string{"**/" + cmd.Name + "**", tierWord(p.commands.LeafTier(cmd.Name, ""))})
 			continue
 		}
-		rows = append(rows, [2]string{"/" + cmd.Name, ""})
+		rows = append(rows, [2]string{"**/" + cmd.Name + "**", ""})
 		for n, leaf := range leaves {
 			branch := "├ "
 			if n == len(leaves)-1 {
@@ -313,24 +313,14 @@ func (p *Plugin) grid(plugin string) string {
 			rows = append(rows, [2]string{branch + leaf, tierWord(p.commands.LeafTier(cmd.Name, strings.ReplaceAll(leaf, " ", "/")))})
 		}
 	}
-	if len(rows) == 0 {
-		return ""
-	}
-	width := 0
+	lines := make([]string, 0, len(rows))
 	for _, r := range rows {
-		width = max(width, utf8.RuneCountInString(r[0]))
-	}
-	var b strings.Builder
-	b.WriteString("```\n")
-	for _, r := range rows {
-		if r[1] == "" {
-			b.WriteString(r[0] + "\n")
-			continue
+		if r[1] != "" {
+			r[0] += " · " + r[1]
 		}
-		b.WriteString(r[0] + strings.Repeat(" ", width+2-utf8.RuneCountInString(r[0])) + r[1] + "\n")
+		lines = append(lines, r[0])
 	}
-	b.WriteString("```")
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 func tierWord(t core.PermTier) string {

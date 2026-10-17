@@ -60,7 +60,7 @@ func TestCardsPingNobodyAndEditInPlace(t *testing.T) {
 	if !strings.Contains(edit, `"attachments":[]`) {
 		t.Errorf("an edit must replace the attachments:\n%s", edit)
 	}
-	for _, want := range []string{"PATCH /api/v10/channels/2/messages/9", `"allowed_mentions":{"parse":[]`, "roles · 2", `\u003c@98\u003e`} {
+	for _, want := range []string{"PATCH /api/v10/channels/2/messages/9", `"allowed_mentions":{"parse":[]`, "member jailed · 2**", `\u003c@98\u003e`} {
 		if !strings.Contains(edit, want) {
 			t.Errorf("edit lacks %s:\n%s", want, edit)
 		}
