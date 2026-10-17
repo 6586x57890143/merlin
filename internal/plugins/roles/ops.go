@@ -65,6 +65,9 @@ type DiscordMemberOps interface {
 	// configured exceptions.
 	GetChannel(channelID snowflake.ID) (discord.Channel, error)
 	GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel, error)
+	// GetAuditLog is read only by clearLeftoverMemberOverwrites, to tell a
+	// member deny merlin wrote from one a mod set by hand.
+	GetAuditLog(guildID, userID snowflake.ID, action discord.AuditLogEvent, before, after snowflake.ID, limit int) (*discord.AuditLog, error)
 	UpdatePermissionOverwrite(channelID, targetID snowflake.ID, u discord.PermissionOverwriteUpdate) error
 	DeletePermissionOverwrite(channelID, targetID snowflake.ID) error
 }

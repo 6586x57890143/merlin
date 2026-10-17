@@ -392,3 +392,34 @@ func TestHandleMemberJoinIgnoresAnExpiredJail(t *testing.T) {
 		t.Error("re-jailed a member whose sentence had already expired")
 	}
 }
+
+// One rejoin is answered once. A mod taking the marker off afterwards, with
+// no newer join, is a hand release: before JailedAt moved on re-apply, the
+// old join stayed "later than the jail" and the sweep put the marker back
+// every tick, one audit entry each.
+func TestRejoinIsReappliedOnceNotEverySweep(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMemberJoined("7000001", "7000102", nil, fixedNow.Add(-time.Minute))
+	store := newFakeStore()
+	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
+		t.Fatal(err)
+	}
+	audit := newFakeAudit()
+	p := newTestPlugin(ops, store, newFakeSettings(), audit, newFakePerms(), newFakeScheduler())
+
+	for range 3 {
+		if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
+			t.Fatal(err)
+		}
+		ops.setMemberJoined("7000001", "7000102", nil, fixedNow.Add(-time.Minute)) // a mod takes it off again
+	}
+	reapplied := 0
+	for _, r := range audit.records {
+		if r.action == "roles.jail_reapplied" {
+			reapplied++
+		}
+	}
+	if reapplied != 1 {
+		t.Fatalf("re-applied %d times, want once", reapplied)
+	}
+}

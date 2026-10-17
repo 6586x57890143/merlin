@@ -146,6 +146,11 @@ type fakeOps struct {
 	// in for a Discord outage or missing permission mid-fan-out.
 	guildChannelsErr error
 
+	// auditLog is what GetAuditLog answers (filtered by action type);
+	// auditLogErr fails it, standing in for a missing View Audit Log.
+	auditLog    []discord.AuditLogEntry
+	auditLogErr error
+
 	// permSetCalls/permDeleteCalls count permission writes, which is what a
 	// guild's Discord audit log gets one entry per: the no-op-skip tests
 	// assert on these, not just on the resulting overwrites.
@@ -486,6 +491,21 @@ func (f *fakeOps) GetChannel(channelID snowflake.ID) (discord.Channel, error) {
 	return ch.Disgo(), nil
 }
 
+func (f *fakeOps) GetAuditLog(guildID, userID snowflake.ID, action discord.AuditLogEvent, before, after snowflake.ID, limit int) (*discord.AuditLog, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.auditLogErr != nil {
+		return nil, f.auditLogErr
+	}
+	var out []discord.AuditLogEntry
+	for _, e := range f.auditLog {
+		if e.ActionType == action && e.UserID == userID {
+			out = append(out, e)
+		}
+	}
+	return &discord.AuditLog{AuditLogEntries: out}, nil
+}
+
 func (f *fakeOps) GetGuildChannels(guildID snowflake.ID) ([]discord.GuildChannel, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -675,6 +695,19 @@ func (f *fakeStore) TransferJail(ctx context.Context, guildID, userID, jailRoleI
 	}
 	// Mirrors the real UPDATE: marker and release_at only, never the snapshot.
 	rec.JailRoleID, rec.ReleaseAt = jailRoleID, releaseAt
+	f.jails[key] = rec
+	return nil
+}
+
+func (f *fakeStore) MarkJailApplied(ctx context.Context, guildID, userID string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := jailKey(guildID, userID)
+	rec, ok := f.jails[key]
+	if !ok {
+		return fmt.Errorf("fake store: mark jail applied for %s: %w", userID, ErrNotJailed)
+	}
+	rec.JailedAt = at
 	f.jails[key] = rec
 	return nil
 }

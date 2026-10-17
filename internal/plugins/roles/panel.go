@@ -207,7 +207,7 @@ func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID strin
 	case "join":
 		note = p.setJoinRoles(ctx, ix)
 	case "sync":
-		note = p.syncChannels(ix.GuildID)
+		note = p.syncChannels(ctx, ix.GuildID)
 	case "on", "off":
 		note = p.setScript(ctx, ix, arg, verb == "on")
 	case "eternal":
@@ -426,8 +426,9 @@ func (p *Plugin) setJoinRoles(ctx context.Context, ix *core.Ix) string {
 }
 
 // syncChannels recomputes every channel for the jail role (creating it if
-// the guild has none) and the island's.
-func (p *Plugin) syncChannels(guildID string) string {
+// the guild has none) and the island's, and clears member-level denies an
+// older release left behind (clearLeftoverMemberOverwrites).
+func (p *Plugin) syncChannels(ctx context.Context, guildID string) string {
 	jailRoleID, err := p.resolveJailRole(guildID)
 	if err != nil {
 		return fmt.Sprintf("✗ Failed to resolve jail role: %v", err)
@@ -439,7 +440,14 @@ func (p *Plugin) syncChannels(guildID string) string {
 	if syncErr != nil {
 		return fmt.Sprintf("✗ Sync completed with errors: %v", syncErr)
 	}
-	return "✓ Channels synced: every channel's jail and vacation visibility matches the lists."
+	note := "✓ Channels synced: every channel's jail and vacation visibility matches the lists."
+	switch n, err := p.clearLeftoverMemberOverwrites(ctx, guildID); {
+	case err != nil:
+		note += fmt.Sprintf("\n! Could not check for leftover member overwrites from old jails (merlin needs View Audit Log): %v", err)
+	case n > 0:
+		note += fmt.Sprintf("\nAlso removed %d member overwrite(s) old jails had left on members since released.", n)
+	}
+	return note
 }
 
 // setScript turns a script on or off. Turning one on runs its first

@@ -7,13 +7,14 @@ import (
 	"sync"
 
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // channelSyncConcurrency bounds how many permission-overwrite writes run at
 // once during a guild-wide resync (syncAllJailChannelOverwrites,
-// syncMemberJailOverwrites, clearMemberJailOverwrites). Each channel has its
+// clearMemberJailOverwrites). Each channel has its
 // own Discord rate-limit bucket for permission writes, so concurrent writes
 // to different channels don't contend with each other; this cap exists only
 // to keep a large guild's fan-out well clear of Discord's global per-bot
@@ -285,6 +286,35 @@ func desiredOverwrite(ch discord.GuildChannel, roleID string, allowed bool, base
 	return allow, deny, withheld, allow != existing.Allow || deny != existing.Deny
 }
 
+// markerOverwrite is desiredOverwrite plus the one question it cannot ask
+// without the guild: does a room the marker may not see need a deny at all?
+// Not when the channel's own @everyone overwrite already denies those bits,
+// which is how a gated guild (the Melting Pot: @everyone sees nothing,
+// melted sees the server) is built. A jailed member holds @everyone and the
+// marker, never the member role (jail strips it and the join-role script
+// will not hand it back), so @everyone's deny already hides the room and a
+// marker deny on top is one more overwrite on every channel saying nothing.
+// Where one is already there in exactly the shape merlin writes, it is
+// removed (allow and deny both zero, which applyOverwrite reads as delete);
+// one the guild changed is left as it is.
+//
+// Only a channel-level @everyone deny counts. A guild whose @everyone simply
+// lacks View at guild level keeps the deny, since a role a jailed member
+// keeps (one above merlin, a booster role) could carry View guild wide and a
+// channel-level deny is what still stops it.
+func markerOverwrite(guildID string, ch discord.GuildChannel, roleID string, allowed bool, baseline discord.Permissions) (allow, deny, withheld discord.Permissions, needed bool) {
+	if !allowed {
+		_, wantDeny := jailOverwriteFor(ch.Type(), false)
+		if ow := findOverwrite(ch, guildID, discord.PermissionOverwriteTypeRole); ow != nil && ow.Deny&wantDeny == wantDeny {
+			existing := findOverwrite(ch, roleID, discord.PermissionOverwriteTypeRole)
+			visibility := jailDenyFor(discord.ChannelTypeGuildVoice)
+			mine := existing != nil && existing.Allow == 0 && existing.Deny != 0 && existing.Deny&^visibility == 0
+			return 0, 0, 0, mine
+		}
+	}
+	return desiredOverwrite(ch, roleID, allowed, baseline)
+}
+
 // visibilityMarker is one role whose channel visibility this plugin
 // manages deny-by-default against an allowlist: the jail marker, or the
 // vacation script's island role. Same sync, different list.
@@ -310,23 +340,8 @@ func idSet(ids []string) map[string]bool {
 	return out
 }
 
-// overwriteMatches reports whether ch already carries exactly the overwrite
-// we were about to write. Every permission write lands in the guild's own
-// Discord audit log, so a resync of a large guild that changed nothing still
-// buried a moderator's real entries under one line per channel, and
-// re-running /roles configure sync-channels did it again. The channel list
-// these paths already fetch carries the live overwrites, so skipping the
-// no-op writes costs no extra API call and nothing in correctness: a write
-// that sets what is already set is not a write worth making.
-func overwriteMatches(ch discord.GuildChannel, targetID string, kind discord.PermissionOverwriteType, allow, deny discord.Permissions) bool {
-	ow := findOverwrite(ch, targetID, kind)
-	return ow != nil && ow.Allow == allow && ow.Deny == deny
-}
-
 // findOverwrite returns ch's overwrite for one target, or nil when it has
-// none. Nil is the answer clearMemberJailOverwrites needs: deleting an
-// overwrite that is not there is a wasted call that still writes an audit
-// entry.
+// none.
 func findOverwrite(ch discord.GuildChannel, targetID string, kind discord.PermissionOverwriteType) *core.Overwrite {
 	for _, ow := range core.Overwrites(ch.PermissionOverwrites()) {
 		if ow.Type == kind && ow.ID.String() == targetID {
@@ -365,125 +380,129 @@ func (p *Plugin) syncChannelVisibility(guildID string, m visibilityMarker, chann
 		return 0, fmt.Errorf("roles: list guild roles: %w", err)
 	}
 	baseline := memberBaseline(guildID, p.jailChannelConfig.MemberRoleID(guildID), ch, roles)
-	allowBits, denyBits, withheld, needed := desiredOverwrite(ch, m.roleID, m.allowed[channelID], baseline)
+	allowBits, denyBits, withheld, needed := markerOverwrite(guildID, ch, m.roleID, m.allowed[channelID], baseline)
 	if !needed {
 		return withheld, nil
 	}
-	if err := setOverwrite(p.ops(guildID), ch.ID(), core.ID(m.roleID), discord.PermissionOverwriteTypeRole, allowBits, denyBits); err != nil {
+	if err := applyOverwrite(p.ops(guildID), ch, m.roleID, allowBits, denyBits); err != nil {
 		return withheld, fmt.Errorf("roles: set %s overwrite on %s: %w", m.name, channelID, err)
 	}
 	return withheld, nil
 }
 
-// channelHasConflictingRoleAllow reports whether some role other than
-// @everyone has an explicit channel-level overwrite allowing a permission
-// deny is supposed to remove. Discord resolves conflicting role-tier
-// overwrites by combining every held role's deny bits, then every held
-// role's allow bits, applying deny then allow: an allow from any other role
-// beats the Jailed role's deny on the same channel, regardless of role
-// position ("permissions do not obey the role hierarchy" for this
-// resolution, per Discord's own docs). A member-tier overwrite is applied
-// after all role-tier overwrites and cannot be beaten by any role, which is
-// what syncMemberJailOverwrites adds, and only where it's actually needed:
-// a channel with no conflicting role overwrite is already correctly denied
-// by the Jailed role's own overwrite alone.
-//
-// everyoneRoleID is guildID itself: Discord gives the @everyone role the
-// same ID as the guild. Not scoped to one specific "access role" by design:
-// this catches any role with a conflicting allow, present now or granted
-// later by anything (a guild's Onboarding flow, a manual grant, a future
-// misconfiguration), not just whichever role happens to be causing trouble
-// today.
-func channelHasConflictingRoleAllow(ch discord.GuildChannel, everyoneRoleID string, deny discord.Permissions) bool {
-	for _, ow := range core.Overwrites(ch.PermissionOverwrites()) {
-		if ow.Type != discord.PermissionOverwriteTypeRole || ow.ID.String() == everyoneRoleID {
-			continue
-		}
-		if ow.Allow&deny != 0 {
-			return true
-		}
+// applyOverwrite writes what markerOverwrite asked for: the pair, or, when
+// it asked for nothing at all, the removal of the marker's overwrite.
+func applyOverwrite(ops DiscordMemberOps, ch discord.GuildChannel, roleID string, allow, deny discord.Permissions) error {
+	if allow == 0 && deny == 0 {
+		return ops.DeletePermissionOverwrite(ch.ID(), core.ID(roleID))
 	}
-	return false
+	return setOverwrite(ops, ch.ID(), core.ID(roleID), discord.PermissionOverwriteTypeRole, allow, deny)
 }
 
-// atRiskJailChannels returns guildID's jail-managed, non-allowlisted
-// channels that actually have a conflicting role-level allow overwrite (see
-// channelHasConflictingRoleAllow). In practice this is a small subset of a
-// guild's channels, since most channels carry no per-role overwrites at
-// all, which is what keeps syncMemberJailOverwrites cheap: it only ever
-// writes to channels where a member-tier overwrite is the sole thing that
-// can actually stop a competing role's allow from beating the Jailed role's
-// deny.
-func (p *Plugin) atRiskJailChannels(guildID string) ([]discord.GuildChannel, error) {
+// jailMemberShape reports whether ow is the member-level deny older
+// versions of merlin wrote for a jailed member on ch: no allow, and exactly
+// jailDenyFor's bits. That hardening existed because a guild's Onboarding
+// flow could hand a jailed member back a role whose channel allow beat the
+// marker's deny. Onboarding is gone, merlin hands out the member role itself
+// (script_joinrole.go, which yields to jail), and HandleMemberUpdate strips
+// anything regranted, so nothing writes these any more. What is left is
+// cleaning up the ones still out there.
+func jailMemberShape(ch discord.GuildChannel, ow core.Overwrite) bool {
+	return ow.Type == discord.PermissionOverwriteTypeMember && ow.Allow == 0 && ow.Deny == jailDenyFor(ch.Type())
+}
+
+// clearMemberJailOverwrites removes userID's leftover member-level jail deny
+// from every jail-managed channel, on release and on a transfer out of jail.
+// Every channel, not the ones that look at risk today: the old version
+// recomputed "at risk" at release time, so a channel whose conflicting role
+// allow (or allowlist entry) changed while the member was jailed kept its
+// member deny forever, which is how released members stayed locked out.
+// Finding none costs the one channel list read and nothing else.
+func (p *Plugin) clearMemberJailOverwrites(guildID, userID string) error {
 	channels, err := p.ops(guildID).GetGuildChannels(core.ID(guildID))
 	if err != nil {
-		return nil, fmt.Errorf("roles: list guild channels: %w", err)
+		return fmt.Errorf("roles: list guild channels: %w", err)
 	}
-	allowed := make(map[string]bool)
-	for _, id := range p.jailChannelConfig.JailAllowedChannelIDs(guildID) {
-		allowed[id] = true
-	}
-
-	var out []discord.GuildChannel
+	var targets []discord.GuildChannel
 	for _, ch := range channels {
-		if !jailManagedChannelType(ch.Type()) || allowed[ch.ID().String()] {
-			continue
-		}
-		if channelHasConflictingRoleAllow(ch, guildID, jailDenyFor(ch.Type())) {
-			out = append(out, ch)
+		if ow := findOverwrite(ch, userID, discord.PermissionOverwriteTypeMember); ow != nil && jailManagedChannelType(ch.Type()) && jailMemberShape(ch, *ow) {
+			targets = append(targets, ch)
 		}
 	}
-	return out, nil
-}
-
-// syncMemberJailOverwrites adds a member-level deny for userID on every
-// at-risk channel (atRiskJailChannels): the hardening that makes a jail
-// unconditional regardless of what roles userID holds or is later granted,
-// since a member-tier overwrite is the only thing in Discord's permission
-// model that reliably wins over every role-tier overwrite at once. Called
-// from stripToJailRoles, so it runs on every jail (re)application: the
-// initial jail, a rejoin-evasion re-apply (Discord clears a member's own
-// channel overwrites when they leave the guild, so a rejoin needs this
-// reapplied too, not just the role), and a regrant reassertion. Per-channel
-// failures are logged and don't abort the rest, matching
-// syncAllJailChannelOverwrites' own policy; the caller treats this whole
-// call as best-effort, since the role strip it runs alongside is what must
-// not fail.
-func (p *Plugin) syncMemberJailOverwrites(guildID, userID string) error {
-	channels, err := p.atRiskJailChannels(guildID)
-	if err != nil {
-		return err
-	}
-	return p.forEachChannelConcurrent(channels, func(ch discord.GuildChannel) error {
-		if overwriteMatches(ch, userID, discord.PermissionOverwriteTypeMember, 0, jailDenyFor(ch.Type())) {
-			return nil
-		}
-		return setOverwrite(p.ops(guildID), ch.ID(), core.ID(userID), discord.PermissionOverwriteTypeMember, 0, jailDenyFor(ch.Type()))
-	}, func(ch discord.GuildChannel, err error) {
-		p.log.Error("roles: set member jail overwrite failed", "guild", guildID, "user", userID, "channel", ch.ID(), "err", err)
-	})
-}
-
-// clearMemberJailOverwrites removes userID's member-level deny from every
-// currently at-risk channel, called from releaseJail. Recomputing "at risk"
-// fresh rather than remembering what was set at jail time means a channel
-// whose conflicting role overwrite was removed while the member was jailed
-// is simply skipped here too: it no longer needs cleanup, which keeps
-// release scoped to the same small channel set jail itself touches instead
-// of a blanket sweep of every jail-managed channel.
-func (p *Plugin) clearMemberJailOverwrites(guildID, userID string) error {
-	channels, err := p.atRiskJailChannels(guildID)
-	if err != nil {
-		return err
-	}
-	return p.forEachChannelConcurrent(channels, func(ch discord.GuildChannel) error {
-		if findOverwrite(ch, userID, discord.PermissionOverwriteTypeMember) == nil {
-			return nil
-		}
+	return p.forEachChannelConcurrent(targets, func(ch discord.GuildChannel) error {
 		return p.ops(guildID).DeletePermissionOverwrite(ch.ID(), core.ID(userID))
 	}, func(ch discord.GuildChannel, err error) {
 		p.log.Error("roles: clear member jail overwrite failed", "guild", guildID, "user", userID, "channel", ch.ID(), "err", err)
 	})
+}
+
+// auditLogPages bounds how far back clearLeftoverMemberOverwrites reads
+// Discord's audit log, 100 entries a page. Discord keeps 45 days anyway.
+const auditLogPages = 20
+
+// clearLeftoverMemberOverwrites removes the member-level jail denies still
+// sitting on members who are no longer jailed: the ones a release before
+// this version left behind. Run from Sync every channel.
+//
+// The shape alone is not proof: a mod hiding one text channel from one
+// member by hand writes exactly the same overwrite. So a candidate goes only
+// if Discord's own audit log says merlin created it, and when that log
+// cannot be read nothing goes. No candidates costs no audit log read at all,
+// which is the steady state once the old ones are gone. Returns how many
+// were removed.
+func (p *Plugin) clearLeftoverMemberOverwrites(ctx context.Context, guildID string) (int, error) {
+	ops := p.ops(guildID)
+	channels, err := ops.GetGuildChannels(core.ID(guildID))
+	if err != nil {
+		return 0, fmt.Errorf("roles: list guild channels: %w", err)
+	}
+	type spot struct{ channel, user string }
+	var candidates []spot
+	for _, ch := range channels {
+		if !jailManagedChannelType(ch.Type()) {
+			continue
+		}
+		for _, ow := range core.Overwrites(ch.PermissionOverwrites()) {
+			if jailMemberShape(ch, ow) {
+				candidates = append(candidates, spot{ch.ID().String(), ow.ID.String()})
+			}
+		}
+	}
+	if len(candidates) == 0 || p.botID == 0 {
+		return 0, nil
+	}
+	ours := make(map[spot]bool)
+	var before snowflake.ID
+	for range auditLogPages {
+		page, err := ops.GetAuditLog(core.ID(guildID), p.botID, discord.AuditLogEventChannelOverwriteCreate, before, 0, 100)
+		if err != nil {
+			return 0, fmt.Errorf("roles: read audit log: %w", err)
+		}
+		for _, e := range page.AuditLogEntries {
+			if e.TargetID != nil && e.Options != nil && e.Options.ID != nil {
+				ours[spot{e.TargetID.String(), *e.Options.ID}] = true
+			}
+			before = e.ID
+		}
+		if len(page.AuditLogEntries) < 100 {
+			break
+		}
+	}
+	removed := 0
+	for _, c := range candidates {
+		if !ours[c] {
+			continue
+		}
+		if _, jailed, err := p.store.GetJail(ctx, guildID, c.user); err != nil || jailed {
+			continue // still jailed, or unknown: release clears it
+		}
+		if err := ops.DeletePermissionOverwrite(core.ID(c.channel), core.ID(c.user)); err != nil {
+			p.log.Error("roles: clear leftover member jail overwrite failed", "guild", guildID, "user", c.user, "channel", c.channel, "err", err)
+			continue
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 // syncAllJailChannelOverwrites recomputes every managed channel's Jailed-role
@@ -532,7 +551,7 @@ func (p *Plugin) syncAllVisibility(guildID string, m visibilityMarker) error {
 		// after this sync starts denied rather than visible until someone
 		// re-runs sync-channels.
 		baseline := memberBaseline(guildID, memberRole, ch, roles)
-		allowBits, denyBits, withheld, needed := desiredOverwrite(ch, m.roleID, m.allowed[ch.ID().String()], baseline)
+		allowBits, denyBits, withheld, needed := markerOverwrite(guildID, ch, m.roleID, m.allowed[ch.ID().String()], baseline)
 		if withheld != 0 {
 			p.log.Info("roles: allowlisted channel grants less than jail would", "guild", guildID, "marker", m.name,
 				"channel", ch.ID(), "withheld", namePermissions(withheld))
@@ -540,7 +559,7 @@ func (p *Plugin) syncAllVisibility(guildID string, m visibilityMarker) error {
 		if !needed {
 			return nil
 		}
-		return setOverwrite(p.ops(guildID), ch.ID(), core.ID(m.roleID), discord.PermissionOverwriteTypeRole, allowBits, denyBits)
+		return applyOverwrite(p.ops(guildID), ch, m.roleID, allowBits, denyBits)
 	}, func(ch discord.GuildChannel, err error) {
 		p.log.Error("roles: sync overwrite failed", "guild", guildID, "marker", m.name, "channel", ch.ID(), "err", err)
 	})

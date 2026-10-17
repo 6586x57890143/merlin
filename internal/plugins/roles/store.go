@@ -84,6 +84,12 @@ type Store interface {
 	// only copy, exactly as for SetJailRelease. Returns ErrNotJailed if no
 	// record exists.
 	TransferJail(ctx context.Context, guildID, userID, jailRoleID string, releaseAt *time.Time) error
+	// MarkJailApplied moves jailed_at to at, recording that the marker was
+	// just put back on a member who joined mid-sentence. jailed_at is read
+	// by nothing but rejoinedSinceJail, and what it has to answer is "did
+	// they join after merlin last put the marker on", not "after the
+	// sentence began". Returns ErrNotJailed if no record exists.
+	MarkJailApplied(ctx context.Context, guildID, userID string, at time.Time) error
 	GetJail(ctx context.Context, guildID, userID string) (JailRecord, bool, error)
 	DeleteJail(ctx context.Context, guildID, userID string) error
 	DueJails(ctx context.Context, guildID string, now time.Time) ([]JailRecord, error)
@@ -188,6 +194,19 @@ func (s *pgStore) TransferJail(ctx context.Context, guildID, userID, jailRoleID 
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("roles store: transfer jail for %s: %w", userID, ErrNotJailed)
+	}
+	return nil
+}
+
+func (s *pgStore) MarkJailApplied(ctx context.Context, guildID, userID string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE role_jails SET jailed_at = $3 WHERE guild_id = $1 AND user_id = $2
+	`, guildID, userID, at)
+	if err != nil {
+		return fmt.Errorf("roles store: mark jail applied: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("roles store: mark jail applied for %s: %w", userID, ErrNotJailed)
 	}
 	return nil
 }

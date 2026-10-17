@@ -2,12 +2,16 @@ package roles
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
+
+	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordtest"
 )
 
 func TestSyncAllJailChannelOverwritesDeniesByDefaultAllowsListed(t *testing.T) {
@@ -143,244 +147,140 @@ func TestSyncJailChannelOverwriteSingleChannel(t *testing.T) {
 		t.Fatalf("expected allowlisted channel to allow view+send, got allow=%d", ow.allow)
 	}
 }
-
-// The member-overwrite hardening exists because Discord resolves conflicting
-// role-tier overwrites by applying every held role's deny, then every held
-// role's allow, last: an allow from any other role beats the Jailed role's
-// deny on the same channel regardless of role position. These tests target
-// the detection that decides which channels actually need the harder,
-// member-tier fix.
-func TestChannelHasConflictingRoleAllow(t *testing.T) {
-	deny := jailDenyFor(discord.ChannelTypeGuildText)
-	everyoneID := "7000001" // @everyone's role ID is always the guild ID.
-
-	cases := []struct {
-		name string
-		ch   *fch
-		want bool
-	}{
-		{
-			name: "another role explicitly allows the denied permission",
-			ch: &fch{PermissionOverwrites: []*fow{
-				{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-			}},
-			want: true,
-		},
-		{
-			name: "no overwrites at all",
-			ch:   &fch{},
-			want: false,
-		},
-		{
-			name: "only @everyone's own overwrite",
-			ch: &fch{PermissionOverwrites: []*fow{
-				{ID: everyoneID, Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-			}},
-			want: false,
-		},
-		{
-			name: "another role only denies, never allows",
-			ch: &fch{PermissionOverwrites: []*fow{
-				{ID: "7000328", Type: discord.PermissionOverwriteTypeRole, Deny: discord.PermissionViewChannel},
-			}},
-			want: false,
-		},
-		{
-			name: "another role allows a permission that isn't the denied one",
-			ch: &fch{PermissionOverwrites: []*fow{
-				{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionSendMessages},
-			}},
-			want: false,
-		},
-		{
-			name: "an existing member-type overwrite is not a role conflict",
-			ch: &fch{PermissionOverwrites: []*fow{
-				{ID: "7000102", Type: discord.PermissionOverwriteTypeMember, Allow: discord.PermissionViewChannel},
-			}},
-			want: false,
-		},
-	}
-	for _, tc := range cases {
-		if got := channelHasConflictingRoleAllow(tc.ch.Disgo(), everyoneID, deny); got != tc.want {
-			t.Errorf("%s: channelHasConflictingRoleAllow = %v, want %v", tc.name, got, tc.want)
-		}
-	}
+// memberDeny is the member-level jail deny older versions wrote.
+func memberDeny(userID string) *fow {
+	return &fow{ID: userID, Type: discord.PermissionOverwriteTypeMember, Deny: discord.PermissionViewChannel}
 }
 
-// Voice channels deny Connect too, and a role that only allows Connect
-// (not View Channel) should still count as a conflict there.
-func TestChannelHasConflictingRoleAllowVoiceConnect(t *testing.T) {
-	deny := jailDenyFor(discord.ChannelTypeGuildVoice)
-	ch := &fch{PermissionOverwrites: []*fow{
-		{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionConnect},
-	}}
-	if !channelHasConflictingRoleAllow(ch.Disgo(), "7000001", deny) {
-		t.Error("expected a role allowing Connect on a voice channel to count as a conflict")
-	}
+func hasOverwrite(ch *fch, id string, kind discord.PermissionOverwriteType) bool {
+	return discordtest.Find(ch.PermissionOverwrites, id, kind) != nil
 }
 
-func TestAtRiskJailChannelsScoping(t *testing.T) {
+// The bug report: release recomputed "at risk" and only cleared there, so a
+// member deny on a channel whose role allow had gone in the meantime stayed
+// after release. Now every channel is checked. A member deny of any other
+// shape is somebody's hand-set decision and stays.
+func TestReleaseClearsMemberDenyOnEveryChannel(t *testing.T) {
 	ops := newFakeOps()
-	// at-risk: a non-allowlisted text channel with a conflicting role allow.
-	ops.channel["7000606"] = &fch{ID: "7000606", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-	// not at-risk: no conflicting overwrite at all.
-	ops.channel["7000614"] = &fch{ID: "7000614", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
-	// not at-risk: allowlisted, even though it has a conflicting-looking overwrite.
-	ops.channel["7000625"] = &fch{ID: "7000625", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-	// not at-risk: categories are never jail-managed.
-	ops.channel["7000626"] = &fch{ID: "7000626", GuildID: "7000001", Type: discord.ChannelTypeGuildCategory,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-
-	settings := newFakeSettings()
-	settings.allowed["7000001"] = []string{"7000625"}
-	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
-
-	channels, err := p.atRiskJailChannels("7000001")
-	if err != nil {
-		t.Fatalf("atRiskJailChannels: %v", err)
-	}
-	if len(channels) != 1 || channels[0].ID().String() != "7000606" {
-		t.Fatalf("atRiskJailChannels = %v, want only [risky]", channels)
-	}
-}
-
-func TestSyncMemberJailOverwritesOnlyAtRiskChannels(t *testing.T) {
-	ops := newFakeOps()
-	ops.channel["7000606"] = &fch{ID: "7000606", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-	ops.channel["7000614"] = &fch{ID: "7000614", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "7000301"}}
+	noLongerAtRisk := lockedRoom("7000611", discord.ChannelTypeGuildText, memberDeny("7000102"))
+	handSet := lockedRoom("7000612", discord.ChannelTypeGuildText,
+		&fow{ID: "7000102", Type: discord.PermissionOverwriteTypeMember, Deny: discord.PermissionViewChannel | discord.PermissionSendMessages})
+	ops.channel["7000611"], ops.channel["7000612"] = noLongerAtRisk, handSet
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-	if err := p.syncMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("syncMemberJailOverwrites: %v", err)
+	rec := JailRecord{GuildID: "7000001", UserID: "7000102", SnapshotRoleIDs: []string{"7000302"}, JailRoleID: "7000301"}
+	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
+		t.Fatalf("releaseJail: %v", err)
 	}
-
-	ow, ok := ops.overwrites[overwriteKey{"7000606", "7000102"}]
-	if !ok {
-		t.Fatal("expected a member-level deny overwrite on the at-risk channel")
+	if hasOverwrite(noLongerAtRisk, "7000102", discord.PermissionOverwriteTypeMember) {
+		t.Error("released member still carries the old member deny")
 	}
-	if ow.deny&discord.PermissionViewChannel == 0 {
-		t.Fatalf("expected ViewChannel denied for the member, got deny=%d", ow.deny)
-	}
-	if _, ok := ops.overwrites[overwriteKey{"7000614", "7000102"}]; ok {
-		t.Error("set an unnecessary member overwrite on a channel with no conflicting role overwrite")
+	if !hasOverwrite(handSet, "7000102", discord.PermissionOverwriteTypeMember) {
+		t.Error("release removed a member overwrite of a shape merlin never wrote")
 	}
 }
 
-func TestClearMemberJailOverwrites(t *testing.T) {
+// Neither half of the evasion routine writes a member overwrite any more,
+// even on a channel where another role's allow would once have qualified.
+func TestEvasionWritesNoMemberOverwrites(t *testing.T) {
 	ops := newFakeOps()
-	ops.channel["7000606"] = &fch{ID: "7000606", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-
-	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-	if err := p.syncMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("syncMemberJailOverwrites: %v", err)
-	}
-	if _, ok := ops.overwrites[overwriteKey{"7000606", "7000102"}]; !ok {
-		t.Fatal("setup: expected the member overwrite to exist before clearing")
-	}
-
-	if err := p.clearMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("clearMemberJailOverwrites: %v", err)
-	}
-	if _, ok := ops.overwrites[overwriteKey{"7000606", "7000102"}]; ok {
-		t.Error("member overwrite still present after clearMemberJailOverwrites")
-	}
-}
-
-// The regular jail path stays pure role-based, deliberately: member-level
-// overwrites cost one write per at-risk channel, and an ordinary jail that
-// nobody is evading shouldn't pay for hardening it doesn't need. Even when a
-// conflicting access-role overwrite exists, applyJail alone must not touch
-// channel overwrites at all.
-func TestApplyJailDoesNotSetMemberOverwrites(t *testing.T) {
-	ops := newFakeOps()
-	ops.channel["7000611"] = &fch{ID: "7000611", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-	ops.setMember("7000001", "7000102", []string{"7000316"})
-
-	p := newEvasionPlugin(t, ops, newFakeStore())
-	if _, err := p.applyJail(context.Background(), "7000001", "7000301", jailTarget{userID: "7000102", roles: []string{"7000316"}}, time.Hour, "7000112", "test"); err != nil {
-		t.Fatalf("applyJail: %v", err)
-	}
-
-	if _, ok := ops.overwrites[overwriteKey{"7000611", "7000102"}]; ok {
-		t.Error("applyJail set a member-level overwrite; that hardening belongs to the evasion routine only")
-	}
-}
-
-// End-to-end: this is the actual bug report. A member rejoins (or has a
-// role regranted by a guild's Onboarding/Membership Screening flow) while
-// jailed, holding an access role whose own channel overwrite explicitly
-// allows View Channel. reapplyIfEvaded is the evasion routine, so unlike an
-// ordinary jail it must add the member-level deny that actually stops that
-// role from beating the Jailed role's own channel-level deny.
-func TestReapplyIfEvadedSetsMemberOverwriteOnConflictingAccessRoleChannel(t *testing.T) {
-	ops := newFakeOps()
-	ops.channel["7000611"] = &fch{ID: "7000611", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-	// Rejoined (JoinedAt after JailedAt) with the access role but no marker.
+	ops.channel["7000611"] = lockedRoom("7000611", discord.ChannelTypeGuildText,
+		&fow{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel})
 	ops.setMemberJoined("7000001", "7000102", []string{"7000316"}, fixedNow.Add(-time.Minute))
-
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
-		t.Fatalf("InsertJail: %v", err)
-	}
-
+	_ = store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"}))
 	p := newEvasionPlugin(t, ops, store)
 	if err := p.reapplyEvadedJails(context.Background(), "7000001"); err != nil {
 		t.Fatalf("reapplyEvadedJails: %v", err)
 	}
-
-	ow, ok := ops.overwrites[overwriteKey{"7000611", "7000102"}]
-	if !ok {
-		t.Fatal("expected a member-level deny on the channel the access role could otherwise unlock")
-	}
-	if ow.deny&discord.PermissionViewChannel == 0 {
-		t.Fatalf("expected ViewChannel denied for the member, got deny=%d", ow.deny)
+	p.HandleMemberUpdate(context.Background(), "7000001", "7000102", []string{"7000301", "7000316"})
+	if ops.permSetCalls != 0 {
+		t.Fatalf("evasion wrote %d permission overwrites, want none", ops.permSetCalls)
 	}
 }
 
-// Same bug report, live-event path: HandleMemberUpdate is the other half of
-// the evasion routine and must set the same hardening.
-func TestHandleMemberUpdateSetsMemberOverwriteOnConflictingAccessRoleChannel(t *testing.T) {
+// A marker deny on a room @everyone is already denied is one more overwrite
+// saying nothing: a jailed member holds @everyone and the marker. The sync
+// writes none there, removes one in exactly merlin's shape, leaves one the
+// guild edited, and still denies the room @everyone can see.
+func TestMarkerSkipsRoomsEveryoneCannotSee(t *testing.T) {
+	everyoneDenied := func(id string, extra ...*fow) *fch {
+		return lockedRoom(id, discord.ChannelTypeGuildText,
+			append([]*fow{{ID: "7000001", Type: discord.PermissionOverwriteTypeRole, Deny: discord.PermissionViewChannel}}, extra...)...)
+	}
 	ops := newFakeOps()
-	ops.channel["7000611"] = &fch{ID: "7000611", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-	ops.setMemberJoined("7000001", "7000102", []string{"7000301", "7000316"}, jailedAt.Add(-24*time.Hour))
+	fresh := everyoneDenied("7000611")
+	stale := everyoneDenied("7000612", &fow{ID: "7000301", Type: discord.PermissionOverwriteTypeRole, Deny: discord.PermissionViewChannel | discord.PermissionConnect})
+	edited := everyoneDenied("7000613", &fow{ID: "7000301", Type: discord.PermissionOverwriteTypeRole, Deny: discord.PermissionViewChannel | discord.PermissionAddReactions})
+	public := lockedRoom("7000614", discord.ChannelTypeGuildText)
+	for _, ch := range []*fch{fresh, stale, edited, public} {
+		ops.channel[ch.ID] = ch
+	}
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 
+	if err := p.syncAllJailChannelOverwrites("7000001", "7000301"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if hasOverwrite(fresh, "7000301", discord.PermissionOverwriteTypeRole) {
+		t.Error("wrote a marker deny on a room @everyone cannot see")
+	}
+	if hasOverwrite(stale, "7000301", discord.PermissionOverwriteTypeRole) {
+		t.Error("kept merlin's own unnecessary marker deny")
+	}
+	if !hasOverwrite(edited, "7000301", discord.PermissionOverwriteTypeRole) {
+		t.Error("removed a marker overwrite the guild had edited")
+	}
+	if ow := discordtest.Find(public.PermissionOverwrites, "7000301", discord.PermissionOverwriteTypeRole); ow == nil || ow.Deny&discord.PermissionViewChannel == 0 {
+		t.Error("a room @everyone can see must still deny the marker")
+	}
+	if ops.permSetCalls != 1 || ops.permDeleteCalls != 1 {
+		t.Fatalf("writes = %d set, %d delete; want 1 and 1", ops.permSetCalls, ops.permDeleteCalls)
+	}
+	if err := p.syncAllJailChannelOverwrites("7000001", "7000301"); err != nil || ops.permSetCalls != 1 || ops.permDeleteCalls != 1 {
+		t.Fatalf("a repeat sync must write nothing: err=%v set=%d delete=%d", err, ops.permSetCalls, ops.permDeleteCalls)
+	}
+}
+
+// Leftovers on members already released are only removed when Discord's
+// audit log says merlin created them, since the shape alone matches a mod
+// hiding a channel by hand. A member still jailed keeps theirs until
+// release, and an unreadable audit log removes nothing.
+func TestClearLeftoverMemberOverwritesNeedsMerlinsAuditEntry(t *testing.T) {
+	ours := lockedRoom("7000611", discord.ChannelTypeGuildText, memberDeny("7000102"), memberDeny("7000103"))
+	theirs := lockedRoom("7000612", discord.ChannelTypeGuildText, memberDeny("7000104"))
+	ops := newFakeOps()
+	ops.channel["7000611"], ops.channel["7000612"] = ours, theirs
+	bot := core.ID("7000130")
+	entry := func(id, channel, user string) discord.AuditLogEntry {
+		target := core.ID(channel)
+		return discord.AuditLogEntry{ID: core.ID(id), UserID: bot, ActionType: discord.AuditLogEventChannelOverwriteCreate,
+			TargetID: &target, Options: &discord.OptionalAuditLogEntryInfo{ID: &user}}
+	}
+	ops.auditLog = []discord.AuditLogEntry{entry("1", "7000611", "7000102"), entry("2", "7000611", "7000103")}
 	store := newFakeStore()
-	if err := store.InsertJail(context.Background(), activeJail("7000102", []string{"7000302"})); err != nil {
-		t.Fatalf("InsertJail: %v", err)
-	}
+	_ = store.InsertJail(context.Background(), activeJail("7000103", nil))
+	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+	p.botID = bot
 
-	p := newEvasionPlugin(t, ops, store)
-	p.HandleMemberUpdate(context.Background(), "7000001", "7000102", []string{"7000301", "7000316"})
-
-	ow, ok := ops.overwrites[overwriteKey{"7000611", "7000102"}]
-	if !ok {
-		t.Fatal("expected a member-level deny on the channel the access role could otherwise unlock")
+	ops.auditLogErr = errors.New("missing access")
+	if n, err := p.clearLeftoverMemberOverwrites(context.Background(), "7000001"); err == nil || n != 0 || ops.permDeleteCalls != 0 {
+		t.Fatalf("unreadable audit log: n=%d err=%v deletes=%d, want an error and nothing removed", n, err, ops.permDeleteCalls)
 	}
-	if ow.deny&discord.PermissionViewChannel == 0 {
-		t.Fatalf("expected ViewChannel denied for the member, got deny=%d", ow.deny)
+	ops.auditLogErr = nil
+	n, err := p.clearLeftoverMemberOverwrites(context.Background(), "7000001")
+	if err != nil || n != 1 {
+		t.Fatalf("removed %d (err %v), want 1", n, err)
+	}
+	if hasOverwrite(ours, "7000102", discord.PermissionOverwriteTypeMember) {
+		t.Error("merlin's leftover on a released member survived")
+	}
+	if !hasOverwrite(ours, "7000103", discord.PermissionOverwriteTypeMember) {
+		t.Error("removed the deny of a member who is still jailed")
+	}
+	if !hasOverwrite(theirs, "7000104", discord.PermissionOverwriteTypeMember) {
+		t.Error("removed a member deny merlin never wrote")
 	}
 }
 
