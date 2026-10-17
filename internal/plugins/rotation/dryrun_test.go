@@ -91,7 +91,7 @@ func TestSweepDryRunDeletesNothingAndKeepsTracking(t *testing.T) {
 
 	found := false
 	for _, r := range audit.records {
-		if r.action == "archive.dryrun" && strings.Contains(r.oldValue, "402") {
+		if r.action == "archive.dryrun" && strings.Contains(r.newValue, "<#402>") {
 			found = true
 		}
 	}

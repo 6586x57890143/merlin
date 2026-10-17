@@ -81,7 +81,7 @@ func addItem(e *ledger.Entry, key, val string) {
 		return
 	}
 	label := gridLabel(key)
-	if key == "user" || key == "channel" || key == "role" || key == "target" {
+	if key == "user" || key == "users" || key == "channel" || key == "role" || key == "target" {
 		label = "" // the entry's who and where, read without a label
 	}
 	e.Subjects = append(e.Subjects, labelled(refs, label)...)
