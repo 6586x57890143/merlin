@@ -65,6 +65,9 @@ func MentionRoles(ids []string) string { return mentionAll(ids, MentionRole) }
 // MentionUsers is MentionRoles for users.
 func MentionUsers(ids []string) string { return mentionAll(ids, MentionUser) }
 
+// MentionChannels is MentionRoles for channels.
+func MentionChannels(ids []string) string { return mentionAll(ids, MentionChannel) }
+
 func mentionAll(ids []string, mention func(string) string) string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {

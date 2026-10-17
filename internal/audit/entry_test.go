@@ -32,6 +32,23 @@ var callSites = []struct{ action, old, new string }{
 	{"config.setup", "", ""},
 	{"aimod.rewrite", "", "user=<@1001> message=[Deleted](https://discord.com/channels/100/300/400) → [Reposted](https://discord.com/channels/100/300/401) policy=harassment"},
 	{"nodot", "", ""},
+	{"roles.jail_reapplied", "", `user=<@1001> release_at=2026-10-17T14:00:00Z unmanageable_roles=[<@&501>] reason="joined while a sentence was in force"`},
+	{"roles.jail_bulk", "", `role=<@&7> duration=2h reason="raid" jailed=3 protected=1 users=[<@1> <@2> <@3>]`},
+	{"archive.dryrun", "", "channel=[<#300> <#301>]"},
+}
+
+// The automatic re-jail names the member as its subject, never as what it
+// "was", and the roles it could not strip as kept; a bulk jail's members
+// are its subjects, unlabelled, every one of them.
+func TestReappliedAndBulkJailsReadAsFields(t *testing.T) {
+	e := toEntry("100", core.ActorSystem, "roles.jail_reapplied", "", callSites[len(callSites)-3].new, at)
+	if !slices.Equal(e.Subjects, []ledger.Ref{ledger.User("1001"), ledger.Role("501").As("kept")}) || e.Reason == "" {
+		t.Fatalf("subjects %+v reason %q", e.Subjects, e.Reason)
+	}
+	bulk := toEntry("100", "418", "roles.jail_bulk", "", callSites[len(callSites)-2].new, at)
+	if want := []ledger.Ref{ledger.Role("7"), ledger.User("1"), ledger.User("2"), ledger.User("3")}; !slices.Equal(bulk.Subjects, want) {
+		t.Fatalf("bulk subjects %+v", bulk.Subjects)
+	}
 }
 
 func TestEveryCallSiteShapeIsAValidEntry(t *testing.T) {

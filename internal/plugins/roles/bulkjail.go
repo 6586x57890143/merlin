@@ -448,14 +448,19 @@ func (p *Plugin) recordBulkAudit(ctx context.Context, guildID, actor, scope stri
 	// right people were caught. A list of raw IDs makes that a lookup
 	// exercise per member. The count is capped by maxBulkJailTargets and the
 	// field is truncated at 1024 bytes regardless, so this cannot run away.
-	mentions := make([]string, 0, len(res.jailed))
-	for _, id := range res.jailed {
-		mentions = append(mentions, core.MentionUser(id))
+	detail := fmt.Sprintf("%s duration=%s reason=%q %s=%d", scope, sentenceLength(duration), reason, sn.name, len(res.jailed))
+	// The outcomes nobody got say nothing: a card with five zero lines in
+	// its grid buries the one that is not.
+	for _, c := range []struct {
+		key string
+		n   int
+	}{{"pending", len(res.pending)}, {"already", len(res.redated)}, {"moved", len(res.transferred)},
+		{"protected", len(res.protected)}, {"failed", len(res.failed)}} {
+		if c.n > 0 {
+			detail += fmt.Sprintf(" %s=%d", c.key, c.n)
+		}
 	}
-	detail := fmt.Sprintf("%s duration=%s reason=%q %s=%d pending=%d already=%d moved=%d protected=%d failed=%d users=%s",
-		scope, sentenceLength(duration), reason, sn.name,
-		len(res.jailed), len(res.pending), len(res.redated), len(res.transferred), len(res.protected), len(res.failed),
-		strings.Join(mentions, " "))
+	detail += " users=[" + core.MentionUsers(res.jailed) + "]"
 	if err := p.audit.Record(ctx, guildID, actor, sn.auditBulk, "", detail); err != nil {
 		p.log.Error("roles: audit bulk jail failed", "guild", guildID, "err", err)
 	}

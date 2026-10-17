@@ -3,7 +3,6 @@ package rotation
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -93,7 +92,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 			}
 		}
 		p.log.Info("rotation sweep: dry-run, skipping deletion", "guild", guildID, "due", due)
-		if err := p.audit.Record(ctx, guildID, core.ActorSystem, "archive.dryrun", strings.Join(due, ","), "would have been deleted now"); err != nil {
+		if err := p.audit.Record(ctx, guildID, core.ActorSystem, "archive.dryrun", "", "channel=["+core.MentionChannels(due)+"]"); err != nil {
 			p.log.Error("rotation sweep: audit dry-run", "guild", guildID, "err", err)
 		}
 		return nil
