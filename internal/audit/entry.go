@@ -205,19 +205,9 @@ func moodOf(m meta) ledger.Mood {
 	return ledger.MoodInfo
 }
 
-// moduleIcons are the action modules that are not a plugin's own name.
-var moduleIcons = map[string]string{"archive": "rotation", "channel": "rotation", "config": "adminconfig"}
-
-// brand is how merlin's cards look: each plugin's icon, her
-// palette, her face for the mood and her rule, which keeps every card the
-// one width the embeds were.
+// brand is how merlin's cards look: her palette, her face for the mood
+// and her rule, which keeps every card one width.
 var brand = ledger.Brand{
-	Emoji: func(module string) string {
-		if p, ok := moduleIcons[module]; ok {
-			module = p
-		}
-		return core.PluginEmoji(module)
-	},
 	Color: func(m ledger.Mood) int {
 		switch m {
 		case ledger.MoodDanger, ledger.MoodError:
