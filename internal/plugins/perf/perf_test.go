@@ -40,19 +40,25 @@ func setup(t *testing.T) *Plugin {
 	return p
 }
 
-// A code block line wider than 40 wraps on a phone and the grid stops being
-// a grid, so every line, long route names included, stays within it.
-func TestReadoutFitsItsGrid(t *testing.T) {
-	out := setup(t).readout()
-	for _, line := range strings.Split(out, "\n") {
-		if n := utf8.RuneCountInString(line); n > 40 {
-			t.Errorf("%d wide: %q", n, line)
+// Every route is a field of its own, its name short enough for one line of
+// a column, and nothing is a code block: a record is read by its fields.
+func TestRecordIsOneFieldARoute(t *testing.T) {
+	e := setup(t).record()
+	var out []string
+	for _, f := range e.Fields {
+		if n := utf8.RuneCountInString(f.Name); n > nameW+5 {
+			t.Errorf("%d wide: %q", n, f.Name)
+		}
+		out = append(out, f.Name+": "+f.Value)
+	}
+	all := strings.Join(out, "\n")
+	for _, want := range []string{"rotation run", " http", "go sched", "50 µs p99", "go gc pause", "- p99", "p50 · 1"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("record missing %q:\n%s", want, all)
 		}
 	}
-	for _, want := range []string{"rotation run", " http", "go sched", "50 µs", "go gc pause", "-"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("readout missing %q:\n%s", want, out)
-		}
+	if strings.Contains(all+e.Description, "```") {
+		t.Errorf("a record is fields, not a code block:\n%s", all)
 	}
 }
 
@@ -68,8 +74,8 @@ func TestOnlyTheOperatorReadsIt(t *testing.T) {
 	}
 	ix, wire = paneltest.IxCommand(t, operator, "perf", nil)
 	p.handlePerf(context.Background(), ix)
-	if !strings.Contains(wire.All(), "go sched") || !strings.Contains(wire.All(), `"flags":32832`) {
-		t.Errorf("the operator was refused, or the panel was not private and V2: %s", wire.All())
+	if !strings.Contains(wire.All(), "go sched") || !strings.Contains(wire.All(), `"flags":64`) || strings.Contains(wire.All(), "32832") {
+		t.Errorf("the operator was refused, or the record was not a private embed: %s", wire.All())
 	}
 	ix, wire = paneltest.IxClick(t, operator, refreshID, nil)
 	p.handleRefresh(context.Background(), ix, refreshID)
