@@ -1,7 +1,6 @@
 package core
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/disgoorg/disgo/discord"
@@ -16,7 +15,7 @@ import (
 // everything else goes below at full width, since beside a thumbnail a phone
 // gives text a narrow column. What is merlin's own is the art: the mood is
 // still derived from the colour (moodForColor), and the rule is the same
-// barred line Embed carries, here as the divider under the head. It is
+// barred line Embed carries, here closing the page above the footer. It is
 // there for its width as much as its look, exactly as on an embed: a
 // container is sized to its content, so a panel whose page is two short lines
 // would otherwise render narrower than the one before it and every click
@@ -32,7 +31,7 @@ type Panel struct {
 	// Line is the subtext beside the thumbnail: what this panel is for.
 	Line string
 	// Note says what the last click did ("✓ ...", "✗ ..."). Shown under the
-	// rule, gone on the next render.
+	// head, gone on the next render.
 	Note string
 	// Parts is the page: text, rows of controls, separators.
 	Parts []discord.ContainerSubComponent
@@ -69,12 +68,14 @@ func (p Panel) Layout() []discord.LayoutComponent {
 			Components: []discord.SectionSubComponent{discord.TextDisplayComponent{Content: head}},
 			Accessory:  discord.ThumbnailComponent{Media: discord.UnfurledMediaItem{URL: p.thumbnail(mood)}},
 		},
-		discord.MediaGalleryComponent{Items: []discord.MediaGalleryItem{{Media: discord.UnfurledMediaItem{URL: ruleAttachmentURL}}}},
 	}
 	if p.Note != "" {
 		parts = append(parts, discord.TextDisplayComponent{Content: p.Note})
 	}
 	parts = append(parts, p.Parts...)
+	// The rule closes the page and divides off the footer, never splits the
+	// head from what it heads.
+	parts = append(parts, discord.MediaGalleryComponent{Items: []discord.MediaGalleryItem{{Media: discord.UnfurledMediaItem{URL: ruleAttachmentURL}}}})
 	if p.Footer != "" {
 		parts = append(parts, discord.TextDisplayComponent{Content: "-# " + p.Footer})
 	}
@@ -108,23 +109,16 @@ func (p Panel) Uploads() []*discord.File {
 	return files
 }
 
-// Readout lays facts out as a code block grid: the label column is the
-// longest label plus two spaces, so values line up the same on every client,
-// where how embed fields wrap is up to each one. Keep it to plain facts: a
-// mention inside a code block renders as its raw snowflake, so who and where
-// go on lines below the grid, not in it.
+// Readout lays facts out one a line, the label in bold: the fact lines of
+// the shared design guide. Plain lines rather than a code block grid, which
+// read as a terminal, cut off on phones and showed a mention as its raw
+// snowflake; a code block is for what somebody copies.
 func Readout(rows [][2]string) string {
-	width := 0
+	lines := make([]string, 0, len(rows))
 	for _, r := range rows {
-		width = max(width, len(r[0]))
+		lines = append(lines, "**"+r[0]+"** "+r[1])
 	}
-	var b strings.Builder
-	b.WriteString("```\n")
-	for _, r := range rows {
-		fmt.Fprintf(&b, "%-*s%s\n", width+2, r[0], r[1])
-	}
-	b.WriteString("```")
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 // MaxSelectValues is Discord's cap on a select's options and picks.

@@ -180,7 +180,7 @@ func TestBuildersDrawWhatTheyAlwaysDrew(t *testing.T) {
 		{"error embed", core.Embed(core.ColorError, "t", "d"),
 			`{"title":"t","description":"d","color":11031092,"image":{"url":"attachment://merlin_rule.png"},"thumbnail":{"url":"attachment://merlin_error.png"}}`},
 		{"panel", pn.Layout(),
-			`[{"type":17,"accent_color":8162138,"components":[{"type":9,"components":[{"type":10,"content":"## settings\n-# what this is"}],"accessory":{"type":11,"media":{"url":"attachment://merlin_ok.png","flags":0}}},{"type":12,"items":[{"media":{"url":"attachment://merlin_rule.png","flags":0}}]},{"type":10,"content":"✓ saved"},{"type":10,"content":"hello"},{"type":14},{"type":1,"components":[{"type":2,"style":1,"label":"go","custom_id":"go"}]},{"type":10,"content":"-# bye"}]}]`},
+			`[{"type":17,"accent_color":8162138,"components":[{"type":9,"components":[{"type":10,"content":"## settings\n-# what this is"}],"accessory":{"type":11,"media":{"url":"attachment://merlin_ok.png","flags":0}}},{"type":10,"content":"✓ saved"},{"type":10,"content":"hello"},{"type":14},{"type":1,"components":[{"type":2,"style":1,"label":"go","custom_id":"go"}]},{"type":12,"items":[{"media":{"url":"attachment://merlin_rule.png","flags":0}}]},{"type":10,"content":"-# bye"}]}]`},
 	} {
 		raw, err := json.Marshal(c.got)
 		if err != nil {

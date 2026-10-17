@@ -65,9 +65,9 @@ func TestPanelCarriesTheRule(t *testing.T) {
 	}
 }
 
-func TestReadoutLinesUp(t *testing.T) {
+func TestReadoutIsFactLines(t *testing.T) {
 	got := Readout([][2]string{{"db", "up"}, {"jobs", "3"}})
-	want := "```\ndb    up\njobs  3\n```"
+	want := "**db** up\n**jobs** 3"
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
