@@ -30,6 +30,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
+	"github.com/6586x57890143/merlin/internal/plugins/fleetgrant"
 	"github.com/6586x57890143/merlin/internal/plugins/help"
 	"github.com/6586x57890143/merlin/internal/plugins/perf"
 	"github.com/6586x57890143/merlin/internal/plugins/ping"
@@ -338,6 +339,12 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// like WithJailer: aimod never imports statistics.
 	aimodPlugin.WithTraffic(statisticsPlugin)
 	registry.Register(adminconfigPlugin)
+	// Another bird on the link may ask merlin for a role an admin allowed
+	// it (/fleet); fleetgrant decides, the link only carries the ask.
+	fleetPlugin := fleetgrant.New(fleetgrant.NewPostgresStore(db.Pool), settingsStore,
+		func(guildID string) fleetgrant.MemberOps { return guard.For(guildID) })
+	registry.Register(fleetPlugin)
+	hub.Serve(fleetgrant.Verb, fleetPlugin.Answer)
 	registry.Register(perf.New(obs.Default))
 	registry.Register(help.New(registry.Plugins, settingsStore))
 
