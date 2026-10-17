@@ -1,6 +1,7 @@
 package discordguard
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -119,5 +120,34 @@ func TestDisconnectSendsNull(t *testing.T) {
 	}
 	if len(w.requests) != 1 || !strings.Contains(w.requests[0], `PATCH`) || !strings.Contains(w.requests[0], `{"channel_id":null}`) {
 		t.Fatalf("sent %v", w.requests)
+	}
+}
+
+// noteJournal keeps what each Begin was told.
+type noteJournal struct{ details []string }
+
+func (j *noteJournal) Begin(_ context.Context, _, op, target, detail string) (int64, error) {
+	j.details = append(j.details, op+" "+target+" "+detail)
+	return int64(len(j.details)), nil
+}
+func (j *noteJournal) Finish(context.Context, int64, error) error                { return nil }
+func (j *noteJournal) PruneBefore(context.Context, time.Time) (int64, error) { return 0, nil }
+
+// The journal says what an overwrite was for and what it set, not only that
+// a channel's permissions were touched.
+func TestJournalRecordsWhatAnOverwriteSet(t *testing.T) {
+	g, _ := restGuard(fakeGate{}, `{}`)
+	j := &noteJournal{}
+	g.WithJournal(j)
+	ops := g.For("100")
+	allow, deny := discord.Permissions(0), discord.PermissionViewChannel
+	if err := ops.UpdatePermissionOverwrite(2, 7, discord.MemberPermissionOverwriteUpdate{Allow: &allow, Deny: &deny}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ops.DeletePermissionOverwrite(2, 7); err != nil {
+		t.Fatal(err)
+	}
+	if len(j.details) != 2 || !strings.Contains(j.details[0], `for=7 {"type":1,"allow":"0","deny":"1024"}`) || j.details[1] != "channel.permissions 2 delete for=7" {
+		t.Fatalf("journal got %q", j.details)
 	}
 }

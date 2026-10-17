@@ -219,7 +219,7 @@ func TestVacationOnAJailedMemberParolesThemAndClearsTheHardening(t *testing.T) {
 		PermissionOverwrites: []*fow{
 			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
 		}}
-	if err := p.syncMemberJailOverwrites("7000001", "7000102"); err != nil {
+	if err := setOverwrite(ops, core.ID("7000606"), core.ID("7000102"), discord.PermissionOverwriteTypeMember, 0, discord.PermissionViewChannel); err != nil {
 		t.Fatal(err)
 	}
 	end := fixedNow.Add(time.Hour)

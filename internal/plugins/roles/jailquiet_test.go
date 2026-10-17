@@ -112,64 +112,6 @@ func TestSyncJailChannelOverwriteSkipsAnAlreadyCorrectChannel(t *testing.T) {
 	}
 }
 
-func TestSyncMemberJailOverwritesSkipsAnAlreadyDeniedMember(t *testing.T) {
-	ops := newFakeOps()
-	ops.channel["7000606"] = &fch{ID: "7000606", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-
-	if err := p.syncMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("first apply: %v", err)
-	}
-	first := ops.permSetCalls
-
-	// A rejoin re-apply, or a regrant reassertion, over a member whose deny
-	// is still in place.
-	if err := p.syncMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("second apply: %v", err)
-	}
-	if ops.permSetCalls != first {
-		t.Fatalf("expected no further writes for an already-denied member, got %d extra", ops.permSetCalls-first)
-	}
-}
-
-func TestClearMemberJailOverwritesSkipsChannelsTheMemberHasNoOverwriteOn(t *testing.T) {
-	ops := newFakeOps()
-	ops.channel["7000606"] = &fch{ID: "7000606", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
-		PermissionOverwrites: []*fow{
-			{ID: "7000316", Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel},
-		}}
-	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
-
-	// Nobody was ever jailed here, so there is nothing to delete.
-	if err := p.clearMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("clear with nothing to clear: %v", err)
-	}
-	if ops.permDeleteCalls != 0 {
-		t.Fatalf("expected no delete calls when the member has no overwrite, got %d", ops.permDeleteCalls)
-	}
-
-	if err := p.syncMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if err := p.clearMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("clear: %v", err)
-	}
-	if ops.permDeleteCalls != 1 {
-		t.Fatalf("expected exactly one delete for the one overwrite that existed, got %d", ops.permDeleteCalls)
-	}
-	// And a second release attempt (a sweep racing an on-demand release) is
-	// silent rather than deleting nothing, loudly.
-	if err := p.clearMemberJailOverwrites("7000001", "7000102"); err != nil {
-		t.Fatalf("second clear: %v", err)
-	}
-	if ops.permDeleteCalls != 1 {
-		t.Fatalf("expected the repeat clear to delete nothing, got %d deletes total", ops.permDeleteCalls)
-	}
-}
-
 func TestJailOverwriteForEachChannelKind(t *testing.T) {
 	view := discord.PermissionViewChannel
 	connect := discord.PermissionConnect

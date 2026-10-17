@@ -1,6 +1,7 @@
 package discordguard
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -38,18 +39,42 @@ func noPings() *discord.AllowedMentions {
 // gated runs call as op against target under the guild's gate, recording
 // the outcome.
 func gated[T any](o *GuildOps, op string, target snowflake.ID, call func() (T, error)) (T, error) {
+	return gatedDetail(o, op, target, "", call)
+}
+
+// gatedDetail is gated with a note of what the call sets, kept in the
+// journal row: which role or member an overwrite was for and its bits, the
+// roles a member edit left them with, the role added or removed. For the
+// writes that change who can see what, so the question "who wrote this
+// overwrite, and when" has an answer here rather than only in Discord's own
+// 45-day audit log.
+func gatedDetail[T any](o *GuildOps, op string, target snowflake.ID, detail string, call func() (T, error)) (T, error) {
 	var zero T
 	if err := o.allow(op); err != nil {
 		return zero, err
 	}
-	jid := o.beginJournal(op, target.String())
+	jid := o.beginJournal(op, target.String(), detail)
 	v, err := call()
 	return v, o.record(jid, err)
 }
 
 func gatedErr(o *GuildOps, op string, target snowflake.ID, call func() error) error {
-	_, err := gated(o, op, target, func() (struct{}, error) { return struct{}{}, call() })
+	return gatedErrDetail(o, op, target, "", call)
+}
+
+func gatedErrDetail(o *GuildOps, op string, target snowflake.ID, detail string, call func() error) error {
+	_, err := gatedDetail(o, op, target, detail, func() (struct{}, error) { return struct{}{}, call() })
 	return err
+}
+
+// describe renders a request body for the journal. A body that will not
+// marshal is noted rather than dropped, since the call still goes ahead.
+func describe(prefix string, v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return prefix + "(unrecorded: " + err.Error() + ")"
+	}
+	return prefix + string(b)
 }
 
 // --- reads: never gated ---
@@ -142,6 +167,15 @@ func (o *GuildOps) GetMembers(guildID snowflake.ID, limit int, after snowflake.I
 	return o.guard.rest.GetMembers(guildID, limit, after)
 }
 
+// GetAuditLog reads Discord's own audit log, filtered by who acted and what
+// kind of action. Needs View Audit Log.
+func (o *GuildOps) GetAuditLog(guildID, userID snowflake.ID, action discord.AuditLogEvent, before, after snowflake.ID, limit int) (*discord.AuditLog, error) {
+	if err := known(guildID); err != nil {
+		return nil, err
+	}
+	return o.guard.rest.GetAuditLog(guildID, userID, action, before, after, limit)
+}
+
 func (o *GuildOps) GetUser(userID snowflake.ID) (*discord.User, error) {
 	if err := known(userID); err != nil {
 		return nil, err
@@ -174,7 +208,7 @@ func (o *GuildOps) UpdateChannel(channelID snowflake.ID, u discord.ChannelUpdate
 	if err := known(channelID); err != nil {
 		return nil, err
 	}
-	return gated(o, opChannelEdit, channelID, func() (discord.Channel, error) {
+	return gatedDetail(o, opChannelEdit, channelID, describe("", u), func() (discord.Channel, error) {
 		return o.guard.rest.UpdateChannel(channelID, u)
 	})
 }
@@ -184,7 +218,7 @@ func (o *GuildOps) UpdatePermissionOverwrite(channelID, targetID snowflake.ID, u
 	if err := known(channelID, targetID); err != nil {
 		return err
 	}
-	return gatedErr(o, opChannelPermissions, channelID, func() error {
+	return gatedErrDetail(o, opChannelPermissions, channelID, describe("for="+targetID.String()+" ", u), func() error {
 		return o.guard.rest.UpdatePermissionOverwrite(channelID, targetID, u)
 	})
 }
@@ -255,7 +289,7 @@ func (o *GuildOps) UpdateMember(guildID, userID snowflake.ID, u discord.MemberUp
 	if err := known(guildID, userID); err != nil {
 		return nil, err
 	}
-	return gated(o, opMemberEdit, userID, func() (*discord.Member, error) {
+	return gatedDetail(o, opMemberEdit, userID, describe("", u), func() (*discord.Member, error) {
 		return o.guard.rest.UpdateMember(guildID, userID, u)
 	})
 }
@@ -267,7 +301,7 @@ func (o *GuildOps) DisconnectMember(guildID, userID snowflake.ID) error {
 	if err := known(guildID, userID); err != nil {
 		return err
 	}
-	return gatedErr(o, opMemberEdit, userID, func() error {
+	return gatedErrDetail(o, opMemberEdit, userID, "voice disconnect", func() error {
 		return o.guard.rest.Do(rest.UpdateMember.Compile(nil, guildID, userID), map[string]any{"channel_id": nil}, nil)
 	})
 }
@@ -278,7 +312,7 @@ func (o *GuildOps) AddMemberRole(guildID, userID, roleID snowflake.ID, opts ...r
 	if err := known(guildID, userID, roleID); err != nil {
 		return err
 	}
-	return gatedErr(o, opMemberRoleAdd, userID, func() error {
+	return gatedErrDetail(o, opMemberRoleAdd, userID, "role="+roleID.String(), func() error {
 		return o.guard.rest.AddMemberRole(guildID, userID, roleID, opts...)
 	})
 }
@@ -287,7 +321,7 @@ func (o *GuildOps) RemoveMemberRole(guildID, userID, roleID snowflake.ID) error 
 	if err := known(guildID, userID, roleID); err != nil {
 		return err
 	}
-	return gatedErr(o, opMemberRoleRemove, userID, func() error {
+	return gatedErrDetail(o, opMemberRoleRemove, userID, "role="+roleID.String(), func() error {
 		return o.guard.rest.RemoveMemberRole(guildID, userID, roleID)
 	})
 }
@@ -296,7 +330,7 @@ func (o *GuildOps) CreateRole(guildID snowflake.ID, r discord.RoleCreate) (*disc
 	if err := known(guildID); err != nil {
 		return nil, err
 	}
-	return gated(o, opRoleCreate, guildID, func() (*discord.Role, error) {
+	return gatedDetail(o, opRoleCreate, guildID, describe("", r), func() (*discord.Role, error) {
 		return o.guard.rest.CreateRole(guildID, r)
 	})
 }
@@ -307,7 +341,7 @@ func (o *GuildOps) UpdateRolePositions(guildID snowflake.ID, u []discord.RolePos
 	if err := known(guildID); err != nil {
 		return nil, err
 	}
-	return gated(o, opRoleEdit, guildID, func() ([]discord.Role, error) {
+	return gatedDetail(o, opRoleEdit, guildID, describe("", u), func() ([]discord.Role, error) {
 		return o.guard.rest.UpdateRolePositions(guildID, u)
 	})
 }
@@ -316,7 +350,7 @@ func (o *GuildOps) DeletePermissionOverwrite(channelID, targetID snowflake.ID) e
 	if err := known(channelID, targetID); err != nil {
 		return err
 	}
-	return gatedErr(o, opChannelPermissions, channelID, func() error {
+	return gatedErrDetail(o, opChannelPermissions, channelID, "delete for="+targetID.String(), func() error {
 		return o.guard.rest.DeletePermissionOverwrite(channelID, targetID)
 	})
 }

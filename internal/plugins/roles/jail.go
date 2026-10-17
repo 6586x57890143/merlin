@@ -394,17 +394,9 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, jailRoleID string, t ja
 // none of them can forget the voice-kick, including whatever future call
 // site needs to reassert a jail next.
 //
-// Deliberately does not touch member-level channel overwrites itself
-// (contrast syncMemberJailOverwrites): that hardening is O(at-risk
-// channels) per call, and an ordinary jail that nobody ever tries to evade
-// should stay the O(1) role edit it always was. Only reapplyIfEvaded and
-// HandleMemberUpdate call syncMemberJailOverwrites themselves, after this
-// returns, because those two are specifically what fire when live state has
-// drifted from the jail: a rejoin, or a role a guild's Onboarding/Membership
-// Screening flow regranted. A member-level deny is what actually stops that
-// regranted role from beating the Jailed role's own channel-level deny (see
-// its doc comment), and paying that cost is worth it exactly there, not on
-// the common case of a jail nobody is fighting.
+// A jail is this one role edit and nothing else. There used to be a
+// member-level deny on every "at risk" channel too, against a role the
+// guild's Onboarding flow handed back; that is gone (jailMemberShape).
 func (p *Plugin) stripToJailRoles(guildID, userID string, newRoles []string) (*discord.Member, error) {
 	roles := core.IDs(newRoles)
 	m, err := p.ops(guildID).UpdateMember(core.ID(guildID), core.ID(userID), discord.MemberUpdate{Roles: &roles})
@@ -606,16 +598,15 @@ func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRe
 	if _, err := p.stripToJailRoles(guildID, rec.UserID, expected); err != nil {
 		return fmt.Errorf("roles: re-apply jail to %s: %w", rec.UserID, err)
 	}
-	// Only reached once live state has actually drifted from the jail (a
-	// rejoin, or a regranted role): the member-level hardening isn't paid on
-	// an ordinary jail nobody is fighting, only here, where it's what
-	// actually stops a role a guild's Onboarding/Membership Screening flow
-	// hands back from beating the Jailed role's own channel-level deny.
-	// Never for a vacation: the island's permissions are the guild's own,
-	// and a member-level deny would lock the beach as tight as the nest.
-	if p.sentenceFor(guildID, rec.JailRoleID) == jailSentence {
-		if err := p.syncMemberJailOverwrites(guildID, rec.UserID); err != nil {
-			p.log.Warn("roles: failed to set member-level jail overwrites", "guild", guildID, "user", rec.UserID, "err", err)
+	// This join has been answered. Without moving JailedAt past it, the join
+	// stays "later than the jail" for the rest of the sentence, so a mod
+	// taking the marker off by hand afterwards read as the evasion again and
+	// merlin put it back on every sweep: 51 times in 75 minutes for one
+	// member in production, each one an audit entry. Now a later removal
+	// without a later join is the hand release it looks like.
+	if rejoined {
+		if err := p.store.MarkJailApplied(ctx, guildID, rec.UserID, p.now()); err != nil {
+			p.log.Error("roles: record jail re-apply time", "guild", guildID, "user", rec.UserID, "err", err)
 		}
 	}
 
@@ -723,17 +714,6 @@ func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string,
 		p.log.Error("roles: re-strip roles regranted after jail", "guild", guildID, "user", userID, "err", err)
 		return
 	}
-	// This is the evasion routine, not an ordinary jail: onboarding/screening
-	// just proved it can hand a channel-unlocking role back, so the
-	// member-level deny that actually stops that role from beating the
-	// Jailed role's own channel-level deny is worth its per-channel cost
-	// here specifically. Never for a vacation (see reapplyIfEvaded).
-	if p.sentenceFor(guildID, rec.JailRoleID) == jailSentence {
-		if err := p.syncMemberJailOverwrites(guildID, userID); err != nil {
-			p.log.Warn("roles: failed to set member-level jail overwrites", "guild", guildID, "user", userID, "err", err)
-		}
-	}
-
 	p.log.Warn("roles: roles regranted to a jailed member were stripped again", "guild", guildID, "user", userID,
 		"unmanageable_roles", unmanageable)
 	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.jail_reasserted", core.MentionUser(userID),

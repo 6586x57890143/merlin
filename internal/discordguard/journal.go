@@ -25,7 +25,7 @@ const journalTimeout = 5 * time.Second
 type Journal interface {
 	// Begin records an attempt and returns its row ID. A zero ID means the
 	// attempt wasn't recorded and Finish should do nothing.
-	Begin(ctx context.Context, guildID, op, targetID string) (int64, error)
+	Begin(ctx context.Context, guildID, op, targetID, detail string) (int64, error)
 	// Finish closes out an attempt with its outcome.
 	Finish(ctx context.Context, id int64, err error) error
 	// PruneBefore deletes entries older than cutoff, returning how many.
@@ -43,13 +43,13 @@ func (g *Guard) WithJournal(j Journal) *Guard {
 // record is logged and ignored: losing the diagnostic record of a mutation is
 // bad, but refusing to perform the mutation because we couldn't write a note
 // about it would be considerably worse.
-func (o *GuildOps) beginJournal(op, targetID string) int64 {
+func (o *GuildOps) beginJournal(op, targetID, detail string) int64 {
 	if o.guard.journal == nil {
 		return 0
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), journalTimeout)
 	defer cancel()
-	id, err := o.guard.journal.Begin(ctx, o.guildID, op, targetID)
+	id, err := o.guard.journal.Begin(ctx, o.guildID, op, targetID, detail)
 	if err != nil {
 		o.guard.log.Error("discordguard: journal begin failed", "guild", o.guildID, "op", op, "err", err)
 		return 0
@@ -78,12 +78,12 @@ func NewPostgresJournal(pool *pgxpool.Pool) *PostgresJournal {
 	return &PostgresJournal{pool: pool}
 }
 
-func (j *PostgresJournal) Begin(ctx context.Context, guildID, op, targetID string) (int64, error) {
+func (j *PostgresJournal) Begin(ctx context.Context, guildID, op, targetID, detail string) (int64, error) {
 	var id int64
 	if err := j.pool.QueryRow(ctx, `
-		INSERT INTO action_journal (guild_id, op, target_id, state)
-		VALUES ($1, $2, $3, 'pending')
-		RETURNING id`, guildID, op, targetID).Scan(&id); err != nil {
+		INSERT INTO action_journal (guild_id, op, target_id, detail, state)
+		VALUES ($1, $2, $3, $4, 'pending')
+		RETURNING id`, guildID, op, targetID, truncate(detail, 2000)).Scan(&id); err != nil {
 		return 0, fmt.Errorf("journal: begin: %w", err)
 	}
 	return id, nil

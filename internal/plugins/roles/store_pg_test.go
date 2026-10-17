@@ -2,6 +2,7 @@ package roles
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -58,5 +59,28 @@ func TestEternalRoleRoundTripThroughPostgres(t *testing.T) {
 	}
 	if got, err := store.ListEternalRoles(ctx, "nobody"); err != nil || len(got) != 0 {
 		t.Fatalf("unknown guild: %v %v", got, err)
+	}
+}
+
+// MarkJailApplied moves jailed_at and nothing else, and says so when there
+// is no row to move.
+func TestMarkJailAppliedThroughPostgres(t *testing.T) {
+	store := NewPostgresStore(dbtest.Pool(t))
+	ctx := context.Background()
+	guild := t.Name()
+	at := time.Now().UTC().Truncate(time.Second)
+	if err := store.InsertJail(ctx, JailRecord{GuildID: guild, UserID: "u1", SnapshotRoleIDs: []string{"r1"}, JailRoleID: "j", JailedAt: at}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	later := at.Add(time.Hour)
+	if err := store.MarkJailApplied(ctx, guild, "u1", later); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	got, _, err := store.GetJail(ctx, guild, "u1")
+	if err != nil || !got.JailedAt.Equal(later) || len(got.SnapshotRoleIDs) != 1 || got.JailRoleID != "j" {
+		t.Fatalf("after mark: %+v %v", got, err)
+	}
+	if err := store.MarkJailApplied(ctx, guild, "nobody", later); !errors.Is(err, ErrNotJailed) {
+		t.Fatalf("missing row: %v, want ErrNotJailed", err)
 	}
 }
