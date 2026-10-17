@@ -79,7 +79,7 @@ func (p *Plugin) handlePerf(ctx context.Context, ix *core.Ix) {
 		ix.RespondErr("Operator only", fmt.Errorf("these numbers cover every server merlin is in, so only her operator can read them"))
 		return
 	}
-	_ = ix.RespondPanel(p.panel())
+	_ = ix.RespondEmbedWithComponents(p.record(), p.controls())
 }
 
 func (p *Plugin) handleRefresh(ctx context.Context, ix *core.Ix, _ string) {
@@ -87,45 +87,47 @@ func (p *Plugin) handleRefresh(ctx context.Context, ix *core.Ix, _ string) {
 		ix.RespondErr("Operator only", fmt.Errorf("these numbers cover every server merlin is in"))
 		return
 	}
-	_ = ix.UpdatePanel(p.panel())
+	_ = ix.UpdateEmbedWithComponents(p.record(), p.controls())
 }
 
-func (p *Plugin) panel() core.Panel {
-	return core.Panel{
-		Color: core.ColorInfo, Title: "Perf", Plugin: p.Name(), Line: "since boot, every server",
-		Parts: []discord.ContainerSubComponent{
-			ui.Text(p.readout()),
-			ui.Row(ui.Button("Refresh", refreshID, discord.ButtonStyleSecondary, false)),
-		},
-		Footer: "in: gateway to dispatch · run: handler or job · http: round trip · wait: a 429's hold · build " + fleet.Build(),
-	}
+func (p *Plugin) controls() []discord.LayoutComponent {
+	return []discord.LayoutComponent{ui.Row(ui.Button("Refresh", refreshID, discord.ButtonStyleSecondary, false))}
 }
 
-// The grid's columns: label, bar, p99, p50, count. 19+2+7+7+5 is 40, the
-// widest a code block line should be. A value is at most 6 wide, so its
-// column keeps a gap, and the label gets the room a route's name needs.
-const labelW, barW = 19, 2
-
-func (p *Plugin) readout() string {
+// record is the numbers as an embed, a record read by its facts (cygnet
+// DESIGN.md): one field a route, slowest first, its bar against the
+// slowest, p99 then p50 and how many, three abreast and stacked on a phone,
+// rather than the 40-column code block grid this was, which wrapped on a
+// phone and read as a terminal. The Go runtime's two numbers close it.
+func (p *Plugin) record() discord.Embed {
 	rows := p.rec.Rows()
-	var b strings.Builder
-	b.WriteString("```\n")
-	fmt.Fprintf(&b, "%-*s%7s%7s%5s\n", labelW+barW, "", "p99", "p50", "n")
+	e := core.Embed(core.ColorInfo, "Perf", "since boot, every server, slowest first")
 	if len(rows) == 0 {
-		b.WriteString("nothing measured yet\n")
+		e.Description += "\nnothing measured yet"
 	}
 	var slowest time.Duration
 	if len(rows) > 0 {
 		slowest = rows[0].P99
 	}
 	for _, r := range rows[:min(top, len(rows))] {
-		label := clip(r.Who, labelW-2-len(r.Stage.String())) + " " + r.Stage.String()
-		fmt.Fprintf(&b, "%-*s%-*s%7s%7s%5s\n", labelW, label, barW, bar(r.P99, slowest, barW-1), dur(r.P99), dur(r.P50), count(r.N))
+		e.Fields = append(e.Fields, discord.EmbedField{
+			Name:   clip(r.Who, nameW) + " " + r.Stage.String(),
+			Value:  strings.TrimSpace(bar(r.P99, slowest, barW)+" "+dur(r.P99)) + " p99\n" + dur(r.P50) + " p50 · " + count(r.N),
+			Inline: core.Inline(),
+		})
 	}
 	sched, gc := p.runtime()
-	fmt.Fprintf(&b, "%s\n%-*s%7s\n%-*s%7s\n```", strings.Repeat("·", 40), labelW+barW, "go sched", dur(sched), labelW+barW, "go gc pause", dur(gc))
-	return b.String()
+	e.Fields = append(e.Fields,
+		discord.EmbedField{Name: "go sched", Value: dur(sched) + " p99", Inline: core.Inline()},
+		discord.EmbedField{Name: "go gc pause", Value: dur(gc) + " p99", Inline: core.Inline()},
+	)
+	e.Footer = &discord.EmbedFooter{Text: "in: gateway to dispatch · run: handler or job · http: round trip · wait: a 429's hold · build " + fleet.Build()}
+	return e
 }
+
+// nameW keeps a route's name to what a column shows on one line; barW is
+// the bar's width in cells against the slowest route.
+const nameW, barW = 24, 4
 
 // bar is d against max as up to width cells of eighths, so two stages a
 // few percent apart still look apart.
