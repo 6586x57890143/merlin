@@ -29,10 +29,10 @@ func TestIntakeReadsDiscordsJSON(t *testing.T) {
 	p.HandleMessage(m)
 	p.HandleMessage(bot)
 	c := p.count
-	if u := c.users["3:4"]; u.Name != "zed" || u.Avatar != "abc" || len(c.users) != 1 {
+	if u := c.users[seat{3, 4}]; u.name != "zed" || u.avatar != "abc" || len(c.users) != 1 {
 		t.Fatalf("users %+v", c.users)
 	}
-	if n := c.messages[bucketKey{"3", "2", "4", m.CreatedAt.UTC().Truncate(time.Hour)}]; n != 1 || len(c.messages) != 1 {
+	if n := c.messages[cell{3, 2, 4, m.CreatedAt.UTC().Truncate(time.Hour)}]; n != 1 || len(c.messages) != 1 {
 		t.Fatalf("messages %+v", c.messages)
 	}
 
@@ -42,7 +42,7 @@ func TestIntakeReadsDiscordsJSON(t *testing.T) {
 	p.HandleVoiceState(vs, discord.VoiceState{}, discord.Member{User: discord.User{ID: 4, Username: "u"}})
 	clock = clock.Add(10 * time.Minute)
 	p.HandleVoiceState(muted, vs, discord.Member{})
-	if o := c.open["3:4"]; o.channelID != "7" || !o.since.Equal(windowStart.Add(30*time.Minute)) {
+	if o := c.open[seat{3, 4}]; o.channel != 7 || !o.since.Equal(windowStart.Add(30*time.Minute)) {
 		t.Fatalf("a mute moved the cursor: %+v", o)
 	}
 	p.SyncVoice("3", []discord.VoiceState{muted})

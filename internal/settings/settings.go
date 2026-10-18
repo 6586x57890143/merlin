@@ -13,9 +13,11 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/disgoorg/snowflake/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -525,10 +527,32 @@ func (s *Store) isDefaultOff(pluginName string) bool {
 // closed for these, the opposite direction from every other plugin and the
 // right one for a plugin whose whole effect is letting members post.
 func (s *Store) PluginEnabled(guildID, pluginName string) bool {
-	if s.isDefaultOff(pluginName) {
-		return slices.Contains(s.guild(guildID).settings.EnabledPlugins, pluginName)
+	return pluginOn(s.guild(guildID).settings, s.isDefaultOff(pluginName), pluginName)
+}
+
+// PluginEnabledID is PluginEnabled for a gateway snowflake, for the
+// per-message handlers: it neither formats the ID (indexing with string(key)
+// of a stack buffer does not allocate) nor builds an empty guildCache on a
+// miss.
+func (s *Store) PluginEnabledID(guildID snowflake.ID, pluginName string) bool {
+	var buf [20]byte
+	key := strconv.AppendUint(buf[:0], uint64(guildID), 10)
+	s.mu.RLock()
+	gc := s.cache[string(key)]
+	off := s.defaultOff[pluginName]
+	s.mu.RUnlock()
+	var gs GuildSettings
+	if gc != nil {
+		gs = gc.settings
 	}
-	return !slices.Contains(s.DisabledPlugins(guildID), pluginName)
+	return pluginOn(gs, off, pluginName)
+}
+
+func pluginOn(gs GuildSettings, defaultOff bool, pluginName string) bool {
+	if defaultOff {
+		return slices.Contains(gs.EnabledPlugins, pluginName)
+	}
+	return !slices.Contains(gs.DisabledPlugins, pluginName)
 }
 
 // WritesPaused and WritesDryRun together satisfy discordguard's GuildGate.

@@ -87,11 +87,11 @@ type Plugin struct {
 	// for the live counter; nil in tests. A function rather than an
 	// interface for the same reason roles.voiceChannelOf is: it is the one
 	// piece of the gateway cache this plugin reads.
-	channelName func(guildID, channelID string) string
+	channelName func(guildID, channelID snow.ID) string
 	// gate is the per-guild plugin switch. The router consults it before
 	// any command; the gateway handlers consult it here, so a guild that
 	// turned this plugin off is not being counted behind its back.
-	gate core.PluginGate
+	gate Gate
 
 	count *counter
 
@@ -107,7 +107,7 @@ type Plugin struct {
 
 // New constructs the plugin. store is passed directly rather than through
 // core.Deps, the same way rotation and roles take theirs.
-func New(store Store, gate core.PluginGate, channelName func(guildID, channelID string) string) *Plugin {
+func New(store Store, gate Gate, channelName func(guildID, channelID snow.ID) string) *Plugin {
 	base, stop := context.WithCancel(context.Background())
 	return &Plugin{
 		store:              store,
@@ -315,6 +315,17 @@ func (p *Plugin) pruneLoop(ctx context.Context) {
 // (tests) means on.
 func (p *Plugin) enabled(guildID string) bool {
 	return p.gate == nil || p.gate.PluginEnabled(guildID, p.Name())
+}
+
+// Gate is core.PluginGate plus the same question on a snowflake, which the
+// per-message handlers ask without formatting the ID. settings.Store is both.
+type Gate interface {
+	core.PluginGate
+	PluginEnabledID(guildID snow.ID, pluginName string) bool
+}
+
+func (p *Plugin) enabledID(guildID snow.ID) bool {
+	return p.gate == nil || p.gate.PluginEnabledID(guildID, p.Name())
 }
 
 func (p *Plugin) operator(userID string) bool {

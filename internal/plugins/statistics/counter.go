@@ -2,7 +2,6 @@ package statistics
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -25,9 +24,20 @@ const flushTimeout = 30 * time.Second
 // ponytail: flat cap and drop-all; per-guild caps if one guild ever floods.
 const pendingCap = 50000
 
-type bucketKey struct {
-	guildID, channelID, userID string
-	hour                       time.Time
+// The tally is keyed on the gateway's snowflakes, so counting a message
+// formats nothing and allocates nothing; IDs become text once, at flush.
+type cell struct {
+	guild, channel, user snow.ID
+	hour                 time.Time
+}
+
+// seat is a member, or a channel, in one guild.
+type seat struct{ guild, id snow.ID }
+
+// sighting is the newest name and avatar seen for a member.
+type sighting struct {
+	name, avatar string
+	at           time.Time
 }
 
 type memberKey struct {
@@ -40,43 +50,51 @@ type memberKey struct {
 // seconds are booked into hourly buckets as they pass, and this is only
 // the cursor.
 type voiceOpen struct {
-	channelID string
-	since     time.Time
+	channel snow.ID
+	since   time.Time
 }
 
 // counter is the live tally between flushes.
 type counter struct {
 	mu       sync.Mutex
-	messages map[bucketKey]int
-	voice    map[bucketKey]int    // seconds
-	open     map[string]voiceOpen // guild:user, members in voice right now
+	messages map[cell]int
+	voice    map[cell]int       // seconds
+	open     map[seat]voiceOpen // members in voice right now
 	members  map[memberKey]*MemberBucket
-	users    map[string]UserSeen // guild:user
-	channels map[string]ChannelSeen
+	users    map[seat]sighting
+	channels map[seat]string // name
 }
 
 func newCounter() *counter {
 	return &counter{
-		messages: map[bucketKey]int{},
-		voice:    map[bucketKey]int{},
-		open:     map[string]voiceOpen{},
+		messages: map[cell]int{},
+		voice:    map[cell]int{},
+		open:     map[seat]voiceOpen{},
 		members:  map[memberKey]*MemberBucket{},
-		users:    map[string]UserSeen{},
-		channels: map[string]ChannelSeen{},
+		users:    map[seat]sighting{},
+		channels: map[seat]string{},
 	}
 }
 
-// post is what statistics reads of a gateway message.
+// post is what the backfill reads of a message from history.
 type post struct {
 	// id is the message's own, which the backfill pages by.
-	id                           string
-	guildID, channelID, authorID string
-	at                           time.Time
+	id                  string
+	channelID, authorID string
+	at                  time.Time
 	// name is the member's nickname, else their display name, else their
 	// username.
 	name, avatar string
 	// skip is a bot, a webhook, or a message with no author.
 	skip bool
+}
+
+// heard is what the live counter reads of a gateway message, on snowflakes.
+type heard struct {
+	guild, channel, author snow.ID
+	at                     time.Time
+	name, avatar           string
+	skip                   bool
 }
 
 // HandleMessage counts one gateway message. Bots and webhooks are not
@@ -86,8 +104,8 @@ func (p *Plugin) HandleMessage(m discord.Message) {
 	if m.GuildID == nil {
 		return
 	}
-	in := post{
-		guildID: m.GuildID.String(), channelID: m.ChannelID.String(), authorID: m.Author.ID.String(),
+	in := heard{
+		guild: *m.GuildID, channel: m.ChannelID, author: m.Author.ID,
 		at: m.CreatedAt, avatar: deref(m.Author.Avatar),
 		skip: m.Author.ID == 0 || m.Author.Bot || m.WebhookID != nil,
 	}
@@ -101,8 +119,8 @@ func (p *Plugin) HandleMessage(m discord.Message) {
 	p.count1(in)
 }
 
-func (p *Plugin) count1(m post) {
-	if m.guildID == "" || m.skip || !p.enabled(m.guildID) {
+func (p *Plugin) count1(m heard) {
+	if m.guild == 0 || m.skip || !p.enabledID(m.guild) {
 		return
 	}
 	at := m.at.UTC()
@@ -111,25 +129,26 @@ func (p *Plugin) count1(m post) {
 	}
 	chName := ""
 	if p.channelName != nil {
-		chName = p.channelName(m.guildID, m.channelID)
+		chName = p.channelName(m.guild, m.channel)
 	}
 
 	c := p.count
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.messages[bucketKey{m.guildID, m.channelID, m.authorID, at.Truncate(time.Hour)}]++
-	c.users[m.guildID+":"+m.authorID] = UserSeen{GuildID: m.guildID, UserID: m.authorID, Name: m.name, Avatar: m.avatar, SeenAt: at}
+	c.messages[cell{m.guild, m.channel, m.author, at.Truncate(time.Hour)}]++
+	c.users[seat{m.guild, m.author}] = sighting{name: m.name, avatar: m.avatar, at: at}
 	if chName != "" {
-		c.channels[m.guildID+":"+m.channelID] = ChannelSeen{GuildID: m.guildID, ChannelID: m.channelID, Name: chName}
+		c.channels[seat{m.guild, m.channel}] = chName
 	}
 }
 
 // move is what statistics reads of a voice state change.
 type move struct {
-	guildID, userID, channelID string
+	// channel is 0 when the member is in no voice channel.
+	guild, user, channel snow.ID
 	// before is the channel before the change, when the gateway cache knew
-	// it; a mute or deafen leaves it equal to channelID.
-	before *string
+	// it; a mute or deafen leaves it equal to channel.
+	before *snow.ID
 	bot    bool
 	// named is set when the event carried the member, and name and avatar
 	// are theirs.
@@ -144,7 +163,7 @@ type move struct {
 // whether they left, switched rooms or joined. old is the state before,
 // from the gateway cache, zero when it had none.
 func (p *Plugin) HandleVoiceState(vs, old discord.VoiceState, m discord.Member) {
-	in := move{guildID: vs.GuildID.String(), userID: vs.UserID.String(), channelID: channelOf(vs.ChannelID), bot: m.User.Bot}
+	in := move{guild: vs.GuildID, user: vs.UserID, channel: channelOf(vs.ChannelID), bot: m.User.Bot}
 	if old.UserID != 0 {
 		before := channelOf(old.ChannelID)
 		in.before = &before
@@ -163,10 +182,10 @@ func (p *Plugin) HandleVoiceState(vs, old discord.VoiceState, m discord.Member) 
 }
 
 func (p *Plugin) voice1(vs move) {
-	if vs.guildID == "" || vs.userID == "" || !p.enabled(vs.guildID) {
+	if vs.guild == 0 || vs.user == 0 || !p.enabledID(vs.guild) {
 		return
 	}
-	if vs.before != nil && *vs.before == vs.channelID {
+	if vs.before != nil && *vs.before == vs.channel {
 		return
 	}
 	if vs.bot {
@@ -176,14 +195,15 @@ func (p *Plugin) voice1(vs move) {
 	c := p.count
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.settleVoice(vs.guildID, vs.userID, now)
-	if vs.channelID == "" {
-		delete(c.open, vs.guildID+":"+vs.userID)
+	who := seat{vs.guild, vs.user}
+	c.settleVoice(who, now)
+	if vs.channel == 0 {
+		delete(c.open, who)
 		return
 	}
-	c.open[vs.guildID+":"+vs.userID] = voiceOpen{channelID: vs.channelID, since: now}
+	c.open[who] = voiceOpen{channel: vs.channel, since: now}
 	if vs.named {
-		c.users[vs.guildID+":"+vs.userID] = UserSeen{GuildID: vs.guildID, UserID: vs.userID, Name: vs.name, Avatar: vs.avatar, SeenAt: now}
+		c.users[who] = sighting{name: vs.name, avatar: vs.avatar, at: now}
 	}
 }
 
@@ -193,18 +213,20 @@ func (p *Plugin) voice1(vs move) {
 // guild are lost, which is the honest direction: a gap the size of a
 // deploy, never time nobody was there for.
 func (p *Plugin) SyncVoice(guildID string, states []discord.VoiceState) {
-	seats := make([][2]string, 0, len(states))
-	for _, vs := range states {
-		if vs.UserID != 0 {
-			seats = append(seats, [2]string{vs.UserID.String(), channelOf(vs.ChannelID)})
-		}
+	g, err := snow.Parse(guildID)
+	if err != nil {
+		return
 	}
-	p.syncVoice(guildID, seats)
+	seats := make([][2]snow.ID, 0, len(states))
+	for _, vs := range states {
+		seats = append(seats, [2]snow.ID{vs.UserID, channelOf(vs.ChannelID)})
+	}
+	p.syncVoice(g, seats)
 }
 
 // syncVoice is SyncVoice for seats of user and channel.
-func (p *Plugin) syncVoice(guildID string, seats [][2]string) {
-	if guildID == "" || !p.enabled(guildID) {
+func (p *Plugin) syncVoice(guildID snow.ID, seats [][2]snow.ID) {
+	if guildID == 0 || !p.enabledID(guildID) {
 		return
 	}
 	now := p.now()
@@ -212,22 +234,22 @@ func (p *Plugin) syncVoice(guildID string, seats [][2]string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, s := range seats {
-		user, ch := s[0], s[1]
-		if user == "" || ch == "" {
+		who, ch := seat{guildID, s[0]}, s[1]
+		if who.id == 0 || ch == 0 {
 			continue
 		}
-		if _, already := c.open[guildID+":"+user]; already {
+		if _, already := c.open[who]; already {
 			continue
 		}
-		c.open[guildID+":"+user] = voiceOpen{channelID: ch, since: now}
+		c.open[who] = voiceOpen{channel: ch, since: now}
 	}
 }
 
-func channelOf(id *snow.ID) string {
+func channelOf(id *snow.ID) snow.ID {
 	if id == nil {
-		return ""
+		return 0
 	}
-	return id.String()
+	return *id
 }
 
 func deref(s *string) string {
@@ -240,17 +262,16 @@ func deref(s *string) string {
 // settleVoice books one member's open time up to now into the hourly
 // buckets, split at hour boundaries, and moves the cursor. Caller holds
 // the lock.
-func (c *counter) settleVoice(guildID, userID string, now time.Time) {
-	k := guildID + ":" + userID
-	o, ok := c.open[k]
+func (c *counter) settleVoice(who seat, now time.Time) {
+	o, ok := c.open[who]
 	if !ok {
 		return
 	}
 	for _, h := range hourSlices(o.since, now) {
-		c.voice[bucketKey{guildID, o.channelID, userID, h.hour}] += h.seconds
+		c.voice[cell{who.guild, o.channel, who.id, h.hour}] += h.seconds
 	}
 	o.since = now
-	c.open[k] = o
+	c.open[who] = o
 }
 
 type hourSlice struct {
@@ -310,16 +331,15 @@ func (p *Plugin) flush(ctx context.Context) {
 	// leave events are no longer heard, so nothing else would ever close
 	// them.
 	now := p.now()
-	for k := range c.open {
-		guildID, userID, _ := strings.Cut(k, ":")
-		if !p.enabled(guildID) {
-			delete(c.open, k)
+	for who := range c.open {
+		if !p.enabledID(who.guild) {
+			delete(c.open, who)
 			continue
 		}
-		c.settleVoice(guildID, userID, now)
+		c.settleVoice(who, now)
 	}
 	messages, voice, members, users, channels := c.messages, c.voice, c.members, c.users, c.channels
-	c.messages, c.voice, c.members, c.users, c.channels = map[bucketKey]int{}, map[bucketKey]int{}, map[memberKey]*MemberBucket{}, map[string]UserSeen{}, map[string]ChannelSeen{}
+	c.messages, c.voice, c.members, c.users, c.channels = map[cell]int{}, map[cell]int{}, map[memberKey]*MemberBucket{}, map[seat]sighting{}, map[seat]string{}
 	c.mu.Unlock()
 	if len(messages) == 0 && len(voice) == 0 && len(members) == 0 {
 		return
@@ -330,7 +350,7 @@ func (p *Plugin) flush(ctx context.Context) {
 
 	rows := make([]Bucket, 0, len(messages))
 	for k, n := range messages {
-		rows = append(rows, Bucket{GuildID: k.guildID, ChannelID: k.channelID, UserID: k.userID, Hour: k.hour, Messages: n})
+		rows = append(rows, Bucket{GuildID: k.guild.String(), ChannelID: k.channel.String(), UserID: k.user.String(), Hour: k.hour, Messages: n})
 	}
 	if err := p.store.AddMessages(ctx, rows); err != nil {
 		p.log.Error("statistics: flush messages", "cells", len(rows), "err", err)
@@ -339,7 +359,7 @@ func (p *Plugin) flush(ctx context.Context) {
 
 	vrows := make([]VoiceBucket, 0, len(voice))
 	for k, secs := range voice {
-		vrows = append(vrows, VoiceBucket{GuildID: k.guildID, ChannelID: k.channelID, UserID: k.userID, Hour: k.hour, Seconds: secs})
+		vrows = append(vrows, VoiceBucket{GuildID: k.guild.String(), ChannelID: k.channel.String(), UserID: k.user.String(), Hour: k.hour, Seconds: secs})
 	}
 	if err := p.store.AddVoice(ctx, vrows); err != nil {
 		p.log.Error("statistics: flush voice", "cells", len(vrows), "err", err)
@@ -358,22 +378,22 @@ func (p *Plugin) flush(ctx context.Context) {
 	// Names are best effort: a lost sighting is replaced by the next
 	// message from the same person.
 	seen := make([]UserSeen, 0, len(users))
-	for _, u := range users {
-		seen = append(seen, u)
+	for who, u := range users {
+		seen = append(seen, UserSeen{GuildID: who.guild.String(), UserID: who.id.String(), Name: u.name, Avatar: u.avatar, SeenAt: u.at})
 	}
 	if err := p.store.UpsertUsers(ctx, seen); err != nil {
 		p.log.Warn("statistics: flush users", "err", err)
 	}
 	chs := make([]ChannelSeen, 0, len(channels))
-	for _, ch := range channels {
-		chs = append(chs, ch)
+	for where, name := range channels {
+		chs = append(chs, ChannelSeen{GuildID: where.guild.String(), ChannelID: where.id.String(), Name: name})
 	}
 	if err := p.store.UpsertChannels(ctx, chs); err != nil {
 		p.log.Warn("statistics: flush channels", "err", err)
 	}
 }
 
-func (p *Plugin) restore(messages, voice map[bucketKey]int, members map[memberKey]*MemberBucket) {
+func (p *Plugin) restore(messages, voice map[cell]int, members map[memberKey]*MemberBucket) {
 	c := p.count
 	c.mu.Lock()
 	defer c.mu.Unlock()
