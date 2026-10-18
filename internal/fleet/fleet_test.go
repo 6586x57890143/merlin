@@ -18,7 +18,7 @@ var quiet = slog.New(slog.DiscardHandler)
 
 func TestUnconfigured(t *testing.T) {
 	for _, c := range [][2]string{{"", ""}, {"ws://x", ""}, {"", "t"}} {
-		if Dial(c[0], c[1], quiet) != nil {
+		if Dial(c[0], c[1], "", quiet) != nil {
 			t.Errorf("%v: linked", c)
 		}
 	}
@@ -43,7 +43,7 @@ func refusing(t *testing.T) *httptest.Server {
 }
 
 func TestDescribe(t *testing.T) {
-	l := Dial("ws://127.0.0.1:1/v1/link", "t", quiet)
+	l := Dial("ws://127.0.0.1:1/v1/link", "t", "not base64!", quiet)
 	if l.manifest.Load() != nil {
 		t.Fatal("a manifest before the commands are finalised")
 	}
@@ -88,5 +88,14 @@ func TestBuildPrefersTheStampedRevision(t *testing.T) {
 	}
 	if got := build(""); got == "" {
 		t.Error("an unstamped build must still name something")
+	}
+}
+
+// A good attestation rides along; a bad one is dropped, and merlin still
+// links.
+func TestDialAttest(t *testing.T) {
+	a := link.Attestation{Bird: "merlin", Commit: "0123456789abcdef0123456789abcdef01234567", Signed: 1}
+	if Dial("ws://127.0.0.1:1/v1/link", "t", a.Encode(), quiet) == nil {
+		t.Error("an attested link didn't dial")
 	}
 }

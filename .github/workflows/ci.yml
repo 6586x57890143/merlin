@@ -151,6 +151,8 @@ jobs:
     needs: [lint-test, secret-scan, docker-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
@@ -161,6 +163,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -177,6 +180,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # merlin proves this build to cygnet: the release key, a secret only
+      # this job on main sees, signs the bird, the commit and the image's
+      # digest (cygnet's link/cmd/attest). A fork never has the key, so it
+      # can't link as merlin once cygnet pins it. Without the key the
+      # deploy goes ahead unsigned, as before.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Sign the build for cygnet
+        id: attest
+        env:
+          BIRD_RELEASE_KEY: ${{ secrets.BIRD_RELEASE_KEY }}
+          DIGEST: ${{ needs.push-image.outputs.digest }}
+        run: |
+          if [ -z "$BIRD_RELEASE_KEY" ]; then
+            echo "::notice::Not signed: the BIRD_RELEASE_KEY secret is not set."
+            exit 0
+          fi
+          att=$(go run github.com/6586x57890143/cygnet/link/cmd/attest@v0.9.0 -bird merlin -commit "$GITHUB_SHA" -image "$DIGEST")
+          echo "attest=$att" >> "$GITHUB_OUTPUT"
       - name: Copy prod compose file to VPS
         uses: appleboy/scp-action@v1.0.0
         with:
@@ -191,7 +215,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: deploy
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: GHCR_TOKEN,GHCR_USER,IMAGE_TAG
+          envs: GHCR_TOKEN,GHCR_USER,IMAGE_TAG,ATTEST
           script: |
             set -e
             cd /home/deploy/merlin
@@ -203,7 +227,9 @@ jobs:
             if [ -f deployed-tag.env ]; then
               cp deployed-tag.env previous-tag.env
             fi
-            echo "MERLIN_IMAGE_TAG=$IMAGE_TAG" > deployed-tag.env
+            # The attestation goes with its tag: a rollback runs the older
+            # image under the older image's own signature.
+            printf 'MERLIN_IMAGE_TAG=%s\nMERLIN_ATTEST=%s\n' "$IMAGE_TAG" "$ATTEST" > deployed-tag.env
 
             set -a
             . ./deployed-tag.env
@@ -223,3 +249,4 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           IMAGE_TAG: ${{ github.sha }}
+          ATTEST: ${{ steps.attest.outputs.attest }}

@@ -11,6 +11,10 @@ services:
       - ALL
     env_file:
       - .env
+    # What CI signed for this image, which merlin shows cygnet when she
+    # links (deployed-tag.env keeps it with its tag); empty when unsigned.
+    environment:
+      MERLIN_ATTEST: ${MERLIN_ATTEST:-}
     volumes:
       - ./config.yaml:/config.yaml:ro
     depends_on:
