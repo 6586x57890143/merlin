@@ -359,7 +359,7 @@ func (p *Plugin) notifyAuthor(ctx context.Context, cfg Config, c candidate, acti
 
 	embed := core.Embed(core.ColorWarning, "A message of yours was moderated", line, fields...)
 	if err := p.ops(guildID).DM(c.AuthorID, discord.MessageCreate{
-		Embeds: []discord.Embed{embed},
+		Embeds: []discord.Embed{core.Bulleted(embed)},
 		Files:  core.EmbedUploads(embed),
 	}); err != nil && !discordguard.Skipped(err) {
 		p.log.Info("aimod: could not DM author", "guild", guildID, "user", c.AuthorID)

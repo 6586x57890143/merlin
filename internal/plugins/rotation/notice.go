@@ -166,7 +166,7 @@ func (p *Plugin) noticeForChannel(ctx context.Context, guildID string, rc settin
 	// and the pair reads as escalate-then-settle.
 	notice := core.Embed(core.ColorWarning, "", line)
 	if _, err := p.ops(guildID).CreateMessage(core.ID(rc.ChannelID), discord.MessageCreate{
-		Embeds: []discord.Embed{notice},
+		Embeds: []discord.Embed{core.Bulleted(notice)},
 		// Without the files the thumbnail URL points at an attachment that
 		// was never uploaded, which Discord renders as a broken frame.
 		Files: core.EmbedUploads(notice),

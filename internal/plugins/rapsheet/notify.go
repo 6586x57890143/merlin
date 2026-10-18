@@ -69,7 +69,7 @@ func (p *Plugin) dm(ctx context.Context, guildID, userID string, key voice.Key, 
 	}
 	embed := core.Embed(color, title, body, fields...)
 	if _, err := p.ops(guildID).CreateMessage(ch.ID(), discord.MessageCreate{
-		Embeds: []discord.Embed{embed},
+		Embeds: []discord.Embed{core.Bulleted(embed)},
 		Files:  core.EmbedUploads(embed),
 	}); err != nil {
 		p.log.Info("rapsheet: could not deliver member notice", "guild", guildID, "user", userID, "err", err)

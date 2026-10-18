@@ -201,7 +201,7 @@ func (p *Plugin) HandleMemberJoin(_ context.Context, guildID string, m discord.M
 func (p *Plugin) postAltNotice(ctx context.Context, cfg Config, joiner *discord.User, h AltHint) {
 	embed, components := altNoticeEmbed(joiner, h, p.altContext(ctx, cfg, h), "", false)
 	if _, err := p.ops(cfg.GuildID).CreateMessage(core.ID(cfg.ModChannelID), discord.MessageCreate{
-		Embeds: []discord.Embed{embed}, Components: components, Files: core.EmbedUploads(embed),
+		Embeds: []discord.Embed{core.Bulleted(embed)}, Components: components, Files: core.EmbedUploads(embed),
 	}); err != nil {
 		p.log.Error("rapsheet: post alt notice", "guild", cfg.GuildID, "err", err)
 	}

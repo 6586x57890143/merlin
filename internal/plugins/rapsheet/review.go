@@ -303,7 +303,7 @@ func (p *Plugin) weeklyReview(ctx context.Context, guildID string) error {
 		fmt.Sprintf("%d entries in the last 30 days, so most of this week's post overlaps last week's on purpose: a pattern is a month long, not a week. What a model reading them noticed:\n\n%s\n\n"+
 			"Read it as a prompt to look, not a verdict. `/rapsheet view` is the record, and a case number is the entry's line on the sheet and in the case-file thread.", len(entries), out))
 	if _, err := p.ops(guildID).CreateMessage(core.ID(cfg.ModChannelID), discord.MessageCreate{
-		Embeds: []discord.Embed{embed}, Files: core.EmbedUploads(embed),
+		Embeds: []discord.Embed{core.Bulleted(embed)}, Files: core.EmbedUploads(embed),
 	}); err != nil {
 		return fmt.Errorf("rapsheet review: post: %w", err)
 	}

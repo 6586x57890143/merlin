@@ -396,7 +396,7 @@ func (p *Plugin) populateIfNeeded(ctx context.Context, channelID snowflake.ID, r
 	// travel with it or the icon renders broken.
 	notice := core.Embed(core.ColorPrimary, "", p.retentionNotice(ctx, rc))
 	if _, err := p.ops(rc.GuildID).CreateMessage(channelID, discord.MessageCreate{
-		Embeds: []discord.Embed{notice},
+		Embeds: []discord.Embed{core.Bulleted(notice)},
 		Files:  core.EmbedUploads(notice),
 	}); err != nil {
 		return fmt.Errorf("post retention notice: %w", err)

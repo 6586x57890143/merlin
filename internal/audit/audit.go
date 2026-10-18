@@ -92,7 +92,7 @@ func (w *Writer) post(_ context.Context, guildID string, card ledger.Card) (stri
 		return "", fmt.Errorf("audit: guild %s has no audit log channel configured", guildID)
 	}
 	msg, err := w.rest.CreateMessage(channelID, discord.MessageCreate{
-		Embeds:          []discord.Embed{card.Embed},
+		Embeds:          []discord.Embed{core.Bulleted(card.Embed)},
 		Components:      rows(card),
 		Files:           core.EmbedUploads(card.Embed),
 		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
@@ -108,7 +108,7 @@ func (w *Writer) edit(_ context.Context, _ string, ref string, card ledger.Card)
 	ch, msg, _ := strings.Cut(ref, "/")
 	components := rows(card)
 	if _, err := w.rest.UpdateMessage(core.ID(ch), core.ID(msg), discord.MessageUpdate{
-		Embeds:     &[]discord.Embed{card.Embed},
+		Embeds:     &[]discord.Embed{core.Bulleted(card.Embed)},
 		Components: &components,
 		// Replaced, not added to: an edit that only uploaded would pile
 		// another copy of each image onto the message every time it grew.
