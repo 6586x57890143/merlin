@@ -322,7 +322,7 @@ func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, g discord.GatewayGuild
 			"a status channel, a mod role, and admins, one step at a time. I only ever change what you pick on each "+
 			"step, and it's safe to re-run any time.", g.Name))
 	_, err = p.rest.CreateMessage(dmChannel.ID(), discord.MessageCreate{
-		Embeds: []discord.Embed{embed},
+		Embeds: []discord.Embed{core.Bulleted(embed)},
 		Files:  core.EmbedUploads(embed),
 		// Outside the guard, so stated here as everywhere else.
 		AllowedMentions: core.NoPings(),

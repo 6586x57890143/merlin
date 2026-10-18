@@ -486,7 +486,7 @@ func (s *Scheduler) alert(ctx context.Context, jobKey string, failures int, caus
 	// job alerts on every failure past the threshold. An alert about a
 	// problem must not become part of one.
 	if _, err := s.rest.CreateMessage(channelID, discord.MessageCreate{
-		Embeds:          []discord.Embed{embed},
+		Embeds:          []discord.Embed{core.Bulleted(embed)},
 		Files:           core.EmbedUploads(embed),
 		AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}},
 	}); err != nil {

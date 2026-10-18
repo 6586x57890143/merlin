@@ -55,7 +55,7 @@ func (p *Plugin) post(ctx context.Context, c Contest, embed discord.Embed, compo
 		return ""
 	}
 	msg, err := p.opsFor(c.GuildID).CreateMessage(core.ID(c.AnnounceChannelID), discord.MessageCreate{
-		Embeds: []discord.Embed{embed},
+		Embeds: []discord.Embed{core.Bulleted(embed)},
 		// EmbedUploads rather than a hand-listed attachment: an
 		// attachment:// URL with no matching upload renders as a broken
 		// frame, and reading the URLs back off the finished embed is what
@@ -349,7 +349,7 @@ func (p *Plugin) deliverPrize(ctx context.Context, c Contest, pr Prize, winnerID
 	embed := core.Embed(core.ColorSuccess, "you won "+c.Title,
 		"nice one. here is what you won.", fields...)
 	_, err = ops.CreateMessage(dm.ID(), discord.MessageCreate{
-		Embeds: []discord.Embed{embed},
+		Embeds: []discord.Embed{core.Bulleted(embed)},
 		Files:  core.EmbedUploads(embed),
 	})
 	if err != nil {

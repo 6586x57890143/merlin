@@ -214,7 +214,7 @@ func (p *Plugin) tellDonorRejected(c Contest, pr Prize) error {
 				". you can pledge again with /contest prize.",
 		})
 	_, err = ops.CreateMessage(dm.ID(), discord.MessageCreate{
-		Embeds: []discord.Embed{embed},
+		Embeds: []discord.Embed{core.Bulleted(embed)},
 		Files:  core.EmbedUploads(embed),
 	})
 	return err

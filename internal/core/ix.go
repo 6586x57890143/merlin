@@ -125,7 +125,7 @@ func noAttachments() *[]discord.AttachmentUpdate { return &[]discord.AttachmentU
 // RespondEmbed is RespondEmbed: embed, privately, with what it references.
 func (ix *Ix) RespondEmbed(embed discord.Embed) error {
 	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
-		Embeds: []discord.Embed{embed}, Files: EmbedUploads(embed),
+		Embeds: []discord.Embed{Bulleted(embed)}, Files: EmbedUploads(embed),
 		Flags: discord.MessageFlagEphemeral, AllowedMentions: noPings(),
 	})
 }
@@ -135,7 +135,7 @@ func (ix *Ix) RespondEmbed(embed discord.Embed) error {
 // ephemeral message.
 func (ix *Ix) RespondPublic(embed discord.Embed, components []discord.LayoutComponent) error {
 	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
-		Embeds: []discord.Embed{embed}, Components: components, Files: EmbedUploads(embed), AllowedMentions: noPings(),
+		Embeds: []discord.Embed{Bulleted(embed)}, Components: components, Files: EmbedUploads(embed), AllowedMentions: noPings(),
 	})
 }
 
@@ -170,7 +170,7 @@ func (ix *Ix) RespondText(content string) error {
 // RespondEmbedWithComponents is RespondEmbed with controls under it.
 func (ix *Ix) RespondEmbedWithComponents(embed discord.Embed, components []discord.LayoutComponent) error {
 	return ix.respond(discord.InteractionResponseTypeCreateMessage, discord.MessageCreate{
-		Embeds: []discord.Embed{embed}, Components: components, Files: EmbedUploads(embed),
+		Embeds: []discord.Embed{Bulleted(embed)}, Components: components, Files: EmbedUploads(embed),
 		Flags: discord.MessageFlagEphemeral, AllowedMentions: noPings(),
 	})
 }
@@ -213,7 +213,7 @@ func (ix *Ix) FollowUpEmbed(embed discord.Embed) error {
 
 func (ix *Ix) FollowUpEmbedWithFiles(embed discord.Embed, extra ...*discord.File) error {
 	return ix.edit(discord.MessageUpdate{
-		Embeds: &[]discord.Embed{embed}, Files: append(EmbedUploads(embed), extra...),
+		Embeds: &[]discord.Embed{Bulleted(embed)}, Files: append(EmbedUploads(embed), extra...),
 		Attachments: noAttachments(), AllowedMentions: noPings(),
 	})
 }
@@ -221,7 +221,7 @@ func (ix *Ix) FollowUpEmbedWithFiles(embed discord.Embed, extra ...*discord.File
 // FollowUpEmbedWithComponents is the core helper of the same name.
 func (ix *Ix) FollowUpEmbedWithComponents(embed discord.Embed, components []discord.LayoutComponent) error {
 	return ix.edit(discord.MessageUpdate{
-		Embeds: &[]discord.Embed{embed}, Components: &components, Files: EmbedUploads(embed),
+		Embeds: &[]discord.Embed{Bulleted(embed)}, Components: &components, Files: EmbedUploads(embed),
 		Attachments: noAttachments(), AllowedMentions: noPings(),
 	})
 }
@@ -234,7 +234,7 @@ func (ix *Ix) DeferUpdate() error {
 // UpdateEmbedWithComponents redraws the message a click arrived on.
 func (ix *Ix) UpdateEmbedWithComponents(embed discord.Embed, components []discord.LayoutComponent) error {
 	return ix.respond(discord.InteractionResponseTypeUpdateMessage, discord.MessageUpdate{
-		Embeds: &[]discord.Embed{embed}, Components: &components, Files: EmbedUploads(embed),
+		Embeds: &[]discord.Embed{Bulleted(embed)}, Components: &components, Files: EmbedUploads(embed),
 		Attachments: noAttachments(), AllowedMentions: noPings(),
 	})
 }

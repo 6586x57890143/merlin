@@ -1,7 +1,8 @@
-// Command icons draws every plugin's icon: one glyph per plugin, kept below
-// as an 11 by 11 text grid so a change to it is reviewable as text, painted
-// onto a tile in merlin's palette and written as a 128 px application emoji
-// into internal/core/assets/emoji. Edit a glyph here and rerun; never edit
+// Command icons draws every plugin's icon and the bullets a card's field
+// labels wear: one glyph each, kept below as an 11 by 11 text grid so a
+// change to it is reviewable as text, painted onto a tile in merlin's
+// palette and written as a 128 px application emoji into
+// internal/core/assets/emoji. Edit a glyph here and rerun; never edit
 // the PNGs.
 //
 //	go run ./tools/icons
@@ -183,6 +184,193 @@ var glyphs = map[string][]string{
 	},
 }
 
+// keys are the bullets a card's field labels wear (core.Bulleted), keyed by
+// what they mean rather than the label, since many labels share one.
+var keys = map[string][]string{
+	"actor": { // a badge: who did it
+		".....w.....",
+		".....w.....",
+		"....www....",
+		"wwwwwwwwwww",
+		".wwwwwwwww.",
+		"..wwwwwww..",
+		"...wwwww...",
+		"..www.www..",
+		"..ww...ww..",
+		".ww.....ww.",
+		".w.......w.",
+	},
+	"member": { // a bust
+		"...........",
+		"....www....",
+		"...wwwww...",
+		"...wwwww...",
+		"...wwwww...",
+		"....www....",
+		"...........",
+		"..wwwwwww..",
+		".wwwwwwwww.",
+		".wwwwwwwww.",
+		"...........",
+	},
+	"channel": { // hash
+		"...........",
+		"...w...w...",
+		"...w...w...",
+		".wwwwwwwww.",
+		"...w...w...",
+		"...w...w...",
+		"...w...w...",
+		".wwwwwwwww.",
+		"...w...w...",
+		"...w...w...",
+		"...........",
+	},
+	"role": { // a tag
+		"...........",
+		"wwwwwww....",
+		"w......w...",
+		"w.ww....w..",
+		"w.ww.....w.",
+		"w.........w",
+		"w........w.",
+		"w.......w..",
+		"w......w...",
+		"wwwwwww....",
+		"...........",
+	},
+	"policy": { // a shield with a tick
+		"wwwwwwwwwww",
+		"w.........w",
+		"w.........w",
+		"w.......w.w",
+		"w......w..w",
+		"w.w...w...w",
+		".w.w.w...w.",
+		".w..w....w.",
+		"..w.....w..",
+		"...w...w...",
+		"....www....",
+	},
+	"gauge": { // a dial: confidence, score
+		"...........",
+		"...........",
+		"...wwwww...",
+		"..w.....w..",
+		".w......ww.",
+		"w......w..w",
+		"w.....w...w",
+		"w....w....w",
+		"w...www...w",
+		"...........",
+		"...........",
+	},
+	"time": { // a clock
+		"...wwwww...",
+		"..w.....w..",
+		".w...w...w.",
+		"w....w....w",
+		"w....w....w",
+		"w....www..w",
+		"w.........w",
+		"w.........w",
+		".w.......w.",
+		"..w.....w..",
+		"...wwwww...",
+	},
+	"message": { // a speech bubble
+		"...........",
+		"wwwwwwwwwww",
+		"w.........w",
+		"w.wwwwwww.w",
+		"w.........w",
+		"w.wwwww...w",
+		"w.........w",
+		"wwwwwwwwwww",
+		"..ww.......",
+		"..w........",
+		"...........",
+	},
+	"reason": { // quote marks
+		"...........",
+		"...........",
+		".www...www.",
+		".www...www.",
+		".www...www.",
+		"...w.....w.",
+		"...w.....w.",
+		"..w.....w..",
+		".w.....w...",
+		"...........",
+		"...........",
+	},
+	"change": { // an arrow
+		"...........",
+		"......w....",
+		"......ww...",
+		"......www..",
+		"wwwwwwwwww.",
+		"wwwwwwwwwww",
+		"wwwwwwwwww.",
+		"......www..",
+		"......ww...",
+		"......w....",
+		"...........",
+	},
+	"link": { // two links of a chain
+		"...........",
+		"...........",
+		"...........",
+		".www...www.",
+		"w...w.w...w",
+		"w..wwwww..w",
+		"w...w.w...w",
+		".www...www.",
+		"...........",
+		"...........",
+		"...........",
+	},
+	"prize": { // a gift
+		"..ww...ww..",
+		"...w...w...",
+		"....w.w....",
+		"wwwwwwwwwww",
+		"w....w....w",
+		"wwwwwwwwwww",
+		".w...w...w.",
+		".w...w...w.",
+		".w...w...w.",
+		".w...w...w.",
+		".wwwwwwwww.",
+	},
+	"status": { // a flag
+		".ww........",
+		".wwwwwwwww.",
+		".wwwwwwwww.",
+		".wwwwwwwww.",
+		".wwwwwwwww.",
+		".w.........",
+		".w.........",
+		".w.........",
+		".w.........",
+		".w.........",
+		".w.........",
+	},
+	"dot": { // any other label
+		"...........",
+		"...........",
+		"...........",
+		".....w.....",
+		"....www....",
+		"...wwwww...",
+		"....www....",
+		".....w.....",
+		"...........",
+		"...........",
+		"...........",
+	},
+}
+
 // merlin's palette (internal/core/embeds.go): the ground is ColorDark, the
 // frame ColorAccent, the glyph ColorLight. The bevel's light and dark are
 // the frame's own colour lifted and dropped, so the tile reads as one piece
@@ -209,18 +397,20 @@ func main() {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		log.Fatal(err)
 	}
-	names := make([]string, 0, len(glyphs))
-	for name := range glyphs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		g := glyphs[name]
-		if err := balanced(g); err != nil {
-			log.Fatalf("glyph %s: %v", name, err)
+	for prefix, set := range map[string]map[string][]string{"plugin_": glyphs, "key_": keys} {
+		names := make([]string, 0, len(set))
+		for name := range set {
+			names = append(names, name)
 		}
-		if err := write(filepath.Join(out, "plugin_"+name+".png"), scale(tile(g), cell)); err != nil {
-			log.Fatal(err)
+		sort.Strings(names)
+		for _, name := range names {
+			g := set[name]
+			if err := balanced(g); err != nil {
+				log.Fatalf("glyph %s%s: %v", prefix, name, err)
+			}
+			if err := write(filepath.Join(out, prefix+name+".png"), scale(tile(g), cell)); err != nil {
+				log.Fatal(err)
+			}
 		}
 	}
 }

@@ -124,7 +124,7 @@ func (p *Plugin) mirrorNow(ctx context.Context, cfg Config, e Entry) error {
 		}
 	}
 	embed := entryEmbed(e)
-	send := discord.MessageCreate{Embeds: []discord.Embed{embed}, Files: core.EmbedUploads(embed)}
+	send := discord.MessageCreate{Embeds: []discord.Embed{core.Bulleted(embed)}, Files: core.EmbedUploads(embed)}
 
 	if cf.ThreadID != "" {
 		msg, err := p.ops(e.GuildID).CreateMessage(core.ID(cf.ThreadID), send)
@@ -190,7 +190,7 @@ func (p *Plugin) remirror(cfg Config, e Entry) {
 			attachments = append(attachments, discord.AttachmentCreate{ID: i})
 		}
 		_, err = p.ops(e.GuildID).UpdateMessage(core.ID(cf.ThreadID), core.ID(e.ThreadMessageID), discord.MessageUpdate{
-			Embeds: &[]discord.Embed{embed},
+			Embeds: &[]discord.Embed{core.Bulleted(embed)},
 			Files:  files,
 			// Replaced, not appended: the mood icon changes with the colour
 			// and an edit that keeps the old attachment shows two. Only the

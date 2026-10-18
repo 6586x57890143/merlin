@@ -185,7 +185,7 @@ func (p *Plugin) suggest(ctx context.Context, cfg Config, trigger Entry, rec Rec
 	}
 	embed, components := suggestionEmbed(e, rec, sh.Score, tippedLine(trigger, p.now(), cfg.HalfLife), standingLine, "", false)
 	if _, err := p.ops(cfg.GuildID).CreateMessage(core.ID(cfg.ModChannelID), discord.MessageCreate{
-		Embeds:     []discord.Embed{embed},
+		Embeds:     []discord.Embed{core.Bulleted(embed)},
 		Components: components,
 		Files:      core.EmbedUploads(embed),
 	}); err != nil {

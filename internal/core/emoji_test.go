@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -137,14 +138,15 @@ func TestSyncEmojiCreatesOnlyWhatIsMissing(t *testing.T) {
 	}
 
 	all := Emojis()
-	f := &fakeEmojiREST{have: []discord.Emoji{{ID: 77, Name: all[0].Name}}, failOn: "plugin_rotation"}
+	present := all[slices.IndexFunc(all, func(e Emoji) bool { return strings.HasPrefix(e.Key, "plugin_") })]
+	f := &fakeEmojiREST{have: []discord.Emoji{{ID: 77, Name: present.Name}}, failOn: "plugin_rotation"}
 	if err := SyncEmoji(f, 2); err == nil {
 		t.Error("a refused upload was not reported")
 	}
 	if len(f.created) != len(all)-2 {
 		t.Errorf("created %d, want every icon but the one present and the one refused", len(f.created))
 	}
-	if got := PluginEmoji(strings.TrimPrefix(all[0].Key, "plugin_")); got != "<:"+all[0].Name+":77>" {
+	if got := PluginEmoji(strings.TrimPrefix(present.Key, "plugin_")); got != "<:"+present.Name+":77>" {
 		t.Errorf("existing emoji renders as %q", got)
 	}
 	if url, file := PluginUpload("rotation"); file == nil || !strings.HasPrefix(url, "attachment://") {
@@ -159,5 +161,43 @@ func TestSyncEmojiCreatesOnlyWhatIsMissing(t *testing.T) {
 	pn := Panel{Title: "Roles", Plugin: "roles"}
 	if !strings.Contains(pn.Layout()[0].(discord.ContainerComponent).Components[0].(discord.SectionComponent).Components[0].(discord.TextDisplayComponent).Content, PluginEmoji("roles")) {
 		t.Error("a panel does not lead with its plugin's icon")
+	}
+}
+
+// Every field label wears a bullet once the emoji are synced: its own by
+// meaning, the dot otherwise. Spacers and labels already led by an emoji
+// are left alone, the caller's fields are not touched, and before a sync
+// the embed goes out as built.
+func TestBulletedLabels(t *testing.T) {
+	zwsp := string(rune(0x200b)) // a grid spacer, as cygnet/ledger pads with
+	t.Cleanup(func() { emojiIDs.Store(nil) })
+	e := discord.Embed{Fields: []discord.EmbedField{
+		{Name: "Member"}, {Name: "something new"}, {Name: zwsp}, {Name: "⛽ Scanning credit"},
+	}}
+	if got := Bulleted(e); got.Fields[0].Name != "Member" {
+		t.Fatalf("before a sync: %q", got.Fields[0].Name)
+	}
+	emojiIDs.Store(&map[string]emojiRef{"key_member": {"1", "key_member_a"}, "key_dot": {"2", "key_dot_b"}})
+	got := Bulleted(e)
+	want := []string{"<:key_member_a:1> Member", "<:key_dot_b:2> something new", zwsp, "⛽ Scanning credit"}
+	for i, w := range want {
+		if got.Fields[i].Name != w {
+			t.Errorf("field %d: %q, want %q", i, got.Fields[i].Name, w)
+		}
+	}
+	if e.Fields[0].Name != "Member" {
+		t.Error("the caller's fields were changed")
+	}
+	if again := Bulleted(got); again.Fields[0].Name != want[0] {
+		t.Errorf("a second pass changed it: %q", again.Fields[0].Name)
+	}
+}
+
+// Every bullet labelKeys names has its art.
+func TestEveryLabelKeyHasArt(t *testing.T) {
+	for label, key := range labelKeys {
+		if _, err := emojiArt.Open("assets/emoji/key_" + key + ".png"); err != nil {
+			t.Errorf("%q wears key_%s, which tools/icons does not draw", label, key)
+		}
 	}
 }

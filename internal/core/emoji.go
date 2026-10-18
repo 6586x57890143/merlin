@@ -6,8 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
@@ -65,12 +68,64 @@ func emojiFor(key string) (emojiRef, bool) {
 
 // PluginEmoji is plugin's icon written inline, <:name:id>, or "" until the
 // emoji are synced.
-func PluginEmoji(plugin string) string {
-	r, ok := emojiFor("plugin_" + plugin)
+func PluginEmoji(plugin string) string { return inlineEmoji("plugin_" + plugin) }
+
+func inlineEmoji(key string) string {
+	r, ok := emojiFor(key)
 	if !ok {
 		return ""
 	}
 	return "<:" + r.name + ":" + r.id + ">"
+}
+
+// labelKeys is which bullet a field label wears, by what the label means.
+// A label not listed wears the plain dot, so every key on a card is
+// bulleted and a new one needs no entry to fit in.
+var labelKeys = map[string]string{
+	"actor": "actor", "by": "actor", "set by": "actor", "written by": "actor",
+	"member": "member", "members": "member", "user": "member", "users": "member",
+	"winners": "member", "donor": "member",
+	"channel": "channel", "channels": "channel", "forum": "channel", "where": "channel",
+	"category": "channel", "categories": "channel",
+	"role": "role", "roles": "role", "kept": "role", "restored": "role", "withheld": "role", "marker": "role",
+	"policy": "policy", "allow": "policy", "deny": "policy",
+	"confidence": "gauge", "score": "gauge", "points": "gauge", "votes": "gauge", "standings": "gauge",
+	"for": "time", "until": "time", "when": "time", "duration": "time", "interval": "time",
+	"retention": "time", "closes": "time", "next": "time", "voting opens": "time", "submissions open": "time",
+	"message": "message", "messages": "message", "media": "message", "entries": "message", "the entries": "message",
+	"reason": "reason", "reason given": "reason", "why": "reason", "detail": "reason", "details": "reason",
+	"value": "change", "from": "change", "to": "change", "removed": "change",
+	"link": "link", "linked to": "link", "gallery": "link", "voting page": "link", "case": "link",
+	"prize": "prize", "prizes": "prize", "pledged": "prize", "your code": "prize", "code": "prize",
+	"status": "status", "phase": "status", "enabled": "status", "tier": "status", "notice": "status",
+	"visibility": "status", "who can see it": "status", "access": "status",
+}
+
+// Bulleted is e with an icon before each field label, the way /help puts
+// a plugin's icon before its name, so a card's keys read as a bulleted list
+// in merlin's own art. A copy: the caller's fields are left alone. Until the
+// emoji are synced it is e unchanged. A spacer, or a label already led by
+// an emoji of its own, is left as it is, which also makes a second pass a
+// no-op.
+func Bulleted(e discord.Embed) discord.Embed {
+	if len(e.Fields) == 0 || emojiIDs.Load() == nil {
+		return e
+	}
+	fields := slices.Clone(e.Fields)
+	for i, f := range fields {
+		if r, _ := utf8.DecodeRuneInString(f.Name); !unicode.IsLetter(r) {
+			continue
+		}
+		key, ok := labelKeys[strings.ToLower(f.Name)]
+		if !ok {
+			key = "dot"
+		}
+		if mark := inlineEmoji("key_" + key); mark != "" {
+			fields[i].Name = mark + " " + f.Name
+		}
+	}
+	e.Fields = fields
+	return e
 }
 
 // PluginOptionEmoji is plugin's icon for a select option or a button, or
