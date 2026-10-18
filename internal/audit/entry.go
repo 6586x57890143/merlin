@@ -30,7 +30,7 @@ func toEntry(guildID, actorID, action, oldValue, newValue string, at time.Time) 
 	m := metaFor(action)
 	e := ledger.Entry{
 		Bird: bird, Guild: guildID, At: at, Action: entryAction(action),
-		Actor: ledger.Member(actorID), Mood: moodOf(m), Summary: strings.ToLower(m.title),
+		Actor: ledger.Member(actorID), Mood: moodOf(m), Summary: m.title,
 	}
 	if actorID == core.ActorSystem || actorID == "" {
 		e.Actor = ledger.Auto()
@@ -55,7 +55,7 @@ func toEntry(guildID, actorID, action, oldValue, newValue string, at time.Time) 
 	switch {
 	case oldText != "" && newText != "":
 		e.Changes = append(e.Changes, ledger.Change{Field: "value", From: gridText(oldText), To: gridText(newText)})
-	case newText != "" && !strings.Contains(e.Summary, strings.ToLower(gridText(newText))):
+	case newText != "" && !strings.Contains(strings.ToLower(e.Summary), strings.ToLower(gridText(newText))):
 		// (A detail that only repeats the summary says nothing twice.)
 		e.Facts = append(e.Facts, ledger.Fact{Label: "detail", Value: gridText(newText)})
 	case oldText != "":
@@ -205,9 +205,20 @@ func moodOf(m meta) ledger.Mood {
 	return ledger.MoodInfo
 }
 
-// brand is how merlin's cards look: her palette, her face for the mood
+// moduleIcons are the action modules that are not a plugin's own name.
+var moduleIcons = map[string]string{"archive": "rotation", "channel": "rotation", "config": "adminconfig"}
+
+// brand is how merlin's cards look: her name, each plugin's icon, her
+// palette, her face for the mood
 // and her rule, which keeps every card one width.
 var brand = ledger.Brand{
+	Name: bird,
+	Icon: func(module string) string {
+		if p, ok := moduleIcons[module]; ok {
+			module = p
+		}
+		return core.PluginEmoji(module)
+	},
 	Color: func(m ledger.Mood) int {
 		switch m {
 		case ledger.MoodDanger, ledger.MoodError:
