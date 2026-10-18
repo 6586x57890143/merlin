@@ -1,7 +1,7 @@
 github.com/6586x57890143/cygnet/ledger v0.6.1 h1:YptPX/nkXPRQy7YUitaAPHB6wgi5OWaaSPU/tAMm3I0=
 github.com/6586x57890143/cygnet/ledger v0.6.1/go.mod h1:JChhfW8uTajVBvneHGp0ejMXIyHc/F/13VzU/GW5wI0=
-github.com/6586x57890143/cygnet/link v0.8.0 h1:nAfnNd6S37RJEo3+o+q4GMCh6+rJKa7SZ24ExHRrAUQ=
-github.com/6586x57890143/cygnet/link v0.8.0/go.mod h1:uJRZai/tIy8hcDxYvgIvWm1vP0nBg/LZi7HcSZeq5Yw=
+github.com/6586x57890143/cygnet/link v0.9.0 h1:RnwUCGin66nsTKGPUQuHjDFNj4LJ9yo1w1BhJRg4cRQ=
+github.com/6586x57890143/cygnet/link v0.9.0/go.mod h1:uJRZai/tIy8hcDxYvgIvWm1vP0nBg/LZi7HcSZeq5Yw=
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=

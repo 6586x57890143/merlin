@@ -30,13 +30,23 @@ type Link struct {
 }
 
 // Dial makes the link from url and token, or nil when either is empty. It
-// doesn't connect until Run.
-func Dial(url, token string, log *slog.Logger) *Link {
+// doesn't connect until Run. attest is what CI signed for this build
+// (MERLIN_ATTEST), shown to cygnet at hello; a bad one is dropped and merlin
+// links unsigned, which a cygnet that pins her key turns away.
+func Dial(url, token, attest string, log *slog.Logger) *Link {
 	if url == "" || token == "" {
 		return nil
 	}
 	l := &Link{log: log}
-	l.c = link.New(link.Config{URL: url, Token: token, Build: Build(), Log: log})
+	var a *link.Attestation
+	if attest != "" {
+		if got, err := link.DecodeAttestation(attest); err != nil {
+			log.Warn("MERLIN_ATTEST doesn't decode; linking unsigned", "err", err)
+		} else {
+			a = &got
+		}
+	}
+	l.c = link.New(link.Config{URL: url, Token: token, Build: Build(), Attest: a, Log: log})
 	l.c.Handle("ping", func(context.Context, link.Call) (any, error) { return nil, nil })
 	// Read once the commands are finalised; a call before then is refused
 	// busy, as the hub would for a full link.
