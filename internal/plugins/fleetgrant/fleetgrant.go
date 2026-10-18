@@ -7,7 +7,10 @@
 //     cygnet stamps on the call from the bird's token, never anything the
 //     body says.
 //   - A role is granted only if this server's admins allowed exactly that
-//     bird to ask for exactly that role (/fleet allow), and only while the
+//     bird to ask for exactly that role (/fleet allow), or, where cygnet
+//     is a member of the server (cygnet.here), if cygnet attested the
+//     asking bird: she saw it run the very image its CI signed. Either way
+//     only while the
 //     role carries no Discord permission, isn't managed, sits under
 //     merlin's own top role, and is named nowhere in merlin's settings (a
 //     mod, member, jail or vacation role, an allow or deny list). All of
@@ -120,7 +123,15 @@ type Plugin struct {
 	mu     sync.Mutex
 	minute int64
 	calls  map[string]int // by bird and server, this minute
+
+	// here asks cygnet whether she is in a server (Vouch); nil without
+	// the link, and then only /fleet allow grants.
+	here func(ctx context.Context, guildID string) (bool, error)
 }
+
+// Vouch has p ask here whether cygnet keeps watch over a server, and grant
+// an attested bird's ask there without its admins listing the role.
+func (p *Plugin) Vouch(here func(ctx context.Context, guildID string) (bool, error)) { p.here = here }
 
 // New is the plugin over store, merlin's settings and guarded ops.
 func New(store Store, use RoleUse, ops func(guildID string) MemberOps) *Plugin {
@@ -157,7 +168,8 @@ func (p *Plugin) Help() core.Help {
 		Title: "Fleet",
 		Line:  "roles other birds may ask me to give",
 		About: "other birds on cygnet's link can ask me to give a member a role, like skua handing out a beta role when someone redeems a key. " +
-			"i only do it for a role an admin allowed with `/fleet allow`, for that bird alone, and only while the role has no permissions and none of my settings use it. " +
+			"i do it for a role an admin allowed with `/fleet allow`, for that bird alone, or, in a server cygnet is in, for a bird she has seen run the build its own repository signed. " +
+			"either way only while the role has no permissions and none of my settings use it. " +
 			"i never take a role away for them. `/fleet list` shows what's allowed, `/fleet deny` takes it back.",
 	}
 }
@@ -171,7 +183,7 @@ func (p *Plugin) Answer(ctx context.Context, c link.Call) (any, error) {
 	if err := dec.Decode(&req); err != nil || dec.More() {
 		return nil, link.Err(link.Invalid, "body")
 	}
-	err := p.Grant(ctx, c.From, req)
+	err := p.GrantAs(ctx, c.From, c.Trust, req)
 	switch {
 	case err == nil:
 		return nil, nil
@@ -188,8 +200,15 @@ func (p *Plugin) Answer(ctx context.Context, c link.Call) (any, error) {
 	return nil, err
 }
 
-// Grant gives req's member req's role for caller, if caller may ask for it.
+// Grant gives req's member req's role for caller, if an admin allowed
+// caller that role.
 func (p *Plugin) Grant(ctx context.Context, caller string, req Request) error {
+	return p.GrantAs(ctx, caller, link.Untrusted, req)
+}
+
+// GrantAs is Grant for a caller cygnet trusts as far as trust: an attested
+// caller needs no admin's listing where cygnet is a member of the server.
+func (p *Plugin) GrantAs(ctx context.Context, caller string, trust link.Trust, req Request) error {
 	if !birdName.MatchString(caller) || !snowflakeID.MatchString(req.Guild) || !snowflakeID.MatchString(req.User) || !snowflakeID.MatchString(req.Role) {
 		return errInvalid
 	}
@@ -200,6 +219,14 @@ func (p *Plugin) Grant(ctx context.Context, caller string, req Request) error {
 	ok, err := p.store.Allowed(ctx, req.Guild, caller, req.Role)
 	if err != nil {
 		return err
+	}
+	why := "listed by an admin"
+	if !ok && trust == link.Attested && p.here != nil {
+		if here, err := p.here(ctx, req.Guild); err != nil {
+			p.log.Warn("fleet: asking cygnet whether she's here", "guild", req.Guild, "err", err)
+		} else if here {
+			ok, why = true, "attested by cygnet, who is here"
+		}
 	}
 	if !ok || p.use.RoleInUse(req.Guild, req.Role) {
 		return errNotAllowed
@@ -222,7 +249,7 @@ func (p *Plugin) Grant(ctx context.Context, caller string, req Request) error {
 	if err != nil {
 		return err
 	}
-	if err := p.audit.Record(ctx, req.Guild, "fleet:"+caller, "fleet.grant", "", fmt.Sprintf("user=%s role=%s bird=%s", core.MentionUser(req.User), core.MentionRole(req.Role), caller)); err != nil {
+	if err := p.audit.Record(ctx, req.Guild, "fleet:"+caller, "fleet.grant", "", fmt.Sprintf("user=%s role=%s bird=%s why=%q", core.MentionUser(req.User), core.MentionRole(req.Role), caller, why)); err != nil {
 		p.log.Error("fleet: audit grant failed", "guild", req.Guild, "err", err)
 	}
 	return nil

@@ -99,3 +99,17 @@ func TestDialAttest(t *testing.T) {
 		t.Error("an attested link didn't dial")
 	}
 }
+
+// Without the link cygnet is never here; with it down, asking fails.
+func TestHere(t *testing.T) {
+	var none *Link
+	if ok, err := none.Here(context.Background(), "1"); ok || err != nil {
+		t.Errorf("no link: %v %v", ok, err)
+	}
+	l := Dial("ws://127.0.0.1:1/v1/link", "t", "", quiet)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if ok, err := l.Here(ctx, "1"); ok || err == nil {
+		t.Errorf("a link that's down: %v %v", ok, err)
+	}
+}
