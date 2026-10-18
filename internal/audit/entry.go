@@ -30,7 +30,7 @@ func toEntry(guildID, actorID, action, oldValue, newValue string, at time.Time) 
 	m := metaFor(action)
 	e := ledger.Entry{
 		Bird: bird, Guild: guildID, At: at, Action: entryAction(action),
-		Actor: ledger.Member(actorID), Mood: moodOf(m), Summary: m.title,
+		Actor: ledger.Member(actorID), Mood: moodOf(m), Summary: strings.ToLower(m.title),
 	}
 	if actorID == core.ActorSystem || actorID == "" {
 		e.Actor = ledger.Auto()
