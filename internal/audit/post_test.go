@@ -45,7 +45,7 @@ func TestCardsPingNobodyAndEditInPlace(t *testing.T) {
 		t.Fatalf("sent %v", w.sent)
 	}
 	post, edit := w.sent[0], w.sent[1]
-	for _, want := range []string{"POST /api/v10/channels/2/messages", `"allowed_mentions":{"parse":[]`, `"embeds":[{"title":"Member jailed"`} {
+	for _, want := range []string{"POST /api/v10/channels/2/messages", `"allowed_mentions":{"parse":[]`, `"embeds":[{"title":"member jailed"`} {
 		if !strings.Contains(post, want) {
 			t.Errorf("post lacks %s:\n%s", want, post)
 		}
@@ -60,7 +60,7 @@ func TestCardsPingNobodyAndEditInPlace(t *testing.T) {
 	if !strings.Contains(edit, `"attachments":[]`) {
 		t.Errorf("an edit must replace the attachments:\n%s", edit)
 	}
-	for _, want := range []string{"PATCH /api/v10/channels/2/messages/9", `"allowed_mentions":{"parse":[]`, "Member jailed · 2", `\u003c@98\u003e`} {
+	for _, want := range []string{"PATCH /api/v10/channels/2/messages/9", `"allowed_mentions":{"parse":[]`, "member jailed · 2", `\u003c@98\u003e`} {
 		if !strings.Contains(edit, want) {
 			t.Errorf("edit lacks %s:\n%s", want, edit)
 		}
