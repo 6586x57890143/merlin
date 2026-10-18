@@ -64,7 +64,7 @@ func TestEveryCallSiteShapeIsAValidEntry(t *testing.T) {
 
 func TestJailReadsAsFields(t *testing.T) {
 	e := toEntry("100", "418", callSites[0].action, "", callSites[0].new, at)
-	if e.Summary != "member jailed" || e.Mood != ledger.MoodWarn || e.Reason != "spam, links" {
+	if e.Summary != "Member jailed" || e.Mood != ledger.MoodWarn || e.Reason != "spam, links" {
 		t.Fatalf("summary %q mood %q reason %q", e.Summary, e.Mood, e.Reason)
 	}
 	want := []ledger.Ref{ledger.User("1001"), ledger.Role("501").As("kept"), ledger.Role("502").As("kept")}
