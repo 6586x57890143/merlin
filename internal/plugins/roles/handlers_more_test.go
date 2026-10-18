@@ -62,6 +62,16 @@ func (r *recordingTransport) said(text string) bool {
 	return false
 }
 
+// deferredFirst reports whether the first thing the handler sent was a
+// deferred acknowledgement (interaction response type 5). The router
+// cancels an unanswered handler's context 2.5s in, so a handler doing
+// several Discord calls must have said this before any of them.
+func deferredFirst(r *recordingTransport) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.bodies) > 0 && strings.HasPrefix(r.bodies[0], `{"type":5`)
+}
+
 // current is the recorder the next interaction answers through.
 // handlerSession makes a fresh one per case, as it used to make a session.
 var current *recordingTransport
@@ -436,10 +446,14 @@ func TestHandleRelease(t *testing.T) {
 
 	ops.setMember("7000001", "7000102", []string{"7000301"})
 	_ = store.InsertJail(context.Background(), JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", SnapshotRoleIDs: []string{"7000302"}})
+	rt = handlerSession(t)
 	p.handleRelease(context.Background(), rolesInteraction("", "release", userArg("user", "7000102")))
 
 	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok {
 		t.Fatal("expected the jail untracked")
+	}
+	if !deferredFirst(rt) {
+		t.Fatalf("a release must defer before its Discord calls, got %v", rt.bodies)
 	}
 	m, _ := ops.GuildMember("7000001", "7000102")
 	if len(m.Roles) != 1 || m.Roles[0] != "7000302" {
@@ -513,9 +527,13 @@ func TestHandleRevoke(t *testing.T) {
 	}
 
 	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000302"})
+	rt = handlerSession(t)
 	p.handleRevoke(context.Background(), rolesInteraction("", "revoke", userArg("user", "7000102"), roleArg("role", "7000302")))
 	if _, ok, _ := store.GetGrant(context.Background(), "7000001", "7000102", "7000302"); ok {
 		t.Fatal("expected the grant untracked")
+	}
+	if !deferredFirst(rt) {
+		t.Fatalf("a revoke must defer before its Discord calls, got %v", rt.bodies)
 	}
 	m, _ := ops.GuildMember("7000001", "7000102")
 	if len(m.Roles) != 0 || !rt.said("Role revoked") {

@@ -80,15 +80,28 @@ func (p *Plugin) handleRevoke(ctx context.Context, ix *core.Ix) {
 		return
 	}
 
-	if err := p.revokeGrant(ctx, ix.GuildID, userID, roleID, actorID(ix)); err != nil {
-		if errors.Is(err, errReleaseInProgress) {
-			ix.RespondErr("Revoke in progress", fmt.Errorf("<@&%s> is being revoked from <@%s> right now", roleID, userID))
-			return
-		}
-		ix.RespondErr("Failed to revoke", err)
+	// Same reason as handleRelease: a member fetch, a role edit and an
+	// audit card can outrun the router's 2.5s response window.
+	if err := ix.Defer(); err != nil {
+		p.log.Error("roles: defer revoke response failed", "guild", ix.GuildID, "err", err)
 		return
 	}
-	ix.RespondOK("Role revoked", fmt.Sprintf("<@&%s> revoked from <@%s>.", roleID, userID))
+	fail := func(title string, err error) {
+		if ferr := ix.FollowUpErr(title, err); ferr != nil {
+			p.log.Error("roles: revoke follow-up failed", "guild", ix.GuildID, "err", ferr)
+		}
+	}
+	if err := p.revokeGrant(ctx, ix.GuildID, userID, roleID, actorID(ix)); err != nil {
+		if errors.Is(err, errReleaseInProgress) {
+			fail("Revoke in progress", fmt.Errorf("<@&%s> is being revoked from <@%s> right now", roleID, userID))
+			return
+		}
+		fail("Failed to revoke", err)
+		return
+	}
+	if err := ix.FollowUpOK("Role revoked", fmt.Sprintf("<@&%s> revoked from <@%s>.", roleID, userID)); err != nil {
+		p.log.Error("roles: revoke follow-up failed", "guild", ix.GuildID, "err", err)
+	}
 }
 
 // revokeGrant removes roleID from userID and stops tracking the grant.
@@ -122,9 +135,18 @@ func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor
 		}
 	}
 
+	// Untracked before the audit card and on a context nothing can cancel,
+	// for releaseJail's reason. The role is gone either way; if this write
+	// fails, the sweep (or, for a permanent grant, the next /roles revoke)
+	// finds it gone and drops the row.
+	delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWriteTimeout)
+	defer cancel()
+	if err := p.store.DeleteGrant(delCtx, guildID, userID, roleID); err != nil {
+		p.log.Error("roles: untrack revoked grant", "guild", guildID, "user", userID, "role", roleID, "err", err)
+	}
+
 	if err := p.audit.Record(ctx, guildID, actor, "roles.grant", fmt.Sprintf("user=%s role=%s", core.MentionUser(userID), core.MentionRole(roleID)), ""); err != nil {
 		p.log.Error("roles: audit revoke failed", "guild", guildID, "user", userID, "role", roleID, "err", err)
 	}
-
-	return p.store.DeleteGrant(ctx, guildID, userID, roleID)
+	return nil
 }

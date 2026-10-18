@@ -723,6 +723,10 @@ func (f *fakeStore) GetJail(ctx context.Context, guildID, userID string) (JailRe
 }
 
 func (f *fakeStore) DeleteJail(ctx context.Context, guildID, userID string) error {
+	// pgx refuses a cancelled context before it touches the row.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.jails, jailKey(guildID, userID))
@@ -784,6 +788,10 @@ func (f *fakeStore) GetGrant(ctx context.Context, guildID, userID, roleID string
 }
 
 func (f *fakeStore) DeleteGrant(ctx context.Context, guildID, userID, roleID string) error {
+	// pgx refuses a cancelled context before it touches the row.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.grants, grantKey(guildID, userID, roleID))

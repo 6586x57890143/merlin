@@ -435,3 +435,37 @@ func TestForeverJailHasNoReleaseTime(t *testing.T) {
 		t.Fatalf("want a tracked jail with no release time, got ok=%v ReleaseAt=%v", ok, rec.ReleaseAt)
 	}
 }
+
+// TestReleaseUntracksEvenWhenTheCallerGaveUp pins the 2026-10-18 failure: a
+// /roles release ran past the router's 2.5s window, its context was
+// cancelled after the roles were already back, and the row delete at the
+// end failed with "context canceled". The member was out, the command said
+// it failed, and the surviving row turned a mod's next hand edit into a
+// transfer. The Discord calls take no context, so a cancelled one here is
+// the same position: roles restorable, caller gone.
+func TestReleaseUntracksEvenWhenTheCallerGaveUp(t *testing.T) {
+	ops := newFakeOps()
+	ops.setMember("7000001", "7000102", []string{"7000301"})
+	ops.roles["7000001"] = []*frole{{ID: "7000302"}, {ID: "7000301"}}
+	store := newFakeStore()
+	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+	rec := JailRecord{GuildID: "7000001", UserID: "7000102", JailRoleID: "7000301", SnapshotRoleIDs: []string{"7000302"}}
+	_ = store.InsertJail(context.Background(), rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.releaseJail(ctx, "7000001", "7000102", rec, core.ActorSystem); err != nil {
+		t.Fatalf("releaseJail: %v", err)
+	}
+	if _, ok, _ := store.GetJail(context.Background(), "7000001", "7000102"); ok {
+		t.Fatal("a release whose roles went back must not leave its row behind")
+	}
+
+	_ = store.InsertGrant(context.Background(), GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000302"})
+	if err := p.revokeGrant(ctx, "7000001", "7000102", "7000302", core.ActorSystem); err != nil {
+		t.Fatalf("revokeGrant: %v", err)
+	}
+	if _, ok, _ := store.GetGrant(context.Background(), "7000001", "7000102", "7000302"); ok {
+		t.Fatal("a revoke whose role came off must not leave its row behind")
+	}
+}
