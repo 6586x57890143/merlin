@@ -415,6 +415,32 @@ func (p *Permissions) CanManageRole(guildID, targetRoleID string) error {
 	return nil
 }
 
+// BareRole reports whether targetRoleID is a role merlin may hand out for
+// another bird: one she can manage (CanManageRole) that carries no Discord
+// permission at all and isn't @everyone, so whoever asked can never turn it
+// into one. It is checked at every grant, not only when the role is
+// allowed, because a role's permissions can change after.
+func (p *Permissions) BareRole(guildID, targetRoleID string) error {
+	if err := p.CanManageRole(guildID, targetRoleID); err != nil {
+		return err
+	}
+	gid, _, err := p.guild(guildID)
+	if err != nil {
+		return err
+	}
+	rid, _ := snowflake.Parse(targetRoleID) // CanManageRole parsed it
+	r, ok := p.state.Role(gid, rid)
+	switch {
+	case !ok:
+		return ErrForbidden{Reason: "target role not found in guild"}
+	case rid == gid:
+		return ErrForbidden{Reason: "@everyone can't be granted"}
+	case r.Permissions != 0:
+		return ErrForbidden{Reason: "the role carries permissions"}
+	}
+	return nil
+}
+
 func hasAnyRole(memberRoles, allowed []string) bool {
 	set := make(map[string]struct{}, len(allowed))
 	for _, id := range allowed {

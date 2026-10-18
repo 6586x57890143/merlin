@@ -26,6 +26,7 @@ type Link struct {
 	c        *link.Client
 	log      *slog.Logger
 	manifest atomic.Pointer[link.Manifest]
+	serves   []string
 }
 
 // Dial makes the link from url and token, or nil when either is empty. It
@@ -48,6 +49,16 @@ func Dial(url, token string, log *slog.Logger) *Link {
 	return l
 }
 
+// Serve answers merlin.<verb> with h. Call it before Run; without the link
+// it does nothing.
+func (l *Link) Serve(verb string, h link.Handler) {
+	if l == nil {
+		return
+	}
+	l.c.Handle(verb, h)
+	l.serves = append(l.serves, verb)
+}
+
 // Run keeps the link up until ctx ends, then says goaway.
 func (l *Link) Run(ctx context.Context) {
 	if l != nil {
@@ -63,7 +74,7 @@ func (l *Link) Describe(app string, intents, perms uint64, tiers map[string]core
 	if l == nil {
 		return
 	}
-	m := link.Manifest{Build: Build(), App: app, Perms: strconv.FormatUint(perms, 10), Intents: intents, Wants: intents, Serves: []string{"ping"}, Commands: []link.Command{}}
+	m := link.Manifest{Build: Build(), App: app, Perms: strconv.FormatUint(perms, 10), Intents: intents, Wants: intents, Serves: append([]string{"ping"}, l.serves...), Commands: []link.Command{}}
 	for name, t := range tiers {
 		m.Commands = append(m.Commands, link.Command{Name: name, Tier: tier(t)})
 	}

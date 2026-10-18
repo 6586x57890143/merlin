@@ -427,6 +427,25 @@ func (s *Store) guild(guildID string) *guildCache {
 func (s *Store) ModRoleIDs(guildID string) []string   { return s.guild(guildID).settings.ModRoleIDs }
 func (s *Store) AdminUserIDs(guildID string) []string { return s.guild(guildID).settings.AdminUserIDs }
 
+// RoleInUse reports whether guildID's settings name roleID anywhere: as a
+// mod, member, jail, vacation, join or archive viewer role, or in any
+// action's allow or deny list. A role merlin gives meaning to is never one
+// another bird may ask her to hand out (fleetgrant).
+func (s *Store) RoleInUse(guildID, roleID string) bool {
+	gc := s.guild(guildID)
+	st := gc.settings
+	if slices.Contains(st.ModRoleIDs, roleID) || slices.Contains(st.ArchiveViewerRoleIDs, roleID) || slices.Contains(st.JoinRoleIDs, roleID) ||
+		st.MemberRoleID == roleID || st.VacationRoleID == roleID || (st.JailMarkerRoleID != nil && *st.JailMarkerRoleID == roleID) {
+		return true
+	}
+	for _, o := range gc.overrides {
+		if slices.Contains(o.RoleIDs, roleID) || slices.Contains(o.DenyRoleIDs, roleID) {
+			return true
+		}
+	}
+	return false
+}
+
 // JailAllowedChannelIDs satisfies roles.JailChannelConfig, the narrow view
 // internal/plugins/roles depends on for its jail channel-visibility
 // allowlist.
