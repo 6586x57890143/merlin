@@ -737,19 +737,33 @@ func (p *Plugin) handleRelease(ctx context.Context, ix *core.Ix) {
 	}
 	sn := p.sentenceFor(ix.GuildID, rec.JailRoleID)
 
+	// A release is several Discord calls in a row plus an audit card and a
+	// DM, which does not fit in the 2.5s after which the router cancels an
+	// unanswered handler's context.
+	if err := ix.Defer(); err != nil {
+		p.log.Error("roles: defer release response failed", "guild", ix.GuildID, "err", err)
+		return
+	}
+	fail := func(title string, err error) {
+		if ferr := ix.FollowUpErr(title, err); ferr != nil {
+			p.log.Error("roles: release follow-up failed", "guild", ix.GuildID, "err", ferr)
+		}
+	}
 	if err := p.releaseJail(ctx, ix.GuildID, userID, rec, actorID(ix)); err != nil {
 		if errors.Is(err, errReleaseInProgress) {
-			ix.RespondErr("Release in progress", fmt.Errorf("<@%s> is being released right now; check `/roles list` in a moment", userID))
+			fail("Release in progress", fmt.Errorf("<@%s> is being released right now; check `/roles list` in a moment", userID))
 			return
 		}
-		ix.RespondErr("Failed to release", err)
+		fail("Failed to release", err)
 		return
 	}
 	// Only the manual command path announces publicly: it has an invoking
 	// channel to post into. Automatic release from the sweep does not, and
 	// stays DM-only (notifyReleased, inside releaseJail).
 	p.announceRelease(ctx, ix.GuildID, ix.ChannelID, []string{userID}, sn)
-	ix.RespondOK("Member released", fmt.Sprintf("<@%s> has been released from %s and their prior roles restored.", userID, sn.name))
+	if err := ix.FollowUpOK("Member released", fmt.Sprintf("<@%s> has been released from %s and their prior roles restored.", userID, sn.name)); err != nil {
+		p.log.Error("roles: release follow-up failed", "guild", ix.GuildID, "err", err)
+	}
 }
 
 // releaseJail restores rec's snapshotted roles to userID and stops tracking
@@ -835,6 +849,22 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 	if _, err := p.ops(guildID).UpdateMember(core.ID(guildID), core.ID(userID), discord.MemberUpdate{Roles: &restoreIDs}); err != nil {
 		return fmt.Errorf("roles: restore roles for %s: %w", userID, err)
 	}
+	// The row goes the moment the roles are back, before anything slower,
+	// and on a context the caller cannot cancel. It used to be the last
+	// step, after the audit card and the DM, and a /roles release that ran
+	// past Discord's response window had its context cut right before it:
+	// the member was out, the command said it failed, and the surviving row
+	// read a mod's next hand edit as a change to a live sentence. A failure
+	// here is logged rather than returned, since the member is released
+	// either way: the sweep finds the marker gone and drops the row when it
+	// comes due, and an indefinite one goes the same way on the next
+	// /roles release.
+	delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWriteTimeout)
+	defer cancel()
+	if err := p.store.DeleteJail(delCtx, guildID, userID); err != nil {
+		p.log.Error("roles: untrack released jail", "guild", guildID, "user", userID, "err", err)
+	}
+
 	if err := p.clearMemberJailOverwrites(guildID, userID); err != nil {
 		p.log.Warn("roles: failed to clear member-level jail overwrites", "guild", guildID, "user", userID, "err", err)
 	}
@@ -851,6 +881,5 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 	// news: somebody who was told they were jailed should be told when that
 	// has ended, or the only way to find out is to keep trying doors.
 	p.notifyReleased(ctx, guildID, userID, sn)
-
-	return p.store.DeleteJail(ctx, guildID, userID)
+	return nil
 }

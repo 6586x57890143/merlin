@@ -25,10 +25,13 @@ import (
 const (
 	// releaseTimeout bounds one timer-driven release, the role jobTimeout
 	// plays for a sweep run. It covers the store, audit and DM calls; the
-	// Discord ops take no context. If the roles were restored and the
-	// DeleteJail after them times out, the sweep re-reads the row, finds the
-	// marker gone, and drops it: it self-heals.
+	// Discord ops take no context.
 	releaseTimeout = time.Minute
+	// stateWriteTimeout bounds the row delete that follows a successful
+	// release or revoke. It runs detached from the caller's context, so
+	// this is the only thing stopping a wedged database from holding the
+	// claim forever.
+	stateWriteTimeout = 10 * time.Second
 	// armLookahead is how far ahead of due the sweep arms timers for rows it
 	// did not see written (a restart, a guild re-added). The worst gap
 	// between two healthy sweep starts is the 60s period, plus up to 6s of
