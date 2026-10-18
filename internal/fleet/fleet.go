@@ -69,6 +69,18 @@ func (l *Link) Serve(verb string, h link.Handler) {
 	l.serves = append(l.serves, verb)
 }
 
+// Here asks cygnet whether she is a member of guildID (cygnet.here).
+func (l *Link) Here(ctx context.Context, guildID string) (bool, error) {
+	if l == nil {
+		return false, nil
+	}
+	var a struct {
+		Here bool `json:"here"`
+	}
+	err := l.c.Call(ctx, "cygnet.here", map[string]string{"guild": guildID}, &a)
+	return a.Here, err
+}
+
 // Run keeps the link up until ctx ends, then says goaway.
 func (l *Link) Run(ctx context.Context) {
 	if l != nil {

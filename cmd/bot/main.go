@@ -345,6 +345,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		func(guildID string) fleetgrant.MemberOps { return guard.For(guildID) })
 	registry.Register(fleetPlugin)
 	hub.Serve(fleetgrant.Verb, fleetPlugin.Answer)
+	// Where cygnet is a member, an attested bird's ask needs no listing.
+	fleetPlugin.Vouch(hub.Here)
 	registry.Register(perf.New(obs.Default))
 	registry.Register(help.New(registry.Plugins, settingsStore))
 

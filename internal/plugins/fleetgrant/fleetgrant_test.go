@@ -175,6 +175,47 @@ func TestGrant(t *testing.T) {
 	}
 }
 
+// Without an admin's listing, an attested bird is granted where cygnet
+// says she's in the server, and nowhere else: not signed, not untrusted,
+// not where she's absent or can't be asked. The other checks still hold.
+func TestGrantAttested(t *testing.T) {
+	ctx := context.Background()
+	p, _, ops, au, use := plugin()
+	req := Request{Guild: guild, User: user, Role: role}
+	if err := p.GrantAs(ctx, "skua", link.Attested, req); !errors.Is(err, errNotAllowed) {
+		t.Errorf("attested with no way to ask cygnet: %v", err)
+	}
+	here, hereErr := false, error(nil)
+	p.Vouch(func(context.Context, string) (bool, error) { return here, hereErr })
+	if err := p.GrantAs(ctx, "skua", link.Attested, req); !errors.Is(err, errNotAllowed) {
+		t.Errorf("attested where cygnet isn't: %v", err)
+	}
+	here, hereErr = true, errors.New("offline")
+	if err := p.GrantAs(ctx, "skua", link.Attested, req); !errors.Is(err, errNotAllowed) {
+		t.Errorf("attested when cygnet can't be asked: %v", err)
+	}
+	hereErr = nil
+	for _, tr := range []link.Trust{link.Signed, link.Untrusted} {
+		if err := p.GrantAs(ctx, "skua", tr, req); !errors.Is(err, errNotAllowed) {
+			t.Errorf("%q where cygnet is: %v", tr, err)
+		}
+	}
+	use[role] = true
+	if err := p.GrantAs(ctx, "skua", link.Attested, req); !errors.Is(err, errNotAllowed) {
+		t.Errorf("attested, a role merlin uses: %v", err)
+	}
+	delete(use, role)
+	if err := p.GrantAs(ctx, "skua", link.Attested, req); err != nil || len(ops.added) != 1 || len(au.actions) != 1 {
+		t.Errorf("attested where cygnet is: %v %v %v", err, ops.added, au.actions)
+	}
+	// Through the link, the trust is the hub's stamp.
+	ops.member.RoleIDs = nil
+	raw, _ := json.Marshal(req)
+	if _, err := p.Answer(ctx, link.Call{From: "skua", Trust: link.Attested, Body: raw}); err != nil || len(ops.added) != 2 {
+		t.Errorf("an attested call: %v %v", err, ops.added)
+	}
+}
+
 // One bird gets perMinute grants in a server a minute.
 func TestGrantCap(t *testing.T) {
 	p, st, _, _, _ := plugin()
