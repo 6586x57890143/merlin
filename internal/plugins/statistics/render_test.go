@@ -145,6 +145,11 @@ func TestDisplayNameSegments(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("segments: %+v, want %+v", got, want)
 	}
+	// Discord's channel-name separator survives as a dot the font has,
+	// rather than vanishing and gluing the emoji to the name.
+	if got := segments(f.name, "💬・general"); !reflect.DeepEqual(got, []seg{{emoji: "1f4ac"}, {text: "·general"}}) {
+		t.Fatalf("separator: %+v", got)
+	}
 	if got := segments(f.name, "zoe"); !reflect.DeepEqual(got, []seg{{text: "zoe"}}) {
 		t.Fatalf("an ordinary name was mangled: %+v", got)
 	}
