@@ -102,6 +102,28 @@ func (p *Plugin) registerCommands() {
 						},
 					},
 					{
+						Name:        "set-fast",
+						Description: "The cheap pass that reads every message. Comma separated; later entries are fallbacks.",
+						Options: []discord.ApplicationCommandOption{
+							discord.ApplicationCommandOptionString{
+								Name:        "models",
+								Description: "Model IDs, cheapest first. Type to search; \"default\" tracks merlin's own defaults.",
+								Required:    true, Autocomplete: true,
+							},
+						},
+					},
+					{
+						Name:        "set-deep",
+						Description: "The pass that confirms a flag before anything is deleted. Worth spending on.",
+						Options: []discord.ApplicationCommandOption{
+							discord.ApplicationCommandOptionString{
+								Name:        "models",
+								Description: "Model IDs, best first. Type to search; \"default\" tracks merlin's own defaults.",
+								Required:    true, Autocomplete: true,
+							},
+						},
+					},
+					{
 						Name:        "compare",
 						Description: "Price a model against this server's measured traffic before switching to it",
 						Options: []discord.ApplicationCommandOption{
@@ -192,11 +214,17 @@ func (p *Plugin) registerCommands() {
 
 	p.commands.HandleIx("aimod", "models/show", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModelsShow)
 	p.commands.HandleIx("aimod", "models/compare", core.PermSpec{Tier: core.TierMod, Action: actionRead}, p.handleModelsCompare)
+	// The panel's models form is a modal, and a modal cannot autocomplete, so
+	// these are the search-as-you-type path to the same setStack.
+	p.commands.HandleIx("aimod", "models/set-fast", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleSetStack(true))
+	p.commands.HandleIx("aimod", "models/set-deep", core.PermSpec{Tier: core.TierAdmin, Action: actionConfigure}, p.handleSetStack(false))
 
 	// Autocomplete on every option whose values come from bot state, per
 	// spec.MD section 4a. models/show is the no-typing discovery path that
 	// the same rule requires alongside it.
 	p.commands.AutocompleteIx("aimod", "models/compare", p.autocompleteModel)
+	p.commands.AutocompleteIx("aimod", "models/set-fast", p.autocompleteModel)
+	p.commands.AutocompleteIx("aimod", "models/set-deep", p.autocompleteModel)
 
 	// actionPolicy rather than actionConfigure, matching sanctions: this
 	// changes how much of the server actually gets looked at, which is a
