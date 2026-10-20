@@ -195,3 +195,31 @@ func TestUndoReleasesTheJailOnlyWhenNoOtherSanctionStands(t *testing.T) {
 		t.Errorf("released = %v, want [u1] once the last sanction is undone", jailer.released)
 	}
 }
+
+// Sanctions off: the incident is an audit entry and nothing more. No ledger
+// entry means no points and no case file; the message is still dealt with.
+func TestSanctionsOffKeepsRemovalsOffTheLedger(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	aud := &fakeAudit{}
+	p := testPlugin(t, store, &fakeClassifier{}, ops, aud)
+	bus := core.NewEventBus(testLogger())
+	rec := &busRecorder{}
+	rec.record(bus)
+	p.bus = bus
+	cfg := enforcingConfig()
+	cfg.SanctionAction = SanctionOff
+	p.enforce(context.Background(), cfg,
+		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "text"},
+		BucketThreats, ActionRemove, confirmed("a threat"))
+	if len(rec.events) != 0 {
+		t.Errorf("sanctions off still reached the ledger: %+v", rec.events)
+	}
+	found := false
+	for _, e := range aud.entries {
+		found = found || e.action == "aimod.remove"
+	}
+	if !found {
+		t.Errorf("no audit entry for the removal: %+v", aud.entries)
+	}
+}

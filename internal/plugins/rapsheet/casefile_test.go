@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -276,5 +277,33 @@ func TestConfigureShowListsTheConfiguration(t *testing.T) {
 		if !strings.Contains(rt.said(), want) {
 			t.Errorf("want %q in %s", want, rt.said())
 		}
+	}
+}
+
+// Two entries for one member mirror on their own goroutines. Both used to
+// read "no thread yet" and each open a post, which is the pair of identical
+// case files a guild found in its forum after two aimod removals.
+func TestConcurrentEntriesShareOneCaseFile(t *testing.T) {
+	h := newHarness()
+	withForum(h)
+	ctx := context.Background()
+	cfg, _ := h.store.Config(ctx, testGuild)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		id, err := h.store.Insert(ctx, Entry{GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategorySpam, ActorID: core.ActorSystem})
+		if err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		wg.Add(1)
+		go func(id int64) {
+			defer wg.Done()
+			if err := h.p.mirrorNow(ctx, cfg, Entry{ID: id, GuildID: testGuild, UserID: "1001", Kind: KindWarn, Category: CategorySpam}); err != nil {
+				t.Errorf("mirrorNow: %v", err)
+			}
+		}(id)
+	}
+	wg.Wait()
+	if h.ops.threadsOpened != 1 {
+		t.Errorf("threads opened = %d, want 1", h.ops.threadsOpened)
 	}
 }
