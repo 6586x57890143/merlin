@@ -150,6 +150,7 @@ func (p *Plugin) Init(deps core.Deps) error {
 	deps.Commands.HandleIx("statistics", "backfill", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.backfill"}, p.handleBackfill)
 	deps.Commands.HandleIx("statistics", "channels", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleChannels)
 	deps.Commands.HandleIx("statistics", "members", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleMembers)
+	deps.Commands.HandleIx("statistics", "daily", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleDaily)
 	deps.Commands.HandleIx("statistics", "status", core.PermSpec{Tier: core.TierAdmin, Action: "statistics.view"}, p.handleStatus)
 	p.registerPanel(deps.Commands)
 	return nil
@@ -233,6 +234,23 @@ func command() discord.SlashCommandCreate {
 				Name:        "members",
 				Description: "Joins and departures over a window of time",
 				Options:     window,
+			},
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "daily",
+				Description: "Chat messages per day as a chart and a csv, with voice beside it for comparison",
+				Options: append(append([]discord.ApplicationCommandOption{}, window...),
+					discord.ApplicationCommandOptionChannel{
+						Name:        "channel",
+						Description: "Only count this channel",
+						ChannelTypes: []discord.ChannelType{
+							discord.ChannelTypeGuildText,
+							discord.ChannelTypeGuildNews,
+							discord.ChannelTypeGuildVoice,
+							discord.ChannelTypeGuildPublicThread,
+							discord.ChannelTypeGuildPrivateThread,
+						},
+					},
+				),
 			},
 			discord.ApplicationCommandOptionSubCommand{
 				Name:        "backfill",
