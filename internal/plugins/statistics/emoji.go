@@ -55,11 +55,19 @@ func segments(f font.Face, s string) []seg {
 			text.WriteRune(' ')
 		case drawable(f, r):
 			text.WriteRune(r)
+		case r == katakanaDot && drawable(f, latinDot):
+			// The separator half of Discord writes channel names with
+			// ("💬・general"). The Go fonts have no CJK, so it would vanish
+			// and glue the emoji to the name; the Latin middle dot reads
+			// the same.
+			text.WriteRune(latinDot)
 		}
 	}
 	flush()
 	return out
 }
+
+const katakanaDot, latinDot = 0x30FB, 0x00B7
 
 func drawable(f font.Face, r rune) bool {
 	_, ok := f.GlyphAdvance(r)

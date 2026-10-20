@@ -1,11 +1,19 @@
 package statistics
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/image/draw"
 )
 
 var dayOne = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
@@ -136,7 +144,7 @@ func TestRenderDailyLongAndShortWindows(t *testing.T) {
 		if !ok {
 			t.Fatalf("%d days: no summary", span)
 		}
-		png, err := renderDaily(pts, s, "the birdhouse", dayOne, to)
+		png, err := renderDaily(http.DefaultClient, pts, s, "the birdhouse", dayOne, to)
 		if err != nil || len(png) == 0 {
 			t.Fatalf("%d days: %v", span, err)
 		}
@@ -175,5 +183,52 @@ func TestHandleDaily(t *testing.T) {
 	p.handleDaily(context.Background(), ix)
 	if !said(w, "That window doesn't work") {
 		t.Fatal("a bad date is refused before deferring")
+	}
+}
+
+// TestDailyTitleDrawsEmoji: a channel or server name's emoji is drawn as
+// art in the headline, not dropped. The stub CDN serves solid magenta, which
+// no ink in the palette has and no blend of ink over the background can
+// produce (both have green well above zero), so finding it in the title band
+// means an emoji landed there. The plain name is the control.
+func TestDailyTitleDrawsEmoji(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		img := image.NewRGBA(image.Rect(0, 0, 72, 72))
+		draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{R: 0xFF, B: 0xFF, A: 0xFF}}, image.Point{}, draw.Src)
+		_ = png.Encode(w, img)
+	}))
+	t.Cleanup(srv.Close)
+	old := emojiBase
+	emojiBase = srv.URL
+	t.Cleanup(func() { emojiBase = old })
+
+	stats := []DayStat{{Day: dayOne, Messages: 5}, {Day: dayOne.AddDate(0, 0, 1), Messages: 8}}
+	to := dayOne.AddDate(0, 0, 2)
+	pts := dailyPoints(stats, dayOne, to, time.Time{})
+	s, _ := summarize(pts)
+	magenta := func(scope string) bool {
+		raw, err := renderDaily(srv.Client(), pts, s, scope, dayOne, to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := png.Decode(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		band := image.Rect(px(pad), px(titleBase-24), px(dailyW-pad), px(titleBase+6))
+		for y := band.Min.Y; y < band.Max.Y; y++ {
+			for x := band.Min.X; x < band.Max.X; x++ {
+				if r, g, b, _ := img.At(x, y).RGBA(); r>>8 == 0xFF && g>>8 == 0 && b>>8 == 0xFF {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if magenta("general") {
+		t.Fatal("control: a plain name drew emoji art")
+	}
+	if !magenta("💬・general 🐦") {
+		t.Fatal("no emoji art in the headline")
 	}
 }

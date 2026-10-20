@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -220,7 +221,7 @@ func (p *Plugin) handleDaily(ctx context.Context, ix *core.Ix) {
 
 	embed := core.Embed(core.ColorInfo, "Daily activity", core.TruncateEmbedDescription(dailyMarkdown(sum, pts, scope)))
 	files := []*discord.File{fileFrom(dailyCSVName, dailyCSV(pts))}
-	if png, err := renderDaily(pts, sum, scope, opts.from, opts.to); err == nil {
+	if png, err := renderDaily(p.client, pts, sum, scope, opts.from, opts.to); err == nil {
 		embed.Image = &discord.EmbedResource{URL: "attachment://" + dailyImageName}
 		files = append([]*discord.File{fileFrom(dailyImageName, png)}, files...)
 	} else {
@@ -319,7 +320,11 @@ var (
 	notCounted = heatOutside
 )
 
-func renderDaily(pts []dayPoint, s dailySummary, scope string, start, end time.Time) ([]byte, error) {
+// renderDaily draws the infographic. client fetches emoji art: server and
+// channel names carry emoji often enough ("💬・general") that dropping them
+// would leave a gap in the headline, and Twemoji is the set Discord itself
+// draws, so the png matches what the server sees in the client.
+func renderDaily(client *http.Client, pts []dayPoint, s dailySummary, scope string, start, end time.Time) ([]byte, error) {
 	f, err := newFaces()
 	if err != nil {
 		return nil, err
@@ -335,7 +340,8 @@ func renderDaily(pts []dayPoint, s dailySummary, scope string, start, end time.T
 	img := image.NewRGBA(image.Rect(0, 0, px(dailyW), px(h)))
 	draw.Draw(img, img.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
 
-	text(img, f.title, nameColor, pad, titleBase, truncate(f.title, "how active "+scope+" is, day by day", inner))
+	drawRich(img, f.title, nameColor, pad, titleBase,
+		fitRich(f.title, segments(f.title, "how active "+scope+" is, day by day"), inner), newGlyphs(client))
 	text(img, f.body, mutedColor, pad, windowBase, truncate(f.body, fmt.Sprintf("%s to %s utc, over %s",
 		start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), humanSpan(end.Sub(start))), inner))
 	text(img, f.body, countColor, pad, totalsBase, truncate(f.body, fmt.Sprintf("%s messages and %s in voice over %s",
@@ -522,8 +528,6 @@ func (c barChart) dates(dst *image.RGBA) {
 	case need > 7:
 		weeks := (need + 6) / 7
 		label = func(i int) bool { d := c.pts[i].day; return d.Weekday() == time.Monday && d.YearDay()/7%weeks == 0 }
-	case need > 1:
-		label = func(i int) bool { return c.pts[i].day.Weekday() == time.Monday || need < 7 && i%need == 0 }
 	}
 	last := -minLabelGap
 	for i, p := range c.pts {
