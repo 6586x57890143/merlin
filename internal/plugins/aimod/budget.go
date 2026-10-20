@@ -100,12 +100,14 @@ func (p *Plugin) recordUsage(ctx context.Context, guildID string, u Usage, deep 
 
 // notePayment records whether the gateway is still willing to be paid.
 //
-// One call site, right where the fast pass lands, because the fast pass runs
-// on every batch and nothing reaches the deep rung without it. A 402 is the
-// gateway saying the account is out of money (or the key is past its cap,
-// which spends the same); any other error says nothing either way and leaves
-// the last answer standing, so a rate limit does not read as bankruptcy.
-func (p *Plugin) notePayment(guildID string, err error) {
+// Called where the fast pass lands and where the deep pass does, since a
+// guild whose fast rung runs on free models only ever offers money on the
+// deep one. A 402 is the gateway saying the account is out of money (or the
+// key is past its cap, which spends the same); any other error says nothing
+// either way and leaves the last answer standing, so a rate limit does not
+// read as bankruptcy. Only a billed call clears it: a free call proves the
+// gateway is up and nothing about the balance.
+func (p *Plugin) notePayment(guildID string, err error, billed bool) {
 	var apiErr *APIError
 	switch {
 	case errors.As(err, &apiErr) && apiErr.Status == http.StatusPaymentRequired:
@@ -119,7 +121,7 @@ func (p *Plugin) notePayment(guildID string, err error) {
 		}
 		p.paymentRefused[guildID] = p.now()
 		p.paymentMu.Unlock()
-	case err == nil:
+	case err == nil && billed:
 		p.paymentMu.Lock()
 		delete(p.paymentRefused, guildID)
 		p.paymentMu.Unlock()

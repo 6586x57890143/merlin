@@ -331,15 +331,24 @@ func (p *Plugin) noticeFunding(ctx context.Context, guildID string, spec *provid
 // The two have different reasons for it and different fixes, and saying
 // "set a limit on the key" to somebody on a free tier would be advice for a
 // problem they do not have.
-func creditUnknown(spec *providerSpec) string {
+//
+// The OpenRouter branch is the ordinary state of a healthy guild, not a
+// missing setting: the gateway does not tell an inference key what the
+// account holds, so this says what merlin does know rather than filling the
+// gap with the key's cap.
+func creditUnknown(spec *providerSpec, limit *float64) string {
 	if spec == orcaRouter {
 		return "Scanning runs on free models, so there is no balance to run down.\n" +
 			subtext("What limits it there is a request rate rather than money. The tip jar below still "+
 				"pays for the paid fallback, which confirms anything the free pass flags.")
 	}
-	return "Not shown: this server's key has no credit limit set.\n" +
-		subtext("Setting a limit on the key at openrouter.ai turns this into a gauge, "+
-			"and stops a leaked key draining the account.")
+	line := "Not shown: OpenRouter does not report an account balance to this key."
+	if limit != nil && *limit > 0 {
+		line = "Not shown: OpenRouter tells this key its own " + formatUSD(*limit) +
+			" spending cap and nothing about what the account holds."
+	}
+	return line + "\n" + subtext("merlin finds out the account is empty when a paid scan is refused, "+
+		"and says so here the moment it happens.")
 }
 
 // acceptedChains lists the chains in this family that the gateway's checkout
@@ -570,7 +579,8 @@ func (p *Plugin) handleFundingShow(ctx context.Context, ix *core.Ix) {
 	var haveRunway bool
 	if remaining == nil {
 		fields = append(fields, discord.EmbedField{
-			Value: core.TruncateEmbedField(creditUnknown(spec)),
+			Name:  "⛽ Scanning credit",
+			Value: core.TruncateEmbedField(creditUnknown(spec, limit)),
 		})
 	} else {
 		left, haveRunway = p.runway(ctx, ix.GuildID, *remaining)

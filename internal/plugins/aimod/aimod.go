@@ -996,7 +996,7 @@ func (p *Plugin) fastPass(ctx context.Context, cfg Config, state budgetState, ba
 	// from the one call that runs on every batch. See notePayment: the
 	// key endpoint reports a spend cap rather than a balance, so this is
 	// the only place an empty account announces itself.
-	p.notePayment(guildID, err)
+	p.notePayment(guildID, err, usage.Cost > 0)
 	return hits, err
 }
 
@@ -1016,6 +1016,7 @@ func (p *Plugin) fastPass(ctx context.Context, cfg Config, state budgetState, ba
 // batch at OpenRouter prices is the bill this gateway exists to avoid.
 func (p *Plugin) deepPass(ctx context.Context, cfg Config, state budgetState, bucket Bucket, c candidate, priorLines []string, self string, wantRewrite bool) (deepVerdict, error) {
 	v, usage, err := p.classifyDeep(ctx, state, cfg, bucket, c, priorLines, self, wantRewrite)
+	p.notePayment(cfg.GuildID, err, usage.Cost > 0)
 	if usage.Cost > 0 || usage.TotalTokens > 0 {
 		p.recordUsage(ctx, cfg.GuildID, usage, true)
 	}
