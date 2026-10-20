@@ -154,12 +154,43 @@ func strictProvider() *providerPrefs {
 // so the paid entries behind a free one still route only to ZDR endpoints
 // and the free ones are simply skipped.
 //
-// RequireParameters survives: it is about the JSON schema, not privacy.
-func relaxForFree(p *providerPrefs, models []string) *providerPrefs {
-	if p == nil || !allFree(models) {
-		return p
+// The schema is relaxed too, for the same reason. Free endpoints commonly
+// take response_format but not structured_outputs (minimax-m3.1-flash:free
+// is one), so json_schema under require_parameters was the second 404:
+// "No endpoints found that can handle the requested parameters". A free
+// stack instead asks for json_object, which nearly every endpoint supports,
+// and carries the schema in the system prompt so the deep pass, whose
+// prompt never spells out its fields, still knows them. unfence covers a
+// model that wraps the object in a code fence anyway. Nothing parsed is
+// trusted any further than before: every caller still validates the result.
+func relaxForFree(req chatRequest) chatRequest {
+	if req.Provider == nil || !allFree(req.Models) {
+		return req
 	}
-	return &providerPrefs{DataCollection: "allow", RequireParameters: p.RequireParameters}
+	req.Provider = &providerPrefs{DataCollection: "allow"}
+	if rf := req.ResponseFormat; rf != nil && rf.Type == "json_schema" {
+		schema, _ := json.Marshal(rf.JSONSchema.Schema)
+		req.ResponseFormat = &responseFormat{Type: "json_object"}
+		// Copied, not appended in place: Chat may send this request twice.
+		msgs := append([]chatMessage{{Role: "system",
+			Content: "Reply with one JSON object and nothing else, matching this JSON Schema: " + string(schema)}},
+			req.Messages...)
+		req.Messages = msgs
+	}
+	return req
+}
+
+// unfence strips a markdown code fence from around a reply, which a model
+// asked for json_object rather than held to a schema sometimes adds.
+func unfence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	if nl := strings.IndexByte(s, '\n'); nl >= 0 {
+		s = s[nl+1:]
+	}
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "```"))
 }
 
 // allFree reports whether every model in a non-empty stack is a `:free` one.
@@ -180,7 +211,7 @@ type jsonSchema struct {
 
 type responseFormat struct {
 	Type       string     `json:"type"`
-	JSONSchema jsonSchema `json:"json_schema"`
+	JSONSchema jsonSchema `json:"json_schema,omitzero"`
 }
 
 type chatRequest struct {
@@ -481,7 +512,7 @@ func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (
 			req.Provider = nil
 		}
 	}
-	req.Provider = relaxForFree(req.Provider, req.Models)
+	req = relaxForFree(req)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -543,7 +574,7 @@ func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (
 		return "", parsed.Usage, fmt.Errorf("%w: %s answered with %d completion tokens and finish_reason %q",
 			ErrEmptyCompletion, parsed.Model, parsed.Usage.CompletionTokens, choice.FinishReason)
 	}
-	return choice.Message.Content, parsed.Usage, nil
+	return unfence(choice.Message.Content), parsed.Usage, nil
 }
 
 // ErrEmptyCompletion reports that a model returned a successful response

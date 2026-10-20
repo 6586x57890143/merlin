@@ -171,23 +171,40 @@ func TestPrivacyLineNamesTheWeakerGuarantee(t *testing.T) {
 // found matching your data policy"), so it goes without retention terms and
 // the status screen says so. A mixed stack keeps them.
 func TestFreeOnlyStackDropsRetentionTerms(t *testing.T) {
-	free := []string{"meta-llama/llama-3.3-70b-instruct:free"}
-	got := relaxForFree(strictProvider(), free)
-	if got.ZDR || got.DataCollection != "allow" || !got.RequireParameters {
-		t.Errorf("free stack sent %+v, want no ZDR, collection allowed, schema still required", *got)
+	free := []string{"minimax/minimax-m3.1-flash:free"}
+	req := relaxForFree(chatRequest{Models: free, Provider: strictProvider(), ResponseFormat: fastSchema(),
+		Messages: []chatMessage{{Role: "user", Content: "hi"}}})
+	if p := req.Provider; p.ZDR || p.DataCollection != "allow" || p.RequireParameters {
+		t.Errorf("free stack sent %+v, want no ZDR, collection allowed, parameters not required", *p)
 	}
+	// The second 404: free endpoints take response_format but not
+	// structured_outputs, so the schema moves into the prompt.
+	if req.ResponseFormat.Type != "json_object" || len(req.Messages) != 2 ||
+		!strings.Contains(req.Messages[0].Content, `"v"`) {
+		t.Errorf("schema not carried into the prompt: %+v / %+v", req.ResponseFormat, req.Messages)
+	}
+	raw, _ := json.Marshal(req.ResponseFormat)
+	if string(raw) != `{"type":"json_object"}` {
+		t.Errorf("json_object request still carries a schema: %s", raw)
+	}
+
 	mixed := append(free, "openai/gpt-5-nano")
-	if got := relaxForFree(strictProvider(), mixed); !got.ZDR || got.DataCollection != "deny" {
-		t.Errorf("mixed stack lost its retention terms: %+v", *got)
+	if got := relaxForFree(chatRequest{Models: mixed, Provider: strictProvider()}); !got.Provider.ZDR || !got.Provider.RequireParameters {
+		t.Errorf("mixed stack lost its terms: %+v", *got.Provider)
 	}
-	if relaxForFree(nil, free) != nil {
+	if relaxForFree(chatRequest{Models: free}).Provider != nil {
 		t.Error("a gateway that takes no block was handed one")
 	}
-	if relaxForFree(strictProvider(), nil).ZDR != true {
+	if !relaxForFree(chatRequest{Provider: strictProvider()}).Provider.ZDR {
 		t.Error("an unpinned stack (gateway defaults) lost its retention terms")
 	}
 	if line := privacyLine(openRouter, Config{FastModels: free}); !strings.Contains(line, "Free models only") {
 		t.Errorf("status does not disclose the free-stack trade: %q", line)
+	}
+	for in, want := range map[string]string{"```json\n{\"v\":[]}\n```": `{"v":[]}`, ` {"v":[]} `: `{"v":[]}`} {
+		if got := unfence(in); got != want {
+			t.Errorf("unfence(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
