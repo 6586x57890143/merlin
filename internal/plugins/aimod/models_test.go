@@ -362,18 +362,23 @@ func TestAnEmptyAccountReadsAsEmptyWhateverTheKeyCapSays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyInfo: %v", err)
 	}
-	if info.LimitRemaining == nil || *info.LimitRemaining != 50 {
-		t.Fatalf("a gateway that has not refused anything should report the cap: %+v", info.LimitRemaining)
+	// Unknown, not full: the cap is not money, and a guild on free models
+	// over an empty account was being shown "$50.00 of $50.00".
+	if info.LimitRemaining != nil {
+		t.Fatalf("the key's cap was reported as a balance: %v", *info.LimitRemaining)
+	}
+	if info.Limit == nil || *info.Limit != 50 {
+		t.Errorf("the cap itself was lost, so it cannot be named as a cap: %+v", info.Limit)
 	}
 
 	// A rate limit says nothing about the balance and must not be mistaken
 	// for one, or an outage would empty a healthy gauge and beg for money.
-	p.notePayment("g1", &APIError{Status: http.StatusTooManyRequests})
+	p.notePayment("g1", &APIError{Status: http.StatusTooManyRequests}, true)
 	if p.outOfCredit("g1") {
 		t.Error("a 429 was read as an empty account")
 	}
 
-	p.notePayment("g1", &APIError{Status: http.StatusPaymentRequired})
+	p.notePayment("g1", &APIError{Status: http.StatusPaymentRequired}, true)
 	info, err = p.keyInfo(context.Background(), "g1", openRouter, "k")
 	if err != nil {
 		t.Fatalf("keyInfo: %v", err)
@@ -390,7 +395,12 @@ func TestAnEmptyAccountReadsAsEmptyWhateverTheKeyCapSays(t *testing.T) {
 
 	// One accepted call clears it. Nothing here is persisted, so a topped-up
 	// account must recover on its own rather than waiting for a restart.
-	p.notePayment("g1", nil)
+	// A free call proves the gateway is up and nothing about the balance.
+	p.notePayment("g1", nil, false)
+	if !p.outOfCredit("g1") {
+		t.Error("an unbilled call cleared the refusal")
+	}
+	p.notePayment("g1", nil, true)
 	if p.outOfCredit("g1") {
 		t.Error("a successful call did not clear the refusal")
 	}
