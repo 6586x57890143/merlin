@@ -1037,13 +1037,26 @@ both sets into the gitignored `web/contest/public/stickers/`.
 
 Hourly activity buckets, counted from the gateway as messages arrive, and
 the commands that read them: `/statistics report` (who was talking, the
-card and the list; operator-only, see the package doc), `channels`,
+card and the list; operator-only, see the package doc), `channels`, `daily`,
 `members`, `status`, `backfill` (operator-only) and `configure retention`.
 This replaced `/activity`, which paged Discord's history over REST for every
 report at about one page a second per channel, so two weeks of one busy
 room was a half-hour scan that any push to `main` killed, and the answer
 was "who was talking in the 20 minutes it managed".
 
+- **`/statistics daily` is the pulse on its own** (`daily.go`): chat
+  messages per UTC day as the main chart, voice hours per day as a smaller
+  control underneath on the same date axis, and a `daily.csv` of every day.
+  It names nobody, so it is `statistics.view` like `channels`, not
+  operator-only. Two charts, never one with a second y-axis: messages and
+  hours are different units, and a shared plot lets whichever scale was
+  drawn last decide what looks busy. Days are zero filled (`Days` returns
+  only days with rows, and a missing bar must read as quiet, not skipped),
+  but a day before coverage (counting began, or pruned) is **not counted**,
+  drawn as a shaded band and left blank in the csv, because zeroes there
+  draw a server that went silent on the days merlin was not looking. Days
+  cut short by the window or by coverage are dimmed and kept out of every
+  figure, the 7-day average included, which breaks rather than dipping.
 - **Counting is free and exact; the scan is now only a backfill.**
   `GUILD_MESSAGES` is unprivileged and always requested
   (`core.NewSession`); the events carry author, channel and timestamp with
