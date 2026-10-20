@@ -447,3 +447,35 @@ func TestApplyRefusesWhenTheRecordNoLongerReachesTheBand(t *testing.T) {
 		t.Error("the stale suggestion should be withdrawn on the click")
 	}
 }
+
+// Entries for one member are ingested on their own goroutines. Without the
+// ladder lock each read "not yet suggested at this band" and each posted a
+// suggestion for the same crossing.
+func TestConcurrentEntriesSuggestABandOnce(t *testing.T) {
+	h := newHarness()
+	withModChannel(h, ModeSuggest)
+	h.ops.addMember("7300007")
+	ctx := context.Background()
+	cfg, _ := h.store.Config(ctx, testGuild)
+	// 20 on file, then 8 x 2: every interleaving lands in the notice band
+	// (30) and none reaches the next one (60).
+	if _, _, err := h.p.record(ctx, cfg, newEntry{GuildID: testGuild, UserID: "7300007", Kind: KindWarn,
+		Category: CategorySpam, ActorID: core.ActorSystem, Source: SourceAIMod, PointsOverride: 20}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := h.p.record(ctx, cfg, newEntry{GuildID: testGuild, UserID: "7300007", Kind: KindWarn,
+				Category: CategorySpam, ActorID: core.ActorSystem, Source: SourceAIMod, PointsOverride: 2}); err != nil {
+				t.Errorf("record: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := len(suggestions(h)); n != 1 {
+		t.Errorf("suggestions = %d, want 1", n)
+	}
+}

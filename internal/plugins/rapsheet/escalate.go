@@ -91,6 +91,10 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, e Entry) string {
 	case KindNote, KindUnban, KindRelease, KindSuggestion:
 		return ""
 	}
+	// After the early returns, which is what makes this safe to hold across
+	// applyLadder and suggest: the ladder rows they record come back through
+	// here and leave at Source == SourceLadder before reaching the lock.
+	defer p.lockMember("ladder", e.GuildID, e.UserID)()
 
 	sh, err := p.loadSheet(ctx, cfg, e.GuildID, e.UserID)
 	if err != nil {

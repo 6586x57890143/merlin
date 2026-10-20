@@ -79,6 +79,9 @@ type ModRoles interface {
 
 // Plugin is the rapsheet plugin.
 type Plugin struct {
+	// memberLocks serializes per-member read-decide-writes. See lockMember.
+	memberLocks sync.Map
+
 	store    Store
 	opsFor   OpsProvider
 	speaker  voice.Source

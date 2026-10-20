@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
@@ -111,6 +112,7 @@ func (p *Plugin) mirror(cfg Config, e Entry) {
 // a forum Discord says is gone is dropped from the config, since the next
 // entry would only fail the same way.
 func (p *Plugin) mirrorNow(ctx context.Context, cfg Config, e Entry) error {
+	defer p.lockMember("mirror", e.GuildID, e.UserID)()
 	cf, ok, err := p.store.CaseFile(ctx, e.GuildID, e.UserID)
 	if err != nil {
 		return err
@@ -162,6 +164,29 @@ func (p *Plugin) mirrorNow(ctx context.Context, cfg Config, e Entry) error {
 	}
 	// A forum post's starter message shares the thread's id.
 	return p.store.SetThreadMessage(ctx, e.ID, th.ID().String())
+}
+
+// lockMember serializes one read-decide-write on one member's record, and
+// returns the unlock. Entries arrive on their own goroutines (every bus
+// event is ingested detached, and aimod escalates a batch's hits in
+// parallel), so two incidents for one member a moment apart both read the
+// same state and both acted on it:
+//
+//   - "mirror": both read "no thread yet" and each opened a post, the
+//     duplicate case files a guild saw in its forum.
+//   - "ladder": both read "not yet suggested at this band" and each posted
+//     a suggestion, or in auto mode each applied the consequence.
+//
+// Scoped so the ladder's Discord calls never hold up a mirror.
+// ponytail: in-process and never pruned (one small mutex per member and
+// scope), which is enough for one bot process; a second replica would need
+// a row lock instead. Per member, not per link group, so two linked
+// accounts escalating in the same instant can still both act.
+func (p *Plugin) lockMember(scope, guildID, userID string) func() {
+	m, _ := p.memberLocks.LoadOrStore(scope+":"+guildID+":"+userID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // remirror edits e's mirrored message after a void or a reason change. An

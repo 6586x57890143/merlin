@@ -169,7 +169,12 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 			}
 			return
 		}
-		p.publishRemoval(ctx, cfg.GuildID, incidentID, c, action, bucket, v)
+		// Sanctions off means the incident is the audit entry above and
+		// nothing else: no rapsheet entry, so no points and no case file.
+		// The ledger comes into play once a guild picks flag or jail.
+		if cfg.SanctionAction != SanctionOff {
+			p.publishRemoval(ctx, cfg.GuildID, incidentID, c, action, bucket, v)
+		}
 		p.notifyAuthor(ctx, cfg, c, action, v)
 		// Only after the message was actually dealt with. Jailing somebody
 		// over a removal that failed would punish them for something still
