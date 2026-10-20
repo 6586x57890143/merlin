@@ -126,7 +126,7 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string)
 				"\n**Deep:** " + strings.Join(modelsOr(cfg.DeepModels, spec.deepModels), ", ") + stackNote(cfg.DeepModels)),
 			ui.Row(ui.Button("Change models", panelCfg+"models", discord.ButtonStylePrimary, !canCfg)),
 		}
-		pn.Footer = "/aimod models show prices these at this server's traffic; /aimod models compare prices a switch."
+		pn.Footer = "/aimod models set-fast and set-deep search the catalogue as you type; show and compare price them."
 
 	case "words":
 		list := "Nothing listed."
@@ -413,9 +413,15 @@ func (p *Plugin) handleForm(ctx context.Context, ix *core.Ix, customID string) {
 		}
 	case "models":
 		if o = p.setStack(ctx, ix, v["fast"], true); o.color != core.ColorError {
-			o = p.setStack(ctx, ix, v["deep"], false)
-			if o.color != core.ColorError {
-				o = outcome{core.ColorSuccess, "Models set", "`/aimod models show` prices them at this server's traffic."}
+			fastWarned := o.color == core.ColorWarning
+			if o = p.setStack(ctx, ix, v["deep"], false); o.color != core.ColorError {
+				if fastWarned || o.color == core.ColorWarning {
+					o = outcome{core.ColorWarning, "Models set, without zero data retention",
+						"Free models have no zero data retention endpoint, so at least one pass gives up that guarantee. " +
+							"The provider page of `/aimod status` says which."}
+				} else {
+					o = outcome{core.ColorSuccess, "Models set", "`/aimod models show` prices them at this server's traffic."}
+				}
 			}
 		}
 	case "word":

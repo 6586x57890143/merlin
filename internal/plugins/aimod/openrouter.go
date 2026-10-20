@@ -142,6 +142,36 @@ func strictProvider() *providerPrefs {
 	return &providerPrefs{ZDR: true, DataCollection: "deny", RequireParameters: true}
 }
 
+// relaxForFree drops the retention terms for a stack made only of OpenRouter
+// `:free` models, and leaves every other stack alone.
+//
+// No free endpoint is zero-retention, so the strict block on a free stack is
+// not a stronger guarantee, it is a request that can never route: OpenRouter
+// answers every one with 404 "No endpoints found matching your data policy",
+// which a guild trying free models on an unfunded key saw on every batch. A
+// guild that pinned nothing but free models has chosen this trade, and
+// /aimod status says so (privacyLine). A mixed stack keeps the strict block,
+// so the paid entries behind a free one still route only to ZDR endpoints
+// and the free ones are simply skipped.
+//
+// RequireParameters survives: it is about the JSON schema, not privacy.
+func relaxForFree(p *providerPrefs, models []string) *providerPrefs {
+	if p == nil || !allFree(models) {
+		return p
+	}
+	return &providerPrefs{DataCollection: "allow", RequireParameters: p.RequireParameters}
+}
+
+// allFree reports whether every model in a non-empty stack is a `:free` one.
+func allFree(models []string) bool {
+	for _, m := range models {
+		if !strings.HasSuffix(m, ":free") {
+			return false
+		}
+	}
+	return len(models) > 0
+}
+
 type jsonSchema struct {
 	Name   string         `json:"name"`
 	Strict bool           `json:"strict"`
@@ -451,6 +481,7 @@ func (c *Client) chatOnce(ctx context.Context, apiKey string, req chatRequest) (
 			req.Provider = nil
 		}
 	}
+	req.Provider = relaxForFree(req.Provider, req.Models)
 
 	body, err := json.Marshal(req)
 	if err != nil {

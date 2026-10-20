@@ -155,14 +155,51 @@ func TestFreeRateLimitIsNotRetriedOnTheSameGateway(t *testing.T) {
 // docs: it is the one promise this plugin makes about member text, and the
 // default gateway is the weaker of the two on it.
 func TestPrivacyLineNamesTheWeakerGuarantee(t *testing.T) {
-	if !strings.Contains(privacyLine(openRouter), "zero data retention") {
-		t.Errorf("OpenRouter line does not mention what it pins: %q", privacyLine(openRouter))
+	if !strings.Contains(privacyLine(openRouter, Config{}), "zero data retention") {
+		t.Errorf("OpenRouter line does not mention what it pins: %q", privacyLine(openRouter, Config{}))
 	}
-	orca := privacyLine(orcaRouter)
+	orca := privacyLine(orcaRouter, Config{})
 	if !strings.Contains(orca, "No per-request retention control") {
 		t.Errorf("OrcaRouter line does not say the guarantee is absent: %q", orca)
 	}
-	if strings.EqualFold(orca, privacyLine(openRouter)) {
+	if strings.EqualFold(orca, privacyLine(openRouter, Config{})) {
 		t.Error("both gateways claim the same guarantee")
+	}
+}
+
+// A free-only stack under the strict block is unroutable (404 "No endpoints
+// found matching your data policy"), so it goes without retention terms and
+// the status screen says so. A mixed stack keeps them.
+func TestFreeOnlyStackDropsRetentionTerms(t *testing.T) {
+	free := []string{"meta-llama/llama-3.3-70b-instruct:free"}
+	got := relaxForFree(strictProvider(), free)
+	if got.ZDR || got.DataCollection != "allow" || !got.RequireParameters {
+		t.Errorf("free stack sent %+v, want no ZDR, collection allowed, schema still required", *got)
+	}
+	mixed := append(free, "openai/gpt-5-nano")
+	if got := relaxForFree(strictProvider(), mixed); !got.ZDR || got.DataCollection != "deny" {
+		t.Errorf("mixed stack lost its retention terms: %+v", *got)
+	}
+	if relaxForFree(nil, free) != nil {
+		t.Error("a gateway that takes no block was handed one")
+	}
+	if relaxForFree(strictProvider(), nil).ZDR != true {
+		t.Error("an unpinned stack (gateway defaults) lost its retention terms")
+	}
+	if line := privacyLine(openRouter, Config{FastModels: free}); !strings.Contains(line, "Free models only") {
+		t.Errorf("status does not disclose the free-stack trade: %q", line)
+	}
+}
+
+// ZDR is the preferred default, so a stack that gives it up says so when set.
+func TestSettingAFreeStackWarns(t *testing.T) {
+	if zdrWarning([]string{"openai/gpt-5-nano"}) != "" {
+		t.Error("a paid stack keeps ZDR and should not warn")
+	}
+	if !strings.Contains(zdrWarning([]string{"x/y:free"}), "may log or train") {
+		t.Error("a free-only stack gives up ZDR without saying so")
+	}
+	if !strings.Contains(zdrWarning([]string{"x/y:free", "openai/gpt-5-nano"}), "skipped") {
+		t.Error("a mixed stack does not say its free entries will never answer")
 	}
 }

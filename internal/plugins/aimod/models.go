@@ -502,10 +502,40 @@ func (p *Plugin) setStack(ctx context.Context, ix *core.Ix, raw string, fast boo
 			fmt.Sprintf("The %s pass will use merlin's own defaults, and will follow them if they change.\n\n"+
 				"`/aimod models show` for the current prices.", which)}
 	}
-	return outcome{core.ColorSuccess, "Models set",
+	o := outcome{core.ColorSuccess, "Models set",
 		fmt.Sprintf("The %s pass will try, in order:\n%s\n\nLater entries are only used when an earlier one errors "+
 			"or is rate limited.\n\n`/aimod models show` to see what that costs at this server's traffic.",
 			which, "- "+strings.Join(ids, "\n- "))}
+	if warn := zdrWarning(ids); warn != "" {
+		o.color, o.title, o.body = core.ColorWarning, "Models set, without zero data retention", warn+"\n\n"+o.body
+	}
+	return o
+}
+
+// zdrWarning is what a stack gives up on OpenRouter's retention guarantee,
+// or "" when it gives up nothing. ZDR is the default and the strongly
+// preferred setting, so leaving it is never silent: see relaxForFree.
+func zdrWarning(ids []string) string {
+	if allFree(ids) {
+		return "Free models have no zero data retention endpoint, so this pass now sends member messages to " +
+			"providers that may log or train on them. Fine for testing; pin a paid model (or `default`) to " +
+			"get the guarantee back."
+	}
+	for _, id := range ids {
+		if strings.HasSuffix(id, ":free") {
+			return "The free entries in this list will be skipped: the paid ones keep zero data retention " +
+				"pinned, and no free endpoint offers it. List only free models if you mean to give that up."
+		}
+	}
+	return ""
+}
+
+// handleSetStack is /aimod models set-fast|set-deep.
+func (p *Plugin) handleSetStack(fast bool) func(context.Context, *core.Ix) {
+	return func(ctx context.Context, ix *core.Ix) {
+		o := p.setStack(ctx, ix, ix.Args()["models"].String(), fast)
+		_ = ix.RespondEmbed(core.Embed(o.color, o.title, o.body))
+	}
 }
 
 // autocompleteModel suggests model IDs with their prices attached.

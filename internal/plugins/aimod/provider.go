@@ -178,7 +178,12 @@ func providerForKey(key string) *providerSpec {
 // entitled to read that in the place they are already looking, and a
 // guarantee that quietly stopped applying is worse than one that was never
 // claimed.
-func privacyLine(spec *providerSpec) string {
+func privacyLine(spec *providerSpec, cfg Config) string {
+	if spec.strictPrefs && (allFree(cfg.FastModels) || allFree(cfg.DeepModels)) {
+		return "Free models only: no free endpoint offers zero data retention, so requests on a free-only " +
+			"stack may go to providers that log or train on what they are sent. Pin a paid model in " +
+			"`/aimod models` to get the retention guarantee back."
+	}
 	if spec.strictPrefs {
 		return "Every request pins zero data retention and refuses providers that collect what they are sent."
 	}

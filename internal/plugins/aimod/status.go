@@ -224,7 +224,7 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 		name: "provider and cost",
 		fields: []discord.EmbedField{{
 			Name:  "Provider",
-			Value: core.TruncateEmbedField(spec.label + "\n" + privacyLine(spec)),
+			Value: core.TruncateEmbedField(spec.label + "\n" + privacyLine(spec, cfg)),
 		}},
 	}
 
