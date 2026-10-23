@@ -625,8 +625,8 @@ guild has no balance to draw at all, and both surfaces say so rather than
 rendering an empty bar: what runs out there is a request rate.
 
 **OpenRouter's `limit_remaining` is the key's remaining spending allowance.**
-Keep it visible as a bar against `limit` in the Scanning credit field and in
-`/aimod status`, including with free models selected. Label it as key allowance,
+Keep it visible as a bar against `limit` in the funding Scanning credit field,
+including with free models selected. Label it as key allowance,
 not account balance. The user wants that allowance; the total account balance
 is not needed, so do not add a management key or `/credits` lookup. Missing
 allowance remains unknown rather than being inferred from the limit.
@@ -635,6 +635,11 @@ A 402 sets `paymentRefused`, displayed separately from OpenRouter's allowance.
 It must not zero or hide that figure: a key can retain allowance while the
 account cannot fund a paid request. An accepted paid call clears the warning;
 a free call proves connectivity but says nothing about paid requests.
+On `/aimod status`, a known payment refusal empties the paid-scanning meter
+and suppresses its runway. The actual key allowance stays visible as text
+under it: an unused spending cap must not look like money available to scan.
+The normal allowance meter returns after an accepted paid request clears the
+refusal. The funding allowance display continues to report the key's figures.
 
 **An address selects a family, not a chain** (`familyFor`). A `0x` address is
 the same account on Base, Ethereum, Polygon, Arbitrum and BNB Chain, because

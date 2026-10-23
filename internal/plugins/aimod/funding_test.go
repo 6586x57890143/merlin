@@ -394,8 +394,12 @@ func TestFundingShowRestoresOpenRouterAllowanceBar(t *testing.T) {
 				}
 				page := p.providerPage(context.Background(), cfg, func(int) {})
 				found := false
+				label := "OpenRouter key allowance"
+				if refused {
+					label = "OpenRouter paid scanning credit"
+				}
 				for _, field := range page.fields {
-					if field.Name == "OpenRouter key allowance" {
+					if field.Name == label {
 						found = strings.Contains(field.Value, "$6.25 of $10.00")
 					}
 				}

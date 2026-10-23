@@ -33,6 +33,55 @@ func statusPagesFor(t *testing.T, cfg Config) ([]statusPage, int) {
 	return pages, color
 }
 
+func TestStatusCreditBarIsEmptyWhilePaidRequestsAreRefused(t *testing.T) {
+	store := newFakeStore()
+	p := stubCatalogue(t, store)
+	p.client.(*Client).base = keyServer(t, `{"data":{"limit":10,"limit_remaining":10}}`)
+	cfg, _ := store.Config(context.Background(), "g1")
+	cfg.FastModels, cfg.DeepModels = []string{"free/model"}, []string{"free/model"}
+	store.setConfig(cfg)
+
+	for _, tc := range []struct {
+		name    string
+		err     error
+		billed  bool
+		refused bool
+	}{
+		{"initial allowance", nil, false, false},
+		{"payment refused", &APIError{Status: 402}, true, true},
+		{"free success keeps refusal", nil, false, true},
+		{"paid success restores meter", nil, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p.notePayment("g1", tc.err, tc.billed)
+			severity := core.ColorSuccess
+			page := p.providerPage(context.Background(), cfg, func(color int) { severity = color })
+			var value string
+			for _, field := range page.fields {
+				if strings.HasPrefix(field.Name, "OpenRouter") {
+					value = field.Value
+				}
+			}
+			if !strings.Contains(value, "$10.00 of $10.00") {
+				t.Fatal("the actual key allowance must remain visible")
+			}
+			if tc.refused {
+				if !strings.Contains(value, strings.Repeat("░", barWidth)) || strings.Contains(value, "█") {
+					t.Errorf("refused paid scans still have a funded-looking bar: %s", value)
+				}
+				if severity != core.ColorError || !strings.Contains(value, "refused") {
+					t.Error("payment refusal must remain an error")
+				}
+				if strings.Contains(value, "left at the last week's rate") {
+					t.Error("unusable credit must not have a positive runway")
+				}
+			} else if !strings.Contains(value, strings.Repeat("█", barWidth)) {
+				t.Error("usable key allowance should have its normal meter")
+			}
+		})
+	}
+}
+
 func pageNames(pages []statusPage) []string {
 	out := make([]string, 0, len(pages))
 	for _, pg := range pages {
