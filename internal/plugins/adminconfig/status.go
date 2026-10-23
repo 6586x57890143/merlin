@@ -96,7 +96,14 @@ func (p *Plugin) statusReport(ctx context.Context, guildID string) (string, seve
 		}
 	}
 
+	// A stale guild's GuildSettings are zero values, which would read here
+	// as "running normally" while the guard is in fact refusing everything.
+	stale, _ := p.settings.(interface{ Stale(string) bool })
 	switch {
+	case stale != nil && stale.Stale(guildID):
+		b.WriteString("**Actions:** ⛔ this server's settings cannot be read; everything but /config is off " +
+			"and actions are paused until they can be\n")
+		note(sevStopped)
 	case gs.WritesPaused && gs.WritesDryRun:
 		b.WriteString("**Actions:** ⛔ paused *and* in dry-run; nothing will be changed\n")
 		note(sevStopped)

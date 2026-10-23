@@ -317,6 +317,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry.Register(rotationPlugin)
 	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
+	settingsStore.Recovery(adminconfigPlugin.Name())
 	registry.Register(aimodPlugin)
 	registry.Register(contestPlugin)
 	registry.Register(rapsheetPlugin)

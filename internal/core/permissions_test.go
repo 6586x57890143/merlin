@@ -421,3 +421,26 @@ func TestHasDiscordErrorCodeDistinguishesAbsences(t *testing.T) {
 		t.Error("both absences must still count as unknown resources")
 	}
 }
+
+// Settings that cannot be read cannot say who is denied, so nobody but the
+// bootstrap identity passes: not a Discord Administrator, not a public tier
+// (a stored override may have raised it), not a whitelist.
+func TestAuthorizeUnknownSettingsAdmitOnlyBootstrap(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"config.mutate": {Unknown: true},
+		"ping.use":      {Unknown: true},
+	}
+	perms := NewPermissions(nil, auth, "bootstrap-user")
+
+	admin := memberInteractionWithPerms("g1", "u1", nil, discord.PermissionAdministrator)
+	if err := perms.ask(admin, PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err == nil {
+		t.Error("a Discord Administrator passed while the guild's deny list was unknown")
+	}
+	if err := perms.ask(memberInteraction("g1", "u2", nil), PermSpec{Tier: TierPublic, Action: "ping.use"}); err == nil {
+		t.Error("a public action passed while its tier override was unknown")
+	}
+	if err := perms.ask(memberInteraction("g1", "bootstrap-user", nil), PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err != nil {
+		t.Errorf("the bootstrap identity was locked out of recovery: %v", err)
+	}
+}

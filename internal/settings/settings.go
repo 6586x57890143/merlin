@@ -218,6 +218,9 @@ type Store struct {
 	// defaultOff names the plugins that are off in a guild until it turns
 	// them on. See DefaultOff.
 	defaultOff map[string]bool
+	// recovery names the plugins still reachable while a guild is stale.
+	// See Recovery.
+	recovery map[string]bool
 }
 
 func New(pool *pgxpool.Pool, bus *core.EventBus) *Store {
@@ -330,11 +333,14 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 // being ignored by Authorize indefinitely, with the only evidence a single
 // error return the admin may well have read as "it didn't work."
 //
-// Dropping the entry instead means reads fall back to zero-value defaults:
-// no mod roles, no admins, no overrides. That is fail-closed for Mod and
-// Admin tiers, and deliberately still leaves the bootstrap identity and
-// Discord's own Administrator bit working, so a guild can never be locked
-// out of /config by a database blip.
+// Dropping the entry is not enough on its own, though, because zero-value
+// defaults are not uniformly restrictive: a pause, a dry run, a disabled
+// plugin and a deny entry all read as absent. So a stale guild is its own
+// state (see Stale): writes read as paused, every plugin but the recovery
+// ones reads as off, and every action policy refuses all but the bootstrap
+// operator, who can always reach /config to see what is wrong. Nothing
+// stale is ever kept, so a grant revoked in the write that failed to
+// refresh cannot survive in the cache either.
 func (s *Store) invalidate(guildID string) {
 	s.mu.Lock()
 	delete(s.cache, guildID)
@@ -415,6 +421,30 @@ func (s *Store) StartRetry(ctx context.Context, log *slog.Logger) {
 	}()
 }
 
+// Stale reports whether guildID's settings are unknown: a refresh failed,
+// after a committed write or on the guild's first load, and RetryStale has
+// not yet read them back.
+func (s *Store) Stale(guildID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stale[guildID]
+}
+
+// Recovery names the plugins that stay reachable while a guild is stale,
+// which is adminconfig: /config status is where an operator sees what is
+// wrong. Everything else is off until the settings can be read. Called once
+// at startup, like DefaultOff.
+func (s *Store) Recovery(pluginNames ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recovery == nil {
+		s.recovery = make(map[string]bool)
+	}
+	for _, name := range pluginNames {
+		s.recovery[name] = true
+	}
+}
+
 func (s *Store) guild(guildID string) *guildCache {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -475,6 +505,9 @@ func (s *Store) JailMarkerRoleID(guildID string) string {
 // action (tier override, allow-list, deny-list), or the zero value if the
 // guild hasn't customized this action at all.
 func (s *Store) ActionPolicy(guildID, action string) core.ActionPolicy {
+	if s.Stale(guildID) {
+		return core.ActionPolicy{Unknown: true}
+	}
 	gc := s.guild(guildID)
 	o, ok := gc.overrides[action]
 	if !ok {
@@ -527,6 +560,12 @@ func (s *Store) isDefaultOff(pluginName string) bool {
 // closed for these, the opposite direction from every other plugin and the
 // right one for a plugin whose whole effect is letting members post.
 func (s *Store) PluginEnabled(guildID, pluginName string) bool {
+	s.mu.RLock()
+	stale, recovery := s.stale[guildID], s.recovery[pluginName]
+	s.mu.RUnlock()
+	if stale {
+		return recovery
+	}
 	return pluginOn(s.guild(guildID).settings, s.isDefaultOff(pluginName), pluginName)
 }
 
@@ -540,7 +579,11 @@ func (s *Store) PluginEnabledID(guildID snowflake.ID, pluginName string) bool {
 	s.mu.RLock()
 	gc := s.cache[string(key)]
 	off := s.defaultOff[pluginName]
+	stale, recovery := s.stale[string(key)], s.recovery[pluginName]
 	s.mu.RUnlock()
+	if stale {
+		return recovery
+	}
 	var gs GuildSettings
 	if gc != nil {
 		gs = gc.settings
@@ -558,8 +601,11 @@ func pluginOn(gs GuildSettings, defaultOff bool, pluginName string) bool {
 // WritesPaused and WritesDryRun together satisfy discordguard's GuildGate.
 // Both read through the same in-memory cache as every other setting, so a
 // pause takes effect on the next destructive call with no DB round trip.
+//
+// A stale guild reads as paused: its last committed write may have been a
+// pause, and nothing can say it was not.
 func (s *Store) WritesPaused(guildID string) bool {
-	return s.guild(guildID).settings.WritesPaused
+	return s.Stale(guildID) || s.guild(guildID).settings.WritesPaused
 }
 
 func (s *Store) WritesDryRun(guildID string) bool {
