@@ -362,6 +362,75 @@ func TestFundingShowAnswersPublicly(t *testing.T) {
 	}
 }
 
+func TestFundingShowRestoresOpenRouterAllowanceBar(t *testing.T) {
+	for _, model := range []string{"free/model", "openai/gpt-5-mini"} {
+		for _, refused := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/refused=%t", model, refused), func(t *testing.T) {
+				store := newFakeStore()
+				p := stubCatalogue(t, store)
+				p.client.(*Client).base = keyServer(t, `{"data":{"limit":10,"limit_remaining":6.25,"is_free_tier":true}}`)
+				cfg, _ := store.Config(context.Background(), "g1")
+				cfg.FastModels, cfg.DeepModels = []string{model}, []string{model}
+				store.setConfig(cfg)
+				if refused {
+					p.notePayment("g1", &APIError{Status: 402}, true)
+				}
+				ix, wire := interactionWire("g1", "funding", "show")
+				p.handleFundingShow(context.Background(), ix)
+				all := strings.Join(wire.Bodies, "\n")
+				for _, want := range []string{
+					"Scanning credit", "$6.25 of $10.00", "OpenRouter key allowance",
+					strings.Repeat("█", 13) + strings.Repeat("░", 7),
+				} {
+					if !strings.Contains(all, want) {
+						t.Errorf("funding response is missing %q", want)
+					}
+				}
+				if strings.Contains(all, "Not shown:") {
+					t.Error("the key allowance is still hidden")
+				}
+				if strings.Contains(all, "Payment refused") != refused {
+					t.Error("payment refusal warning does not match provider state")
+				}
+				page := p.providerPage(context.Background(), cfg, func(int) {})
+				found := false
+				for _, field := range page.fields {
+					if field.Name == "OpenRouter key allowance" {
+						found = strings.Contains(field.Value, "$6.25 of $10.00")
+					}
+				}
+				if !found {
+					t.Error("status page does not show the key allowance")
+				}
+			})
+		}
+	}
+}
+
+func TestFundingShowDistinguishesMissingAndZeroAllowance(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, want string
+	}{
+		{"no limit", `{"data":{"limit":null,"limit_remaining":null}}`, "No spending limit is reported"},
+		{"missing remainder", `{"data":{"limit":10}}`, "remaining allowance is unavailable"},
+		{"exhausted", `{"data":{"limit":10,"limit_remaining":0}}`, "$0.00 of $10.00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := stubCatalogue(t, newFakeStore())
+			p.client.(*Client).base = keyServer(t, tc.response)
+			ix, wire := interactionWire("g1", "funding", "show")
+			p.handleFundingShow(context.Background(), ix)
+			all := strings.Join(wire.Bodies, "\n")
+			if !strings.Contains(all, tc.want) {
+				t.Errorf("funding response is missing %q", tc.want)
+			}
+			if tc.name != "exhausted" && strings.Contains(all, "$0.00") {
+				t.Error("an unknown allowance was reported as zero")
+			}
+		})
+	}
+}
+
 // The address is what somebody came for; the caveats are what somebody
 // deciding whether to trust it came for. They are not equally urgent, so they
 // do not render at the same weight.
