@@ -75,6 +75,14 @@ const (
 	// indistinguishable from an outage. Comfortably inside the Scheduler's
 	// own jobTimeout even if Chat spends its one retry.
 	calibrateTimeout = 3 * time.Minute
+
+	// manualCalibrationTimeout bounds a review an admin started from the
+	// panel. The router's handler context is 30 seconds, which a review
+	// cannot finish inside, so the panel detaches from it once the
+	// interaction is deferred: room for Chat's attempt and its one retry,
+	// plus the transcript read and the store, well inside the 15 minutes
+	// Discord keeps a deferred interaction open.
+	manualCalibrationTimeout = 2*calibrateTimeout + time.Minute
 )
 
 // Bounds on what one run may produce. Validation limits rather than

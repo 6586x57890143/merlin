@@ -648,3 +648,68 @@ func TestCalibrationCannotTeachActingOnVernacular(t *testing.T) {
 		t.Error("a stored example acting on vernacular still reaches the classifier prompt")
 	}
 }
+
+// ctxClassifier honours its context the way the real *Client does, which
+// fakeClassifier deliberately does not.
+type ctxClassifier struct {
+	*fakeClassifier
+	onCall func()
+}
+
+func (c ctxClassifier) Chat(ctx context.Context, key string, req chatRequest) (string, Usage, error) {
+	if c.onCall != nil {
+		c.onCall()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", Usage{}, err
+	}
+	return c.fakeClassifier.Chat(ctx, key, req)
+}
+
+// Review now from the panel defers and then outlives the router's 30 second
+// handler context, which ends while the model is still thinking. Cut off
+// there, the proposal was never stored and the admin was told it failed.
+func TestPanelCalibrationOutlivesTheHandlerContext(t *testing.T) {
+	store := newFakeStore()
+	routerCtx, expire := context.WithCancel(context.Background())
+	defer expire()
+	id := panelPol + "calnow"
+	i, wire := decodeIx("g1", 3, map[string]any{"custom_id": id, "component_type": 2}, nil)
+	client := &fakeClassifier{calibration: []string{
+		`{"examples":[{"text":"this update is stupid","bucket":"hate_speech","should_act":false,"note":"generic profanity"}],"findings":[]}`,
+	}}
+	p := testPlugin(t, store, ctxClassifier{client, func() {
+		if !wire.Answered() {
+			t.Error("the review started before the interaction was deferred")
+		}
+		expire()
+	}}, newFakeOps(), &fakeAudit{})
+	sealer, err := secret.New(testSecretKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.sealer = sealer
+	cfg := calibratingConfig()
+	if cfg.APIKeySealed, err = sealer.Seal("sk-or-v1-test"); err != nil {
+		t.Fatal(err)
+	}
+	cfg.CalibrationMode = CalibrationSuggest
+	store.setConfig(cfg)
+	if _, err := store.RecordIncident(context.Background(), Incident{
+		GuildID: "g1", ChannelID: "c1", MessageID: "m1", AuthorID: "u1",
+		Bucket: BucketHateSpeech, Action: ActionRemove, Content: "a moderated message",
+		CreatedAt: testNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p.handlePanelSet(routerCtx, i, id)
+
+	if client.calibrationCalls != 1 {
+		t.Fatalf("calibration calls = %d, want 1", client.calibrationCalls)
+	}
+	stored, _ := store.Config(context.Background(), "g1")
+	if len(stored.CalibrationPending) != 1 {
+		t.Errorf("the proposal was lost when the handler context ended: %+v", stored.CalibrationPending)
+	}
+}
