@@ -132,6 +132,21 @@ jobs:
             exit 1
           fi
 
+  contest-worker:
+    runs-on: ubuntu-latest
+    # The Worker decides who gets a ballot and when a ballot counts, and has
+    # no Go test to lean on. A late ballot landing after the final tally was
+    # only caught by hand, so this runs the real worker.js against real
+    # SQLite on every push. Node 24 for node:sqlite.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - run: node scripts/check-contest.mjs
+
   docker-build:
     runs-on: ubuntu-latest
     permissions:

@@ -5,16 +5,19 @@
 // whether somebody gets a ballot have no Go equivalent to lean on, and are
 // exactly where a mistake is invisible until a contest is already rigged:
 // the OAuth session cookie and its CSRF state, the vote rules, and the
-// hashing that has to agree with merlin's byte for byte. So this stubs D1
-// and Discord and drives the real exported fetch handler.
+// hashing that has to agree with merlin's byte for byte. So this runs D1 as
+// in-memory SQLite, stubs Discord, and drives the real exported fetch
+// handler.
 //
-// Deliberately not wired into CI, the same call scripts/check-lab.mjs made:
-// adding Node to a Go pipeline for a hundred lines of glue is a worse trade
-// than running this by hand when worker.js changes.
+// CI runs it (the contest-worker job). It used to be run by hand, the same
+// call scripts/check-lab.mjs made, until a late ballot counted after the
+// final tally showed this is where the security of a contest actually lives.
 //
-//   node scripts/check-contest.mjs
+//   node scripts/check-contest.mjs     (Node 22.13+ for node:sqlite)
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import worker from "../web/contest/worker.js";
 
 const BOT_TOKEN = "test-bot-token";
@@ -24,84 +27,46 @@ const LINK_KEY = "link-key";
 const CLIENT_ID = "app-1";
 const CLIENT_SECRET = "shh";
 
-// --- a D1 good enough to run the four statements worker.js issues ----------
+// --- D1, as real SQLite on the real schema ---------------------------------
+//
+// It used to be a table of regexes over the statements worker.js issued,
+// which could only ever agree with whatever SQL it was written against: a
+// guard moved into a WHERE clause read as a plain insert. SQLite is what D1
+// runs, and a batch here is a transaction as it is there.
 
 function makeDB() {
-  const contests = new Map();
-  const votes = new Set(); // "slug\0voter\0entry"
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("../web/contest/schema.sql", import.meta.url), "utf8"));
 
-  const run = (sql, args) => {
-    const s = sql.replace(/\s+/g, " ").trim();
-    if (s.startsWith("INSERT INTO contests")) {
-      const [slug, snapshot, phase, closes_at, updated_at] = args;
-      const prev = contests.get(slug);
-      contests.set(slug, { slug, snapshot, phase, closes_at, updated_at, frozen: prev ? prev.frozen : 0 });
-      return { results: [] };
-    }
-    if (s.startsWith("UPDATE contests SET frozen")) {
-      const c = contests.get(args[0]);
-      if (c) c.frozen = 1;
-      return { results: [] };
-    }
-    if (s.startsWith("SELECT snapshot, frozen FROM contests") ||
-        s.startsWith("SELECT snapshot FROM contests")) {
-      return { results: contests.has(args[0]) ? [contests.get(args[0])] : [] };
-    }
-    if (s.startsWith("SELECT entry_id FROM votes")) {
-      const out = [];
-      for (const k of votes) {
-        const [slug, voter, entry] = k.split("\0");
-        if (slug === args[0] && voter === args[1]) out.push({ entry_id: entry });
-      }
-      return { results: out };
-    }
-    if (s.startsWith("SELECT entry_id, COUNT(*)")) {
-      const counts = new Map();
-      for (const k of votes) {
-        const [slug, , entry] = k.split("\0");
-        if (slug !== args[0]) continue;
-        counts.set(entry, (counts.get(entry) || 0) + 1);
-      }
-      return { results: [...counts].map(([entry_id, n]) => ({ entry_id, n })) };
-    }
-    if (s.startsWith("SELECT COUNT(*) AS votes")) {
-      const voters = new Set();
-      let n = 0;
-      for (const k of votes) {
-        const [slug, voter] = k.split("\0");
-        if (slug !== args[0]) continue;
-        n++; voters.add(voter);
-      }
-      return { results: [{ votes: n, voters: voters.size }] };
-    }
-    if (s.startsWith("DELETE FROM votes")) {
-      for (const k of [...votes]) {
-        const [slug, voter] = k.split("\0");
-        if (slug === args[0] && voter === args[1]) votes.delete(k);
-      }
-      return { results: [] };
-    }
-    if (s.startsWith("INSERT OR IGNORE INTO votes")) {
-      votes.add(args.join("\0"));
-      return { results: [] };
-    }
-    throw new Error("unstubbed sql: " + s);
+  const exec = (sql, args) => {
+    const st = db.prepare(sql);
+    if (st.columns().length) return { results: st.all(...args), meta: { changes: 0 } };
+    const { changes } = st.run(...args);
+    return { results: [], meta: { changes } };
   };
 
   const stmt = (sql) => ({
     bind: (...args) => ({
-      run: async () => run(sql, args),
-      all: async () => run(sql, args),
-      first: async () => (run(sql, args).results[0] ?? null),
+      run: async () => exec(sql, args),
+      all: async () => exec(sql, args),
+      first: async () => (exec(sql, args).results[0] ?? null),
       _sql: sql, _args: args,
     }),
   });
 
   return {
     prepare: stmt,
-    batch: async (list) => { for (const s of list) await s.run(); },
-    _contests: contests,
-    _votes: votes,
+    batch: async (list) => {
+      db.exec("BEGIN");
+      try {
+        const out = list.map((s) => exec(s._sql, s._args));
+        db.exec("COMMIT");
+        return out;
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+    },
   };
 }
 
@@ -453,6 +418,40 @@ test("close freezes, so a vote after it is refused", async () => {
     method: "POST", headers: { authorization: "Bearer " + BOT_TOKEN },
   });
   assert.equal((await vote(e, await sessionCookie(SLUG, "hash-voter"), ["e1"])).status, 409);
+});
+
+// The race the sequential checks above cannot see: a ballot validated while
+// voting was open, then held up reading its body while close froze and
+// counted. It must not land after the tally, and must not report success.
+test("a ballot held up past the close is refused, not counted later", async () => {
+  const e = env();
+  await push(e);
+  const cookie = await sessionCookie(SLUG, "hash-voter");
+  let release, reached;
+  const gate = new Promise((r) => { release = r; });
+  const atBody = new Promise((r) => { reached = r; });
+  const req = new Request(`https://x.test/api/c/${SLUG}/vote`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ picks: ["e1"] }),
+  });
+  const json = req.json.bind(req);
+  req.json = async () => { reached(); await gate; return json(); };
+  const pending = worker.fetch(req, e);
+  await atBody; // past every open-voting check
+
+  const tally = await (await call(e, `/api/c/${SLUG}/close`, {
+    method: "POST", headers: { authorization: "Bearer " + BOT_TOKEN },
+  })).json();
+  assert.deepEqual(tally, {}, "the ballot was counted before it was cast");
+
+  release();
+  const res = await pending;
+  assert.equal(res.status, 409, "a ballot cast after the close was reported accepted");
+  const after = await (await call(e, `/api/c/${SLUG}/stats`, {
+    headers: { authorization: "Bearer " + BOT_TOKEN },
+  })).json();
+  assert.equal(after.votes, 0, "a ballot landed in the ledger after the final tally");
 });
 
 test("a re-push after close does not thaw voting", async () => {

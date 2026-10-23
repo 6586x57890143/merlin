@@ -437,16 +437,20 @@ async function putSnapshot(slug, request, env) {
   return json({ ok: true });
 }
 
-// closeVoting freezes and counts in one request, so no vote can land between
-// the freeze and the count.
+// closeVoting freezes and counts in one batch, which D1 runs as one
+// transaction, so no ballot can land between the freeze and the count. A
+// ballot already past castVote's checks is refused by the guard on its own
+// writes (ballotOpen), not by anything here.
 async function closeVoting(slug, request, env) {
   const denied = requireBot(request, env);
   if (denied) return denied;
 
-  await env.DB.prepare(`UPDATE contests SET frozen = 1 WHERE slug = ?1`).bind(slug).run();
-  const rows = await env.DB.prepare(
-    `SELECT entry_id, COUNT(*) AS n FROM votes WHERE slug = ?1 GROUP BY entry_id`
-  ).bind(slug).all();
+  const [, rows] = await env.DB.batch([
+    env.DB.prepare(`UPDATE contests SET frozen = 1 WHERE slug = ?1`).bind(slug),
+    env.DB.prepare(
+      `SELECT entry_id, COUNT(*) AS n FROM votes WHERE slug = ?1 GROUP BY entry_id`
+    ).bind(slug),
+  ]);
 
   const tally = {};
   for (const r of rows.results || []) tally[r.entry_id] = r.n;
@@ -520,18 +524,35 @@ async function castVote(slug, request, env) {
     }
   }
 
+  // Every check above ran before the body was read, and a close can freeze
+  // and count in between. So each write carries the same test in its own
+  // WHERE clause, and the batch (one transaction) ends by asking it once
+  // more: if voting closed meanwhile nothing was written, and the voter is
+  // told so rather than shown a ballot that was never counted.
+  const now = Math.floor(Date.now() / 1000);
   const stmts = [
-    env.DB.prepare(`DELETE FROM votes WHERE slug = ?1 AND voter_hash = ?2`).bind(slug, voter),
+    env.DB.prepare(
+      `DELETE FROM votes WHERE slug = ?1 AND voter_hash = ?2 AND ${ballotOpen}`
+    ).bind(slug, voter, now),
   ];
   for (const id of picks) {
     stmts.push(env.DB.prepare(
-      `INSERT OR IGNORE INTO votes (slug, voter_hash, entry_id) VALUES (?1, ?2, ?3)`
-    ).bind(slug, voter, id));
+      `INSERT OR IGNORE INTO votes (slug, voter_hash, entry_id) SELECT ?1, ?2, ?4 WHERE ${ballotOpen}`
+    ).bind(slug, voter, now, id));
   }
-  await env.DB.batch(stmts);
+  stmts.push(env.DB.prepare(`SELECT ${ballotOpen} AS open`).bind(slug, voter, now));
+  const results = await env.DB.batch(stmts);
+  if (!results[results.length - 1].results[0].open) {
+    return json({ error: "voting is closed" }, 409);
+  }
 
   return json({ ok: true, picks });
 }
+
+// ballotOpen is castVote's open-voting test as SQL, over ?1 = slug and
+// ?3 = now, matching the checks it makes before reading the body.
+const ballotOpen = `EXISTS (SELECT 1 FROM contests WHERE slug = ?1 AND frozen = 0
+  AND phase = 'vote' AND (closes_at = 0 OR closes_at >= ?3))`;
 
 // page serves the single static asset. Every contest renders from the same
 // document; the slug comes out of the URL client side and the content from
