@@ -228,8 +228,8 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 		}},
 	}
 
-	// The live account balance, which is a different question from this
-	// server's own cap and the one that actually stops the key working.
+	// Provider allowance and payment availability are separate facts. A key
+	// can retain its allowance while the account cannot pay for requests.
 	if len(sealed) > 0 {
 		if plain, err := p.sealer.Open(sealed); err != nil {
 			worse(core.ColorError)
@@ -240,6 +240,7 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 			page.fields = append(page.fields, discord.EmbedField{
 				Name: spec.label, Value: core.TruncateEmbedField("could not reach " + spec.label + ": " + err.Error())})
 		} else {
+			refused := p.outOfCredit(cfg.GuildID)
 			balance := creditUnknown(spec, info.Limit)
 			label := spec.label + " account"
 			if spec == openRouter {
@@ -248,7 +249,7 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 			if spec == orcaRouter {
 				balance = "free tier: no balance to run down, only a request rate"
 			}
-			if info.LimitRemaining != nil {
+			if info.LimitRemaining != nil && !refused {
 				balance = formatUSD(*info.LimitRemaining) + " left on this key"
 				if info.Limit != nil && *info.Limit > 0 {
 					balance = bar(*info.LimitRemaining/(*info.Limit), barWidth) + "\n" +
@@ -268,9 +269,16 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 					}
 				}
 			}
-			if p.outOfCredit(cfg.GuildID) {
+			if refused {
 				worse(core.ColorError)
-				balance += "\nthe gateway refused the last paid request"
+				label = spec.label + " paid scanning credit"
+				balance = bar(0, barWidth) + "\nPaid scans unavailable: the gateway refused the last paid request."
+				if spec == openRouter && info.LimitRemaining != nil {
+					balance += "\nKey allowance: " + formatUSD(*info.LimitRemaining)
+					if info.Limit != nil && *info.Limit > 0 {
+						balance += " of " + formatUSD(*info.Limit)
+					}
+				}
 			}
 			page.fields = append(page.fields, discord.EmbedField{
 				Name:  label,
