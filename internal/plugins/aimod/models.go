@@ -125,26 +125,13 @@ func (p *Plugin) keyInfo(ctx context.Context, guildID string, spec *providerSpec
 	if err != nil {
 		return info, err
 	}
-	// limit_remaining is what is left of a spending cap set on the key, and
-	// it is not a balance: a $50 cap on an account holding nothing reports
-	// $50 remaining forever, which drew a full fuel gauge over an empty
-	// account (and over a guild running nothing but free models) and told a
-	// server asking for donations that it needed none. Nothing on the
-	// gateway will say otherwise from the key a guild actually pastes, since
-	// GET /credits wants a management key and answers 403 to an inference
-	// one.
-	//
-	// So it is dropped. nil already means "merlin cannot know this" in every
-	// renderer (no bar, no runway, no low-credit warning), which is the
-	// truth, and the only reading that misleads in neither direction. Limit
-	// survives so the cap can be named as a cap. OrcaRouter is exempt:
-	// OrcaBalance subtracts a real spend from a real purchased ceiling.
-	if spec != orcaRouter {
-		info.LimitRemaining = nil
-	}
-	// The one ground truth is whether the gateway just agreed to be paid.
-	// Zeroed rather than nil'd: that is a thing known to be nothing.
-	if p.outOfCredit(guildID) {
+	// OpenRouter's limit_remaining is the key's remaining spending
+	// allowance, not the account balance, and every renderer labels it so
+	// (creditLabel). A refused payment leaves it alone: an unfunded account
+	// can still have allowance left on the key, and the refusal is reported
+	// beside it rather than by zeroing it. OrcaBalance's figure is account
+	// credit, so there a refusal is knowledge that it is empty.
+	if spec == orcaRouter && p.outOfCredit(guildID) {
 		empty := 0.0
 		info.LimitRemaining = &empty
 	}

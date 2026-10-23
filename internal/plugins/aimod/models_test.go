@@ -345,37 +345,31 @@ func TestModelAutocompleteIsSilentWithoutAKey(t *testing.T) {
 	}
 }
 
-// A spend cap is not a balance, and the gauge used to draw one as the other:
-// a $50 cap on an account holding nothing reported $50 remaining forever, so
-// a server whose scanning had already stopped saw a full tank and was told it
-// needed no help. Nothing on the gateway says otherwise from an inference key
-// (GET /credits wants a management key), so the ground truth is a 402 on a
-// real call, and it has to survive back into every surface that renders the
-// gauge.
-func TestAnEmptyAccountReadsAsEmptyWhateverTheKeyCapSays(t *testing.T) {
+// OpenRouter's limit_remaining is the key's remaining spending allowance,
+// and a refused payment is a separate fact. A refusal used to zero the
+// allowance (and before that the allowance was dropped altogether), so a key
+// with $50 of allowance left read as empty or unknown. Both now survive into
+// every surface, each named as what it is.
+func TestOpenRouterAllowanceSurvivesAPaymentRefusal(t *testing.T) {
 	p := stubCatalogue(t, newFakeStore())
-	// The stub reports a $50 cap with nothing drawn against it, which is
-	// exactly the shape that made the tank read full.
 	p.client.(*Client).base = keyServer(t, `{"data":{"label":"merlin","limit":50,"limit_remaining":50,"usage":0,"usage_daily":0}}`)
 
 	info, err := p.keyInfo(context.Background(), "g1", openRouter, "k")
 	if err != nil {
 		t.Fatalf("keyInfo: %v", err)
 	}
-	// Unknown, not full: the cap is not money, and a guild on free models
-	// over an empty account was being shown "$50.00 of $50.00".
-	if info.LimitRemaining != nil {
-		t.Fatalf("the key's cap was reported as a balance: %v", *info.LimitRemaining)
+	if info.LimitRemaining == nil || *info.LimitRemaining != 50 {
+		t.Fatalf("the key's remaining allowance was lost: %+v", info.LimitRemaining)
 	}
 	if info.Limit == nil || *info.Limit != 50 {
-		t.Errorf("the cap itself was lost, so it cannot be named as a cap: %+v", info.Limit)
+		t.Errorf("the limit was lost, so the gauge has no denominator: %+v", info.Limit)
 	}
 
-	// A rate limit says nothing about the balance and must not be mistaken
-	// for one, or an outage would empty a healthy gauge and beg for money.
+	// A rate limit says nothing about money and must not be mistaken for a
+	// refusal, or an outage would raise a payment warning.
 	p.notePayment("g1", &APIError{Status: http.StatusTooManyRequests}, true)
 	if p.outOfCredit("g1") {
-		t.Error("a 429 was read as an empty account")
+		t.Error("a 429 was read as a refused payment")
 	}
 
 	p.notePayment("g1", &APIError{Status: http.StatusPaymentRequired}, true)
@@ -383,14 +377,8 @@ func TestAnEmptyAccountReadsAsEmptyWhateverTheKeyCapSays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyInfo: %v", err)
 	}
-	// Zero rather than nil: nil means "cannot be known", and the gauge
-	// renders that as no bar at all. This is known, and it is nothing, which
-	// is what has to reach the donor as an empty bar over "$0.00 of $50.00".
-	if info.LimitRemaining == nil || *info.LimitRemaining != 0 {
-		t.Errorf("a refused payment did not empty the gauge: %+v", info.LimitRemaining)
-	}
-	if info.Limit == nil || *info.Limit != 50 {
-		t.Errorf("the cap was lost, so the gauge has no denominator: %+v", info.Limit)
+	if info.LimitRemaining == nil || *info.LimitRemaining != 50 {
+		t.Errorf("a refused payment changed the key allowance: %+v", info.LimitRemaining)
 	}
 
 	// One accepted call clears it. Nothing here is persisted, so a topped-up

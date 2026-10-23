@@ -624,23 +624,25 @@ stay gateway-agnostic, nil-pointer "no limit set" branch included. A free-tier
 guild has no balance to draw at all, and both surfaces say so rather than
 rendering an empty bar: what runs out there is a request rate.
 
-**`limit_remaining` is a cap on the key, not the account's balance**, and
-reading it as one drew a full tank over an empty account: a $50 cap with
-nothing spent against it reports $50 left forever, so a server whose scanning
-had already stopped saw "$50.00 of $50.00", was told by `funding.ask` that all
-was well, and was never shown the "$0.00 of $50.00" that is the whole reason a
-fuel gauge sits next to a donation address. Nothing on the gateway says
-otherwise from the key a guild actually pastes: `GET /credits` answers the real
-balance but wants a management key and returns 403 to an inference one. So the
-ground truth is whether the gateway just agreed to be paid. A 402 on the fast
-pass (the one call every batch makes) sets `paymentRefused`, `keyInfo` zeroes
-`LimitRemaining` while it stands, and the next accepted call clears it. Zeroed
-rather than nil'd, because nil already means "cannot be known" and this is the
-opposite. Only a 402 counts: a 429 or a 5xx says nothing about the balance, and
-reading an outage as bankruptcy would empty a healthy gauge and beg for money.
-In memory like the other notice maps, since a restart re-learns it from the
-first batch and a stale row claiming a topped-up account is still broke would
-be worse than a moment of not knowing.
+**OpenRouter's `limit_remaining` is the key's remaining spending allowance**,
+and both `/aimod funding show` and `/aimod status` show it labelled
+"OpenRouter key allowance" (`creditLabel`), never as account credit, and
+whatever the model stack costs. The account balance is not shown: `GET
+/credits` wants a management key, and the allowance is what the owner asked
+for. A missing allowance stays nil (unknown) and is never filled in from the
+limit or shown as zero. Two earlier versions got this wrong in opposite
+directions, first dropping the field and then zeroing it on a refusal, so do
+not reintroduce either.
+
+**A 402 is reported beside the allowance, never by changing it.** It sets
+`paymentRefused`; both surfaces then add a refusal line and go red, and on
+the public tip jar the prose and merlin's face read the jar as empty, since to
+a donor a refused payment is exactly that. The allowance figure itself stays
+as OpenRouter reported it: a key can have allowance left on an account that
+cannot pay. Only a 402 counts (a 429 or 5xx says nothing about money), and
+only a billed success clears it. In memory, re-learned from the first batch
+after a restart. OrcaRouter is the exception: `OrcaBalance` is account credit,
+so there `keyInfo` does zero it on a refusal.
 
 **An address selects a family, not a chain** (`familyFor`). A `0x` address is
 the same account on Base, Ethereum, Polygon, Arbitrum and BNB Chain, because
@@ -783,10 +785,10 @@ sweating (`MoodTipJarLow`) inside `lowCreditRunway` or under
 from `tipJarFullFraction` up. The gauge rather than the donation balance
 because "mostly full" needs a capacity and only the cap gives one; a wallet
 has no top. Empty and low reuse `fundingWords`' thresholds so the face cannot
-weep beside a line saying all is well. An unknown balance (the usual
-OpenRouter case, see above) or one in between returns `MoodNone` and the embed
+weep beside a line saying all is well. An unknown allowance (a key with no
+limit set, see above) or one in between returns `MoodNone` and the embed
 keeps its colour's face: a full or empty jar drawn over a figure merlin does
-not have is the same misreading `keyInfo` drops `limit_remaining` to avoid.
+not have would be a guess.
 The low and full frames are edits of the crying emote kept in
 `assets/source/`, keyed by flood fill from the border rather than a global
 black key, which would have eaten the outline and the pupil.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -359,6 +360,60 @@ func showTheJarWith(t *testing.T, address string, balances map[string]float64) [
 func TestFundingShowAnswersPublicly(t *testing.T) {
 	if ack := showTheJar(t)[0]; strings.Contains(ack, `"flags"`) {
 		t.Fatalf("the tip jar was acknowledged with flags, so only the invoker sees it: %s", ack)
+	}
+}
+
+// The key's allowance is shown whatever the model stack costs, and a refused
+// payment is reported beside it rather than by zeroing it.
+func TestFundingShowKeepsTheOpenRouterAllowance(t *testing.T) {
+	for _, stack := range []string{"free/model", "openai/gpt-5-mini"} {
+		for _, refused := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/refused=%t", stack, refused), func(t *testing.T) {
+				store := newFakeStore()
+				p := stubCatalogue(t, store)
+				p.client.(*Client).base = keyServer(t, `{"data":{"limit":50,"limit_remaining":37.5,"usage_daily":0}}`)
+				cfg, _ := store.Config(context.Background(), "g1")
+				cfg.FastModels, cfg.DeepModels = []string{stack}, []string{stack}
+				store.setConfig(cfg)
+				if refused {
+					p.notePayment("g1", &APIError{Status: http.StatusPaymentRequired}, true)
+				}
+				i, wire := interactionWire("g1", "funding", "show")
+				p.handleFundingShow(context.Background(), i)
+				all := strings.Join(wire.Bodies, "\n")
+				for _, want := range []string{"OpenRouter key allowance", "$37.50 of $50.00", "not the account balance"} {
+					if !strings.Contains(all, want) {
+						t.Errorf("missing %q: %s", want, all)
+					}
+				}
+				if strings.Contains(all, "Payment refused") != refused {
+					t.Errorf("the payment warning does not match the refusal: %s", all)
+				}
+				// To a donor a refused payment is an empty jar, whatever
+				// allowance the key has left.
+				if strings.Contains(all, "merlin_tipjar_empty.png") != refused {
+					t.Errorf("the empty-jar face does not match the refusal (refused=%t)", refused)
+				}
+			})
+		}
+	}
+}
+
+// A key that reports no remaining allowance gets no invented one: not zero,
+// and not the limit.
+func TestFundingShowInventsNoAllowance(t *testing.T) {
+	for _, body := range []string{
+		`{"data":{"limit":null,"limit_remaining":null}}`,
+		`{"data":{"limit":50}}`,
+	} {
+		p := stubCatalogue(t, newFakeStore())
+		p.client.(*Client).base = keyServer(t, body)
+		i, wire := interactionWire("g1", "funding", "show")
+		p.handleFundingShow(context.Background(), i)
+		all := strings.Join(wire.Bodies, "\n")
+		if strings.Contains(all, "$0.00 of") || strings.Contains(all, "$50.00 of") || !strings.Contains(all, "not shown here") {
+			t.Errorf("%s: a missing allowance was presented as money: %s", body, all)
+		}
 	}
 }
 

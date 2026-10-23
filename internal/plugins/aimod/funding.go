@@ -318,7 +318,7 @@ func (p *Plugin) noticeFunding(ctx context.Context, guildID string, spec *provid
 	p.fundingNoticed[guildID] = day
 	p.fundingNoticeMu.Unlock()
 
-	detail := fmt.Sprintf("%s of "+spec.label+" credit left, about %s at the last week's rate. "+
+	detail := fmt.Sprintf("%s of "+creditLabel(spec)+" left, about %s at the last week's rate. "+
 		"Below this the plugin falls back to pattern checks only. /aimod funding shows the tip jar.",
 		formatUSD(remaining), core.FormatDuration(left))
 	if err := p.auditWriter.Record(ctx, guildID, core.ActorSystem, "aimod.funding_low", "", detail); err != nil {
@@ -326,29 +326,33 @@ func (p *Plugin) noticeFunding(ctx context.Context, guildID string, spec *provid
 	}
 }
 
-// creditUnknown explains an ungaugeable balance, per gateway.
+// creditLabel names what the gauge measures. OpenRouter reports the key's
+// remaining spending allowance, which is not the account balance, and the
+// model stack's price changes neither.
+func creditLabel(spec *providerSpec) string {
+	if spec == openRouter {
+		return "OpenRouter key allowance"
+	}
+	return spec.label + " credit"
+}
+
+// creditUnknown explains an ungaugeable figure, per gateway.
 //
 // The two have different reasons for it and different fixes, and saying
 // "set a limit on the key" to somebody on a free tier would be advice for a
-// problem they do not have.
-//
-// The OpenRouter branch is the ordinary state of a healthy guild, not a
-// missing setting: the gateway does not tell an inference key what the
-// account holds, so this says what merlin does know rather than filling the
-// gap with the key's cap.
+// problem they do not have. On OpenRouter it means the key reported no
+// remaining allowance, which is never filled in from the cap.
 func creditUnknown(spec *providerSpec, limit *float64) string {
 	if spec == orcaRouter {
 		return "Scanning runs on free models, so there is no balance to run down.\n" +
 			subtext("What limits it there is a request rate rather than money. The tip jar below still "+
 				"pays for the paid fallback, which confirms anything the free pass flags.")
 	}
-	line := "Not shown: OpenRouter does not report an account balance to this key."
+	line := "No spending limit is reported for this key."
 	if limit != nil && *limit > 0 {
-		line = "Not shown: OpenRouter tells this key its own " + formatUSD(*limit) +
-			" spending cap and nothing about what the account holds."
+		line = "The key's spending limit is " + formatUSD(*limit) + "; its remaining allowance is not reported."
 	}
-	return line + "\n" + subtext("merlin finds out the account is empty when a paid scan is refused, "+
-		"and says so here the moment it happens.")
+	return line + "\n" + subtext("This is separate from the account balance, which is not shown here.")
 }
 
 // acceptedChains lists the chains in this family that the gateway's checkout
@@ -579,7 +583,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, ix *core.Ix) {
 	var haveRunway bool
 	if remaining == nil {
 		fields = append(fields, discord.EmbedField{
-			Name:  "⛽ Scanning credit",
+			Name:  "⛽ " + creditLabel(spec),
 			Value: core.TruncateEmbedField(creditUnknown(spec, limit)),
 		})
 	} else {
@@ -591,19 +595,31 @@ func (p *Plugin) handleFundingShow(ctx context.Context, ix *core.Ix) {
 		if haveRunway {
 			value += "\n" + subtext("about "+humanRunway(left)+" at the last week's rate")
 		}
-		// Why the ceiling is still a big number next to a zero. Without this
-		// the pair reads as a bug rather than as the two different things
-		// they are: a cap somebody set on the key, and money in the account.
-		if p.outOfCredit(ix.GuildID) && limit != nil && *limit > 0 {
-			value += "\n" + subtext(formatUSD(*limit)+" is the cap on the key, not money in the account")
+		if spec == openRouter {
+			value += "\n" + subtext("Remaining spending allowance on this key, not the account balance.")
 		}
-		fields = append(fields, discord.EmbedField{Name: "⛽ Scanning credit", Value: core.TruncateEmbedField(value)})
+		fields = append(fields, discord.EmbedField{Name: "⛽ " + creditLabel(spec), Value: core.TruncateEmbedField(value)})
 		switch {
 		case *remaining <= 0:
 			color = core.ColorError
 		case haveRunway && left <= lowCreditRunway:
 			color = core.ColorWarning
 		}
+	}
+
+	// A refusal is its own fact, not a zeroed allowance: the key can have
+	// allowance left while the account behind it cannot pay. The prose and
+	// merlin's face are for donors, though, and to them a refused payment
+	// is an empty jar whatever the key's allowance says.
+	gauge := remaining
+	if spec == openRouter && p.outOfCredit(ix.GuildID) {
+		empty := 0.0
+		gauge = &empty
+		color = core.ColorError
+		fields = append(fields, discord.EmbedField{
+			Name:  "Payment refused",
+			Value: "OpenRouter refused the last paid request. The key allowance above does not mean the account is funded.",
+		})
 	}
 
 	if !f.Configured() {
@@ -702,7 +718,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, ix *core.Ix) {
 		})
 	}
 
-	body := p.fundingWords(ctx, ix.GuildID, f, remaining, left, haveRunway)
+	body := p.fundingWords(ctx, ix.GuildID, f, gauge, left, haveRunway)
 
 	// A freshly changed payout address leads, and raises the severity rather
 	// than lowering it: a jar that is both nearly empty and just repointed is
@@ -716,7 +732,7 @@ func (p *Plugin) handleFundingShow(ctx context.Context, ix *core.Ix) {
 	}
 
 	embed := core.Embed(color, "merlin's tip jar", core.TruncateEmbedDescription(body), fields...)
-	if m := tipJarMood(remaining, limit, left, haveRunway); m != core.MoodNone {
+	if m := tipJarMood(gauge, limit, left, haveRunway); m != core.MoodNone {
 		core.SetMood(&embed, m)
 	}
 	if err := ix.FollowUpEmbed(embed); err != nil {

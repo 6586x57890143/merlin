@@ -232,3 +232,28 @@ func TestStatusPageClickSurvivesAJunkCustomID(t *testing.T) {
 	p.handleStatusPage(context.Background(), i, statusPagePrefix+"banana")
 	p.handleStatusPage(context.Background(), i, core.PaginationCustomID(statusPagePrefix, 2))
 }
+
+// The provider page names the key's allowance as an allowance, keeps it
+// after a refused payment, and reports the refusal beside it.
+func TestProviderPageShowsTheKeyAllowanceAndARefusal(t *testing.T) {
+	store := newFakeStore()
+	p := stubCatalogue(t, store)
+	p.client.(*Client).base = keyServer(t, `{"data":{"limit":50,"limit_remaining":37.5,"usage_daily":0}}`)
+	p.notePayment("g1", &APIError{Status: 402}, true)
+	cfg, _ := store.Config(context.Background(), "g1")
+
+	worst := core.ColorSuccess
+	page := p.providerPage(context.Background(), cfg, func(c int) { worst = c })
+	var all strings.Builder
+	for _, f := range page.fields {
+		all.WriteString(f.Name + "\n" + f.Value + "\n")
+	}
+	for _, want := range []string{"OpenRouter key allowance", "$37.50 of $50.00", "refused the last paid request"} {
+		if !strings.Contains(all.String(), want) {
+			t.Errorf("provider page is missing %q:\n%s", want, all.String())
+		}
+	}
+	if worst != core.ColorError {
+		t.Errorf("a refused payment did not make the report an error: %d", worst)
+	}
+}
