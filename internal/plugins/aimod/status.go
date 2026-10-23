@@ -240,12 +240,10 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 			page.fields = append(page.fields, discord.EmbedField{
 				Name: spec.label, Value: core.TruncateEmbedField("could not reach " + spec.label + ": " + err.Error())})
 		} else {
-			// LimitRemaining is nil for OpenRouter (keyInfo drops the cap,
-			// which is not a balance), and on a free tier there is genuinely
-			// nothing to draw: what runs out there is a request rate.
-			balance := "balance not reported to this key"
-			if info.Limit != nil && *info.Limit > 0 {
-				balance += " (it has a " + formatUSD(*info.Limit) + " spending cap, which is not money in the account)"
+			balance := creditUnknown(spec, info.Limit)
+			label := spec.label + " account"
+			if spec == openRouter {
+				label = "OpenRouter key allowance"
 			}
 			if spec == orcaRouter {
 				balance = "free tier: no balance to run down, only a request rate"
@@ -256,10 +254,8 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 					balance = bar(*info.LimitRemaining/(*info.Limit), barWidth) + "\n" +
 						formatUSD(*info.LimitRemaining) + " of " + formatUSD(*info.Limit)
 				}
-				if p.outOfCredit(cfg.GuildID) {
-					worse(core.ColorError)
-					balance += "\nthe gateway refused the last call: the account behind this key is empty, " +
-						"whatever the key's own cap says"
+				if spec == openRouter {
+					balance += "\nremaining key allowance, not the account balance"
 				}
 				// core.FormatDuration rather than humanRunway: this is a mod
 				// surface, and every admin or audit duration in this codebase
@@ -272,8 +268,12 @@ func (p *Plugin) providerPage(ctx context.Context, cfg Config, worse func(int)) 
 					}
 				}
 			}
+			if p.outOfCredit(cfg.GuildID) {
+				worse(core.ColorError)
+				balance += "\nthe gateway refused the last paid request"
+			}
 			page.fields = append(page.fields, discord.EmbedField{
-				Name:  spec.label + " account",
+				Name:  label,
 				Value: core.TruncateEmbedField(fmt.Sprintf("%s\n%s used across all uses of this key today", balance, formatUSD(info.UsageDaily))),
 			})
 		}
