@@ -366,6 +366,10 @@ func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID strin
 			p.log.Error("aimod: defer calibrate", "err", err)
 			return
 		}
+		// Deferring buys Discord's 15 minutes, not the router's 30 seconds,
+		// and a review cut off there never stores its proposal.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), manualCalibrationTimeout)
+		defer cancel()
 		o = p.calibrateNow(ctx, ix)
 		if err := ix.FollowUpPanel(p.panel(ctx, ix, "calibration", "", o.note())); err != nil {
 			p.log.Error("aimod: panel follow-up failed", "err", err)
