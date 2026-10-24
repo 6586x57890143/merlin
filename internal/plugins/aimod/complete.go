@@ -68,7 +68,7 @@ func (p *Plugin) Complete(ctx context.Context, guildID, system, user string) (st
 	if state.Exhausted {
 		return "", ErrBudgetExhausted
 	}
-	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
+	out, _, err := p.paidChat(ctx, guildID, state, true, chatRequest{
 		spec:     state.Spec,
 		timeout:  completeTimeout,
 		Models:   modelsOr(cfg.DeepModels, state.Spec.deepModels),
@@ -79,11 +79,6 @@ func (p *Plugin) Complete(ctx context.Context, guildID, system, user string) (st
 		},
 		MaxTokens: completeMaxTokens,
 	})
-	// Booked before the error is handled, matching classify and calibrate:
-	// a call that returned usage was billed whether or not it answered.
-	if usage.Cost > 0 || usage.TotalTokens > 0 {
-		p.recordUsage(ctx, guildID, usage, true)
-	}
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == 402 {

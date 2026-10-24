@@ -451,7 +451,8 @@ func freeRateLimited(err error) bool {
 // spending a second call on an answer nobody will read is the one retry that
 // is certainly pointless.
 func worthFallback(err error) bool {
-	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, errOverBudget) && !errors.Is(err, errSpendUnbooked)
 }
 
 // retryAfter is how long the failure asked to be left alone, clamped.

@@ -111,7 +111,7 @@ func (p *Plugin) slurCleared(ctx context.Context, cfg Config, c candidate, rewri
 	if allowed, _ := p.meter.allowDeep(cfg.GuildID, c.AuthorID, p.now()); !allowed {
 		return false
 	}
-	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
+	out, _, err := p.paidChat(ctx, cfg.GuildID, state, true, chatRequest{
 		spec:     state.Spec,
 		Models:   modelsOr(cfg.DeepModels, state.Spec.deepModels),
 		Provider: strictProvider(),
@@ -122,9 +122,6 @@ func (p *Plugin) slurCleared(ctx context.Context, cfg Config, c candidate, rewri
 		ResponseFormat: secondLookSchema(),
 		MaxTokens:      secondLookMaxTokens,
 	})
-	if usage.Cost > 0 || usage.TotalTokens > 0 {
-		p.recordUsage(ctx, cfg.GuildID, usage, true)
-	}
 	if err != nil {
 		p.log.Warn("aimod: second look failed, slur hit stands", "guild", cfg.GuildID, "message", c.MessageID, "err", err)
 		return false

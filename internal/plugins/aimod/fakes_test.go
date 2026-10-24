@@ -33,8 +33,10 @@ type fakeStore struct {
 	incidents []Incident
 	nextID    int64
 
-	configErr   error
-	spendErr    error
+	configErr error
+	spendErr  error
+	// addSpendErr fails AddSpend, which is how a receipt gets lost.
+	addSpendErr error
 	incidentErr error
 
 	funding   map[string]Funding
@@ -90,7 +92,7 @@ func (f *fakeStore) mutate(guildID string, fn func(*Config)) error {
 // passes: one key on the gateway that pins privacy prefs, which is what
 // every test written before there was a second gateway assumed.
 func testState() budgetState {
-	return budgetState{APIKey: "key", Spec: openRouter}
+	return budgetState{APIKey: "key", Spec: openRouter, Budget: 5}
 }
 
 func (f *fakeStore) SetAPIKey(_ context.Context, g, _ string, sealed []byte) error {
@@ -176,6 +178,9 @@ func spendKey(guildID string, day time.Time) string { return guildID + "|" + day
 func (f *fakeStore) AddSpend(_ context.Context, g string, day time.Time, u Usage, deep bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.addSpendErr != nil {
+		return f.addSpendErr
+	}
 	sp := f.spend[spendKey(g, day)]
 	sp.Day = day
 	sp.SpentUSD += u.Cost

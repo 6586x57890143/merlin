@@ -61,11 +61,11 @@ func TestBudgetBlocksOnceSpent(t *testing.T) {
 	}
 
 	// Spend right up to the cap.
-	p.recordUsage(context.Background(), "g1", Usage{Cost: 0.09, PromptTokens: 100}, false)
+	_ = store.AddSpend(context.Background(), "g1", today(p.now()), Usage{Cost: 0.09, PromptTokens: 100}, false)
 	if state, _ := p.checkBudget(context.Background(), cfg); state.Exhausted {
 		t.Error("exhausted at $0.09 of a $0.10 budget")
 	}
-	p.recordUsage(context.Background(), "g1", Usage{Cost: 0.02, PromptTokens: 100}, false)
+	_ = store.AddSpend(context.Background(), "g1", today(p.now()), Usage{Cost: 0.02, PromptTokens: 100}, false)
 	state, _ = p.checkBudget(context.Background(), cfg)
 	if !state.Exhausted {
 		t.Errorf("spent %.2f of %.2f and was not exhausted", state.Spent, state.Budget)

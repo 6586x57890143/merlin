@@ -86,18 +86,6 @@ func (p *Plugin) checkBudget(ctx context.Context, cfg Config) (budgetState, erro
 	return st, nil
 }
 
-// recordUsage books one call against the guild's day.
-//
-// Called for every response that carried a usage block, including ones whose
-// body failed to parse: the money left the account either way, and a budget
-// that only counts successful calls is a budget a misbehaving model can walk
-// straight through.
-func (p *Plugin) recordUsage(ctx context.Context, guildID string, u Usage, deep bool) {
-	if err := p.store.AddSpend(ctx, guildID, today(p.now()), u, deep); err != nil {
-		p.log.Error("aimod: record spend", "guild", guildID, "err", err)
-	}
-}
-
 // notePayment records whether the gateway is still willing to be paid.
 //
 // Called where the fast pass lands and where the deep pass does, since a
