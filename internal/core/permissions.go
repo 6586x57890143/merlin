@@ -76,6 +76,10 @@ type PermSpec struct {
 // over Allow (and over tier/Administrator-bit) for the same person/role,
 // except for the bootstrap admin, which nothing can deny (see Authorize).
 type ActionPolicy struct {
+	// Unknown means the guild's settings cannot be read, so no deny entry,
+	// tier override or grant can be trusted to be absent. Only the bootstrap
+	// identity passes.
+	Unknown      bool
 	RequiredTier PermTier
 	AllowRoleIDs []string
 	AllowUserIDs []string
@@ -203,6 +207,9 @@ func (p *Permissions) authorize(guildID string, member *invoker, spec PermSpec) 
 	var policy ActionPolicy
 	if spec.Action != "" {
 		policy = p.settings.ActionPolicy(guildID, spec.Action)
+		if policy.Unknown && (member == nil || member.userID != p.bootstrapID) {
+			return ErrForbidden{Reason: "this server's settings cannot be read right now"}
+		}
 		if member != nil && member.userID != p.bootstrapID {
 			userID := member.userID
 			if slices.Contains(policy.DenyUserIDs, userID) || hasAnyRole(member.roles, policy.DenyRoleIDs) {
