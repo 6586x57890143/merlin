@@ -332,6 +332,14 @@ func (f *fakeStore) RecordIncident(_ context.Context, inc Incident) (int64, erro
 	}
 	f.nextID++
 	inc.ID = f.nextID
+	// An upsert on (guild, message), as pgStore's is.
+	for i, have := range f.incidents {
+		if have.GuildID == inc.GuildID && have.MessageID == inc.MessageID {
+			inc.ID = have.ID
+			f.incidents[i] = inc
+			return inc.ID, nil
+		}
+	}
 	f.incidents = append(f.incidents, inc)
 	return inc.ID, nil
 }
@@ -594,6 +602,7 @@ type fakeOps struct {
 	dms       []discord.MessageCreate
 	webhooks  int
 	deleteErr error
+	postErr   error
 
 	// Held as aimod reads them, so fixture IDs ("u1", "owner") need not be
 	// snowflakes.
@@ -640,6 +649,9 @@ func (f *fakeOps) CreateWebhook(string, string) (Hook, error) {
 func (f *fakeOps) PostAs(_ Hook, m discord.WebhookMessageCreate, wait bool) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.postErr != nil {
+		return "", f.postErr
+	}
 	f.posted = append(f.posted, m)
 	if wait {
 		return "repost1", nil

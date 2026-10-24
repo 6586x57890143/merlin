@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
@@ -119,6 +120,11 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	if action == ActionRewrite && c.Forwarded {
 		action = ActionRemove
 	}
+	// A repost Discord would reject for length fails after the delete, which
+	// is the partial outcome below. Known now, so decided now.
+	if action == ActionRewrite && utf8.RuneCountInString(strings.TrimSpace(v.Rewrite)+rewriteMarker(newIncidentCode())) > maxContentLen {
+		action = ActionRemove
+	}
 
 	inc := Incident{
 		GuildID:    cfg.GuildID,
@@ -163,7 +169,14 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	case ActionRemove:
 		err = p.removeMessage(ctx, cfg.GuildID, c)
 	case ActionRewrite:
-		repostID, err = p.rewriteMessage(ctx, cfg.GuildID, c, v.Rewrite, inc.Code)
+		var deleted bool
+		repostID, deleted, err = p.rewriteMessage(ctx, cfg.GuildID, c, v.Rewrite, inc.Code)
+		if err != nil && deleted {
+			// The original is gone and the repost is not there. Whatever
+			// happens next must not describe that as a rewrite.
+			p.rewriteFellShort(ctx, cfg, inc, err)
+			action, auditAction, err = ActionRemove, "aimod.rewrite_failed", nil
+		}
 	default:
 		return
 	}
@@ -230,10 +243,15 @@ func (p *Plugin) removeMessage(ctx context.Context, guildID string, c candidate)
 //
 // It returns the repost's message ID, empty when the rewrite became a
 // removal, so the audit entry can link to what the channel now shows.
-func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate, replacement, code string) (string, error) {
+//
+// deleted reports whether the original was removed, which on an error is
+// the difference between nothing having happened and a rewrite that stopped
+// halfway: deleted, with nothing reposted.
+func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate, replacement, code string) (repostID string, deleted bool, err error) {
 	replacement = strings.TrimSpace(replacement)
 	if replacement == "" {
-		return "", p.removeMessage(ctx, guildID, c)
+		err := p.removeMessage(ctx, guildID, c)
+		return "", err == nil, err
 	}
 
 	// The webhook is resolved before the delete. Doing it the other way
@@ -242,22 +260,52 @@ func (p *Plugin) rewriteMessage(ctx context.Context, guildID string, c candidate
 	// worst possible moment.
 	hook, err := p.resolveWebhook(ctx, guildID, c.ChannelID)
 	if err != nil {
-		return "", fmt.Errorf("aimod: resolve webhook: %w", err)
+		return "", false, fmt.Errorf("aimod: resolve webhook: %w", err)
 	}
 
 	author, err := p.ops(guildID).Member(guildID, c.AuthorID)
 	if err != nil {
-		return "", fmt.Errorf("aimod: fetch author: %w", err)
+		return "", false, fmt.Errorf("aimod: fetch author: %w", err)
 	}
 
 	if err := p.removeMessage(ctx, guildID, c); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return p.ops(guildID).PostAs(hook, discord.WebhookMessageCreate{
+	id, err := p.ops(guildID).PostAs(hook, discord.WebhookMessageCreate{
 		Content:   replacement + rewriteMarker(code),
 		Username:  displayName(author),
 		AvatarURL: author.AvatarURL,
 	}, true)
+	if err != nil {
+		// A deleted webhook fails every rewrite after it until re-resolved.
+		p.forgetWebhook(c.ChannelID)
+		return "", true, fmt.Errorf("aimod: repost: %w", err)
+	}
+	return id, true, nil
+}
+
+// maxContentLen is Discord's limit on a message's content.
+const maxContentLen = 2000
+
+// rewriteFellShort re-records a rewrite whose original was deleted and whose
+// repost failed as what it is, a removal, so the incident, the audit entry
+// and the author's DM all describe the message that is actually gone.
+//
+// Resolving the webhook first narrows this, it cannot close it: the repost
+// can still fail after the delete (a rate limit, a pause landing between the
+// two calls, a webhook deleted meanwhile). Where the guild keeps evidence
+// the original is in the incident row and /aimod undo puts it back; where it
+// keeps none there is nothing to restore, and the incident says removed
+// rather than implying a recovery that does not exist.
+func (p *Plugin) rewriteFellShort(ctx context.Context, cfg Config, inc Incident, cause error) {
+	p.log.Error("aimod: rewrite deleted the original but could not repost it",
+		"guild", cfg.GuildID, "channel", inc.ChannelID, "message", inc.MessageID, "err", cause)
+	inc.Action, inc.Code = ActionRemove, ""
+	inc.Reason += " (rewrite failed after the original was deleted, so it was removed instead)"
+	if _, err := p.store.RecordIncident(ctx, inc); err != nil {
+		p.log.Error("aimod: re-record a failed rewrite as a removal",
+			"guild", cfg.GuildID, "message", inc.MessageID, "err", err)
+	}
 }
 
 func displayName(m Member) string {
@@ -457,7 +505,7 @@ func messageFate(guildID, action string, c candidate, v deepVerdict, repostID st
 			return deleted + " → [Reposted](" + repost + ")"
 		}
 		return deleted + " → Reposted"
-	case action == "aimod.remove" || action == "aimod.rewrite":
+	case action == "aimod.remove" || action == "aimod.rewrite" || action == "aimod.rewrite_failed":
 		// A rewrite with nothing left to publish is a removal
 		// (rewriteMessage), so it is reported as one.
 		return deleted
