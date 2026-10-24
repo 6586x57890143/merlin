@@ -167,6 +167,11 @@ type Plugin struct {
 	inFlightMu sync.Mutex
 	inFlight   map[string]chan struct{} // guild ID -> semaphore
 
+	// ledgerMu guards ledgers, each guild's in-flight model spend. See
+	// allowance.go.
+	ledgerMu sync.Mutex
+	ledgers  map[string]*guildLedger
+
 	// budgetNoticeMu guards budgetNoticed, which keeps the
 	// budget-exhausted audit entry to one per guild per day rather than one
 	// per message, which is the difference between a useful warning and a
@@ -987,7 +992,6 @@ func (p *Plugin) fastPass(ctx context.Context, cfg Config, state budgetState, ba
 	// tokens with no messages under them, which is the same error the
 	// other way and is what the budget tests pin down.
 	if usage.Cost > 0 || usage.TotalTokens > 0 {
-		p.recordUsage(ctx, guildID, usage, false)
 		if err := p.store.AddScanned(ctx, guildID, today(p.now()), len(batch)); err != nil {
 			p.log.Error("aimod: count scanned", "guild", guildID, "err", err)
 		}
@@ -1017,18 +1021,12 @@ func (p *Plugin) fastPass(ctx context.Context, cfg Config, state budgetState, ba
 func (p *Plugin) deepPass(ctx context.Context, cfg Config, state budgetState, bucket Bucket, c candidate, priorLines []string, self string, wantRewrite bool) (deepVerdict, error) {
 	v, usage, err := p.classifyDeep(ctx, state, cfg, bucket, c, priorLines, self, wantRewrite)
 	p.notePayment(cfg.GuildID, err, usage.Cost > 0)
-	if usage.Cost > 0 || usage.TotalTokens > 0 {
-		p.recordUsage(ctx, cfg.GuildID, usage, true)
-	}
 	if err != nil && state.FallbackKey != "" && worthFallback(err) {
 		p.log.Info("aimod: deep pass falling back",
 			"guild", cfg.GuildID, "from", providerName(state.Spec), "err", err)
 		fb := state
 		fb.APIKey, fb.Spec = state.FallbackKey, state.fallback()
-		v, usage, err = p.classifyDeep(ctx, fb, cfg, bucket, c, priorLines, self, wantRewrite)
-		if usage.Cost > 0 || usage.TotalTokens > 0 {
-			p.recordUsage(ctx, cfg.GuildID, usage, true)
-		}
+		v, _, err = p.classifyDeep(ctx, fb, cfg, bucket, c, priorLines, self, wantRewrite)
 	}
 	return v, err
 }

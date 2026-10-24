@@ -316,6 +316,17 @@ status` rather than appearing to work.
   because assuming zero spent turns an unreachable database into an uncapped
   budget. Over the cap the plugin degrades to rungs 0-1 and posts one audit
   entry per day, never a silent downgrade.
+- **The cap governs each call, not each batch** (`allowance.go`). Every model
+  call goes through `paidChat`, never `p.client.Chat` directly: it takes one of
+  the guild's `maxPaidCalls` slots (concurrency is bounded at the HTTP boundary,
+  across batches, escalations, fallbacks and calibration), reserves an
+  allowance, and books the real cost before releasing it. `checkBudget` alone
+  used to admit a batch's fast call, twenty deep calls and their fallbacks on
+  one snapshot. The allowance is the largest call this guild paid for today on
+  that rung, so the remaining overshoot is bounded by `maxPaidCalls` times the
+  amount a call exceeds every call before it. A receipt that fails to write is
+  held and retried before the next call, and **no paid call is made until it
+  lands**: spending against an understated total is spending blind.
 - **Cost-drain abuse is a first-class attack, not spam.** The daily budget caps
   the bill; the damage it does not cap is the hours of unprotected server after
   somebody exhausts it, which is exactly what a person planning to post

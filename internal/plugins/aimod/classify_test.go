@@ -384,7 +384,7 @@ func TestDeepPassFallsOverToTheOtherGateway(t *testing.T) {
 	p := testPlugin(t, store, client, ops, &fakeAudit{})
 
 	cfg := enforcingConfig()
-	state := budgetState{APIKey: "orca", Spec: orcaRouter, FallbackKey: "openrouter"}
+	state := budgetState{APIKey: "orca", Spec: orcaRouter, FallbackKey: "openrouter", Budget: 5}
 	hits, _, err := p.classifyFast(context.Background(), state, cfg, []candidate{{MessageID: "m1"}})
 	if err != nil {
 		t.Fatalf("classifyFast: %v", err)
@@ -415,7 +415,7 @@ func TestDeepPassDoesNotRetryWithNoFallbackKey(t *testing.T) {
 	p := testPlugin(t, store, client, ops, &fakeAudit{})
 
 	cfg := enforcingConfig()
-	state := budgetState{APIKey: "orca", Spec: orcaRouter}
+	state := budgetState{APIKey: "orca", Spec: orcaRouter, Budget: 5}
 	hits, _, err := p.classifyFast(context.Background(), state, cfg, []candidate{{MessageID: "m1"}})
 	if err != nil {
 		t.Fatalf("classifyFast: %v", err)

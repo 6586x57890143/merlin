@@ -279,7 +279,7 @@ func (p *Plugin) classifyFast(ctx context.Context, state budgetState, cfg Config
 		fmt.Fprintf(&user, "%d. %s%s\n", i+1, sanitizeForPrompt(c.Content), slurNote(c.Content))
 	}
 
-	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
+	out, usage, err := p.paidChat(ctx, cfg.GuildID, state, false, chatRequest{
 		spec:     state.Spec,
 		Models:   modelsOr(cfg.FastModels, state.Spec.fastModels),
 		Provider: strictProvider(),
@@ -422,7 +422,7 @@ func (p *Plugin) classifyDeep(ctx context.Context, state budgetState, cfg Config
 	}
 	fmt.Fprintf(&user, "The message to judge, written by %s:\n%s%s", self, sanitizeForPrompt(c.Content), slurNote(c.Content))
 
-	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
+	out, usage, err := p.paidChat(ctx, cfg.GuildID, state, true, chatRequest{
 		spec:     state.Spec,
 		Models:   modelsOr(cfg.DeepModels, state.Spec.deepModels),
 		Provider: strictProvider(),

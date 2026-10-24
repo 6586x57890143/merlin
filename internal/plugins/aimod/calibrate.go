@@ -227,7 +227,7 @@ func (p *Plugin) reviewGuild(ctx context.Context, cfg Config) (calibrationResult
 		return calibrationResult{}, errNothingToReview
 	}
 
-	out, usage, err := p.client.Chat(ctx, state.APIKey, chatRequest{
+	out, _, err := p.paidChat(ctx, cfg.GuildID, state, true, chatRequest{
 		spec:     state.Spec,
 		timeout:  calibrateTimeout,
 		Models:   modelsOr(cfg.DeepModels, state.Spec.deepModels),
@@ -239,11 +239,6 @@ func (p *Plugin) reviewGuild(ctx context.Context, cfg Config) (calibrationResult
 		ResponseFormat: calibrationSchema(),
 		MaxTokens:      calibrateMaxTokens,
 	})
-	// Booked before the error is handled, matching classify: a call that
-	// returned usage was billed whether or not its body parsed.
-	if usage.Cost > 0 || usage.TotalTokens > 0 {
-		p.recordUsage(ctx, cfg.GuildID, usage, true)
-	}
 	if err != nil {
 		return calibrationResult{}, fmt.Errorf("aimod: calibration review: %w", err)
 	}
