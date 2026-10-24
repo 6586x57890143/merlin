@@ -5,9 +5,11 @@
 -- once and served back verbatim, so adding a field to a contest never means
 -- a migration here.
 --
--- There is no user id anywhere in this file. voter_hash is an HMAC merlin
--- computed under a key that never leaves the VPS, so this database cannot be
--- turned back into a list of who voted for what even by whoever holds it.
+-- There is no user id anywhere in this file. voter_hash is an HMAC of the
+-- voter's Discord ID, computed by the Worker the moment it arrives, under the
+-- LINK_KEY it shares with merlin. This database alone cannot be turned back
+-- into a list of who voted for what; the database plus that secret could test
+-- guesses, which is why LINK_KEY is a secret on both sides.
 
 CREATE TABLE IF NOT EXISTS contests (
   slug       TEXT PRIMARY KEY,
