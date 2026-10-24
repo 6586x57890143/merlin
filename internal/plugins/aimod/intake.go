@@ -96,5 +96,8 @@ func (p *Plugin) HandleMessageEdit(m discord.Message) {
 	if m.EditedTimestamp == nil {
 		return
 	}
+	// Before the rescan, so a verdict still in flight on the old text finds
+	// it has been superseded. See revision.go.
+	p.noteRevision(m.ID.String(), m.Content)
 	p.HandleMessage(m)
 }

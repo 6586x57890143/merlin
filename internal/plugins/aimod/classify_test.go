@@ -76,6 +76,7 @@ func TestDeepConfirmationDeletes(t *testing.T) {
 		deep: []string{`{"violation":true,"bucket":"threats","confidence":0.95,"reason":"a specific person, a specific act"}`},
 	}
 	p := testPlugin(t, store, client, ops, &fakeAudit{})
+	store.setConfig(enforcingConfig())
 
 	p.classifyOne(t, enforcingConfig(), candidate{
 		MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "some genuinely threatening sentence",
@@ -384,6 +385,7 @@ func TestDeepPassFallsOverToTheOtherGateway(t *testing.T) {
 	p := testPlugin(t, store, client, ops, &fakeAudit{})
 
 	cfg := enforcingConfig()
+	store.setConfig(cfg)
 	state := budgetState{APIKey: "orca", Spec: orcaRouter, FallbackKey: "openrouter", Budget: 5}
 	hits, _, err := p.classifyFast(context.Background(), state, cfg, []candidate{{MessageID: "m1"}})
 	if err != nil {

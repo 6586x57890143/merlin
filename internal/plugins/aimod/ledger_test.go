@@ -31,6 +31,7 @@ func TestARemovalIsPublishedWithItsIncidentAsTheRef(t *testing.T) {
 	rec.record(bus)
 	p.bus = bus
 
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "text"},
 		BucketThreats, ActionRemove, confirmed("a threat"))
@@ -64,6 +65,7 @@ func TestAFlagPublishesNothing(t *testing.T) {
 	p.bus = bus
 	cfg := enforcingConfig()
 	cfg.Mode = ModeFlag
+	store.setConfig(cfg)
 	p.enforce(context.Background(), cfg,
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "text"},
 		BucketThreats, ActionRemove, confirmed("r"))
@@ -209,6 +211,7 @@ func TestSanctionsOffKeepsRemovalsOffTheLedger(t *testing.T) {
 	p.bus = bus
 	cfg := enforcingConfig()
 	cfg.SanctionAction = SanctionOff
+	store.setConfig(cfg)
 	p.enforce(context.Background(), cfg,
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "text"},
 		BucketThreats, ActionRemove, confirmed("a threat"))

@@ -55,6 +55,19 @@ func newIncidentCode() string {
 // other way, leaving a row for a message that is still there, which reads
 // correctly in /aimod why and is undone by nothing at all.
 func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bucket, action Action, v deepVerdict) {
+	// The verdict may be older than the policy and the message. See
+	// revision.go.
+	defer p.lockMessage(c.MessageID)()
+	if p.superseded(c) {
+		p.log.Info("aimod: message edited since it was judged, verdict discarded",
+			"guild", cfg.GuildID, "channel", c.ChannelID, "message", c.MessageID)
+		return
+	}
+	var ok bool
+	if cfg, action, ok = p.stillActs(ctx, cfg, bucket, action, c); !ok {
+		return
+	}
+
 	// A confirmed violation means this member's run of similar messages is
 	// one worth reading, so its later copies are scanned rather than skipped
 	// as spam. See similarSpam.

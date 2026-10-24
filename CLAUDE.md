@@ -416,6 +416,17 @@ status` rather than appearing to work.
   policy and reason by code only, a mod gets the full record by code or
   message ID. Random rather than the row or message ID, since either would let
   any member probe whether a message had been quietly flagged.
+- **A verdict is re-checked against the present before it acts**
+  (`revision.go`). Model work holds a config and message snapshot for as long
+  as a deep pass takes, and acting on it anyway let a guild switch moderation
+  off and still watch an in-flight call delete and sanction, and let an author
+  who corrected a message have the old text rewritten back over it. So
+  `enforce` takes a per-message lock, discards a verdict on text the author has
+  since edited (`HandleMessageEdit` records a hash, never the text, before its
+  rescan), and `stillActs` re-reads the plugin gate and config: off or the
+  bucket off means nothing, a change to flag means a flag. It only moves an
+  action down. An edit that lands between that check and Discord carrying out
+  the delete is the race left, since Discord has no conditional delete.
 - **The incident is recorded before the message is touched** (same ordering
   argument as `roles.applyJail`): the other order leaves the message gone with
   no copy of it, nothing for `/aimod undo`, and nothing to show the member.

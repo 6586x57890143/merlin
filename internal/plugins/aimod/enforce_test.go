@@ -44,6 +44,7 @@ func TestNothingIsDeletedIfTheIncidentCannotBeRecorded(t *testing.T) {
 	ops := newFakeOps()
 	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "text"},
 		BucketThreats, ActionRemove, confirmed("r"))
@@ -63,6 +64,7 @@ func TestFlagModeTouchesNothing(t *testing.T) {
 
 	cfg := enforcingConfig()
 	cfg.Mode = ModeFlag
+	store.setConfig(cfg)
 	p.enforce(context.Background(), cfg,
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "text"},
 		BucketThreats, ActionRemove, confirmed("r"))
@@ -89,6 +91,7 @@ func TestRewriteRepostsUnderTheAuthorWithAMarker(t *testing.T) {
 
 	v := confirmed("one line had a phone number in it")
 	v.Rewrite = "i think [removed] is wrong about this"
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "i think 555-0100 is wrong about this"},
 		BucketDoxxing, ActionRewrite, v)
@@ -126,11 +129,13 @@ func TestRewriteRepostsUnderTheAuthorWithAMarker(t *testing.T) {
 // remains. That is a normal outcome, not a failure, and it degrades to a
 // removal rather than trying to post an empty message.
 func TestRewriteWithNothingLeftBecomesARemoval(t *testing.T) {
+	store := newFakeStore()
 	ops := newFakeOps()
-	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 
 	v := confirmed("the whole message was the violation")
 	v.Rewrite = "   "
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "x"},
 		BucketThreats, ActionRewrite, v)
@@ -157,6 +162,7 @@ func TestAForwardIsRemovedRatherThanRewritten(t *testing.T) {
 
 	v := confirmed("a slur aimed at a protected group")
 	v.Rewrite = "tickle all nice people"
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "x", Forwarded: true},
 		BucketHateSpeech, ActionRewrite, v)
@@ -177,9 +183,11 @@ func TestAForwardIsRemovedRatherThanRewritten(t *testing.T) {
 // bot earns a reputation for being arbitrary, and this one acts with no
 // human in the loop, so the DM is the only thing standing in for one.
 func TestAuthorIsAlwaysToldWhy(t *testing.T) {
+	store := newFakeStore()
 	ops := newFakeOps()
-	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "the original words"},
 		BucketThreats, ActionRemove, confirmed("a specific person, a specific act"))
@@ -213,6 +221,7 @@ func TestZeroEvidenceStoresNoText(t *testing.T) {
 
 	cfg := enforcingConfig()
 	cfg.EvidenceHours = 0
+	store.setConfig(cfg)
 	p.enforce(context.Background(), cfg,
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "the original words"},
 		BucketThreats, ActionRemove, confirmed("r"))
@@ -233,11 +242,13 @@ func TestZeroEvidenceStoresNoText(t *testing.T) {
 // the record of what would have happened is the whole output and it is not
 // a failure. Same reasoning discordguard.Skipped exists for.
 func TestDryRunRecordsWhatItWouldHaveDone(t *testing.T) {
+	store := newFakeStore()
 	ops := newFakeOps()
 	ops.deleteErr = discordguardDryRun()
 	audit := &fakeAudit{}
-	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, audit)
+	p := testPlugin(t, store, &fakeClassifier{}, ops, audit)
 
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "x"},
 		BucketThreats, ActionRemove, confirmed("r"))
@@ -260,6 +271,7 @@ func TestAlreadyDeletedIsNotAFailure(t *testing.T) {
 	store := newFakeStore()
 	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "x"},
 		BucketThreats, ActionRemove, confirmed("r"))
@@ -278,9 +290,11 @@ func TestAlreadyDeletedIsNotAFailure(t *testing.T) {
 // action already succeeded and the incident row is already durable. The
 // policy every other call site in this codebase uses.
 func TestAuditFailureDoesNotBlockEnforcement(t *testing.T) {
+	store := newFakeStore()
 	ops := newFakeOps()
-	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{err: errors.New("no audit channel")})
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{err: errors.New("no audit channel")})
 
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "x"},
 		BucketThreats, ActionRemove, confirmed("r"))
@@ -410,6 +424,7 @@ func TestEmptyRewriteIsRecordedAndAuditedAsARemoval(t *testing.T) {
 
 	v := confirmed("the whole message was the slur")
 	v.Rewrite = ""
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "the whole message"},
 		BucketHateSpeech, ActionRewrite, v)
@@ -452,6 +467,7 @@ func TestNonEmptyRewriteStaysARewrite(t *testing.T) {
 
 	v := confirmed("one line had a phone number in it")
 	v.Rewrite = "the rest of what they said"
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "original"},
 		BucketDoxxing, ActionRewrite, v)
@@ -473,12 +489,14 @@ func TestNonEmptyRewriteStaysARewrite(t *testing.T) {
 // and posting that with an "edited by merlin" marker under it is worse than
 // the message being cleaned up.
 func TestAModelRewriteIsRedactedBeforeItIsPublished(t *testing.T) {
+	store := newFakeStore()
 	ops := newFakeOps()
 	ops.members["u1"] = Member{Name: "someguy"}
-	p := testPlugin(t, newFakeStore(), &fakeClassifier{}, ops, &fakeAudit{})
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
 
 	v := confirmed("hate speech")
 	v.Rewrite = "welcome to niggernation friends"
+	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
 		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "welcome to niggernation friends"},
 		BucketHateSpeech, ActionRewrite, v)
