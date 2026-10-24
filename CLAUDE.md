@@ -427,6 +427,17 @@ status` rather than appearing to work.
   bucket off means nothing, a change to flag means a flag. It only moves an
   action down. An edit that lands between that check and Discord carrying out
   the delete is the race left, since Discord has no conditional delete.
+- **A cached verdict is only as good as the context it was reached in**
+  (`dedupeCache`, `dedupeText`). Both model rungs read more than the words:
+  the fast pass the reply target, the deep pass the surrounding speakers. So a
+  clear is keyed on the words plus the reply, and a confirmed violation is
+  reused as is only for the same author replying to the same thing. For
+  anybody else it is a hint (`confirmHint`): their message skips the fast pass
+  and goes straight to a deep pass in its own context, or is recorded as a flag
+  if the budget is spent. Keyed on guild and text alone, a benign reply cleared
+  the same words used as harassment, and one member's violation sanctioned an
+  unrelated member with no model ever reading theirs. A raid from many
+  accounts now costs a deep call per account, bounded by `maxUserDeep`.
 - **The incident is recorded before the message is touched** (same ordering
   argument as `roles.applyJail`): the other order leaves the message gone with
   no copy of it, nothing for `/aimod undo`, and nothing to show the member.
