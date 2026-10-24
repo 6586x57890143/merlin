@@ -438,6 +438,15 @@ status` rather than appearing to work.
   the same words used as harassment, and one member's violation sanctioned an
   unrelated member with no model ever reading theirs. A raid from many
   accounts now costs a deep call per account, bounded by `maxUserDeep`.
+- **A rewrite that fails after the delete is a removal** (`rewriteFellShort`).
+  Resolving the webhook first narrows the gap but cannot close it: the repost
+  can still fail after the original is gone. `rewriteMessage` reports whether
+  it deleted, and a rewrite that stopped there is re-recorded as a removal
+  (through `RecordIncident`'s upsert), audited as `aimod.rewrite_failed` and
+  DMed as a removal, so nothing claims a rewrite that is not in the channel.
+  With evidence kept, `/aimod undo` restores the original; with evidence 0
+  there is nothing to restore and the incident says removed. A replacement too
+  long for Discord is decided as a removal before anything is deleted.
 - **The incident is recorded before the message is touched** (same ordering
   argument as `roles.applyJail`): the other order leaves the message gone with
   no copy of it, nothing for `/aimod undo`, and nothing to show the member.

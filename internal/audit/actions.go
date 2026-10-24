@@ -55,10 +55,11 @@ var actions = map[string]meta{
 	// message, not how serious the policy area was: a moderator scanning
 	// this channel needs to find the irreversible ones, and a removal is
 	// irreversible whether it was a slur or a phishing link.
-	"aimod.remove":     {title: "AI moderation: message removed", color: core.ColorError},
-	"aimod.rewrite":    {title: "AI moderation: message rewritten", color: core.ColorWarning},
-	"aimod.flagged":    {title: "AI moderation: message flagged", color: core.ColorWarning},
-	"aimod.sanctioned": {title: "AI moderation: member jailed", color: core.ColorError},
+	"aimod.remove":         {title: "AI moderation: message removed", color: core.ColorError},
+	"aimod.rewrite":        {title: "AI moderation: message rewritten", color: core.ColorWarning},
+	"aimod.rewrite_failed": {title: "AI moderation: rewrite failed, message removed", color: core.ColorError},
+	"aimod.flagged":        {title: "AI moderation: message flagged", color: core.ColorWarning},
+	"aimod.sanctioned":     {title: "AI moderation: member jailed", color: core.ColorError},
 	// Contests. Nothing here is destructive: the worst a contest does is
 	// create a channel and post in it, and cancelling deliberately deletes
 	// nothing. So the palette runs info for routine, success for anything

@@ -512,3 +512,61 @@ func TestAModelRewriteIsRedactedBeforeItIsPublished(t *testing.T) {
 		t.Errorf("the rest of the rewrite was lost: %q", posted[0].Content)
 	}
 }
+
+// A rewrite whose repost fails after the original was deleted has removed
+// the message. The incident, the audit entry and the DM must all say so,
+// and the original stays recoverable through /aimod undo.
+func TestAFailedRepostIsRecordedAsARemoval(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	ops.members["u1"] = Member{Name: "someguy"}
+	ops.postErr = errors.New("webhook rate limited")
+	audit := &fakeAudit{}
+	p := testPlugin(t, store, &fakeClassifier{}, ops, audit)
+
+	v := confirmed("a phone number")
+	v.Rewrite = "call me on [removed]"
+	store.setConfig(enforcingConfig())
+	p.enforce(context.Background(), enforcingConfig(),
+		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "call me on 555-0100"},
+		BucketDoxxing, ActionRewrite, v)
+
+	if deleted, _ := ops.snapshot(); len(deleted) != 1 {
+		t.Fatalf("deleted %v, want the original gone", deleted)
+	}
+	inc := store.recorded()
+	if len(inc) != 1 || inc[0].Action != ActionRemove || inc[0].Code != "" {
+		t.Fatalf("incident %+v, want one removal with no rewrite code", inc)
+	}
+	if inc[0].Content == "" {
+		t.Error("the original was not kept, so /aimod undo cannot restore it")
+	}
+	if !contains(audit.actions(), "aimod.rewrite_failed") || contains(audit.actions(), "aimod.rewrite") {
+		t.Errorf("audit actions = %v, want the failed rewrite and not a successful one", audit.actions())
+	}
+	if len(ops.dms) != 1 {
+		t.Errorf("sent %d DMs, want the author told their message was removed", len(ops.dms))
+	}
+}
+
+// A replacement Discord would reject for length is known before anything is
+// deleted, so it is decided as a removal up front.
+func TestAnOverlongRewriteIsARemovalFromTheStart(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	p := testPlugin(t, store, &fakeClassifier{}, ops, &fakeAudit{})
+
+	v := confirmed("r")
+	v.Rewrite = strings.Repeat("a", maxContentLen)
+	store.setConfig(enforcingConfig())
+	p.enforce(context.Background(), enforcingConfig(),
+		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "x"},
+		BucketDoxxing, ActionRewrite, v)
+
+	if _, posted := ops.snapshot(); len(posted) != 0 {
+		t.Errorf("attempted %d reposts of a message too long to post", len(posted))
+	}
+	if inc := store.recorded(); len(inc) != 1 || inc[0].Action != ActionRemove {
+		t.Errorf("incident %+v, want a removal", inc)
+	}
+}
