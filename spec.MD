@@ -169,7 +169,7 @@ merlin/
 
 
 
-\- Anything hosted outside this binary gets the least it can work with. The contest gallery (§9, Milestone 11) is the only such surface: it holds what a contest is and how people voted, and it is told the display names members already show each other and never a Discord ID. Voters arrive as an HMAC computed under a key that never leaves the host, so the vote ledger cannot be turned back into a list of who voted for what by whoever holds it. The bot itself stays outbound-only either way: it pushes to that service and asks it two questions, and there is still no inbound port on this process.
+\- Anything hosted outside this binary gets the least it can work with. The contest gallery (§9, Milestone 11) is the only such surface: it holds what a contest is and how people voted, and it is told the display names members already show each other and never a Discord ID. Voters are recorded as an HMAC of their Discord ID, computed by the service the moment it learns the ID, under a key shared only between this binary and that service (the Worker's `LINK_KEY`, merlin's `MERLIN_CONTEST_LINK_KEY`). The vote ledger alone therefore cannot be turned back into a list of who voted for what; somebody holding both the ledger and that secret could test guesses, which is why the key is a secret on both sides and never part of a snapshot. The bot itself stays outbound-only either way: it pushes to that service and asks it two questions, and there is still no inbound port on this process.
 
 
 
