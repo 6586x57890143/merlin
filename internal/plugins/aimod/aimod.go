@@ -172,6 +172,13 @@ type Plugin struct {
 	ledgerMu sync.Mutex
 	ledgers  map[string]*guildLedger
 
+	// revisions and acting keep in-flight verdicts honest about the message
+	// they were reached on. See revision.go.
+	revisionMu sync.Mutex
+	revisions  map[string]revision
+	actingMu   sync.Mutex
+	acting     map[string]*messageLock
+
 	// budgetNoticeMu guards budgetNoticed, which keeps the
 	// budget-exhausted audit entry to one per guild per day rather than one
 	// per message, which is the difference between a useful warning and a

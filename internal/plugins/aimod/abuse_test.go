@@ -240,6 +240,7 @@ func TestOverTheDeepCeilingStillRecordsAFlag(t *testing.T) {
 	}
 	p := testPlugin(t, store, client, ops, &fakeAudit{})
 	cfg := enforcingConfig()
+	store.setConfig(cfg)
 
 	// Burn the deep ceiling, then send one more.
 	for range maxUserDeep + 2 {
