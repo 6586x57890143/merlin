@@ -188,6 +188,10 @@ func TestFreeOnlyStackDropsRetentionTerms(t *testing.T) {
 		t.Errorf("json_object request still carries a schema: %s", raw)
 	}
 
+	if got := relaxForFree(chatRequest{Models: []string{"openrouter/free"}, Provider: strictProvider()}); got.Provider.ZDR {
+		t.Error("the free router kept the strict block, which cannot route")
+	}
+
 	mixed := append(free, "openai/gpt-5-nano")
 	if got := relaxForFree(chatRequest{Models: mixed, Provider: strictProvider()}); !got.Provider.ZDR || !got.Provider.RequireParameters {
 		t.Errorf("mixed stack lost its terms: %+v", *got.Provider)
