@@ -514,7 +514,7 @@ func zdrWarning(ids []string) string {
 			"get the guarantee back."
 	}
 	for _, id := range ids {
-		if strings.HasSuffix(id, ":free") {
+		if isFree(id) {
 			return "The free entries in this list will be skipped: the paid ones keep zero data retention " +
 				"pinned, and no free endpoint offers it. List only free models if you mean to give that up."
 		}

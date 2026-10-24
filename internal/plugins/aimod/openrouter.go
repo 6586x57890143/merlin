@@ -193,14 +193,21 @@ func unfence(s string) string {
 	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "```"))
 }
 
-// allFree reports whether every model in a non-empty stack is a `:free` one.
+// allFree reports whether every model in a non-empty stack is a free one.
 func allFree(models []string) bool {
 	for _, m := range models {
-		if !strings.HasSuffix(m, ":free") {
+		if !isFree(m) {
 			return false
 		}
 	}
 	return len(models) > 0
+}
+
+// isFree is a `:free` model or `openrouter/free`, OpenRouter's router over
+// the free lineup. The router carries no suffix, and missing it kept the
+// strict block on a guild whose whole stack was the router: every call 404d.
+func isFree(m string) bool {
+	return strings.HasSuffix(m, ":free") || m == "openrouter/free"
 }
 
 type jsonSchema struct {
