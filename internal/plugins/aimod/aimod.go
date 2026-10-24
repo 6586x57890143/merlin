@@ -638,7 +638,7 @@ func (p *Plugin) scan(ctx context.Context, cfg Config, m message, c candidate, r
 	// the member's scan ceiling, which stays for content nobody has judged
 	// yet. The bucket's action is re-read from live config rather than taken
 	// from the cache, so a policy changed since the verdict still governs.
-	if e, ok := p.dedupe.lookup(cfg.GuildID, c.Content, p.now()); ok && e.verdict != nil {
+	if e, ok := p.dedupe.lookup(cfg.GuildID, c.AuthorID, dedupeText(c.Content, c.ReplyTo), p.now()); ok && e.verdict != nil {
 		action := EffectiveAction(cfg.BucketActions, e.verdict.bucket)
 		if action == ActionOff {
 			return
@@ -646,6 +646,17 @@ func (p *Plugin) scan(ctx context.Context, cfg Config, m message, c candidate, r
 		p.spawn(func(bg context.Context) {
 			p.enforce(bg, cfg, c, e.verdict.bucket, action, e.verdict.deep)
 		})
+		return
+	}
+	// Somebody else's message with these words was confirmed. That says
+	// where to look, not what to do: this one is judged by the deep pass in
+	// its own context, skipping only the fast pass that would ask the same
+	// question again. See dedupeCache.remember.
+	if v, ok := p.dedupe.hint(cfg.GuildID, c.Content, p.now()); ok {
+		if EffectiveAction(cfg.BucketActions, v.bucket) == ActionOff {
+			return
+		}
+		p.spawn(func(bg context.Context) { p.confirmHint(bg, cfg, c, v) })
 		return
 	}
 	// Near-repeat spam (see similarSpam), after the dedupe lookup for the
@@ -835,7 +846,7 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 		}
 		for i, c := range batch {
 			if !flagged[i+1] {
-				p.dedupe.markClean(guildID, c.Content, p.now())
+				p.dedupe.markClean(guildID, dedupeText(c.Content, c.ReplyTo), p.now())
 			}
 			// Rung 1.5 learns here, from the answer of the rung it is
 			// approximating. This is the only training input it has, and the
@@ -890,6 +901,22 @@ func (p *Plugin) classify(guildID string, batch []candidate) {
 		}
 		wg.Wait()
 	})
+}
+
+// confirmHint sends a message whose words were confirmed elsewhere straight
+// to the deep pass. Over the budget nothing can confirm it, so it is
+// recorded as a flag rather than acted on or dropped.
+func (p *Plugin) confirmHint(ctx context.Context, cfg Config, c candidate, v *cachedVerdict) {
+	hit := Verdict{Bucket: v.bucket, Confidence: v.deep.Confidence}
+	state, err := p.checkBudget(ctx, cfg)
+	if err != nil || state.Exhausted {
+		p.enforce(ctx, cfg, c, v.bucket, ActionFlag, deepVerdict{
+			Violation: true, Bucket: v.bucket, Confidence: v.deep.Confidence,
+			Reason: "the same words were confirmed in another message; not confirmed for this one",
+		})
+		return
+	}
+	p.escalate(ctx, cfg, state, c, hit)
 }
 
 // withSlurHints adds a hate_speech hit for every message in batch whose
@@ -968,12 +995,12 @@ func (p *Plugin) escalate(ctx context.Context, cfg Config, state budgetState, c 
 	if !v.Violation || v.Confidence < actThreshold {
 		// Cleared by the deep pass, so identical text is genuinely clean and
 		// later copies should not pay to be told so a second time.
-		p.dedupe.markCleanFor(cfg.GuildID, c.AuthorID, c.Content, p.now())
+		p.dedupe.markCleanFor(cfg.GuildID, c.AuthorID, dedupeText(c.Content, c.ReplyTo), p.now())
 		return
 	}
 	// Remembered before acting, so a flood arriving while this one is still
 	// in flight finds the verdict rather than queueing more classifications.
-	p.dedupe.remember(cfg.GuildID, c.Content, p.now(), &cachedVerdict{
+	p.dedupe.remember(cfg.GuildID, c.AuthorID, c.Content, c.ReplyTo, p.now(), &cachedVerdict{
 		bucket: hit.Bucket, action: action, deep: v,
 	})
 	p.enforce(ctx, cfg, c, hit.Bucket, action, v)

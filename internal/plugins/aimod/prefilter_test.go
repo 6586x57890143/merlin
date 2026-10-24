@@ -234,19 +234,70 @@ func TestDeepClearIsPerAuthorAndFastClearIsNot(t *testing.T) {
 	}
 }
 
-// A verdict that something IS a violation holds against whoever posts it.
-// Repetition is aggravating, not exculpatory, so the act path stays shared.
-func TestActVerdictStillAppliesToEveryone(t *testing.T) {
+// A confirmed violation is reused as is only for the same author replying
+// to the same thing. Anybody else gets a hint, which sends their message to
+// the deep pass rather than authorizing anything, and is never read as clean.
+func TestActVerdictIsReusedOnlyInItsOwnContext(t *testing.T) {
 	c := newDedupeCache()
 	const line = "a line that trips the filter"
-	c.remember("g1", line, testNow, &cachedVerdict{bucket: BucketThreats, action: ActionRemove})
+	c.remember("g1", "u1", line, "", testNow, &cachedVerdict{bucket: BucketThreats, action: ActionRemove})
 
-	e, ok := c.lookup("g1", line, testNow)
-	if !ok || e.verdict == nil {
-		t.Fatal("an act verdict was not remembered guild-wide")
+	if e, ok := c.lookup("g1", "u1", dedupeText(line, ""), testNow); !ok || e.verdict == nil {
+		t.Fatal("the same author repeating the same line was not answered from the cache")
 	}
-	if c.seenClean("g1", "someone-else-entirely", line, testNow) {
+	if _, ok := c.lookup("g1", "u2", dedupeText(line, ""), testNow); ok {
+		t.Error("another member's message was answered with a verdict reached on somebody else's")
+	}
+	if _, ok := c.lookup("g1", "u1", dedupeText(line, "you said what?"), testNow); ok {
+		t.Error("a verdict was reused in a different reply context")
+	}
+	if v, ok := c.hint("g1", line, testNow); !ok || v.bucket != BucketThreats {
+		t.Error("other members' copies get no hint to confirm them")
+	}
+	if c.seenClean("g1", "someone-else-entirely", dedupeText(line, ""), testNow) {
 		t.Error("an act verdict read as clean for a different author")
+	}
+}
+
+// A clear reached on a reply does not clear the same words replying to
+// something else, since the fast pass read both.
+func TestACleanReplyClearsOnlyThatReply(t *testing.T) {
+	c := newDedupeCache()
+	const line = "you are one too"
+	c.markClean("g1", dedupeText(line, "lol i'm such an idiot"), testNow)
+	if c.seenClean("g1", "u2", dedupeText(line, "my mum just died"), testNow) {
+		t.Error("a benign reply cleared the same words aimed at somebody else")
+	}
+	if !c.seenClean("g1", "u2", dedupeText(line, "lol i'm such an idiot"), testNow) {
+		t.Error("an identical reply was not answered from the cache")
+	}
+}
+
+// Identical words from a second member are judged by the deep pass in their
+// own context, not removed on the strength of the first member's verdict.
+func TestAnotherMembersCopyIsConfirmedNotAssumed(t *testing.T) {
+	store := newFakeStore()
+	ops := newFakeOps()
+	client := &fakeClassifier{deep: []string{`{"violation":false,"bucket":"threats","confidence":0.1,"reason":"quoting it to object"}`}}
+	p := intakePlugin(t, store, client, ops)
+	cfg, _ := store.Config(context.Background(), "g1")
+	cfg.Mode = ModeEnforce
+	cfg.BucketActions[BucketThreats] = ActionRemove
+	store.setConfig(cfg)
+
+	const line = "a line somebody was removed for"
+	p.dedupe.remember("g1", "u1", line, "", testNow, &cachedVerdict{
+		bucket: BucketThreats, action: ActionRemove,
+		deep: deepVerdict{Violation: true, Bucket: BucketThreats, Confidence: 0.99, Reason: "r"},
+	})
+	p.handle(message{ID: "m2", GuildID: "g1", ChannelID: "c1", Content: line, AuthorID: "u2"})
+	p.wg.Wait()
+
+	if fast, deep := client.counts(); fast != 0 || deep != 1 {
+		t.Errorf("calls fast=%d deep=%d, want straight to one deep pass", fast, deep)
+	}
+	if deleted, _ := ops.snapshot(); len(deleted) != 0 {
+		t.Errorf("deleted %v on another member's verdict", deleted)
 	}
 }
 
@@ -259,7 +310,7 @@ func TestCachedVerdictHonoursACurrentPolicyChange(t *testing.T) {
 	p := intakePlugin(t, store, &fakeClassifier{}, ops)
 
 	const line = "a message somebody already had a verdict on"
-	p.dedupe.remember("g1", line, testNow, &cachedVerdict{
+	p.dedupe.remember("g1", "u1", line, "", testNow, &cachedVerdict{
 		bucket: BucketGore, action: ActionRemove,
 		deep: deepVerdict{Violation: true, Bucket: BucketGore, Confidence: 0.99, Reason: "r"},
 	})

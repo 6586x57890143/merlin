@@ -140,6 +140,21 @@ func dedupeKey(guildID, authorID, content string) uint64 {
 	return h.Sum64()
 }
 
+// dedupeText is what a cached answer was reached on: the words and the
+// message they reply to, since the fast pass reads both. Without the reply a
+// benign answer to a friend cleared the same words aimed at somebody else,
+// guild-wide, for the whole window.
+func dedupeText(content, replyTo string) string {
+	if replyTo == "" {
+		return content
+	}
+	return content + "\x00reply\x00" + replyTo
+}
+
+// hintAuthor is the key scope of hints: a byte no snowflake contains, so a
+// hint never answers a lookup meant for a verdict or a clear.
+const hintAuthor = "\x01"
+
 // seenClean reports whether this exact text was scanned inside the window
 // and came back with nothing against it.
 //
@@ -155,16 +170,25 @@ func dedupeKey(guildID, authorID, content string) uint64 {
 // A guild-wide clear is checked first, then one recorded for this author
 // alone: see markCleanFor.
 func (c *dedupeCache) seenClean(guildID, authorID, content string, now time.Time) bool {
-	if e, ok := c.lookup(guildID, content, now); ok && e.verdict == nil {
+	if e, ok := c.lookupKey(dedupeKey(guildID, "", content), now); ok && e.verdict == nil {
 		return true
 	}
 	e, ok := c.lookupKey(dedupeKey(guildID, authorID, content), now)
 	return ok && e.verdict == nil
 }
 
-// lookup returns a live guild-wide entry for this text, if there is one.
-func (c *dedupeCache) lookup(guildID, content string, now time.Time) (dedupeEntry, bool) {
-	return c.lookupKey(dedupeKey(guildID, "", content), now)
+// lookup returns a live verdict this author already had on this text in
+// this reply context, which is the only case reused without asking again.
+func (c *dedupeCache) lookup(guildID, authorID, text string, now time.Time) (dedupeEntry, bool) {
+	return c.lookupKey(dedupeKey(guildID, authorID, text), now)
+}
+
+// hint reports whether anybody's message with these words was confirmed as
+// a violation inside the window. It authorizes nothing: a hit sends the
+// message straight to the deep pass, which judges it in its own context.
+func (c *dedupeCache) hint(guildID, content string, now time.Time) (*cachedVerdict, bool) {
+	e, ok := c.lookupKey(dedupeKey(guildID, hintAuthor, content), now)
+	return e.verdict, ok && e.verdict != nil
 }
 
 func (c *dedupeCache) lookupKey(key uint64, now time.Time) (dedupeEntry, bool) {
@@ -177,10 +201,16 @@ func (c *dedupeCache) lookupKey(key uint64, now time.Time) (dedupeEntry, bool) {
 	return e, true
 }
 
-// remember records a guild-wide verdict against this text. A nil verdict
-// means clean.
-func (c *dedupeCache) remember(guildID, content string, now time.Time, v *cachedVerdict) {
-	c.rememberKey(dedupeKey(guildID, "", content), now, v)
+// remember records a confirmed violation: reusable as is for the same
+// author in the same reply context, and as a hint for everybody else.
+//
+// A model's verdict depends on who said it and to whom (the reply target,
+// the speakers around it), and reusing one guild-wide let a violation in
+// one exchange sanction an unrelated member who used the same words in
+// another, with no model ever reading theirs.
+func (c *dedupeCache) remember(guildID, authorID, content, replyTo string, now time.Time, v *cachedVerdict) {
+	c.rememberKey(dedupeKey(guildID, authorID, dedupeText(content, replyTo)), now, v)
+	c.rememberKey(dedupeKey(guildID, hintAuthor, content), now, v)
 }
 
 func (c *dedupeCache) rememberKey(key uint64, now time.Time, v *cachedVerdict) {
@@ -197,8 +227,8 @@ func (c *dedupeCache) rememberKey(key uint64, now time.Time, v *cachedVerdict) {
 //
 // Swept on write rather than on a ticker: no goroutine to leak, and the
 // sweep only runs when the map is actually growing.
-func (c *dedupeCache) markClean(guildID, content string, now time.Time) {
-	c.remember(guildID, content, now, nil)
+func (c *dedupeCache) markClean(guildID, text string, now time.Time) {
+	c.rememberKey(dedupeKey(guildID, "", text), now, nil)
 }
 
 // markCleanFor records a clear that applies to one member only.
@@ -285,7 +315,7 @@ func (p *Plugin) shouldSkip(cfg Config, m message, now time.Time) skipReason {
 	if len([]rune(content)) < minScanLen {
 		return skipShort
 	}
-	if p.dedupe.seenClean(m.GuildID, m.AuthorID, content, now) {
+	if p.dedupe.seenClean(m.GuildID, m.AuthorID, dedupeText(content, replyContext(m)), now) {
 		return skipDuplicate
 	}
 	return skipNone
