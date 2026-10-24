@@ -1012,8 +1012,11 @@ wobble is a `border-radius` trick, the collage is the six merlin mood PNGs
 `internal/core/assets` already ships, and the headline's per-letter tilt is
 seeded from the contest slug so it is stable for that contest and different
 from the next. `scripts/check-contest.mjs` drives the real Worker under Node
-with D1 and Discord stubbed, and is deliberately not wired into CI for the
-same reason `check-lab.mjs` is not.
+with D1 as in-memory SQLite on `schema.sql` and Discord stubbed, and CI runs
+it (`contest-worker`). **A ballot's open-voting checks belong in its own
+batch** (`ballotOpen`): `castVote` validates and then reads the body, and a
+close that freezes and counts in between used to leave the ballot to commit
+after the final tally and report success.
 
 Sprite sheets are kept, and cut by throwaway tooling, exactly as the mood
 sheet is: `internal/core/assets/source/merlin_moods_sheet.png` holds the six
