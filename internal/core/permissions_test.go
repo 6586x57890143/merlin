@@ -107,6 +107,25 @@ func TestAuthorizeBootstrapAdminAlwaysSatisfiesAdminTier(t *testing.T) {
 	}
 }
 
+func TestEveryBootstrapAdminHoldsTheBreakGlass(t *testing.T) {
+	auth := newFakeAuthData()
+	auth.policies["g1"] = map[string]ActionPolicy{
+		"config.mutate": {DenyUserIDs: []string{"second"}},
+	}
+	perms := NewPermissions(nil, auth, "first", "second")
+	for _, id := range []string{"first", "second"} {
+		if err := perms.ask(memberInteraction("g1", id, nil), PermSpec{Tier: TierAdmin, Action: "config.mutate"}); err != nil {
+			t.Errorf("%s: expected TierAdmin past a deny, got %v", id, err)
+		}
+		if err := perms.CanModerate("g1", nil, id, nil); err == nil {
+			t.Errorf("%s: expected to be untargetable", id)
+		}
+	}
+	if perms.IsBootstrapAdmin("third") || perms.IsBootstrapAdmin("") {
+		t.Error("only the listed identities are bootstrap admins")
+	}
+}
+
 func TestAuthorizeWhitelistGrantsAccessIndependentOfTier(t *testing.T) {
 	auth := newFakeAuthData()
 	auth.policies["g1"] = map[string]ActionPolicy{

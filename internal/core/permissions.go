@@ -120,21 +120,21 @@ type PluginGate interface {
 // by CommandRouter before its handler ever runs, so there is no per-plugin
 // choke point to forget.
 type Permissions struct {
-	state       cache.Caches
-	settings    GuildAuthData
-	bootstrapID string
+	state     cache.Caches
+	settings  GuildAuthData
+	bootstrap []string
 }
 
-// NewPermissions constructs Permissions. bootstrapAdminUserID is a bootstrap
-// identity (env-sourced, never DB-backed) that always satisfies TierAdmin
-// regardless of settings state, so a wiped or not-yet-configured guild's
-// settings can never permanently lock the operator out.
+// NewPermissions constructs Permissions. bootstrap is the break-glass
+// identities (env-sourced, never DB-backed), each of which always satisfies
+// TierAdmin regardless of settings state, so a wiped or not-yet-configured
+// guild's settings can never permanently lock the operators out.
 //
 // state is the gateway's cache, where a guild's owner and roles and the bot's
 // own member are read; nil means nothing resolves, and every check that
 // needs it fails closed.
-func NewPermissions(state cache.Caches, settings GuildAuthData, bootstrapAdminUserID string) *Permissions {
-	return &Permissions{state: state, settings: settings, bootstrapID: bootstrapAdminUserID}
+func NewPermissions(state cache.Caches, settings GuildAuthData, bootstrap ...string) *Permissions {
+	return &Permissions{state: state, settings: settings, bootstrap: bootstrap}
 }
 
 // Authorize checks spec against the member invoking ix. Discord's own
@@ -207,10 +207,10 @@ func (p *Permissions) authorize(guildID string, member *invoker, spec PermSpec) 
 	var policy ActionPolicy
 	if spec.Action != "" {
 		policy = p.settings.ActionPolicy(guildID, spec.Action)
-		if policy.Unknown && (member == nil || member.userID != p.bootstrapID) {
+		if policy.Unknown && (member == nil || !p.IsBootstrapAdmin(member.userID)) {
 			return ErrForbidden{Reason: "this server's settings cannot be read right now"}
 		}
-		if member != nil && member.userID != p.bootstrapID {
+		if member != nil && !p.IsBootstrapAdmin(member.userID) {
 			userID := member.userID
 			if slices.Contains(policy.DenyUserIDs, userID) || hasAnyRole(member.roles, policy.DenyRoleIDs) {
 				return ErrForbidden{Reason: "denied for " + spec.Action}
@@ -245,7 +245,7 @@ func (p *Permissions) authorize(guildID string, member *invoker, spec PermSpec) 
 	}
 	userID := member.userID
 
-	isAdmin := userID == p.bootstrapID ||
+	isAdmin := p.IsBootstrapAdmin(userID) ||
 		slices.Contains(p.settings.AdminUserIDs(guildID), userID) ||
 		member.administrator
 
@@ -291,7 +291,7 @@ func (p *Permissions) authorize(guildID string, member *invoker, spec PermSpec) 
 // Fails closed: if the guild's state can't be resolved (so we can't tell
 // whether the target is an admin), the action is refused rather than allowed.
 func (p *Permissions) CanModerate(guildID string, actor *Actor, targetUserID string, targetRoleIDs []string) error {
-	if targetUserID == p.bootstrapID {
+	if p.IsBootstrapAdmin(targetUserID) {
 		return ErrForbidden{Reason: "the bootstrap admin can't be targeted"}
 	}
 
@@ -316,10 +316,10 @@ func (p *Permissions) CanModerate(guildID string, actor *Actor, targetUserID str
 	return nil
 }
 
-// IsBootstrapAdmin reports whether userID is the operator identity from
-// MERLIN_BOOTSTRAP_ADMIN_USER_ID: the one account that satisfies TierAdmin in
+// IsBootstrapAdmin reports whether userID is one of the operator identities
+// from MERLIN_BOOTSTRAP_ADMIN_USER_ID: the accounts that satisfy TierAdmin in
 // every guild regardless of DB state, that no deny list can block, and that
-// CanModerate refuses as a target for everyone including itself.
+// CanModerate refuses as a target for everyone including each other.
 //
 // Exported because two callers outside this package need the identity itself
 // rather than an authorization answer: roles.JailAutomatic, which must refuse
@@ -329,7 +329,7 @@ func (p *Permissions) CanModerate(guildID string, actor *Actor, targetUserID str
 // actual question, so answering it directly beats inferring it from the text
 // of an error.
 func (p *Permissions) IsBootstrapAdmin(userID string) bool {
-	return userID != "" && userID == p.bootstrapID
+	return userID != "" && slices.Contains(p.bootstrap, userID)
 }
 
 // isAdminMember answers "would this member satisfy TierAdmin here?" for an
@@ -340,7 +340,7 @@ func (p *Permissions) IsBootstrapAdmin(userID string) bool {
 // The guild owner is included because Discord grants them every permission
 // implicitly, regardless of which roles they hold.
 func (p *Permissions) isAdminMember(guildID, userID string, roleIDs []string) (bool, error) {
-	if userID == p.bootstrapID || slices.Contains(p.settings.AdminUserIDs(guildID), userID) {
+	if p.IsBootstrapAdmin(userID) || slices.Contains(p.settings.AdminUserIDs(guildID), userID) {
 		return true, nil
 	}
 	gid, guild, err := p.guild(guildID)

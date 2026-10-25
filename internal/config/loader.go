@@ -54,7 +54,11 @@ func (l *Loader) reload() error {
 	next.Discord.Token = os.Getenv("DISCORD_BOT_TOKEN")
 	next.Discord.AppID = os.Getenv("DISCORD_APP_ID")
 	next.Database.DSN = os.Getenv("DATABASE_URL")
-	next.BootstrapAdminUserID = os.Getenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID")
+	bootstrap, err := snowflakes(os.Getenv("MERLIN_BOOTSTRAP_ADMIN_USER_ID"))
+	if err != nil {
+		return fmt.Errorf("MERLIN_BOOTSTRAP_ADMIN_USER_ID: %w", err)
+	}
+	next.BootstrapAdminUserIDs = bootstrap
 	next.PauseAllWrites = isTruthy(os.Getenv("MERLIN_PAUSE_ALL_WRITES"))
 	// Opt-in. See GlobalConfig.OnboardingDM.
 	next.OnboardingDM = isTruthy(os.Getenv("MERLIN_ENABLE_ONBOARDING_DM"))
@@ -85,7 +89,7 @@ func (l *Loader) reload() error {
 	if next.ContestWorkerURL != "" && next.ContestLinkKey == "" {
 		return errors.New("MERLIN_CONTEST_WORKER_URL is set but MERLIN_CONTEST_LINK_KEY is not: contest voting sessions would be forgeable by anyone. Generate one with `openssl rand -base64 32` and give the Worker the same value")
 	}
-	if next.BootstrapAdminUserID == "" {
+	if len(next.BootstrapAdminUserIDs) == 0 {
 		return errors.New("MERLIN_BOOTSTRAP_ADMIN_USER_ID not set: without it, a guild with no settings configured yet has no way to run /config at all")
 	}
 
@@ -177,6 +181,26 @@ func fundingOverrides() (rpcs, contracts map[string]string) {
 // isTruthy accepts the spellings an operator under pressure is likely to
 // reach for. Anything unrecognized, including a typo, leaves the pause
 // disengaged, so the emergency stop can only ever be turned on deliberately.
+// snowflakes reads a comma separated list of Discord IDs, refusing anything
+// that is not one, since a typo here would quietly leave nobody holding the
+// break glass.
+func snowflakes(v string) ([]string, error) {
+	var ids []string
+	for _, f := range strings.Split(v, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if strings.Trim(f, "0123456789") != "" {
+			return nil, fmt.Errorf("%q is not a Discord ID", f)
+		}
+		if !slices.Contains(ids, f) {
+			ids = append(ids, f)
+		}
+	}
+	return ids, nil
+}
+
 func isTruthy(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "1", "true", "yes", "on":

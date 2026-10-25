@@ -15,12 +15,14 @@ type GlobalConfig struct {
 
 	Discord  DiscordConfig  `yaml:"-"`
 	Database DatabaseConfig `yaml:"-"`
-	// BootstrapAdminUserID always satisfies core.TierAdmin, in every guild,
-	// regardless of internal/settings state: the one identity that
-	// guarantees a wiped or not-yet-configured guild's settings can never
-	// permanently lock the operator out of /config. Env-sourced only, same
-	// as the other secrets/identifiers below.
-	BootstrapAdminUserID string `yaml:"-"`
+	// BootstrapAdminUserIDs each always satisfy core.TierAdmin, in every
+	// guild, regardless of internal/settings state: the break-glass
+	// identities that guarantee a wiped or not-yet-configured guild's
+	// settings can never permanently lock the operators out of /config.
+	// MERLIN_BOOTSTRAP_ADMIN_USER_ID, comma separated; the first is the
+	// operator a surface names when it names one (the /support advert).
+	// Env-sourced only, same as the other secrets/identifiers below.
+	BootstrapAdminUserIDs []string `yaml:"-"`
 	// PauseAllWrites is the host-level emergency stop: every destructive
 	// Discord call is refused process-wide while it is set. Env-sourced and
 	// applied at startup rather than hot-reloaded, because it is the lever
