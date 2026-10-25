@@ -94,10 +94,14 @@ func (p *Plugin) brand() cards.Brand {
 	}
 }
 
-// panel lays a card out in merlin's panel: her colour, her rule, and her
-// banner or her heart-in-beak face.
+// accent is the cards' bar: the frame copper of the perk tiles and the
+// campaign banner, so the bar matches the art beside it.
+const accent = 0xD9774B
+
+// panel lays a card out in merlin's panel: the campaign's copper, her rule,
+// and the campaign banner or her heart-in-beak face.
 func panel(pg cards.Page) core.Panel {
-	return core.Panel{Color: core.ColorPrimary, Mood: core.MoodSupporter, Title: pg.Title, Line: pg.Line, Parts: pg.Parts, Footer: pg.Footer, Hero: pg.Hero}
+	return core.Panel{Color: accent, Mood: core.MoodSupporter, Title: pg.Title, Line: pg.Line, Parts: pg.Parts, Footer: pg.Footer, Hero: pg.Hero}
 }
 
 // handleSupport posts the advert in the channel, or, inside the cooldown
