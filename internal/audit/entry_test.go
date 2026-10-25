@@ -20,6 +20,7 @@ var callSites = []struct{ action, old, new string }{
 	{"roles.jail", "", `user=<@1001> duration=2h release_at=2026-10-17T14:00:00Z unmanageable_roles=[<@&501>, <@&502>] reason="spam, links"`},
 	{"roles.release", "", "user=<@1001> from=jail restored=[<@&501> <@&503>]"},
 	{"roles.grant", "", `user=<@1001> role=<@&501> reason="event"`},
+	{"roles.supporter_grant", "", "user=<@1001> role=<@&501> until=2026-11-25T14:00:00Z"},
 	{"rotation.archive_perms_fixed", "<#300>", "category overwrites corrected, 2 channel(s) resynced"},
 	{"channel.rotated", "<#300>", "<#301>"},
 	{"archive.deleted", "<#300>", ""},

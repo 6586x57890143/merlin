@@ -258,6 +258,18 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// Wired here rather than imported, so aimod depends on the behaviour and
 	// not on the package: *roles.Plugin satisfies aimod.Jailer structurally.
 	aimodPlugin.WithJailer(rolesPlugin)
+	// The supporter role follows cygnet's ledger (cygnet.supporters), wired
+	// like WithJailer so roles never imports the fleet link.
+	if hub != nil {
+		rolesPlugin.WithSupporters(roles.SupportersFunc(func(ctx context.Context) ([]roles.Backer, error) {
+			got, err := hub.Supporters(ctx)
+			out := make([]roles.Backer, 0, len(got))
+			for _, b := range got {
+				out = append(out, roles.Backer{UserID: b.User, Until: time.UnixMilli(b.Until)})
+			}
+			return out, err
+		}))
+	}
 	// /config plugins set aimod false has to stop the scanning too, not just
 	// the commands: HandleMessage below is the one plugin entry point the
 	// CommandRouter's own gate check never sees. See aimod.PluginGate.

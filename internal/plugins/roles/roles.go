@@ -61,6 +61,9 @@ type Plugin struct {
 	// in tests that do not care, and publish tolerates that.
 	bus *core.EventBus
 	now func() time.Time
+	// supporters is cygnet's list of who backs the birds; nil leaves the
+	// supporter role alone (see supporters.go).
+	supporters Supporters
 	// voice supplies the DM wording sent to a jailed or released member.
 	// An interface, not the concrete catalog, so a generator can replace it
 	// later without this plugin knowing (see internal/voice).
@@ -181,6 +184,7 @@ func (p *Plugin) SyncGuild(guildID string) {
 		return
 	}
 	p.sweepRegistered[guildID] = true
+	p.registerSupporterSync(guildID)
 }
 
 // ForgetGuild drops guildID's sweep-registration bookkeeping and its cached
