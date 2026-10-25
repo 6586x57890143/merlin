@@ -84,3 +84,30 @@ func TestSupporterSyncOnlyWhereThereIsARole(t *testing.T) {
 		t.Fatalf("registered %d jobs for the Melting Pot", len(sched.registered))
 	}
 }
+
+func TestASupporterIsRemindedOnceAWeekOut(t *testing.T) {
+	const g, role, u = meltingPotGuildID, meltingPotSupporterRoleID, "7000201"
+	ctx := context.Background()
+	ops := newFakeOps()
+	ops.setMember(g, u, nil)
+	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+	until := p.now().Add(30 * 24 * time.Hour)
+	p.WithSupporters(SupportersFunc(func(context.Context) ([]Backer, error) { return []Backer{{UserID: u, Until: until}}, nil }))
+	if err := p.syncSupporters(ctx, g, role); err != nil || len(ops.dmSends) != 0 {
+		t.Fatalf("a month out: %v, %d DMs", err, len(ops.dmSends))
+	}
+	until = p.now().Add(5 * 24 * time.Hour)
+	for range 2 {
+		if err := p.syncSupporters(ctx, g, role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(ops.dmSends) != 1 {
+		t.Fatalf("%d reminders, want one", len(ops.dmSends))
+	}
+	// A renewal ends somewhere else, and is reminded again when it nears.
+	until = until.Add(24 * time.Hour)
+	if err := p.syncSupporters(ctx, g, role); err != nil || len(ops.dmSends) != 2 {
+		t.Fatalf("after a renewal: %v, %d reminders", err, len(ops.dmSends))
+	}
+}

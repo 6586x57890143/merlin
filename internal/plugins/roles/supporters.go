@@ -7,11 +7,13 @@ import (
 	"slices"
 	"time"
 
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
 	"github.com/6586x57890143/merlin/internal/scheduler"
+	"github.com/6586x57890143/merlin/internal/voice"
 )
 
 // Supporters is who backs the birds now, as cygnet keeps it
@@ -38,6 +40,9 @@ const (
 	meltingPotSupporterRoleID = "1562888379799183421"
 	supporterSyncInterval     = 10 * time.Minute
 	supporterReason           = "supporter, via cygnet"
+	// supporterRemindAhead is how long before backing ends its DM goes.
+	supporterRemindAhead = 7 * 24 * time.Hour
+	supportURL           = "https://cygnet.lol/support"
 )
 
 // WithSupporters turns on the supporter role sync where a guild has a
@@ -96,8 +101,29 @@ func (p *Plugin) syncSupporters(ctx context.Context, guildID, roleID string) err
 		if err := p.syncSupporter(ctx, guildID, roleID, b); err != nil {
 			errs = append(errs, err)
 		}
+		if err := p.remindSupporter(ctx, guildID, b); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
+}
+
+// remindSupporter DMs b a week before their backing ends, once per paid
+// period: the claim is written before the DM, so a failed write never
+// sends it twice, and a renewal moves Until and so earns its own. A DM
+// that can't be delivered (closed DMs) is not retried.
+func (p *Plugin) remindSupporter(ctx context.Context, guildID string, b Backer) error {
+	if b.Until.Sub(p.now()) > supporterRemindAhead {
+		return nil
+	}
+	first, err := p.store.ClaimSupporterReminder(ctx, b.UserID, b.Until)
+	if err != nil || !first {
+		return err
+	}
+	p.dm(ctx, guildID, b.UserID, voice.KeySupporterReminder, "Your backing ends soon", core.ColorInfo,
+		map[string]string{"when": relativeTimestamp(b.Until)},
+		discord.EmbedField{Name: "Renew", Value: supportURL})
+	return nil
 }
 
 func (p *Plugin) syncSupporter(ctx context.Context, guildID, roleID string, b Backer) error {

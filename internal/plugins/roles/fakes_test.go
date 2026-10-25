@@ -593,7 +593,22 @@ type fakeStore struct {
 	jails          map[string]JailRecord        // guildID+":"+userID
 	grants         map[string]GrantRecord       // guildID+":"+userID+":"+roleID
 	eternal        map[string]EternalRoleRecord // guildID+":"+userID+":"+originRoleID
+	reminded       map[string]bool              // userID+":"+until
 	nextID         int64
+}
+
+func (f *fakeStore) ClaimSupporterReminder(ctx context.Context, userID string, until time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reminded == nil {
+		f.reminded = map[string]bool{}
+	}
+	k := userID + ":" + until.UTC().String()
+	if f.reminded[k] {
+		return false, nil
+	}
+	f.reminded[k] = true
+	return true, nil
 }
 
 func newFakeStore() *fakeStore {

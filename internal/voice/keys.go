@@ -95,6 +95,12 @@ const (
 	KeyJailAnnounce    Key = "roles.jail_announce"
 	KeyReleaseAnnounce Key = "roles.release_announce"
 
+	// KeySupporterReminder is the DM a week before somebody's backing of
+	// the birds ends. Plain register: it is about their money. {when} is
+	// required because the date is the whole message; where to renew is a
+	// code-authored field, never a line.
+	KeySupporterReminder Key = "roles.supporter_reminder"
+
 	// The vacation script (roles/script_vacation.go): jail's shape in a
 	// tropical flavour. The same DM/channel split as above: *.notice, *.over,
 	// *.from_jail and *.to_jail are DMs to the member in the plain register,
@@ -360,6 +366,13 @@ var specs = map[Key]spec{
 		maxLen:   maxMessageContent,
 		fallback: "{members} has been jailed. back {until}.",
 	},
+	KeySupporterReminder: {
+		register: RegisterPlain,
+		required: []string{"when"},
+		maxLen:   maxEmbedDescription,
+		fallback: "your backing of the birds ends {when}. nothing renews by itself.",
+	},
+
 	KeyReleaseAnnounce: {
 		register: RegisterPlayful,
 		required: []string{"members"},
