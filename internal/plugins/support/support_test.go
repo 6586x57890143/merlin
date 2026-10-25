@@ -71,7 +71,7 @@ func TestSupportPostsPubliclyThenOnlyToTheAsker(t *testing.T) {
 		return wire.Bodies[0]
 	}
 	first := ask()
-	for _, want := range []string{"back the birds", "merlin_banner.png", "@" + owner, "https://cygnet.lol/support"} {
+	for _, want := range []string{"back the birds", "merlin_supporter_hero.png", "@" + owner, "https://cygnet.lol/support"} {
 		if !strings.Contains(first, want) {
 			t.Errorf("the advert lacks %q", want)
 		}
@@ -107,7 +107,7 @@ func TestNewSupportersAreThankedInTheirChannel(t *testing.T) {
 	if m.channel != "300" || m.data.Flags != discord.MessageFlagIsComponentsV2 || !strings.Contains(text, "<@1> and <@2>") || !strings.Contains(text, "thank you") {
 		t.Fatalf("card in %s: %s", m.channel, text)
 	}
-	if !strings.Contains(text, "merlin_supporter.png") || strings.Contains(text, "merlin_banner.png") {
+	if !strings.Contains(text, "merlin_supporter.png") || strings.Contains(text, "merlin_supporter_hero.png") {
 		t.Fatal("the welcome should wear her heart-in-beak face, not the banner")
 	}
 	var names []string
