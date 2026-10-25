@@ -64,6 +64,10 @@ const (
 	tipJarLowFraction  = 0.2
 	tipJarFullFraction = 0.75
 
+	// supportURL is where somebody backs the birds themselves (cygnet's
+	// supporter subscription), linked from the public tip jar.
+	supportURL = "https://cygnet.lol/support"
+
 	// addressChangeWarning is how long the public view leads with the fact
 	// that the payout address moved. A repointed jar is the one way this
 	// feature can cost somebody money, and nothing on chain can be undone, so
@@ -696,6 +700,15 @@ func (p *Plugin) handleFundingShow(ctx context.Context, ix *core.Ix) {
 			Value: core.TruncateEmbedField(where),
 		})
 	}
+
+	// The other way to help, said apart from the jar because the money goes
+	// somewhere else: the jar pays for scanning here, backing pays the
+	// person who builds the birds, and nobody should send one meaning the
+	// other.
+	fields = append(fields, discord.EmbedField{
+		Name:  "🪶 Back the birds",
+		Value: "A monthly supporter for merlin and the other birds, paid in crypto: " + supportURL + subtext("Separate from this jar: it goes to the birds' builder, not to this server's scanning."),
+	})
 
 	body := p.fundingWords(ctx, ix.GuildID, f, remaining, left, haveRunway)
 

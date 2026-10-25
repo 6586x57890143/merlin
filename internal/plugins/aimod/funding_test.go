@@ -356,6 +356,16 @@ func showTheJarWith(t *testing.T, address string, balances map[string]float64) [
 // Asserted on the acknowledgement specifically: Discord fixes ephemerality
 // when the interaction is acked, so this is the request that decides it and
 // no later edit can correct it.
+// The public jar also says where to back the birds, and that it is not this
+// jar: the two send money to different people.
+func TestFundingShowLinksBackingTheBirds(t *testing.T) {
+	last := showTheJar(t)
+	body := last[len(last)-1]
+	if !strings.Contains(body, supportURL) || !strings.Contains(body, "Separate from this jar") {
+		t.Fatalf("the jar doesn't point at backing the birds: %s", body)
+	}
+}
+
 func TestFundingShowAnswersPublicly(t *testing.T) {
 	if ack := showTheJar(t)[0]; strings.Contains(ack, `"flags"`) {
 		t.Fatalf("the tip jar was acknowledged with flags, so only the invoker sees it: %s", ack)
