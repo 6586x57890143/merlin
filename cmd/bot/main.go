@@ -159,7 +159,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// to fail-closed defaults; this walks those back to real values once the
 	// database is reachable again, instead of waiting on the next mutation.
 	settingsStore.StartRetry(ctx, log)
-	perms := core.NewPermissions(gw.Caches, settingsStore, cfg.BootstrapAdminUserID)
+	perms := core.NewPermissions(gw.Caches, settingsStore, cfg.BootstrapAdminUserIDs...)
 	// Loaded and validated before anything can use it, so a catalog that
 	// has lost a required placeholder (the rotation notice's retention
 	// window, most of all) stops the bot here rather than posting an
@@ -328,7 +328,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry.Register(sched)
 	registry.Register(ping.New(speaker))
 	// /support and the new-supporter card; roles publishes who joined.
-	registry.Register(support.New(func(guildID string) support.Sender { return guard.For(guildID) }, settingsStore, speaker, cfg.BootstrapAdminUserID))
+	registry.Register(support.New(func(guildID string) support.Sender { return guard.For(guildID) }, settingsStore, speaker, cfg.BootstrapAdminUserIDs[0]))
 	registry.Register(rotationPlugin)
 	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
