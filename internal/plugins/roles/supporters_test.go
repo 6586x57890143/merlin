@@ -2,6 +2,8 @@ package roles
 
 import (
 	"context"
+	"github.com/6586x57890143/merlin/internal/core"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -143,7 +145,7 @@ func TestASupporterIsRemindedOnceAWeekOut(t *testing.T) {
 	}
 }
 
-func TestNewSupportersGetOneThankYouCard(t *testing.T) {
+func TestNewSupportersAreAnnouncedOnceOnTheBus(t *testing.T) {
 	const g, role = meltingPotGuildID, testSupporterRole
 	const a, b, renewing = "7000401", "7000402", "7000403"
 	ctx := context.Background()
@@ -152,9 +154,12 @@ func TestNewSupportersGetOneThankYouCard(t *testing.T) {
 		ops.setMember(g, u, nil)
 	}
 	store := newFakeStore()
-	settings := newFakeSettings()
-	_ = settings.SetSupporterChannel(ctx, g, "7000499")
-	p := newTestPlugin(ops, store, settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+	p := newTestPlugin(ops, store, newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
+	p.bus = core.NewEventBus(slog.New(slog.DiscardHandler))
+	var got [][]string
+	p.bus.Subscribe(core.EventSupportersJoined, "test", func(_ context.Context, ev core.Event) {
+		got = append(got, ev.Payload.(core.SupportersJoinedPayload).UserIDs)
+	})
 	soon, later := p.now().Add(20*24*time.Hour), p.now().Add(60*24*time.Hour)
 	_ = store.InsertGrant(ctx, GrantRecord{GuildID: g, UserID: renewing, RoleID: role, ExpiresAt: &soon})
 	backers := []Backer{{UserID: a, Until: later}, {UserID: b, Until: later}, {UserID: renewing, Until: later}}
@@ -164,16 +169,8 @@ func TestNewSupportersGetOneThankYouCard(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(ops.dmSends) != 1 {
-		t.Fatalf("%d cards, want one", len(ops.dmSends))
-	}
-	card := ops.dmSends[0]
-	desc := card.data.Embeds[0].Description
-	if card.channelID != "7000499" || !strings.Contains(desc, "<@"+a+">") || !strings.Contains(desc, "<@"+b+">") || strings.Contains(desc, renewing) {
-		t.Fatalf("card in %s: %q", card.channelID, desc)
-	}
-	if f := card.data.Embeds[0].Fields; len(f) != 1 || f[0].Value != supportURL {
-		t.Fatalf("fields %+v", f)
+	if len(got) != 1 || strings.Join(got[0], ",") != a+","+b {
+		t.Fatalf("announced %v, want one event naming the two new supporters and not the renewal", got)
 	}
 }
 

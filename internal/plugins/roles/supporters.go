@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
@@ -168,51 +167,14 @@ func (p *Plugin) createSupporterRole(ctx context.Context, guildID string) (strin
 	return id, p.jailChannelConfig.SetSupporterRole(ctx, guildID, id)
 }
 
-// maxThanked is the most new supporters one card names; past it, "and N
-// more", so a backlog (the first sync after launch) is still one card.
-const maxThanked = 10
-
-// thankSupporters posts one thank you card for members who just became
-// supporters, in the channel picked on /roles settings. One card a sync,
-// never on a renewal, and nothing pings: the guard's senders zero
-// AllowedMentions. It carries the one small ad, a code-authored field
-// saying where. Best effort: no channel picked, or one merlin can't post
-// in, means no card.
+// thankSupporters tells whoever listens (the support plugin's thank you
+// card) that userIDs just became supporters here: one event a sync, never
+// on a renewal.
 func (p *Plugin) thankSupporters(ctx context.Context, guildID string, userIDs []string) {
-	channel := p.jailChannelConfig.SupporterChannelID(guildID)
-	if len(userIDs) == 0 || channel == "" {
+	if len(userIDs) == 0 || p.bus == nil {
 		return
 	}
-	names := userIDs
-	more := ""
-	if len(names) > maxThanked {
-		names, more = names[:maxThanked], fmt.Sprintf(" and %d more", len(userIDs)-maxThanked)
-	}
-	body := p.voice.Line(ctx, guildID, voice.KeySupporterThanks, map[string]string{"members": listMentions(names) + more})
-	if body == "" {
-		return
-	}
-	embed := core.Embed(core.ColorPrimary, "Thank you", body,
-		discord.EmbedField{Name: "Back the birds", Value: supportURL})
-	core.SetMood(&embed, core.MoodSupporter)
-	if _, err := p.ops(guildID).CreateMessage(core.ID(channel), discord.MessageCreate{
-		Embeds: []discord.Embed{embed},
-		Files:  core.EmbedUploads(embed),
-	}); err != nil {
-		p.log.Info("roles: could not thank supporters", "guild", guildID, "err", err)
-	}
-}
-
-// listMentions is user mentions joined the owner's way: "a, b and c".
-func listMentions(ids []string) string {
-	m := make([]string, len(ids))
-	for i, id := range ids {
-		m[i] = core.MentionUser(id)
-	}
-	if len(m) < 2 {
-		return strings.Join(m, "")
-	}
-	return strings.Join(m[:len(m)-1], ", ") + " and " + m[len(m)-1]
+	p.bus.Publish(ctx, core.Event{Type: core.EventSupportersJoined, GuildID: guildID, Payload: core.SupportersJoinedPayload{UserIDs: userIDs}, At: p.now()})
 }
 
 // remindSupporter DMs b a week before their backing ends, once per paid
