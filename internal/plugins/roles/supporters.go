@@ -2,6 +2,7 @@ package roles
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"slices"
@@ -39,9 +40,9 @@ type Backer struct {
 
 // How often the list is read, and what merlin names the role she creates.
 const (
-	supporterRoleName         = "Supporter"
-	supporterSyncInterval     = 10 * time.Minute
-	supporterReason           = "supporter, via cygnet"
+	supporterRoleName     = "Supporter"
+	supporterSyncInterval = 10 * time.Minute
+	supporterReason       = "supporter, via cygnet"
 	// supporterRemindAhead is how long before backing ends its DM goes.
 	supporterRemindAhead = 7 * 24 * time.Hour
 	supportURL           = "https://cygnet.lol/support"
@@ -113,16 +114,53 @@ func (p *Plugin) syncSupporters(ctx context.Context, guildID, roleID string) err
 	return errors.Join(errs...)
 }
 
-// createSupporterRole makes merlin's own supporter role for guildID, with
-// no permissions (it is a badge), and turns supporters on with it. Discord
-// puts a new role at the bottom, under merlin's top role, so she can always
-// give and take it. A guild that already has one keeps it.
+// supporterBadge is the role's icon: the feathered heart badge cygnet's
+// /support page wears, in its dusk colours, since a role icon can't follow
+// the viewer's theme.
+//
+//go:embed assets/supporter_badge.png
+var supporterBadge []byte
+
+// The supporter role's gradient: merlin's beak blue into her bronze-cream
+// feathers. A server without gradient roles gets the blue alone.
+const (
+	supporterBlue  = 0x3A7DBA
+	supporterCream = 0xD8B585
+)
+
+// supporterRoleCreate is how merlin draws the supporter role for a guild
+// with features: shown apart in the member list, her gradient and the badge
+// where the server can show them, no permissions (it is a badge). Where it
+// sits in the role list is each server's to choose.
+func supporterRoleCreate(features []discord.GuildFeature) discord.RoleCreate {
+	none := discord.PermissionsNone
+	// colors is always sent (disgo can't omit it), so it always carries the
+	// blue; the cream only where the server can show a gradient.
+	rc := discord.RoleCreate{Name: supporterRoleName, Permissions: &none, Hoist: true, Color: supporterBlue,
+		Colors: discord.RoleColors{PrimaryColor: supporterBlue}}
+	if slices.Contains(features, discord.GuildFeatureEnhancedRoleColors) {
+		cream := supporterCream
+		rc.Colors.SecondaryColor = &cream
+	}
+	if slices.Contains(features, discord.GuildFeatureRoleIcons) {
+		rc.Icon = discord.NewIconRaw(discord.IconTypePNG, supporterBadge)
+	}
+	return rc
+}
+
+// createSupporterRole makes merlin's own supporter role for guildID and
+// turns supporters on with it. Discord puts a new role at the bottom,
+// under merlin's top role, so she can always give and take it. A guild
+// that already has one keeps it.
 func (p *Plugin) createSupporterRole(ctx context.Context, guildID string) (string, error) {
 	if id := p.jailChannelConfig.SupporterRoleID(guildID); id != "" {
 		return id, nil
 	}
-	none := discord.PermissionsNone
-	role, err := p.ops(guildID).CreateRole(core.ID(guildID), discord.RoleCreate{Name: supporterRoleName, Permissions: &none})
+	var features []discord.GuildFeature
+	if g, err := p.ops(guildID).GetGuild(core.ID(guildID)); err == nil {
+		features = g.Features
+	}
+	role, err := p.ops(guildID).CreateRole(core.ID(guildID), supporterRoleCreate(features))
 	if err != nil {
 		return "", fmt.Errorf("create supporter role: %w", err)
 	}
@@ -248,7 +286,7 @@ func (p *Plugin) supporterParts(guildID string, canSet bool) []discord.Container
 	role := p.jailChannelConfig.SupporterRoleID(guildID)
 	if role == "" {
 		return []discord.ContainerSubComponent{
-			ui.Switch("**Supporters are off.** Turned on, merlin makes a **Supporter** role with no permissions and gives it to whoever backs the birds at cygnet.lol/support, for as long as they do.",
+			ui.Switch("**Supporters are off.** Turned on, merlin makes a **Supporter** role and gives it to whoever backs the birds at cygnet.lol/support, for as long as they do. It has no permissions, shows apart in the member list, and wears merlin's colours and badge where the server can show them. Move it as high as you like.",
 				ui.Button("Turn on", panelJail+"suprole:", discord.ButtonStyleSecondary, !canSet)),
 		}
 	}

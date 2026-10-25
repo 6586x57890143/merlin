@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/disgoorg/disgo/discord"
+
 	"github.com/6586x57890143/merlin/internal/scheduler"
 )
 
@@ -172,5 +174,16 @@ func TestNewSupportersGetOneThankYouCard(t *testing.T) {
 	}
 	if f := card.data.Embeds[0].Fields; len(f) != 1 || f[0].Value != supportURL {
 		t.Fatalf("fields %+v", f)
+	}
+}
+
+func TestTheSupporterRoleStandsOutWhereTheServerCanShowIt(t *testing.T) {
+	plain := supporterRoleCreate(nil)
+	if !plain.Hoist || plain.Color != supporterBlue || plain.Colors.PrimaryColor != supporterBlue || plain.Colors.SecondaryColor != nil || plain.Icon != nil || *plain.Permissions != discord.PermissionsNone {
+		t.Fatalf("a plain server: %+v", plain)
+	}
+	full := supporterRoleCreate([]discord.GuildFeature{discord.GuildFeatureEnhancedRoleColors, discord.GuildFeatureRoleIcons})
+	if full.Colors.SecondaryColor == nil || *full.Colors.SecondaryColor != supporterCream || full.Icon == nil {
+		t.Fatalf("a boosted server: %+v", full)
 	}
 }
