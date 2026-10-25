@@ -38,6 +38,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
 	"github.com/6586x57890143/merlin/internal/plugins/statistics"
+	"github.com/6586x57890143/merlin/internal/plugins/support"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/scripts"
 	"github.com/6586x57890143/merlin/internal/secret"
@@ -326,6 +327,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New(speaker))
+	// /support and the new-supporter card; roles publishes who joined.
+	registry.Register(support.New(func(guildID string) support.Sender { return guard.For(guildID) }, settingsStore, speaker, cfg.BootstrapAdminUserID))
 	registry.Register(rotationPlugin)
 	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)

@@ -48,6 +48,10 @@ type Panel struct {
 	// upload, nil when Icon is already a URL Discord can fetch.
 	Icon       string
 	IconUpload *discord.File
+	// Hero leads the panel with merlin's banner at full width, the head
+	// under it with no thumbnail beside: for a card whose art is the point
+	// (the supporter advert), not a page somebody works in.
+	Hero bool
 }
 
 // Layout renders p as the message's single top-level container.
@@ -68,6 +72,12 @@ func (p Panel) Layout() []discord.LayoutComponent {
 			Components: []discord.SectionSubComponent{discord.TextDisplayComponent{Content: head}},
 			Accessory:  discord.ThumbnailComponent{Media: discord.UnfurledMediaItem{URL: p.thumbnail(mood)}},
 		},
+	}
+	if p.Hero {
+		parts = []discord.ContainerSubComponent{
+			discord.MediaGalleryComponent{Items: []discord.MediaGalleryItem{{Media: discord.UnfurledMediaItem{URL: bannerAttachmentURL}, Description: "merlin in flight"}}},
+			discord.TextDisplayComponent{Content: head},
+		}
 	}
 	if p.Note != "" {
 		parts = append(parts, discord.TextDisplayComponent{Content: p.Note})
@@ -97,6 +107,9 @@ func (p Panel) Uploads() []*discord.File {
 		mood = moodForColor(p.Color)
 	}
 	files := []*discord.File{asset{ruleAttachmentName, rulePNG}.upload()}
+	if p.Hero {
+		return append(files, asset{bannerAttachmentName, bannerPNG}.upload())
+	}
 	if p.Icon != "" {
 		if p.IconUpload != nil {
 			files = append(files, p.IconUpload)

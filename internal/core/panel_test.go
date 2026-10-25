@@ -72,3 +72,23 @@ func TestReadoutIsFactLines(t *testing.T) {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
 }
+
+// A hero panel leads with the banner and carries no thumbnail, and uploads
+// the banner and rule rather than a mood.
+func TestAHeroPanelLeadsWithTheBanner(t *testing.T) {
+	p := Panel{Color: ColorPrimary, Title: "t", Line: "l", Hero: true}
+	parts := p.Layout()[0].(discord.ContainerComponent).Components
+	if g, ok := parts[0].(discord.MediaGalleryComponent); !ok || g.Items[0].Media.URL != bannerAttachmentURL {
+		t.Fatalf("first part %T, want the banner", parts[0])
+	}
+	if _, ok := parts[1].(discord.TextDisplayComponent); !ok {
+		t.Fatalf("the head is %T, want text with no thumbnail beside it", parts[1])
+	}
+	var names []string
+	for _, f := range p.Uploads() {
+		names = append(names, f.Name)
+	}
+	if len(names) != 2 || names[1] != bannerAttachmentName {
+		t.Fatalf("uploads %v", names)
+	}
+}
