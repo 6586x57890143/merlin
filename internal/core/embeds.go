@@ -103,6 +103,9 @@ var moodTipJarLowPNG []byte
 //go:embed assets/merlin_tipjar_full.png
 var moodTipJarFullPNG []byte
 
+//go:embed assets/merlin_supporter.png
+var moodSupporterPNG []byte
+
 // Mood is which drawing of merlin a message carries.
 type Mood int
 
@@ -127,6 +130,9 @@ const (
 	MoodTipJarEmpty
 	MoodTipJarLow
 	MoodTipJarFull
+	// MoodSupporter, merlin with a winged heart in her beak, is the thank
+	// you card for a new supporter (roles). No colour maps to it.
+	MoodSupporter
 )
 
 var moodAssets = map[Mood]struct {
@@ -143,6 +149,8 @@ var moodAssets = map[Mood]struct {
 	MoodTipJarEmpty: {"merlin_tipjar_empty.png", moodTipJarEmptyPNG},
 	MoodTipJarLow:   {"merlin_tipjar_low.png", moodTipJarLowPNG},
 	MoodTipJarFull:  {"merlin_tipjar_full.png", moodTipJarFullPNG},
+
+	MoodSupporter: {"merlin_supporter.png", moodSupporterPNG},
 }
 
 // moodForColor maps an embed's colour to a mood.

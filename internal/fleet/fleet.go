@@ -81,6 +81,22 @@ func (l *Link) Here(ctx context.Context, guildID string) (bool, error) {
 	return a.Here, err
 }
 
+// Backer is one supporter as cygnet.supporters lists them.
+type Backer struct {
+	User  string `json:"user"`
+	Gold  bool   `json:"gold"`
+	Until int64  `json:"until"` // Unix milliseconds
+}
+
+// Supporters asks cygnet who backs the birds now (cygnet.supporters).
+func (l *Link) Supporters(ctx context.Context) ([]Backer, error) {
+	var a struct {
+		Supporters []Backer `json:"supporters"`
+	}
+	err := l.c.Call(ctx, "cygnet.supporters", nil, &a)
+	return a.Supporters, err
+}
+
 // Run keeps the link up until ctx ends, then says goaway.
 func (l *Link) Run(ctx context.Context) {
 	if l != nil {

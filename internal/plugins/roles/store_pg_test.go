@@ -3,6 +3,7 @@ package roles
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -82,5 +83,20 @@ func TestMarkJailAppliedThroughPostgres(t *testing.T) {
 	}
 	if err := store.MarkJailApplied(ctx, guild, "nobody", later); !errors.Is(err, ErrNotJailed) {
 		t.Fatalf("missing row: %v, want ErrNotJailed", err)
+	}
+}
+
+func TestSupporterReminderIsClaimedOnceThroughPostgres(t *testing.T) {
+	store := NewPostgresStore(dbtest.Pool(t))
+	ctx := context.Background()
+	until := time.Date(2026, 11, 25, 14, 0, 0, 0, time.UTC)
+	user := strconv.FormatInt(time.Now().UnixNano(), 10) // a rerun against the same database starts clean
+	for i, want := range []bool{true, false} {
+		if got, err := store.ClaimSupporterReminder(ctx, user, until); err != nil || got != want {
+			t.Fatalf("claim %d: %v %v, want %v", i, got, err, want)
+		}
+	}
+	if got, err := store.ClaimSupporterReminder(ctx, user, until.AddDate(0, 1, 0)); err != nil || !got {
+		t.Fatalf("a later period: %v %v", got, err)
 	}
 }
