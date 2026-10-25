@@ -71,7 +71,7 @@ func TestSupportPostsPubliclyThenOnlyToTheAsker(t *testing.T) {
 		return wire.Bodies[0]
 	}
 	first := ask()
-	for _, want := range []string{"back the birds", "merlin_banner.png", "@" + owner, "https://cygnet.lol/support"} {
+	for _, want := range []string{"back the birds", "merlin_banner.png", "@" + owner, "https://support.cygnet.lol"} {
 		if !strings.Contains(first, want) {
 			t.Errorf("the advert lacks %q", want)
 		}

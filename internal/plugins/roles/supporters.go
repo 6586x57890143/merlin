@@ -44,7 +44,7 @@ const (
 	supporterReason       = "supporter, via cygnet"
 	// supporterRemindAhead is how long before backing ends its DM goes.
 	supporterRemindAhead = 7 * 24 * time.Hour
-	supportURL           = "https://cygnet.lol/support"
+	supportURL           = "https://support.cygnet.lol"
 )
 
 // WithSupporters turns on the supporter role sync, in every guild that
@@ -248,7 +248,7 @@ func (p *Plugin) supporterParts(guildID string, canSet bool) []discord.Container
 	role := p.jailChannelConfig.SupporterRoleID(guildID)
 	if role == "" {
 		return []discord.ContainerSubComponent{
-			ui.Switch("**Supporters are off.** Turned on, merlin makes a **Supporter** role and gives it to whoever backs the birds at cygnet.lol/support, for as long as they do. It has no permissions, shows apart in the member list, and wears merlin's colours and badge where the server can show them. Move it as high as you like.",
+			ui.Switch("**Supporters are off.** Turned on, merlin makes a **Supporter** role and gives it to whoever backs the birds at support.cygnet.lol, for as long as they do. It has no permissions, shows apart in the member list, and wears merlin's colours and badge where the server can show them. Move it as high as you like.",
 				ui.Button("Turn on", panelJail+"suprole:", discord.ButtonStyleSecondary, !canSet)),
 		}
 	}

@@ -1,5 +1,5 @@
 // Package support is merlin's half of backing the birds: /support posts
-// the advert that sends people to cygnet.lol/support, and a new supporter
+// the advert that sends people to support.cygnet.lol, and a new supporter
 // (roles publishes core.EventSupportersJoined from cygnet's ledger) gets
 // the welcome card in the channel picked on /roles settings. The words are
 // cygnet/support's, shared by every bird; the layout is merlin's panel,
@@ -183,6 +183,6 @@ func (p *Plugin) Help() core.Help {
 	return core.Help{
 		Title: "Support",
 		Line:  "how to back the bird bots",
-		About: "`/support` shows how to back the bird bots at cygnet.lol/support, and what it buys: a supporter role, preview builds, early access and a say. anyone can post it; in a channel where it was just posted, it shows only to you. when somebody starts backing the birds, i thank them in the channel picked on `/roles settings`. nothing i do is ever locked behind paying.",
+		About: "`/support` shows how to back the bird bots at support.cygnet.lol, and what it buys: a supporter role, preview builds, early access and a say. anyone can post it; in a channel where it was just posted, it shows only to you. when somebody starts backing the birds, i thank them in the channel picked on `/roles settings`. nothing i do is ever locked behind paying.",
 	}
 }
