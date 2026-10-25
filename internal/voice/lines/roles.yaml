@@ -99,3 +99,16 @@ roles.supporter_reminder:
   # matter of fact
   - "backing ends {when}. nothing renews by itself"
   - "heads up: your backing ends {when}"
+
+roles.supporter_thanks:
+  # warm
+  - "{members} just backed the birds. thank you, truly 🪶"
+  - "a heart for {members}, who just started backing us"
+  - "{members} is keeping the lights on now. thank you"
+  # playful
+  - "look who brought snacks for the nest: {members}"
+  - "{members} backed the birds. i will be insufferable about it all day"
+  - "new supporter alert: {members}. i'm holding this heart for you"
+  # matter of fact
+  - "{members} became a supporter. thank you for keeping us running"
+  - "welcome to the supporters, {members}"

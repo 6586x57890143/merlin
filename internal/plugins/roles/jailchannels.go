@@ -73,6 +73,12 @@ type JailChannelConfig interface {
 	// channelID passed to the setter clears it.
 	JailAnnounceChannelID(guildID string) string
 	SetJailAnnounceChannel(ctx context.Context, guildID, channelID string) error
+	// The supporter role merlin created here and where new supporters are
+	// thanked (supporters.go). Empty means off and nowhere; "" clears.
+	SupporterRoleID(guildID string) string
+	SetSupporterRole(ctx context.Context, guildID, roleID string) error
+	SupporterChannelID(guildID string) string
+	SetSupporterChannel(ctx context.Context, guildID, channelID string) error
 	ClearJailMarkerRole(ctx context.Context, guildID string) error
 	// The vacation script's marker role (script_vacation.go). Empty means
 	// none; an empty roleID passed to the setter clears it. Unlike the jail

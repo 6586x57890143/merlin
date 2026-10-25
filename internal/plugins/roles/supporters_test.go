@@ -2,12 +2,15 @@ package roles
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/6586x57890143/merlin/internal/scheduler"
 )
 
 func TestSyncSupporters(t *testing.T) {
-	const g, role = meltingPotGuildID, meltingPotSupporterRoleID
+	const g, role = meltingPotGuildID, testSupporterRole
 	const fresh, byHand, renewing, absent, lapsed, jailed = "7000101", "7000102", "7000103", "7000104", "7000105", "7000106"
 	ctx := context.Background()
 	ops := newFakeOps()
@@ -70,23 +73,49 @@ func TestSyncSupporters(t *testing.T) {
 	}
 }
 
-func TestSupporterSyncOnlyWhereThereIsARole(t *testing.T) {
+// testSupporterRole is the role a test guild's supporters are given.
+const testSupporterRole = "7000450"
+
+func TestSupporterSyncRunsOnlyWhereSupportersAreOn(t *testing.T) {
 	sched := newFakeScheduler()
-	p := newTestPlugin(newFakeOps(), newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), sched)
+	settings := newFakeSettings()
+	p := newTestPlugin(newFakeOps(), newFakeStore(), settings, newFakeAudit(), newFakePerms(), sched)
 	p.registerSupporterSync(meltingPotGuildID)
-	p.WithSupporters(SupportersFunc(func(context.Context) ([]Backer, error) { return nil, nil }))
-	p.registerSupporterSync("7000001")
 	if len(sched.registered) != 0 {
-		t.Fatalf("registered %d jobs without a link or a role", len(sched.registered))
+		t.Fatal("registered without the fleet link")
 	}
+	asked := 0
+	p.WithSupporters(SupportersFunc(func(context.Context) ([]Backer, error) { asked++; return nil, nil }))
 	p.registerSupporterSync(meltingPotGuildID)
 	if len(sched.registered) != 1 {
-		t.Fatalf("registered %d jobs for the Melting Pot", len(sched.registered))
+		t.Fatalf("registered %d jobs", len(sched.registered))
+	}
+	// Off: the job asks cygnet nothing.
+	if err := sched.run(t, scheduler.JobKey(meltingPotGuildID, "roles-supporters")); err != nil || asked != 0 {
+		t.Fatalf("off: %v, asked %d", err, asked)
+	}
+	_ = settings.SetSupporterRole(context.Background(), meltingPotGuildID, testSupporterRole)
+	if err := sched.run(t, scheduler.JobKey(meltingPotGuildID, "roles-supporters")); err != nil || asked != 1 {
+		t.Fatalf("on: %v, asked %d", err, asked)
+	}
+}
+
+func TestTurningSupportersOnMakesOneRole(t *testing.T) {
+	ops := newFakeOps()
+	settings := newFakeSettings()
+	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+	id, err := p.createSupporterRole(context.Background(), meltingPotGuildID)
+	if err != nil || id == "" || settings.SupporterRoleID(meltingPotGuildID) != id {
+		t.Fatalf("created %q, %v; settings say %q", id, err, settings.SupporterRoleID(meltingPotGuildID))
+	}
+	again, err := p.createSupporterRole(context.Background(), meltingPotGuildID)
+	if err != nil || again != id {
+		t.Fatalf("a second turn on made %q, %v", again, err)
 	}
 }
 
 func TestASupporterIsRemindedOnceAWeekOut(t *testing.T) {
-	const g, role, u = meltingPotGuildID, meltingPotSupporterRoleID, "7000201"
+	const g, role, u = meltingPotGuildID, testSupporterRole, "7000201"
 	ctx := context.Background()
 	ops := newFakeOps()
 	ops.setMember(g, u, nil)
@@ -109,5 +138,39 @@ func TestASupporterIsRemindedOnceAWeekOut(t *testing.T) {
 	until = until.Add(24 * time.Hour)
 	if err := p.syncSupporters(ctx, g, role); err != nil || len(ops.dmSends) != 2 {
 		t.Fatalf("after a renewal: %v, %d reminders", err, len(ops.dmSends))
+	}
+}
+
+func TestNewSupportersGetOneThankYouCard(t *testing.T) {
+	const g, role = meltingPotGuildID, testSupporterRole
+	const a, b, renewing = "7000401", "7000402", "7000403"
+	ctx := context.Background()
+	ops := newFakeOps()
+	for _, u := range []string{a, b, renewing} {
+		ops.setMember(g, u, nil)
+	}
+	store := newFakeStore()
+	settings := newFakeSettings()
+	_ = settings.SetSupporterChannel(ctx, g, "7000499")
+	p := newTestPlugin(ops, store, settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+	soon, later := p.now().Add(20*24*time.Hour), p.now().Add(60*24*time.Hour)
+	_ = store.InsertGrant(ctx, GrantRecord{GuildID: g, UserID: renewing, RoleID: role, ExpiresAt: &soon})
+	backers := []Backer{{UserID: a, Until: later}, {UserID: b, Until: later}, {UserID: renewing, Until: later}}
+	p.WithSupporters(SupportersFunc(func(context.Context) ([]Backer, error) { return backers, nil }))
+	for range 2 {
+		if err := p.syncSupporters(ctx, g, role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(ops.dmSends) != 1 {
+		t.Fatalf("%d cards, want one", len(ops.dmSends))
+	}
+	card := ops.dmSends[0]
+	desc := card.data.Embeds[0].Description
+	if card.channelID != "7000499" || !strings.Contains(desc, "<@"+a+">") || !strings.Contains(desc, "<@"+b+">") || strings.Contains(desc, renewing) {
+		t.Fatalf("card in %s: %q", card.channelID, desc)
+	}
+	if f := card.data.Embeds[0].Fields; len(f) != 1 || f[0].Value != supportURL {
+		t.Fatalf("fields %+v", f)
 	}
 }
