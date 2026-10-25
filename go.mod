@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/6586x57890143/cygnet/ledger v0.7.0
 	github.com/6586x57890143/cygnet/link v0.9.0
-	github.com/6586x57890143/cygnet/support v0.0.0-20261025185017-67e7bd6b34f3
+	github.com/6586x57890143/cygnet/support v0.1.1-0.20261025214429-4793557d5ffc
 	github.com/disgoorg/disgo v0.19.6
 	github.com/disgoorg/json/v2 v2.0.0
 	github.com/disgoorg/omit v1.0.0
