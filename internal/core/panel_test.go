@@ -78,7 +78,7 @@ func TestReadoutIsFactLines(t *testing.T) {
 func TestAHeroPanelLeadsWithTheBanner(t *testing.T) {
 	p := Panel{Color: ColorPrimary, Title: "t", Line: "l", Hero: true}
 	parts := p.Layout()[0].(discord.ContainerComponent).Components
-	if g, ok := parts[0].(discord.MediaGalleryComponent); !ok || g.Items[0].Media.URL != bannerAttachmentURL {
+	if g, ok := parts[0].(discord.MediaGalleryComponent); !ok || g.Items[0].Media.URL != heroAttachmentURL {
 		t.Fatalf("first part %T, want the banner", parts[0])
 	}
 	if _, ok := parts[1].(discord.TextDisplayComponent); !ok {
@@ -88,7 +88,7 @@ func TestAHeroPanelLeadsWithTheBanner(t *testing.T) {
 	for _, f := range p.Uploads() {
 		names = append(names, f.Name)
 	}
-	if len(names) != 2 || names[1] != bannerAttachmentName {
+	if len(names) != 2 || names[1] != heroAttachmentName {
 		t.Fatalf("uploads %v", names)
 	}
 }
