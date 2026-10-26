@@ -577,6 +577,19 @@ func (p *Plugin) reapplyEvadedJails(ctx context.Context, guildID string) error {
 // is a moderator's decision, and leaving the server neither serves the
 // sentence nor extends it.
 func (p *Plugin) reapplyIfEvaded(ctx context.Context, guildID string, rec JailRecord) error {
+	key := jailKey(guildID, rec.UserID)
+	if !p.claim(key) {
+		return nil
+	}
+	defer p.unclaim(key)
+	current, ok, err := p.store.GetJail(ctx, guildID, rec.UserID)
+	if err != nil {
+		return err
+	}
+	if !ok || (current.ReleaseAt != nil && !current.ReleaseAt.After(p.now())) {
+		return nil
+	}
+	rec = current
 	member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(rec.UserID))
 	if err != nil {
 		if core.IsUnknownResource(err) {
@@ -676,64 +689,12 @@ func (p *Plugin) HandleMemberJoin(ctx context.Context, guildID, userID string) {
 	}
 }
 
-// HandleMemberUpdate re-strips userID back to their jail role set if
-// Discord's own GUILD_MEMBER_UPDATE shows roles were regranted while they
-// were jailed, most commonly a guild's Onboarding or Membership Screening
-// flow, which grants its configured roles the moment a member completes it,
-// entirely independent of and unseen by anything this bot does. Only ever
-// called while the GUILD_MEMBERS intent is in effect, same as
-// HandleMemberJoin; reapplyIfEvaded's sweep is this fix's backstop when the
-// intent is off, bounded to one minute instead of instant.
-//
-// roles is trusted directly from the event rather than re-fetched: unlike
-// reapplyIfEvaded's deliberate live-REST-not-cache policy (reading a local
-// cache that can go stale), a GUILD_MEMBER_UPDATE payload is Discord's own
-// authoritative push of the member's current state, not something read back
-// out of this bot's cache.
-func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string, roles []string) {
+// HandleMemberUpdate validates current roles under the same member claim as
+// release. Gateway events can arrive after a release or a subsequent transfer.
+func (p *Plugin) HandleMemberUpdate(ctx context.Context, guildID, userID string, _ []string) {
 	defer p.memberChanged(ctx, guildID, userID)
-	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
-	if err != nil {
-		p.log.Error("roles: look up jail on member update", "guild", guildID, "user", userID, "err", err)
-		return
-	}
-	if !ok {
-		return
-	}
-	if !slices.Contains(roles, rec.JailRoleID) {
-		// The marker itself is gone. A mod swapping it for the other marker
-		// by hand is a transfer and the row follows it (script_vacation.go);
-		// anything else is a manual release or the rejoin path, both already
-		// owned by reapplyIfEvaded's confused-deputy rule. Don't fight it.
-		if rec.ReleaseAt == nil || rec.ReleaseAt.After(p.now()) {
-			p.detectManualTransfer(ctx, guildID, rec, roles)
-		}
-		return
-	}
-	if rec.ReleaseAt != nil && !rec.ReleaseAt.After(p.now()) {
-		// Sentence already served; the record just hasn't been swept out
-		// yet. GetJail doesn't filter by expiry (unlike ActiveJails, which
-		// is what reapplyEvadedJails' sweep uses), so without this check an
-		// update landing in that window would re-strip someone whose jail
-		// has already ended, mirroring the same guard HandleMemberJoin has.
-		return
-	}
-
-	expected, unmanageable := jailRoles(p.perms, guildID, rec.JailRoleID, roles)
-	if sameRoleSet(expected, roles) {
-		return // Nothing drifted; also what stops this handler looping on its own edit below.
-	}
-
-	if _, err := p.stripToJailRoles(guildID, userID, expected); err != nil {
-		p.log.Error("roles: re-strip roles regranted after jail", "guild", guildID, "user", userID, "err", err)
-		return
-	}
-	p.log.Warn("roles: roles regranted to a jailed member were stripped again", "guild", guildID, "user", userID,
-		"unmanageable_roles", unmanageable)
-	if err := p.audit.Record(ctx, guildID, core.ActorSystem, "roles.jail_reasserted", "",
-		fmt.Sprintf("user=%s release_at=%s unmanageable_roles=[%s] reason=%q", core.MentionUser(userID),
-			releaseAtText(rec), core.MentionRoles(unmanageable), "roles were regranted while jailed (server onboarding/screening)")); err != nil {
-		p.log.Error("roles: audit jail reassert failed", "guild", guildID, "user", userID, "err", err)
+	if err := p.reapplyIfEvaded(ctx, guildID, JailRecord{UserID: userID}); err != nil {
+		p.log.Error("roles: reconcile jail on member update", "guild", guildID, "user", userID, "err", err)
 	}
 }
 

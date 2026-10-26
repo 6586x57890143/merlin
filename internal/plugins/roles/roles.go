@@ -98,12 +98,13 @@ type Plugin struct {
 	// joinRoleSeen is the last known shape of every join role, keyed
 	// guild:role, so an edit can be reported as what changed
 	// (script_joinrole.go). Discord's role update carries only the new one.
-	joinRoleMu        sync.Mutex
-	joinRoleSeen      map[string]joinRoleShape
-	visibilityLocks   sync.Map // guild ID -> *sync.Mutex
-	visibilityMu      sync.Mutex
-	visibilityPending map[string]uint64
-	visibilityReady   map[string]bool
+	joinRoleMu         sync.Mutex
+	joinRoleSeen       map[string]joinRoleShape
+	visibilityLocks    sync.Map // guild ID -> *sync.Mutex
+	visibilityMu       sync.Mutex
+	visibilityPending  map[string]uint64
+	visibilityRevision map[string]uint64
+	visibilityReady    map[string]bool
 
 	// timers holds one pending release/expiry per jail or grant key, and
 	// inFlight the keys being released this instant. See release.go.

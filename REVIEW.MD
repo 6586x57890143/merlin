@@ -28,14 +28,15 @@ The selected mode owns visibility, history, sending and participation restrictio
 
 Operational documentation: [features](docs/features.md). Design summary: [specification](spec.MD). Discord permission semantics: [official permissions documentation](https://docs.discord.com/developers/topics/permissions).
 
-## Validation
-
 ## PR review follow-up
 
-The Astra Max review of PR #245 identified two additional grant-path gaps after integration with current main. Both are corrected:
+The Astra Max review of PR #245 identified additional gaps after integration with current main. Corrections include:
 
 - Supporter grants now use the same member claim and persistence-before-Discord ordering as manual grants. Failed API adds retain tracking and can retry without requiring a new backing deadline.
 - Dry-run exits before changing grant state. Definitive guard refusals restore the previous grant record and expiry timer; only ambiguous Discord failures retain the attempted grant for cleanup.
+- Settings mutations retain retry work even when a sweep finishes during the write. Generations are monotonic, and ambiguous marker saves invalidate old cached role IDs.
+- Jail and vacation reconcile independently. Vacation also establishes cold or pending restrictions before assigning its marker.
+- Evasion checks and gateway updates validate current state under the member claim. Transfers re-read the record and roles, preserve extended deadlines when automatic, and report the effective deadline. Join-role and eternal-role writers share that claim too.
 
 Regression tests cover both paths, including existing untracked, permanent and temporary roles. Full review and current-head CI remain prerequisites for merge.
 

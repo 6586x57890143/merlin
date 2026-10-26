@@ -1,6 +1,7 @@
 package roles
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
@@ -20,7 +21,11 @@ func (p *Plugin) markVisibilityDirty(guildID string) {
 	if p.visibilityPending == nil {
 		p.visibilityPending = make(map[string]uint64)
 	}
-	p.visibilityPending[guildID]++
+	if p.visibilityRevision == nil {
+		p.visibilityRevision = make(map[string]uint64)
+	}
+	p.visibilityRevision[guildID]++
+	p.visibilityPending[guildID] = p.visibilityRevision[guildID]
 }
 
 // existingJailRole resolves a cold cache without creating a role merely
@@ -58,16 +63,12 @@ func (p *Plugin) reconcileVisibility(guildID string, force bool) error {
 	if p.dryRun(guildID) {
 		return fmt.Errorf("channel sync pending while dry-run is enabled")
 	}
-	id, err := p.existingJailRole(guildID)
-	if err != nil {
-		return err
+	id, jailErr := p.existingJailRole(guildID)
+	if jailErr == nil && id != "" {
+		jailErr = p.syncAllJailChannelOverwrites(guildID, id)
 	}
-	if id != "" {
-		if err := p.syncAllJailChannelOverwrites(guildID, id); err != nil {
-			return err
-		}
-	}
-	if err := p.syncAllVacationOverwrites(guildID); err != nil {
+	// A broken jail marker must not block vacation's migration or retries.
+	if err := errors.Join(jailErr, p.syncAllVacationOverwrites(guildID)); err != nil {
 		return err
 	}
 	p.visibilityMu.Lock()

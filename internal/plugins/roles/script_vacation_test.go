@@ -14,7 +14,7 @@ import (
 )
 
 // The vacation script: a jail row whose marker is the island's role. These
-// tests pin what differs from jail (the switch, no channel writes, the
+// tests pin what differs from jail (the switch, the configured marker, the
 // words) and that a move between the two keeps the snapshot and follows
 // the marker whichever way it happened.
 
@@ -101,8 +101,8 @@ func TestVacationClearsADeletedConfiguredRole(t *testing.T) {
 }
 
 // TestVacationIsAJailOnTheIsland: the record is a jail row with the
-// island's marker, the member holds exactly that, no channel overwrite is
-// written, and every surface says vacation: audit, DM, announcement, the
+// island's marker, the member holds exactly that, permissions are reconciled,
+// and every surface says vacation: audit, DM, announcement, the
 // ledger (as a note, never a jail) and the reply.
 func TestVacationIsAJailOnTheIsland(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
@@ -123,8 +123,8 @@ func TestVacationIsAJailOnTheIsland(t *testing.T) {
 	if !slices.Equal(m.Roles, []string{island}) {
 		t.Fatalf("expected the member stripped to the island's role, got %v", m.Roles)
 	}
-	if ops.permSetCalls != 0 || ops.permDeleteCalls != 0 {
-		t.Fatal("vacation must never write a channel overwrite")
+	if ow := ops.overwrites[overwriteKey{"7000601", island}]; ow.deny&discord.PermissionViewChannel == 0 {
+		t.Fatal("vacation must establish channel restrictions before assignment")
 	}
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.vacation"}) {
 		t.Fatalf("audit: %v", got)

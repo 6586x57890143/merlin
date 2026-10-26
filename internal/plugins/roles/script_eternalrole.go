@@ -112,6 +112,11 @@ func (p *Plugin) enforceEternalRoles(ctx context.Context, guildID string) error 
 }
 
 func (p *Plugin) enforceEternalRole(ctx context.Context, rec EternalRoleRecord) error {
+	key := jailKey(rec.GuildID, rec.UserID)
+	if !p.claim(key) {
+		return nil
+	}
+	defer p.unclaim(key)
 	if _, jailed, err := p.store.GetJail(ctx, rec.GuildID, rec.UserID); err != nil {
 		return fmt.Errorf("look up jail: %w", err)
 	} else if jailed {

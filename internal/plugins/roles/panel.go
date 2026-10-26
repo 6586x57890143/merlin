@@ -246,6 +246,8 @@ func (p *Plugin) auditConfig(ctx context.Context, ix *core.Ix, oldValue, newValu
 // role, and resyncs every channel against the new one at the moment it
 // changes rather than as a side effect of some later cold resolve.
 func (p *Plugin) setMarkerRole(ctx context.Context, ix *core.Ix, roleID string) string {
+	defer p.markVisibilityDirty(ix.GuildID)
+	defer p.forgetJailRole(ix.GuildID)
 	if roleID == "" {
 		if err := p.jailChannelConfig.ClearJailMarkerRole(ctx, ix.GuildID); err != nil {
 			return fmt.Sprintf("✗ Failed to clear marker role: %v", err)
@@ -310,6 +312,7 @@ func (p *Plugin) setAllowlist(ctx context.Context, ix *core.Ix, customID, who st
 		// Even a reported save failure can follow a committed write whose
 		// cache refresh failed. Keep reconciliation pending in that case too.
 		p.markVisibilityDirty(ix.GuildID)
+		defer p.markVisibilityDirty(ix.GuildID)
 		var err error
 		if adding {
 			err = add(ctx, ix.GuildID, id)
@@ -380,6 +383,8 @@ func (p *Plugin) setMemberRole(ctx context.Context, ix *core.Ix, roleID string) 
 // setVacationRole sets or clears the island's marker, syncs every channel
 // for the new one, and reads back what it can now see.
 func (p *Plugin) setVacationRole(ctx context.Context, ix *core.Ix, roleID string) string {
+	defer p.markVisibilityDirty(ix.GuildID)
+	defer p.forgetVacationRole(ix.GuildID)
 	if err := p.jailChannelConfig.SetVacationRole(ctx, ix.GuildID, roleID); err != nil {
 		return fmt.Sprintf("✗ Failed to save: %v", err)
 	}

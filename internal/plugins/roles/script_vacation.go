@@ -127,6 +127,15 @@ func (p *Plugin) resolveVacationRole(guildID string) (string, error) {
 	p.jailRoleMu.Lock()
 	defer p.jailRoleMu.Unlock()
 	if id, ok := p.vacationRoleID[guildID]; ok {
+		p.visibilityMu.Lock()
+		pending := !p.visibilityReady[guildID] || p.visibilityPending[guildID] != 0
+		p.visibilityMu.Unlock()
+		if pending {
+			if err := p.syncAllVacationOverwrites(guildID); err != nil {
+				p.markVisibilityDirty(guildID)
+				return "", err
+			}
+		}
 		return id, nil
 	}
 	want := p.configuredVacationRole(guildID)
@@ -144,6 +153,10 @@ func (p *Plugin) resolveVacationRole(guildID string) (string, error) {
 			}
 		}
 		return "", fmt.Errorf("the vacation role %s no longer exists; set another under Vacation on `/roles settings`", core.MentionRole(want))
+	}
+	if err := p.syncAllVacationOverwrites(guildID); err != nil {
+		p.markVisibilityDirty(guildID)
+		return "", err
 	}
 	p.vacationRoleID[guildID] = want
 	return want, nil
@@ -204,13 +217,41 @@ func (p *Plugin) counterpartMarker(guildID, markerRoleID string) (string, bool) 
 // GUILD_MEMBER_UPDATE lands inside it: HandleMemberUpdate read that as a
 // mod swapping the roles by hand and announced the same move a second
 // time. A caller that finds the row claimed leaves it to whoever holds it.
-func (p *Plugin) transferJail(ctx context.Context, guildID string, t jailTarget, from JailRecord, newMarker string, releaseAt *time.Time) error {
+func (p *Plugin) transferJail(ctx context.Context, guildID string, t jailTarget, _ JailRecord, newMarker string, releaseAt *time.Time) error {
+	_, err := p.transferJailWithDeadline(ctx, guildID, t, newMarker, releaseAt, false)
+	return err
+}
+
+func (p *Plugin) transferJailWithDeadline(ctx context.Context, guildID string, t jailTarget, newMarker string, releaseAt *time.Time, extendOnly bool) (*time.Time, error) {
 	userID := t.userID
 	key := jailKey(guildID, userID)
 	if !p.claim(key) {
-		return errReleaseInProgress
+		return nil, errReleaseInProgress
 	}
 	defer p.unclaim(key)
+	from, ok, err := p.store.GetJail(ctx, guildID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrNotJailed
+	}
+	if !t.absent {
+		member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(userID))
+		if err != nil {
+			return nil, err
+		}
+		t.roles = core.IDStrings(member.RoleIDs)
+	}
+	if extendOnly && (from.ReleaseAt == nil || (releaseAt != nil && from.ReleaseAt.After(*releaseAt))) {
+		releaseAt = from.ReleaseAt
+	}
+	return releaseAt, p.transferJailClaimed(ctx, guildID, t, from, newMarker, releaseAt)
+}
+
+// Caller holds the member claim and supplies current record/member state.
+func (p *Plugin) transferJailClaimed(ctx context.Context, guildID string, t jailTarget, from JailRecord, newMarker string, releaseAt *time.Time) error {
+	userID := t.userID
 	// An absent target has no roles to move; only the row does. The marker
 	// they end up wearing is whichever one the row names when they arrive,
 	// which reapplyIfEvaded reads fresh, so moving somebody between the nest
@@ -235,7 +276,8 @@ func (p *Plugin) transferJail(ctx context.Context, guildID string, t jailTarget,
 	return nil
 }
 
-// detectManualTransfer recognises a mod moving somebody between the nest
+// detectManualTransfer runs under the member claim with fresh state. It
+// recognises a mod moving somebody between the nest
 // and the island by hand: rec's marker is gone from roles and the other
 // marker is on them instead. The row follows the marker, keeping its end
 // (a hand swap is a change of place, not of sentence), the member is
@@ -255,7 +297,7 @@ func (p *Plugin) detectManualTransfer(ctx context.Context, guildID string, rec J
 	if !ok || !slices.Contains(roles, other) {
 		return false
 	}
-	if err := p.transferJail(ctx, guildID, jailTarget{userID: rec.UserID, roles: roles}, rec, other, rec.ReleaseAt); err != nil {
+	if err := p.transferJailClaimed(ctx, guildID, jailTarget{userID: rec.UserID, roles: roles}, rec, other, rec.ReleaseAt); err != nil {
 		if !errors.Is(err, errReleaseInProgress) {
 			p.log.Error("roles: record a hand transfer", "guild", guildID, "user", rec.UserID, "err", err)
 		}
