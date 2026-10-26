@@ -38,7 +38,18 @@ const (
 	// own actions back (an aimod undo). Payload is ModerationReversedPayload,
 	// naming the original by the same Source and Ref the action carried.
 	EventModerationReversed EventType = "moderation.reversed"
+
+	// EventSupportersJoined is published when members first become
+	// supporters in a guild (roles, from cygnet's ledger), never on a
+	// renewal. Payload is SupportersJoinedPayload. The support plugin
+	// thanks them; roles neither knows nor cares who listens.
+	EventSupportersJoined EventType = "supporters.joined"
 )
+
+// SupportersJoinedPayload is the Event.Payload for EventSupportersJoined.
+type SupportersJoinedPayload struct {
+	UserIDs []string
+}
 
 // ChannelRotatedPayload is the Event.Payload for EventChannelRotated.
 type ChannelRotatedPayload struct {

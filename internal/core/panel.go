@@ -1,6 +1,7 @@
 package core
 
 import (
+	_ "embed"
 	"strings"
 
 	"github.com/disgoorg/disgo/discord"
@@ -48,7 +49,25 @@ type Panel struct {
 	// upload, nil when Icon is already a URL Discord can fetch.
 	Icon       string
 	IconUpload *discord.File
+	// Hero leads the panel with the supporter campaign's banner (merlin in
+	// flight at dusk) at full width, the head under it with no thumbnail
+	// beside: for a card whose art is the point, not a page somebody works
+	// in.
+	Hero bool
 }
+
+// The supporter campaign's banner, which a Hero panel leads with: drawn
+// for it in the perk tiles' dusk palette, halved to 1024x384 and stripped
+// of metadata. Discord shows it at about 550 px, so this is still sharp on
+// a dense screen at a quarter of the original's weight.
+//
+//go:embed assets/merlin_supporter_hero.png
+var heroPNG []byte
+
+const (
+	heroAttachmentName = "merlin_supporter_hero.png"
+	heroAttachmentURL  = "attachment://" + heroAttachmentName
+)
 
 // Layout renders p as the message's single top-level container.
 func (p Panel) Layout() []discord.LayoutComponent {
@@ -68,6 +87,12 @@ func (p Panel) Layout() []discord.LayoutComponent {
 			Components: []discord.SectionSubComponent{discord.TextDisplayComponent{Content: head}},
 			Accessory:  discord.ThumbnailComponent{Media: discord.UnfurledMediaItem{URL: p.thumbnail(mood)}},
 		},
+	}
+	if p.Hero {
+		parts = []discord.ContainerSubComponent{
+			discord.MediaGalleryComponent{Items: []discord.MediaGalleryItem{{Media: discord.UnfurledMediaItem{URL: heroAttachmentURL}, Description: "merlin in flight over a dusk sky"}}},
+			discord.TextDisplayComponent{Content: head},
+		}
 	}
 	if p.Note != "" {
 		parts = append(parts, discord.TextDisplayComponent{Content: p.Note})
@@ -97,6 +122,9 @@ func (p Panel) Uploads() []*discord.File {
 		mood = moodForColor(p.Color)
 	}
 	files := []*discord.File{asset{ruleAttachmentName, rulePNG}.upload()}
+	if p.Hero {
+		return append(files, asset{heroAttachmentName, heroPNG}.upload())
+	}
 	if p.Icon != "" {
 		if p.IconUpload != nil {
 			files = append(files, p.IconUpload)
@@ -130,4 +158,3 @@ func MoodURL(m Mood) string { return moodAttachmentURL(m) }
 
 // RuleURL is the rule's attachment:// URL, for the same.
 const RuleURL = ruleAttachmentURL
-

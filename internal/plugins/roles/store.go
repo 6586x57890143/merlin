@@ -110,6 +110,10 @@ type Store interface {
 	ListEternalRoles(ctx context.Context, guildID string) ([]EternalRoleRecord, error)
 	PutEternalRole(ctx context.Context, rec EternalRoleRecord) error
 	DeleteEternalRole(ctx context.Context, guildID, userID, originRoleID string) error
+
+	// ClaimSupporterReminder records that userID is being reminded of the
+	// backing that ends at until, and reports whether this call was first.
+	ClaimSupporterReminder(ctx context.Context, userID string, until time.Time) (bool, error)
 }
 
 // EternalRoleRecord is one eternal role: the member, and the stored copy of
@@ -421,6 +425,14 @@ func (s *pgStore) PutEternalRole(ctx context.Context, rec EternalRoleRecord) err
 		return fmt.Errorf("roles store: put eternal role: %w", err)
 	}
 	return nil
+}
+
+func (s *pgStore) ClaimSupporterReminder(ctx context.Context, userID string, until time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `INSERT INTO supporter_reminders (user_id, until) VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, until)
+	if err != nil {
+		return false, fmt.Errorf("roles store: claim supporter reminder: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *pgStore) DeleteEternalRole(ctx context.Context, guildID, userID, originRoleID string) error {

@@ -618,7 +618,22 @@ type fakeStore struct {
 	jails          map[string]JailRecord        // guildID+":"+userID
 	grants         map[string]GrantRecord       // guildID+":"+userID+":"+roleID
 	eternal        map[string]EternalRoleRecord // guildID+":"+userID+":"+originRoleID
+	reminded       map[string]bool              // userID+":"+until
 	nextID         int64
+}
+
+func (f *fakeStore) ClaimSupporterReminder(ctx context.Context, userID string, until time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reminded == nil {
+		f.reminded = map[string]bool{}
+	}
+	k := userID + ":" + until.UTC().String()
+	if f.reminded[k] {
+		return false, nil
+	}
+	f.reminded[k] = true
+	return true, nil
 }
 
 func newFakeStore() *fakeStore {
@@ -873,10 +888,43 @@ type fakeSettings struct {
 	vacationAllowed      map[string][]string // guildID -> vacation allowlist
 	memberRole           map[string]string   // guildID -> ordinary member role
 	joinRoles            map[string][]string // guildID -> extra join roles
+	supporter            map[string]string   // guildID+":role" / ":channel"
 }
 
 func newFakeSettings() *fakeSettings {
 	return &fakeSettings{conversation: make(map[string][]string), vacationConversation: make(map[string][]string), allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string), vacationRole: make(map[string]string), vacationAllowed: make(map[string][]string), memberRole: make(map[string]string), joinRoles: make(map[string][]string)}
+}
+
+func (f *fakeSettings) SupporterRoleID(guildID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.supporter[guildID+":role"]
+}
+
+func (f *fakeSettings) SupporterChannelID(guildID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.supporter[guildID+":channel"]
+}
+
+func (f *fakeSettings) SetSupporterRole(ctx context.Context, guildID, roleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.supporter == nil {
+		f.supporter = map[string]string{}
+	}
+	f.supporter[guildID+":role"] = roleID
+	return nil
+}
+
+func (f *fakeSettings) SetSupporterChannel(ctx context.Context, guildID, channelID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.supporter == nil {
+		f.supporter = map[string]string{}
+	}
+	f.supporter[guildID+":channel"] = channelID
+	return nil
 }
 
 func (f *fakeSettings) JailAnnounceChannelID(guildID string) string {

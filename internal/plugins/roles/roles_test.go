@@ -18,6 +18,17 @@ var fixedNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 type fakeScheduler struct {
 	registered map[string]bool
 	seeded     map[string]time.Time
+	jobs       map[string]func(ctx context.Context) error
+}
+
+// run fires jobKey's registered job once.
+func (f *fakeScheduler) run(t *testing.T, jobKey string) error {
+	t.Helper()
+	fn, ok := f.jobs[jobKey]
+	if !ok {
+		t.Fatalf("no job %s", jobKey)
+	}
+	return fn(context.Background())
 }
 
 func newFakeScheduler() *fakeScheduler {
@@ -29,6 +40,10 @@ func (f *fakeScheduler) Register(jobKey string, spec core.CronSpec, fn func(ctx 
 		return context.DeadlineExceeded
 	}
 	f.registered[jobKey] = true
+	if f.jobs == nil {
+		f.jobs = map[string]func(ctx context.Context) error{}
+	}
+	f.jobs[jobKey] = fn
 	return nil
 }
 

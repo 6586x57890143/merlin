@@ -86,3 +86,29 @@ roles.release_announce:
   # matter of fact
   - "{members} is free again 🕊️"
   - "{members} is out. nothing lost, nothing held against them"
+
+roles.supporter_reminder:
+  # warm
+  - "thank you for backing the birds. your time runs out {when}, and nothing renews by itself"
+  - "a heads up, since nothing renews on its own: your backing ends {when}. thank you for it"
+  - "your backing ends {when}. it has kept the lights on here, thank you"
+  # plain
+  - "your backing of the birds ends {when}. if you want to keep going, the link is below"
+  - "just so you know, your supporter time ends {when}"
+  - "your supporter role goes {when}, when your backing runs out"
+  # matter of fact
+  - "backing ends {when}. nothing renews by itself"
+  - "heads up: your backing ends {when}"
+
+roles.supporter_thanks:
+  # warm
+  - "{members} just backed the birds. thank you, truly"
+  - "a heart for {members}, who just started backing us"
+  - "{members} is keeping the lights on now. thank you"
+  # playful
+  - "look who brought snacks for the nest: {members}"
+  - "{members} backed the birds. i will be insufferable about it all day"
+  - "{members} just backed the birds. i'm holding this heart for you"
+  # matter of fact
+  - "{members} became a supporter. thank you for keeping us running"
+  - "welcome to the supporters, {members}"

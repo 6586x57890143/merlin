@@ -65,6 +65,10 @@ type GuildSettings struct {
 	// JoinRoleIDs is the extra roles the roles plugin's join-role script
 	// gives every new member besides MemberRoleID (migration 0045).
 	JoinRoleIDs []string
+	// SupporterRoleID is the role merlin created to give whoever backs the
+	// birds, and SupporterChannelID where she thanks new ones (migration
+	// 0050). No role means the guild hasn't turned supporters on.
+	SupporterRoleID, SupporterChannelID string
 	// ArchiveViewerRoleIDs is which extra roles can see rotation's archive
 	// channels, on top of ModRoleIDs and anyone holding Discord's own
 	// Administrator bit. Guild-scoped rather than per rotating channel
@@ -237,10 +241,10 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids, member_role_id, join_role_ids, jail_conversation_channel_ids, vacation_conversation_channel_ids
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids, member_role_id, join_role_ids, jail_conversation_channel_ids, vacation_conversation_channel_ids, supporter_role_id, supporter_channel_id
 		FROM settings_guild WHERE guild_id = $1`, guildID)
-	var marker, announce, vacation, member sql.NullString
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs, &member, &gc.settings.JoinRoleIDs, &gc.settings.JailConversationChannelIDs, &gc.settings.VacationConversationChannelIDs); err {
+	var marker, announce, vacation, member, supRole, supChannel sql.NullString
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs, &member, &gc.settings.JoinRoleIDs, &gc.settings.JailConversationChannelIDs, &gc.settings.VacationConversationChannelIDs, &supRole, &supChannel); err {
 	case nil, pgx.ErrNoRows:
 		if marker.Valid {
 			v := marker.String
@@ -251,6 +255,7 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		gc.settings.JailAnnounceChannelID = announce.String
 		gc.settings.VacationRoleID = vacation.String
 		gc.settings.MemberRoleID = member.String
+		gc.settings.SupporterRoleID, gc.settings.SupporterChannelID = supRole.String, supChannel.String
 	default:
 		return fmt.Errorf("settings: load guild %s: %w", guildID, err)
 	}
@@ -460,7 +465,7 @@ func (s *Store) RoleInUse(guildID, roleID string) bool {
 	gc := s.guild(guildID)
 	st := gc.settings
 	if slices.Contains(st.ModRoleIDs, roleID) || slices.Contains(st.ArchiveViewerRoleIDs, roleID) || slices.Contains(st.JoinRoleIDs, roleID) ||
-		st.MemberRoleID == roleID || st.VacationRoleID == roleID || (st.JailMarkerRoleID != nil && *st.JailMarkerRoleID == roleID) {
+		st.MemberRoleID == roleID || st.VacationRoleID == roleID || st.SupporterRoleID == roleID || (st.JailMarkerRoleID != nil && *st.JailMarkerRoleID == roleID) {
 		return true
 	}
 	for _, o := range gc.overrides {
@@ -747,6 +752,13 @@ func (s *Store) PruneDeletedRole(ctx context.Context, guildID, roleID string) ([
 		removed = append(removed, "member role")
 	}
 
+	if s.SupporterRoleID(guildID) == roleID {
+		if err := s.SetSupporterRole(ctx, guildID, ""); err != nil {
+			return removed, err
+		}
+		removed = append(removed, "supporter role")
+	}
+
 	if slices.Contains(s.JoinRoleIDs(guildID), roleID) {
 		if err := s.RemoveJoinRole(ctx, guildID, roleID); err != nil {
 			return removed, err
@@ -934,6 +946,45 @@ func (s *Store) SetMemberRole(ctx context.Context, guildID, roleID string) error
 		ON CONFLICT (guild_id) DO UPDATE SET member_role_id = NULLIF($2, ''), updated_at = now()`,
 		guildID, roleID); err != nil {
 		return fmt.Errorf("settings: set member role: %w", err)
+	}
+	if err := s.Refresh(ctx, guildID); err != nil {
+		s.invalidate(guildID)
+		return err
+	}
+	s.publishChanged(ctx, guildID)
+	return nil
+}
+
+// SupporterRoleID is the role merlin gives supporters here, or "" where
+// supporters are off.
+func (s *Store) SupporterRoleID(guildID string) string {
+	return s.guild(guildID).settings.SupporterRoleID
+}
+
+// SupporterChannelID is where new supporters are thanked, or "" for nowhere.
+func (s *Store) SupporterChannelID(guildID string) string {
+	return s.guild(guildID).settings.SupporterChannelID
+}
+
+// SetSupporterRole sets (or, with "", clears) the supporter role.
+func (s *Store) SetSupporterRole(ctx context.Context, guildID, roleID string) error {
+	return s.setGuildText(ctx, guildID, "supporter_role_id", roleID)
+}
+
+// SetSupporterChannel sets (or, with "", clears) where supporters are thanked.
+func (s *Store) SetSupporterChannel(ctx context.Context, guildID, channelID string) error {
+	return s.setGuildText(ctx, guildID, "supporter_channel_id", channelID)
+}
+
+// setGuildText sets one nullable text column of guildID's settings row,
+// "" storing NULL, then refreshes the cache and tells everyone. column is
+// always a literal from this file, never input.
+func (s *Store) setGuildText(ctx context.Context, guildID, column, value string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO settings_guild (guild_id, `+column+`, updated_at) VALUES ($1, NULLIF($2, ''), now())
+		ON CONFLICT (guild_id) DO UPDATE SET `+column+` = NULLIF($2, ''), updated_at = now()`,
+		guildID, value); err != nil {
+		return fmt.Errorf("settings: set %s: %w", column, err)
 	}
 	if err := s.Refresh(ctx, guildID); err != nil {
 		s.invalidate(guildID)

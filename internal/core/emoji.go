@@ -128,10 +128,18 @@ func Bulleted(e discord.Embed) discord.Embed {
 	return e
 }
 
+// AppEmoji is the app emoji drawn from assets/emoji/<key>.png written
+// inline, or "" until the emoji are synced.
+func AppEmoji(key string) string { return inlineEmoji(key) }
+
 // PluginOptionEmoji is plugin's icon for a select option or a button, or
 // nil until the emoji are synced.
-func PluginOptionEmoji(plugin string) *discord.ComponentEmoji {
-	r, ok := emojiFor("plugin_" + plugin)
+func PluginOptionEmoji(plugin string) *discord.ComponentEmoji { return AppComponentEmoji("plugin_" + plugin) }
+
+// AppComponentEmoji is the app emoji key for a select option or a button,
+// or nil until the emoji are synced.
+func AppComponentEmoji(key string) *discord.ComponentEmoji {
+	r, ok := emojiFor(key)
 	if !ok {
 		return nil
 	}

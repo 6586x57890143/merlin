@@ -38,6 +38,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/roles"
 	"github.com/6586x57890143/merlin/internal/plugins/rotation"
 	"github.com/6586x57890143/merlin/internal/plugins/statistics"
+	"github.com/6586x57890143/merlin/internal/plugins/support"
 	"github.com/6586x57890143/merlin/internal/scheduler"
 	"github.com/6586x57890143/merlin/internal/scripts"
 	"github.com/6586x57890143/merlin/internal/secret"
@@ -158,7 +159,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// to fail-closed defaults; this walks those back to real values once the
 	// database is reachable again, instead of waiting on the next mutation.
 	settingsStore.StartRetry(ctx, log)
-	perms := core.NewPermissions(gw.Caches, settingsStore, cfg.BootstrapAdminUserID)
+	perms := core.NewPermissions(gw.Caches, settingsStore, cfg.BootstrapAdminUserIDs...)
 	// Loaded and validated before anything can use it, so a catalog that
 	// has lost a required placeholder (the rotation notice's retention
 	// window, most of all) stops the bot here rather than posting an
@@ -258,6 +259,18 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// Wired here rather than imported, so aimod depends on the behaviour and
 	// not on the package: *roles.Plugin satisfies aimod.Jailer structurally.
 	aimodPlugin.WithJailer(rolesPlugin)
+	// The supporter role follows cygnet's ledger (cygnet.supporters), wired
+	// like WithJailer so roles never imports the fleet link.
+	if hub != nil {
+		rolesPlugin.WithSupporters(roles.SupportersFunc(func(ctx context.Context) ([]roles.Backer, error) {
+			got, err := hub.Supporters(ctx)
+			out := make([]roles.Backer, 0, len(got))
+			for _, b := range got {
+				out = append(out, roles.Backer{UserID: b.User, Until: time.UnixMilli(b.Until)})
+			}
+			return out, err
+		}))
+	}
 	// /config plugins set aimod false has to stop the scanning too, not just
 	// the commands: HandleMessage below is the one plugin entry point the
 	// CommandRouter's own gate check never sees. See aimod.PluginGate.
@@ -314,6 +327,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New(speaker))
+	// /support and the new-supporter card; roles publishes who joined.
+	registry.Register(support.New(func(guildID string) support.Sender { return guard.For(guildID) }, settingsStore, speaker, cfg.BootstrapAdminUserIDs[0]))
 	registry.Register(rotationPlugin)
 	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)

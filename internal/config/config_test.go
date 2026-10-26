@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -185,6 +186,18 @@ func TestOnboardingDMIsOffUnlessAskedFor(t *testing.T) {
 		cfg := loadWith(t, map[string]string{"MERLIN_ENABLE_ONBOARDING_DM": value})
 		if cfg.OnboardingDM != want {
 			t.Errorf("MERLIN_ENABLE_ONBOARDING_DM=%q gave OnboardingDM=%v, want %v", value, cfg.OnboardingDM, want)
+		}
+	}
+}
+
+func TestSnowflakes(t *testing.T) {
+	got, err := snowflakes(" 175928847299117063, 175928847299117064 ,,175928847299117063")
+	if err != nil || !slices.Equal(got, []string{"175928847299117063", "175928847299117064"}) {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	for _, bad := range []string{"heavywinds", "<@175928847299117063>", "175928847299117063;175928847299117064"} {
+		if _, err := snowflakes(bad); err == nil {
+			t.Errorf("%q: expected a refusal", bad)
 		}
 	}
 }

@@ -146,6 +146,8 @@ var actions = map[string]meta{
 	// Granting or restoring.
 	"roles.release":                 {title: "Member released", color: core.ColorSuccess},
 	"roles.grant":                   {title: "Role granted", color: core.ColorSuccess},
+	"roles.supporter_grant":         {title: "Supporter role given", color: core.ColorSuccess},
+	"roles.supporter_renew":         {title: "Supporter role renewed", color: core.ColorSuccess},
 	"config.admin_added":            {title: "Admin added", color: core.ColorSuccess},
 	"config.mod_role_added":         {title: "Mod role added", color: core.ColorSuccess},
 	"config.permission_granted":     {title: "Permission granted", color: core.ColorSuccess},

@@ -40,6 +40,7 @@ var rolesPages = []struct{ key, label, about string }{
 	{"jail", "Jail", "What a jailed member can still see"},
 	{"vacation", "Vacation", "The island's role and what it can see"},
 	{"join", "New members", "The roles every new member is given"},
+	{"supporters", "Supporters", "The role and thank you for who backs the birds"},
 	{"scripts", "Scripts", "Server scripts that override admins"},
 }
 
@@ -93,6 +94,9 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string)
 			ui.Text("The **join-role** script gives a new member these roles 15 seconds after joining, besides the member role.\n-# " + p.joinRoleLine(g)),
 			ui.Row(ui.RoleSelect(panelJail+"join", "Roles every new member gets", cfg.JoinRoleIDs(g), ui.MaxSelectValues, !canJail)),
 		}
+
+	case "supporters":
+		pn.Parts = p.supporterParts(g, canJail)
 
 	case "scripts":
 		page = "scripts"
@@ -182,6 +186,7 @@ var pageOf = map[string]string{
 	"marker": "jail", "allow": "jail", "announce": "jail", "member": "jail", "sync": "jail",
 	"vacrole": "vacation", "vacallow": "vacation", "join": "join",
 	"on": "scripts", "off": "scripts", "eternal": "scripts",
+	"suprole": "supporters", "supoff": "supporters", "supchan": "supporters",
 }
 
 // handlePanelSet applies one control. Every one is deferred: several walk
@@ -221,6 +226,8 @@ func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID strin
 		note = p.setScript(ctx, ix, arg, verb == "on")
 	case "eternal":
 		note = p.setEternalRoles(ctx, ix, arg)
+	case "suprole", "supoff", "supchan":
+		note = p.setSupporters(ctx, ix, verb)
 	default:
 		note = "✗ That control is out of date. Run `/roles settings` again."
 	}

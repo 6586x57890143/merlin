@@ -466,6 +466,30 @@ func TestMemberRoleRoundTrip(t *testing.T) {
 	}
 }
 
+// The supporter role and channel: set, named in RoleInUse, pruned with the
+// role, and cleared by an empty value.
+func TestSupportersRoundTrip(t *testing.T) {
+	store, _, guildID := setupStore(t)
+	ctx := context.Background()
+
+	if err := store.SetSupporterRole(ctx, guildID, "role-s"); err != nil {
+		t.Fatalf("SetSupporterRole: %v", err)
+	}
+	if err := store.SetSupporterChannel(ctx, guildID, "chan-s"); err != nil {
+		t.Fatalf("SetSupporterChannel: %v", err)
+	}
+	if store.SupporterRoleID(guildID) != "role-s" || store.SupporterChannelID(guildID) != "chan-s" || !store.RoleInUse(guildID, "role-s") {
+		t.Fatalf("after set: %q %q %v", store.SupporterRoleID(guildID), store.SupporterChannelID(guildID), store.RoleInUse(guildID, "role-s"))
+	}
+	removed, err := store.PruneDeletedRole(ctx, guildID, "role-s")
+	if err != nil || len(removed) != 1 || removed[0] != "supporter role" || store.SupporterRoleID(guildID) != "" {
+		t.Fatalf("prune: %v %v / %q", removed, err, store.SupporterRoleID(guildID))
+	}
+	if err := store.SetSupporterChannel(ctx, guildID, ""); err != nil || store.SupporterChannelID(guildID) != "" {
+		t.Fatalf("clearing the channel: %v / %q", err, store.SupporterChannelID(guildID))
+	}
+}
+
 // The join roles: a list, deduplicated on add, pruned like the member role.
 func TestJoinRolesRoundTrip(t *testing.T) {
 	store, _, guildID := setupStore(t)
