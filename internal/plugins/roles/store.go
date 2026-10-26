@@ -321,7 +321,14 @@ func (s *pgStore) GetGrant(ctx context.Context, guildID, userID, roleID string) 
 }
 
 func (s *pgStore) DeleteGrant(ctx context.Context, guildID, userID, roleID string) error {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM role_grants WHERE guild_id = $1 AND user_id = $2 AND role_id = $3`,
+	// Forgetting a grant also revokes its suspended copy. Otherwise release
+	// resurrects an expired or manually revoked role from the jail snapshot.
+	if _, err := s.pool.Exec(ctx, `
+		WITH revoked_snapshot AS (
+			UPDATE role_jails SET snapshot_role_ids = array_remove(snapshot_role_ids, $3)
+			WHERE guild_id = $1 AND user_id = $2
+		)
+		DELETE FROM role_grants WHERE guild_id = $1 AND user_id = $2 AND role_id = $3`,
 		guildID, userID, roleID); err != nil {
 		return fmt.Errorf("roles store: delete grant: %w", err)
 	}

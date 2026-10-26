@@ -27,6 +27,7 @@ func TestReleaseJailRestoresSnapshotFilteredToExistingRoles(t *testing.T) {
 		SnapshotRoleIDs: []string{"7000302", "7000303"},
 		JailRoleID:      "7000301",
 	}
+	_ = p.store.InsertJail(context.Background(), rec)
 	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}
@@ -402,6 +403,7 @@ func TestReleaseJailKeepsRolesGainedWhileJailed(t *testing.T) {
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), perms, newFakeScheduler())
 
 	rec := JailRecord{GuildID: "7000001", UserID: "7000102", SnapshotRoleIDs: []string{"7000302", "moved-up"}, JailRoleID: "7000301"}
+	_ = p.store.InsertJail(context.Background(), rec)
 	if err := p.releaseJail(context.Background(), "7000001", "7000102", rec, core.ActorSystem); err != nil {
 		t.Fatalf("releaseJail: %v", err)
 	}

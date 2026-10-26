@@ -133,10 +133,9 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 	if releaseAt.Equal(*rec.ReleaseAt) {
 		return nil
 	}
-	if err := p.store.SetJailRelease(ctx, guildID, userID, &releaseAt); err != nil {
+	if err := p.redateJail(ctx, guildID, userID, &releaseAt, true); err != nil {
 		return fmt.Errorf("roles: extend jail: %w", err)
 	}
-	p.armJailRelease(guildID, userID, releaseAt)
 	p.publishResentenced(ctx, guildID, userID, core.ActorSystem, reason, duration)
 	return nil
 }

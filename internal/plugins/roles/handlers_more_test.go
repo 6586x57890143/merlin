@@ -591,7 +591,7 @@ func TestConfigureAllowAndDisallowChannel(t *testing.T) {
 	if got := auditActions(audit); len(got) != 2 {
 		t.Fatalf("expected both changes audited, got %v", got)
 	}
-	if !rt.said("Channel allowed") || !rt.said("Channel hidden") {
+	if !rt.said("Channel allowed") || !rt.said("Channel access updated") {
 		t.Fatal("expected both confirmations")
 	}
 }
@@ -686,7 +686,7 @@ func TestConfigureListChannels(t *testing.T) {
 	settings.allowed["7000001"] = []string{"7000603", "7000604"}
 	settings.announce["7000001"] = "7000627"
 	showPage(p, "jail")
-	for _, want := range []string{"Visible while jailed", "<#7000603> <#7000604>", "also <#7000627>"} {
+	for _, want := range []string{"Read-only", "Conversation", "<#7000603> <#7000604>", "also <#7000627>"} {
 		if !rt.said(want) {
 			t.Fatalf("expected the list to mention %q in %q", want, rt.bodies)
 		}

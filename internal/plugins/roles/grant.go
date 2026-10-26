@@ -39,11 +39,25 @@ func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
 		durationLabel = "for " + core.FormatDuration(duration)
 	}
 
-	if err := p.ops(ix.GuildID).AddMemberRole(core.ID(ix.GuildID), core.ID(userID), core.ID(roleID)); err != nil {
-		ix.RespondErr("Failed to grant role", err)
+	if err := ix.Defer(); err != nil {
+		return
+	}
+	key := jailKey(ix.GuildID, userID)
+	if !p.claim(key) {
+		_ = ix.FollowUpErr("Member update in progress", errReleaseInProgress)
+		return
+	}
+	defer p.unclaim(key)
+	if _, jailed, err := p.store.GetJail(ctx, ix.GuildID, userID); err != nil || jailed {
+		if err == nil {
+			err = errors.New("release this member from jail or vacation before granting roles")
+		}
+		_ = ix.FollowUpErr("Cannot grant role", err)
 		return
 	}
 
+	// Persist first. A failed or ambiguous Discord response must leave the
+	// expiry recoverable by the sweep, even if the role was actually added.
 	if err := p.store.InsertGrant(ctx, GrantRecord{
 		GuildID:   ix.GuildID,
 		UserID:    userID,
@@ -53,18 +67,22 @@ func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
 		GrantedBy: actorID(ix),
 		Reason:    reason,
 	}); err != nil {
-		ix.RespondErr("Failed to save grant record", err)
+		_ = ix.FollowUpErr("Failed to save grant record", err)
 		return
 	}
 	if expiresAt != nil {
 		p.armGrantRevoke(ix.GuildID, userID, roleID, *expiresAt)
+	}
+	if err := p.ops(ix.GuildID).AddMemberRole(core.ID(ix.GuildID), core.ID(userID), core.ID(roleID)); err != nil {
+		_ = ix.FollowUpErr("Role grant not confirmed; tracking retained for cleanup", err)
+		return
 	}
 
 	if err := p.audit.Record(ctx, ix.GuildID, actorID(ix), "roles.grant", "", fmt.Sprintf("user=%s role=%s reason=%q", core.MentionUser(userID), core.MentionRole(roleID), reason)); err != nil {
 		p.log.Error("roles: audit grant failed", "guild", ix.GuildID, "user", userID, "err", err)
 	}
 
-	ix.RespondOK("Role granted", fmt.Sprintf("<@&%s> granted to <@%s> %s.", roleID, userID, durationLabel))
+	_ = ix.FollowUpOK("Role granted", fmt.Sprintf("<@&%s> granted to <@%s> %s.", roleID, userID, durationLabel))
 }
 
 func (p *Plugin) handleRevoke(ctx context.Context, ix *core.Ix) {
@@ -111,11 +129,29 @@ func (p *Plugin) handleRevoke(ctx context.Context, ix *core.Ix) {
 // mod already manually removed the role, there's nothing left to revoke,
 // just stop tracking it.
 func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor string) error {
+	return p.revokeGrantChecked(ctx, guildID, userID, roleID, actor, false)
+}
+
+func (p *Plugin) revokeGrantChecked(ctx context.Context, guildID, userID, roleID, actor string, dueOnly bool) error {
+	memberKey := jailKey(guildID, userID)
+	if !p.claim(memberKey) {
+		return errReleaseInProgress
+	}
+	defer p.unclaim(memberKey)
 	key := grantKey(guildID, userID, roleID)
 	if !p.claim(key) {
 		return errReleaseInProgress
 	}
 	defer p.unclaim(key)
+	if dueOnly {
+		rec, ok, err := p.store.GetGrant(ctx, guildID, userID, roleID)
+		if err != nil {
+			return err
+		}
+		if !ok || rec.ExpiresAt == nil || rec.ExpiresAt.After(p.now()) {
+			return nil
+		}
+	}
 
 	member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(userID))
 	if err != nil {
@@ -143,6 +179,7 @@ func (p *Plugin) revokeGrant(ctx context.Context, guildID, userID, roleID, actor
 	defer cancel()
 	if err := p.store.DeleteGrant(delCtx, guildID, userID, roleID); err != nil {
 		p.log.Error("roles: untrack revoked grant", "guild", guildID, "user", userID, "role", roleID, "err", err)
+		return fmt.Errorf("roles: role removed but grant and jail snapshot cleanup failed; retry revoke: %w", err)
 	}
 
 	if err := p.audit.Record(ctx, guildID, actor, "roles.grant", fmt.Sprintf("user=%s role=%s", core.MentionUser(userID), core.MentionRole(roleID)), ""); err != nil {

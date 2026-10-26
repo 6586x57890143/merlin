@@ -31,11 +31,7 @@ import (
 // merlin never creates the vacation role (contrast resolveJailRole): it
 // is the guild's own, the Melting Pot's island or whatever /roles configure
 // vacation-role names, and the command refuses without one. Its channel
-// visibility is managed exactly as the jail marker's is, deny everywhere
-// but the vacation allowlist, with two differences spelled out above
-// syncAllVacationOverwrites: the sync runs on explicit moments rather than
-// on resolve, and it merges with what the guild already set on a channel
-// rather than replacing it.
+// visibility uses the same read-only and conversation modes as jail.
 //
 // A member can be moved between the two, in either direction, and the move
 // keeps their snapshot and takes the new duration: /roles jail on somebody
@@ -360,7 +356,7 @@ func (p *Plugin) scriptOn(ctx context.Context, guildID, script string) bool {
 // not computed (that is Discord's job and a much longer function); this is
 // what an admin needs to confirm the beach is the only room left open.
 func (p *Plugin) describeRoleAccess(guildID, roleID string) string {
-	const wontTouch = "merlin only moves this role's View (and Connect) bits, deny everywhere but the vacation allowlist; everything else on each channel's overwrite is left as the server set it."
+	const wontTouch = "merlin reconciles read-only and conversation access, hiding other channels. Unrelated overwrite bits and member-specific restrictions remain in place."
 	channels, err := p.ops(guildID).GetGuildChannels(core.ID(guildID))
 	if err != nil {
 		return "Could not read this server's channels to describe what the role sees. " + wontTouch
@@ -393,28 +389,10 @@ func (p *Plugin) describeRoleAccess(guildID, roleID string) string {
 	return core.TruncateEmbedDescription(b.String())
 }
 
-// The island's visibility. The same deny-by-default sync as the jail
-// marker (jailchannels.go), against the vacation allowlist: every managed
-// channel gets a deny for the island's role except the listed ones, so a
-// member on vacation sees the beach and nothing else. What differs from
-// jail is *when* it runs, and how it treats what it finds. It runs when
-// the script is turned on, when the role or the list changes, and on
-// /roles configure sync-channels; never on resolve, so a restart writes
-// nothing (see resolveJailRole for why that matters to the guild's audit
-// log). And desiredOverwrite merges with an overwrite the guild already
-// set rather than replacing it, so the beach keeps working the way it was
-// built and only its visibility bits are ever moved.
-
-// vacationAllowlist is the configured list, or the Melting Pot's beach
-// there when nothing is configured, mirroring the role default.
+// The former implicit beach default is persisted by migration 0051, so
+// removing it from the read-only list remains an explicit saved decision.
 func (p *Plugin) vacationAllowlist(guildID string) []string {
-	if ids := p.jailChannelConfig.VacationAllowedChannelIDs(guildID); len(ids) > 0 {
-		return ids
-	}
-	if guildID == meltingPotGuildID {
-		return []string{meltingPotDefaultVacationChannelID}
-	}
-	return nil
+	return p.jailChannelConfig.VacationAllowedChannelIDs(guildID)
 }
 
 // syncAllVacationOverwrites recomputes every channel for the island's

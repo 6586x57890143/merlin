@@ -95,8 +95,12 @@ type Plugin struct {
 	// joinRoleSeen is the last known shape of every join role, keyed
 	// guild:role, so an edit can be reported as what changed
 	// (script_joinrole.go). Discord's role update carries only the new one.
-	joinRoleMu   sync.Mutex
-	joinRoleSeen map[string]joinRoleShape
+	joinRoleMu        sync.Mutex
+	joinRoleSeen      map[string]joinRoleShape
+	visibilityLocks   sync.Map // guild ID -> *sync.Mutex
+	visibilityMu      sync.Mutex
+	visibilityPending map[string]uint64
+	visibilityReady   map[string]bool
 
 	// timers holds one pending release/expiry per jail or grant key, and
 	// inFlight the keys being released this instant. See release.go.
@@ -195,6 +199,10 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	p.mu.Unlock()
 	p.forgetJailRole(guildID)
 	p.forgetVacationRole(guildID)
+	p.visibilityMu.Lock()
+	delete(p.visibilityReady, guildID)
+	delete(p.visibilityPending, guildID)
+	p.visibilityMu.Unlock()
 	// A timer firing after the bot has left would ask Discord about a guild
 	// it can no longer see. releaseJail only drops a row on Unknown Member,
 	// never Unknown Guild, so the row would survive that anyway; this just
@@ -254,6 +262,14 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	p.jailRoleMu.Lock()
 	defer p.jailRoleMu.Unlock()
 	if id, ok := p.jailRoleID[guildID]; ok {
+		p.visibilityMu.Lock()
+		pending := !p.visibilityReady[guildID] || p.visibilityPending[guildID] != 0
+		p.visibilityMu.Unlock()
+		if pending {
+			if err := p.syncAllJailChannelOverwrites(guildID, id); err != nil {
+				return "", err
+			}
+		}
 		return id, nil
 	}
 
@@ -265,20 +281,11 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	if marker := p.jailChannelConfig.JailMarkerRoleID(guildID); marker != "" {
 		for _, r := range rolesList {
 			if r.ID.String() == marker {
+				if err := p.syncAllJailChannelOverwrites(guildID, marker); err != nil {
+					p.markVisibilityDirty(guildID)
+					return "", err
+				}
 				p.jailRoleID[guildID] = marker
-				// Deliberately no sync here. The cache above is per process,
-				// not persisted, so this branch is reached on every process
-				// restart for a guild that has a marker role configured, not
-				// just the first time. A full resync used to run here every
-				// time, which meant every restart rewrote every managed
-				// channel's overwrite and flooded the audit log even though
-				// nothing had changed since the last sync. handleMarkerRole
-				// and handleAllowChannel already sync once, at the moment the
-				// marker role actually changes, which is the only time it
-				// needs to happen; an admin who suspects drift (e.g. new
-				// channels) still has /roles configure sync-channels on
-				// demand. Same reasoning as the find-by-name branch below,
-				// which has never synced here either.
 				return marker, nil
 			}
 		}
@@ -295,6 +302,10 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	if guildID == meltingPotGuildID {
 		for _, r := range rolesList {
 			if r.ID.String() == meltingPotDefaultJailRoleID {
+				if err := p.syncAllJailChannelOverwrites(guildID, r.ID.String()); err != nil {
+					p.markVisibilityDirty(guildID)
+					return "", err
+				}
 				p.jailRoleID[guildID] = r.ID.String()
 				return r.ID.String(), nil
 			}
@@ -303,6 +314,10 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 
 	for _, r := range rolesList {
 		if r.Name == jailRoleName {
+			if err := p.syncAllJailChannelOverwrites(guildID, r.ID.String()); err != nil {
+				p.markVisibilityDirty(guildID)
+				return "", err
+			}
 			p.jailRoleID[guildID] = r.ID.String()
 			return r.ID.String(), nil
 		}
@@ -323,7 +338,9 @@ func (p *Plugin) resolveJailRole(guildID string) (string, error) {
 	// mod's very first /roles jail would strip roles but leave every
 	// channel visible, until someone thought to run sync-channels by hand.
 	if err := p.syncAllJailChannelOverwrites(guildID, role.ID.String()); err != nil {
-		p.log.Error("roles: initial jail channel overwrite sync failed", "guild", guildID, "err", err)
+		delete(p.jailRoleID, guildID)
+		p.markVisibilityDirty(guildID)
+		return "", fmt.Errorf("roles: jail role created but channel restrictions failed; sync will retry: %w", err)
 	}
 	return role.ID.String(), nil
 }

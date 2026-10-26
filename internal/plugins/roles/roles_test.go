@@ -138,17 +138,9 @@ func TestResolveJailRoleUsesConfiguredMarkerRoleDirectly(t *testing.T) {
 	}
 }
 
-// TestResolveJailRoleColdCacheDoesNotResyncConfiguredMarkerRole is a
-// regression test for a real production incident: a guild with a configured
-// marker role saw every managed channel's overwrite rewritten, flooding the
-// audit log, on what looked from the outside like an ordinary jail. The
-// cause was resolveJailRole resyncing every channel whenever its in-memory
-// cache was cold for a configured marker role, and that cache resets on
-// every process restart, not just the first time the role is configured.
-// handleMarkerRole and handleAllowChannel already sync once, explicitly, at
-// the moment the marker role is set; resolveJailRole finding that same role
-// again after a restart must be a cache-fill, not another full resync.
-func TestResolveJailRoleColdCacheDoesNotResyncConfiguredMarkerRole(t *testing.T) {
+// Cold resolves establish restrictions; the overwrite diff keeps subsequent
+// reconciliations quiet when permissions already match.
+func TestResolveJailRoleColdCacheReconcilesConfiguredMarkerRole(t *testing.T) {
 	ops := newFakeOps()
 	ops.roles["7000001"] = []*frole{{ID: "7000324", Name: "Marker"}}
 	ops.channel["7000602"] = &fch{ID: "7000602", GuildID: "7000001", Type: discord.ChannelTypeGuildText}
@@ -161,8 +153,8 @@ func TestResolveJailRoleColdCacheDoesNotResyncConfiguredMarkerRole(t *testing.T)
 	if _, err := p.resolveJailRole("7000001"); err != nil {
 		t.Fatalf("resolveJailRole: %v", err)
 	}
-	if len(ops.overwrites) != 0 {
-		t.Fatalf("expected no channel overwrites written resolving an already-configured marker role, got %d", len(ops.overwrites))
+	if ow := ops.overwrites[overwriteKey{"7000602", "7000324"}]; ow.deny&discord.PermissionViewChannel == 0 {
+		t.Fatal("cold resolve must establish restrictions before assigning a marker")
 	}
 }
 

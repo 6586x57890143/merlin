@@ -136,8 +136,12 @@ func TestJailOverwriteForEachChannelKind(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			allow, deny := jailOverwriteFor(tc.kind, tc.allowed)
-			if allow != tc.allow || deny != tc.deny {
+			access := accessHidden
+			if tc.allowed {
+				access = accessConversation
+			}
+			allow, deny := jailOverwriteFor(tc.kind, access)
+			if allow&tc.allow != tc.allow || deny&tc.deny != tc.deny || allow&deny != 0 {
 				t.Fatalf("jailOverwriteFor(%d, %v) = (%d, %d), want (%d, %d)", tc.kind, tc.allowed, allow, deny, tc.allow, tc.deny)
 			}
 		})

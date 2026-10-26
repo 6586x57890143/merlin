@@ -3,11 +3,38 @@ package roles
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/6586x57890143/merlin/internal/dbtest"
 )
+
+func TestDeleteGrantPrunesJailSnapshotAtomically(t *testing.T) {
+	pool := dbtest.Pool(t)
+	store := NewPostgresStore(pool)
+	ctx, guild := context.Background(), t.Name()
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM role_jails WHERE guild_id=$1`, guild)
+		_, _ = pool.Exec(ctx, `DELETE FROM role_grants WHERE guild_id=$1`, guild)
+	})
+	if err := store.InsertJail(ctx, JailRecord{GuildID: guild, UserID: "u1", JailRoleID: "marker", SnapshotRoleIDs: []string{"member", "temporary"}, JailedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertGrant(ctx, GrantRecord{GuildID: guild, UserID: "u1", RoleID: "temporary", GrantedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteGrant(ctx, guild, "u1", "temporary"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetGrant(ctx, guild, "u1", "temporary"); ok || err != nil {
+		t.Fatalf("grant remains: %t %v", ok, err)
+	}
+	rec, ok, err := store.GetJail(ctx, guild, "u1")
+	if err != nil || !ok || !slices.Equal(rec.SnapshotRoleIDs, []string{"member"}) {
+		t.Fatalf("snapshot: %+v %v", rec, err)
+	}
+}
 
 // The eternal-role copy is the one row in this package with a BYTEA column
 // and a NULL-able one, which the in-memory fake cannot vouch for. Skips

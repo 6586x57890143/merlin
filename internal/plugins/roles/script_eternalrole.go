@@ -271,6 +271,7 @@ func (p *Plugin) recreateEternalRole(ctx context.Context, rec *EternalRoleRecord
 
 	old := rec.RoleID
 	rec.RoleID, rec.IconHash = role.ID.String(), deref(role.Icon)
+	rec.UnicodeEmoji = deref(role.Emoji)
 	if err := p.store.PutEternalRole(ctx, *rec); err != nil {
 		return nil, fmt.Errorf("retarget copy: %w", err)
 	}

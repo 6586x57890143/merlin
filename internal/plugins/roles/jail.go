@@ -349,6 +349,20 @@ func (p *Plugin) respondSingleJail(ix *core.Ix, userID string, duration time.Dur
 // what release should hand back.
 func (p *Plugin) applyJail(ctx context.Context, guildID, jailRoleID string, t jailTarget, duration time.Duration, actor, reason string) ([]string, error) {
 	userID := t.userID
+	key := jailKey(guildID, userID)
+	if !p.claim(key) {
+		return nil, errReleaseInProgress
+	}
+	defer p.unclaim(key)
+	// Target resolution can precede a grant revocation. Snapshot only roles
+	// fetched under the same claim, so a revoked grant cannot reappear later.
+	if !t.absent {
+		member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(userID))
+		if err != nil {
+			return nil, fmt.Errorf("roles: refresh jail target: %w", err)
+		}
+		t.roles = core.IDStrings(member.RoleIDs)
+	}
 	newRoles, unmanageable := jailRoles(p.perms, guildID, jailRoleID, t.roles)
 
 	now := p.now()
@@ -781,6 +795,10 @@ func (p *Plugin) handleRelease(ctx context.Context, ix *core.Ix) {
 // the system sentinel, so a mod releasing somebody early was audited as an
 // automatic release and the decision had no owner.
 func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec JailRecord, actor string) error {
+	return p.releaseJailChecked(ctx, guildID, userID, rec, actor, false)
+}
+
+func (p *Plugin) releaseJailChecked(ctx context.Context, guildID, userID string, rec JailRecord, actor string, dueOnly bool) error {
 	// The timer and the sweep can both arrive at a row that has just come
 	// due; the second one finds it claimed and leaves it to the first.
 	key := jailKey(guildID, userID)
@@ -788,6 +806,20 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 		return errReleaseInProgress
 	}
 	defer p.unclaim(key)
+
+	// The caller's snapshot may predate a sentence extension or grant expiry.
+	// Re-read only after claiming the same member used by those mutations.
+	current, exists, err := p.store.GetJail(ctx, guildID, userID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	rec = current
+	if dueOnly && (rec.ReleaseAt == nil || rec.ReleaseAt.After(p.now())) {
+		return nil
+	}
 
 	member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(userID))
 	if err != nil {
@@ -834,7 +866,20 @@ func (p *Plugin) releaseJail(ctx context.Context, guildID, userID string, rec Ja
 			restore = append(restore, id)
 		}
 	}
+	grants, err := p.store.ListGrants(ctx, guildID, userID)
+	if err != nil {
+		return fmt.Errorf("roles: check suspended grants: %w", err)
+	}
+	expired := make(map[string]bool)
+	for _, grant := range grants {
+		if grant.ExpiresAt != nil && !grant.ExpiresAt.After(p.now()) {
+			expired[grant.RoleID] = true
+		}
+	}
 	for _, id := range rec.SnapshotRoleIDs {
+		if expired[id] {
+			continue
+		}
 		if !valid[id] || slices.Contains(restore, id) {
 			continue
 		}
