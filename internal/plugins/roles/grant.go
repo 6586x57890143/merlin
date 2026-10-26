@@ -10,6 +10,7 @@ import (
 	"github.com/disgoorg/disgo/rest"
 
 	"github.com/6586x57890143/merlin/internal/core"
+	"github.com/6586x57890143/merlin/internal/discordguard"
 )
 
 func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
@@ -42,6 +43,10 @@ func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
 	if err := ix.Defer(); err != nil {
 		return
 	}
+	if p.dryRun(ix.GuildID) {
+		_ = ix.FollowUpOK("Dry-run", "The role and its grant record were left unchanged.")
+		return
+	}
 	key := jailKey(ix.GuildID, userID)
 	if !p.claim(key) {
 		_ = ix.FollowUpErr("Member update in progress", errReleaseInProgress)
@@ -58,6 +63,11 @@ func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
 
 	// Persist first. A failed or ambiguous Discord response must leave the
 	// expiry recoverable by the sweep, even if the role was actually added.
+	previous, tracked, err := p.store.GetGrant(ctx, ix.GuildID, userID, roleID)
+	if err != nil {
+		_ = ix.FollowUpErr("Failed to read grant record", err)
+		return
+	}
 	if err := p.store.InsertGrant(ctx, GrantRecord{
 		GuildID:   ix.GuildID,
 		UserID:    userID,
@@ -74,7 +84,7 @@ func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
 		p.armGrantRevoke(ix.GuildID, userID, roleID, *expiresAt)
 	}
 	if err := p.ops(ix.GuildID).AddMemberRole(core.ID(ix.GuildID), core.ID(userID), core.ID(roleID)); err != nil {
-		_ = ix.FollowUpErr("Role grant not confirmed; tracking retained for cleanup", err)
+		_ = ix.FollowUpErr("Role grant not confirmed", p.failedGrant(ctx, ix.GuildID, userID, roleID, previous, tracked, err))
 		return
 	}
 
@@ -83,6 +93,37 @@ func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
 	}
 
 	_ = ix.FollowUpOK("Role granted", fmt.Sprintf("<@&%s> granted to <@%s> %s.", roleID, userID, durationLabel))
+}
+
+// The member claim must be held by the caller. Guard refusals guarantee no
+// Discord request was sent, unlike transport failures. Restore the previous
+// tracking state so a paused rehearsal cannot time out an already-held role.
+func (p *Plugin) failedGrant(ctx context.Context, guildID, userID, roleID string, previous GrantRecord, tracked bool, cause error) error {
+	if !discordguard.Skipped(cause) && !errors.Is(cause, discordguard.ErrRateLimited) && !errors.Is(cause, discordguard.ErrCircuitOpen) {
+		return fmt.Errorf("tracking retained for cleanup: %w", cause)
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWriteTimeout)
+	defer cancel()
+	var err error
+	if tracked {
+		err = p.store.InsertGrant(writeCtx, previous)
+	} else {
+		err = p.store.DeleteGrant(writeCtx, guildID, userID, roleID)
+	}
+	if err != nil {
+		return fmt.Errorf("grant refused (%v), but restoring prior tracking failed: %w", cause, err)
+	}
+	key := grantKey(guildID, userID, roleID)
+	p.timerMu.Lock()
+	if timer := p.timers[key]; timer != nil {
+		timer.Stop()
+		delete(p.timers, key)
+	}
+	p.timerMu.Unlock()
+	if tracked && previous.ExpiresAt != nil {
+		p.armGrantRevoke(guildID, userID, roleID, *previous.ExpiresAt)
+	}
+	return cause
 }
 
 func (p *Plugin) handleRevoke(ctx context.Context, ix *core.Ix) {

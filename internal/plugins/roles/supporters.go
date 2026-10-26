@@ -198,11 +198,19 @@ func (p *Plugin) remindSupporter(ctx context.Context, guildID string, b Backer) 
 // syncSupporter gives or re-dates b's grant, and reports whether b just
 // became a supporter here (a first grant, not a renewal).
 func (p *Plugin) syncSupporter(ctx context.Context, guildID, roleID string, b Backer) (bool, error) {
+	if p.dryRun(guildID) {
+		return false, nil
+	}
+	key := jailKey(guildID, b.UserID)
+	if !p.claim(key) {
+		return false, errReleaseInProgress
+	}
+	defer p.unclaim(key)
 	rec, granted, err := p.store.GetGrant(ctx, guildID, b.UserID, roleID)
 	if err != nil {
 		return false, err
 	}
-	if granted && (rec.ExpiresAt == nil || !rec.ExpiresAt.Before(b.Until)) {
+	if granted && rec.ExpiresAt == nil {
 		return false, nil
 	}
 	if _, jailed, err := p.store.GetJail(ctx, guildID, b.UserID); err != nil || jailed {
@@ -219,19 +227,30 @@ func (p *Plugin) syncSupporter(ctx context.Context, guildID, roleID string, b Ba
 	if !granted && holds {
 		return false, nil // given by hand: not merlin's to time out
 	}
-	if !holds {
-		if err := p.ops(guildID).AddMemberRole(core.ID(guildID), core.ID(b.UserID), core.ID(roleID)); err != nil {
-			return false, err
-		}
+	renew := !granted || rec.ExpiresAt.Before(b.Until)
+	if !renew && holds {
+		return false, nil
 	}
 	until := b.Until
-	if err := p.store.InsertGrant(ctx, GrantRecord{
-		GuildID: guildID, UserID: b.UserID, RoleID: roleID,
-		GrantedAt: p.now(), ExpiresAt: &until, GrantedBy: core.ActorSystem, Reason: supporterReason,
-	}); err != nil {
-		return false, err
+	if renew {
+		// Like /roles grant, persist the expiry before changing Discord.
+		if err := p.store.InsertGrant(ctx, GrantRecord{
+			GuildID: guildID, UserID: b.UserID, RoleID: roleID,
+			GrantedAt: p.now(), ExpiresAt: &until, GrantedBy: core.ActorSystem, Reason: supporterReason,
+		}); err != nil {
+			return false, err
+		}
+	} else {
+		until = *rec.ExpiresAt
 	}
 	p.armGrantRevoke(guildID, b.UserID, roleID, until)
+	if !holds {
+		// Retry a saved grant after an unconfirmed API response, even when
+		// the backing deadline has not changed since the previous attempt.
+		if err := p.ops(guildID).AddMemberRole(core.ID(guildID), core.ID(b.UserID), core.ID(roleID)); err != nil {
+			return false, p.failedGrant(ctx, guildID, b.UserID, roleID, rec, granted, err)
+		}
+	}
 	action := "roles.supporter_grant"
 	if granted {
 		action = "roles.supporter_renew"
