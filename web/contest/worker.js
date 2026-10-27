@@ -194,6 +194,9 @@ function b64urlDecode(s) {
     const bin = atob(String(s).replace(/-/g, "+").replace(/_/g, "/") + pad);
     const out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    // atob accepts nonzero pad bits and alternate spellings of the same
+    // bytes. Signed tokens use only the unpadded URL-safe form we mint.
+    if (b64url(out) !== s) return null;
     return out;
   } catch {
     return null;

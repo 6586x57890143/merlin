@@ -306,8 +306,47 @@ test("a tampered session cookie is refused", async () => {
   const e = env();
   await push(e);
   const good = await sessionCookie(SLUG, "hash-voter");
-  const bad = good.slice(0, -1) + (good.at(-1) === "A" ? "B" : "A");
-  assert.equal((await vote(e, bad, ["e1"])).status, 401);
+  // Exercise every final symbol: three alternatives change only unused pad
+  // bits and decode to the same MAC. The old A/B mutation hit that at random.
+  for (const last of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") {
+    const cookie = good.slice(0, -1) + last;
+    assert.equal((await vote(e, cookie, ["e1"])).status,
+      cookie === good ? 200 : 401, "signature ending " + last);
+  }
+  assert.equal((await vote(e, good.replace("hash-voter", "hash-forged"), ["e1"])).status, 401);
+});
+
+test("noncanonical signature encodings are refused", async () => {
+  const e = env();
+  await push(e);
+  const good = await sessionCookie(SLUG, "hash-voter");
+  const dot = good.lastIndexOf(".");
+  for (const bad of [good + "=", good.slice(0, dot + 2) + " " + good.slice(dot + 2)]) {
+    assert.equal((await vote(e, bad, ["e1"])).status, 401);
+  }
+});
+
+test("OAuth state with nonzero signature pad bits is refused", async () => {
+  const e = env();
+  await push(e);
+  const good = await signed(`${SLUG}|nonce|${Math.floor(Date.now() / 1000) + 600}`);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const last = alphabet.indexOf(good.at(-1));
+  assert.equal(last % 4, 0, "canonical SHA-256 signature has two zero pad bits");
+  stubDiscord();
+  try {
+    for (const pad of [1, 2, 3]) {
+      const bad = good.slice(0, -1) + alphabet[last + pad];
+      assert.deepEqual(Buffer.from(bad.split(".")[1], "base64url"),
+        Buffer.from(good.split(".")[1], "base64url"), "only pad bits changed");
+      const res = await call(e, `/oauth/callback?code=abc&state=${encodeURIComponent(bad)}`, {
+        headers: { cookie: "oa=nonce" },
+      });
+      assert.equal(res.status, 400);
+    }
+  } finally {
+    unstubDiscord();
+  }
 });
 
 // A session from one contest must not silently authorise a vote in the next
