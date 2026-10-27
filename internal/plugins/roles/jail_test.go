@@ -292,13 +292,11 @@ func TestApplyJailNeverStripsRolesWithoutTrackingThem(t *testing.T) {
 	}
 }
 
-// TestApplyJailRollsBackRecordWhenRoleUpdateFails is the other direction: the
-// record lands, the role edit fails, and the guild must not be left tracking
-// a jail nobody is actually in.
-func TestApplyJailRollsBackRecordWhenRoleUpdateFails(t *testing.T) {
+// A definitive refusal leaves roles unchanged, so tracking can be rolled back.
+func TestApplyJailRollsBackRecordWhenRoleUpdateIsRefused(t *testing.T) {
 	ops := newFakeOps()
 	ops.setMember("7000001", "7000102", []string{"7000302"})
-	ops.memberEditErr = transientErr()
+	ops.memberEditErr = &rest.Error{Response: &http.Response{StatusCode: http.StatusForbidden}}
 
 	p := newTestPlugin(ops, newFakeStore(), newFakeSettings(), newFakeAudit(), newFakePerms(), newFakeScheduler())
 

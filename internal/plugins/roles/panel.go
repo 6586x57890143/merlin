@@ -308,6 +308,20 @@ func (p *Plugin) setAllowlist(ctx context.Context, ix *core.Ix, customID, who st
 		}
 	}
 	var notes []string
+	bulk := len(added)+len(removed) > 1
+	var savedAdded, savedRemoved int
+	result := func() string {
+		lines := notes
+		if bulk {
+			lines = append([]string{fmt.Sprintf("Channel access updated: %d additions and %d removals saved in the %s list. Pending syncs will be retried by the sweep.", savedAdded, savedRemoved, mode)}, lines...)
+		}
+		text := []rune(strings.Join(lines, "\n"))
+		// Leave room for both 25-channel lists and the panel's other text.
+		if len(text) > 600 {
+			text = append(text[:550], []rune("\nFurther details omitted; check channel sync.")...)
+		}
+		return string(text)
+	}
 	change := func(id string, adding bool) bool {
 		// Even a reported save failure can follow a committed write whose
 		// cache refresh failed. Keep reconciliation pending in that case too.
@@ -323,11 +337,18 @@ func (p *Plugin) setAllowlist(ctx context.Context, ix *core.Ix, customID, who st
 			notes = append(notes, fmt.Sprintf("✗ Failed to save: %v", err))
 			return false
 		}
+		if adding {
+			savedAdded++
+		} else {
+			savedRemoved++
+		}
 		p.auditConfig(ctx, ix, "", fmt.Sprintf("%s=%s selected=%t", auditKey, core.MentionChannel(id), adding))
 		if p.dryRun(ix.GuildID) {
 			notes = append(notes, "Settings saved; channel sync is pending while dry-run is enabled.")
 		} else if _, err := sync(ix.GuildID, id); err != nil {
 			notes = append(notes, fmt.Sprintf("✗ Settings saved, but access for <#%s> was not synced: %v. The sweep will retry.", id, err))
+		} else if bulk {
+			return true
 		} else if adding {
 			notes = append(notes, fmt.Sprintf("✓ Channel allowed: <#%s> is configured for %s access for %s. Member-specific restrictions still apply.", id, mode, who))
 		} else {
@@ -337,7 +358,7 @@ func (p *Plugin) setAllowlist(ctx context.Context, ix *core.Ix, customID, who st
 	}
 	for _, id := range added {
 		if !change(id, true) {
-			return strings.Join(notes, "\n")
+			return result()
 		}
 	}
 	for _, id := range removed {
@@ -345,7 +366,7 @@ func (p *Plugin) setAllowlist(ctx context.Context, ix *core.Ix, customID, who st
 			break
 		}
 	}
-	return strings.Join(notes, "\n")
+	return result()
 }
 
 func (p *Plugin) setAnnounceChannel(ctx context.Context, ix *core.Ix, channelID string) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"time"
 
@@ -95,11 +96,11 @@ func (p *Plugin) handleGrant(ctx context.Context, ix *core.Ix) {
 	_ = ix.FollowUpOK("Role granted", fmt.Sprintf("<@&%s> granted to <@%s> %s.", roleID, userID, durationLabel))
 }
 
-// The member claim must be held by the caller. Guard refusals guarantee no
-// Discord request was sent, unlike transport failures. Restore the previous
-// tracking state so a paused rehearsal cannot time out an already-held role.
+// The member claim must be held by the caller. Guard refusals and explicit
+// Discord rejections leave roles unchanged, unlike ambiguous transport failures.
+// Restore prior tracking so a refused grant cannot time out an already-held role.
 func (p *Plugin) failedGrant(ctx context.Context, guildID, userID, roleID string, previous GrantRecord, tracked bool, cause error) error {
-	if !discordguard.Skipped(cause) && !errors.Is(cause, discordguard.ErrRateLimited) && !errors.Is(cause, discordguard.ErrCircuitOpen) {
+	if !definitiveWriteRefusal(cause) {
 		return fmt.Errorf("tracking retained for cleanup: %w", cause)
 	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWriteTimeout)
@@ -124,6 +125,17 @@ func (p *Plugin) failedGrant(ctx context.Context, guildID, userID, roleID string
 		p.armGrantRevoke(guildID, userID, roleID, *previous.ExpiresAt)
 	}
 	return cause
+}
+
+func definitiveWriteRefusal(err error) bool {
+	if discordguard.Skipped(err) || errors.Is(err, discordguard.ErrRateLimited) || errors.Is(err, discordguard.ErrCircuitOpen) || core.IsUnknownResource(err) {
+		return true
+	}
+	if failure, ok := errors.AsType[*rest.Error](err); ok && failure.Response != nil {
+		status := failure.Response.StatusCode
+		return status >= 400 && status < 500 && status != http.StatusRequestTimeout
+	}
+	return false
 }
 
 func (p *Plugin) handleRevoke(ctx context.Context, ix *core.Ix) {

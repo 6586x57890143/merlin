@@ -113,7 +113,8 @@ type fakeOps struct {
 	// be shown carrying on past a single bad row.
 	memberFetchErrFor map[string]error
 	// memberEditErr does the same for UpdateMember.
-	memberEditErr error
+	memberEditErr         error
+	memberEditResponseErr error
 	// onMemberEdit, when set, runs after a role edit lands with the roles
 	// just set, standing in for the GUILD_MEMBER_UPDATE Discord dispatches
 	// for the bot's own edit, which arrives while the caller is still
@@ -329,7 +330,7 @@ func (f *fakeOps) UpdateMember(guildID, userID snowflake.ID, data discord.Member
 		f.onMemberEdit(g, u, roles)
 		f.mu.Lock()
 	}
-	return out, nil
+	return out, f.memberEditResponseErr
 }
 
 // DisconnectMember is the voice disconnect: its own call, never combined

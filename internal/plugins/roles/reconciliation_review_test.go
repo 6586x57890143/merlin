@@ -226,3 +226,23 @@ func TestJoinRoleYieldsToMemberClaim(t *testing.T) {
 		t.Fatal("join role did not resume after claim released")
 	}
 }
+
+func TestColdMeltingPotSyncFindsNamedFallbackWithoutPreferredRole(t *testing.T) {
+	ops, settings := newFakeOps(), newFakeSettings()
+	const role, channel = "7000398", "7000601"
+	ops.roles[meltingPotGuildID] = []*frole{{ID: role, Name: jailRoleName}}
+	settings.allowed[meltingPotGuildID] = []string{channel}
+	ops.channel[channel] = &fch{ID: channel, GuildID: meltingPotGuildID, Type: discord.ChannelTypeGuildText,
+		PermissionOverwrites: []*fow{{ID: role, Type: discord.PermissionOverwriteTypeRole, Allow: discord.PermissionViewChannel | discord.PermissionSendMessages}}}
+	p := newTestPlugin(ops, newFakeStore(), settings, newFakeAudit(), newFakePerms(), newFakeScheduler())
+	if id, err := p.existingJailRole(meltingPotGuildID); err != nil || id != role {
+		t.Fatalf("cold fallback: %s %v", id, err)
+	}
+	if _, err := p.syncJailOne(meltingPotGuildID, channel); err != nil {
+		t.Fatal(err)
+	}
+	ow := findOverwrite(ops.channel[channel].Disgo(), role, discord.PermissionOverwriteTypeRole)
+	if ow.Allow&discord.PermissionSendMessages != 0 || ow.Deny&discord.PermissionSendMessages == 0 || ow.Allow&discord.PermissionReadMessageHistory == 0 {
+		t.Fatal("cold fallback marker was not migrated to read-only")
+	}
+}

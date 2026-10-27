@@ -337,8 +337,9 @@ func (p *Plugin) respondSingleJail(ix *core.Ix, userID string, duration time.Dur
 // the confused-deputy check release already applies: the marker
 // isn't on them, so it counts as already handled, gets untracked, and no
 // roles are restored. A spurious row that cleans itself up beats a member
-// jailed indefinitely. The rollback below just makes that immediate instead
-// of eventual.
+// jailed indefinitely. Only a definitive refusal rolls the record back;
+// ambiguous failures retain the snapshot and release timer because Discord
+// may have applied the edit before its response was lost.
 //
 // A target who is not in the guild (t.absent) is recorded and nothing else.
 // There is no member to strip, and the record on its own is already the
@@ -382,11 +383,20 @@ func (p *Plugin) applyJail(ctx context.Context, guildID, jailRoleID string, t ja
 
 	if !t.absent {
 		if _, err := p.stripToJailRoles(guildID, userID, newRoles); err != nil {
-			if delErr := p.store.DeleteJail(ctx, guildID, userID); delErr != nil {
-				p.log.Error("roles: roll back jail record after failed role update",
-					"guild", guildID, "user", userID, "err", delErr)
+			if definitiveWriteRefusal(err) {
+				writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWriteTimeout)
+				defer cancel()
+				if delErr := p.store.DeleteJail(writeCtx, guildID, userID); delErr != nil {
+					return nil, fmt.Errorf("roles: role update refused (%v), but snapshot cleanup failed: %w", err, delErr)
+				}
+				return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
 			}
-			return nil, fmt.Errorf("roles: strip roles for %s: %w", userID, err)
+			// Discord may have applied the strip before losing its response.
+			// Keep the sole restoration snapshot and its release timer.
+			if releaseAt != nil {
+				p.armJailRelease(guildID, userID, *releaseAt)
+			}
+			return nil, fmt.Errorf("roles: strip for %s unconfirmed; jail record retained for release: %w", userID, err)
 		}
 	}
 	if releaseAt != nil {

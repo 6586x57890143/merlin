@@ -35,11 +35,22 @@ func (p *Plugin) existingJailRole(guildID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if id := p.knownJailRole(guildID); id != "" {
+	p.jailRoleMu.Lock()
+	id := p.jailRoleID[guildID]
+	p.jailRoleMu.Unlock()
+	if id == "" {
+		id = p.jailChannelConfig.JailMarkerRoleID(guildID)
+	}
+	if id != "" {
 		if findRole(roles, id) != nil {
 			return id, nil
 		}
 		return "", fmt.Errorf("jail marker %s no longer exists", id)
+	}
+	// The Melting Pot preference is optional, like resolveJailRole's default.
+	// A previous process may already have created the named fallback instead.
+	if guildID == meltingPotGuildID && findRole(roles, meltingPotDefaultJailRoleID) != nil {
+		return meltingPotDefaultJailRoleID, nil
 	}
 	for _, role := range roles {
 		if role.Name == jailRoleName {
