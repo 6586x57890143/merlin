@@ -43,6 +43,10 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 	}
 
 	var firstErr error
+	if err := p.reconcileVisibility(guildID, false); err != nil {
+		p.log.Error("roles: channel restrictions still pending", "guild", guildID, "err", err)
+		firstErr = err
+	}
 
 	// Before releasing anyone, put back the jails people walked out of.
 	// Discord drops a member's roles when they leave, so a jailed member who
@@ -67,7 +71,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 			p.armJailRelease(guildID, rec.UserID, *rec.ReleaseAt)
 			continue
 		}
-		if err := p.releaseJail(ctx, guildID, rec.UserID, rec, core.ActorSystem); err != nil && !errors.Is(err, errReleaseInProgress) {
+		if err := p.releaseJailChecked(ctx, guildID, rec.UserID, rec, core.ActorSystem, true); err != nil && !errors.Is(err, errReleaseInProgress) {
 			p.log.Error("roles sweep: release jail failed", "guild", guildID, "user", rec.UserID, "err", err)
 			if firstErr == nil {
 				firstErr = err
@@ -84,7 +88,7 @@ func (p *Plugin) sweep(ctx context.Context, guildID string) error {
 			p.armGrantRevoke(guildID, rec.UserID, rec.RoleID, *rec.ExpiresAt)
 			continue
 		}
-		if err := p.revokeGrant(ctx, guildID, rec.UserID, rec.RoleID, core.ActorSystem); err != nil && !errors.Is(err, errReleaseInProgress) {
+		if err := p.revokeGrantChecked(ctx, guildID, rec.UserID, rec.RoleID, core.ActorSystem, true); err != nil && !errors.Is(err, errReleaseInProgress) {
 			p.log.Error("roles sweep: revoke grant failed", "guild", guildID, "user", rec.UserID, "role", rec.RoleID, "err", err)
 			if firstErr == nil {
 				firstErr = err

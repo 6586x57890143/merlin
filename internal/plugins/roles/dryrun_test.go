@@ -5,7 +5,68 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/6586x57890143/merlin/internal/discordguard"
 )
+
+func TestGrantDryRunCannotCreateFutureRevocation(t *testing.T) {
+	ops, store := newFakeOps(), newFakeStore()
+	ops.setMember("7000001", "7000102", []string{"7000302"})
+	p, timers, now := newTimedPlugin(ops, store)
+	p.dryRun = func(string) bool { return true }
+	rt := handlerSession(t)
+	p.handleGrant(context.Background(), rolesInteraction("", "grant", userArg("user", "7000102"), roleArg("role", "7000302"), strArg("duration", "1h")))
+	if _, tracked, _ := store.GetGrant(context.Background(), "7000001", "7000102", "7000302"); tracked || len(timers.armed) != 0 || len(ops.roleAddCalls) != 0 || !rt.said("Dry-run") {
+		t.Fatal("dry-run changed grant state")
+	}
+	p.dryRun = func(string) bool { return false }
+	*now = now.Add(2 * time.Hour)
+	p.fireGrantRevoke("7000001", "7000102", "7000302")
+	if len(ops.roleRemoveCalls) != 0 {
+		t.Fatal("rehearsed grant revoked an existing role")
+	}
+}
+
+func TestRefusedGrantRestoresPriorTrackingAndTimer(t *testing.T) {
+	for _, guardErr := range []error{discordguard.ErrPaused, discordguard.ErrDryRun, discordguard.ErrRateLimited, discordguard.ErrCircuitOpen} {
+		for _, previousKind := range []string{"untracked", "permanent", "temporary"} {
+			t.Run(guardErr.Error()+"/"+previousKind, func(t *testing.T) {
+				ops, store := newFakeOps(), newFakeStore()
+				ops.setMember("7000001", "7000102", []string{"7000302"})
+				ops.roleAddErr = guardErr
+				p, _, now := newTimedPlugin(ops, store)
+				ctx := context.Background()
+				previous := GrantRecord{GuildID: "7000001", UserID: "7000102", RoleID: "7000302", Reason: "original"}
+				if previousKind == "temporary" {
+					previous.ExpiresAt = ptrTime(fixedNow.Add(4 * time.Hour))
+				}
+				if previousKind != "untracked" {
+					_ = store.InsertGrant(ctx, previous)
+				}
+				rt := handlerSession(t)
+				p.handleGrant(ctx, rolesInteraction("", "grant", userArg("user", "7000102"), roleArg("role", "7000302"), strArg("duration", "1h")))
+				got, tracked, _ := store.GetGrant(ctx, "7000001", "7000102", "7000302")
+				if tracked != (previousKind != "untracked") || (tracked && (got.Reason != previous.Reason || (got.ExpiresAt == nil) != (previous.ExpiresAt == nil))) {
+					t.Fatalf("refused grant changed previous state: %+v %t", got, tracked)
+				}
+				if previousKind == "temporary" && !got.ExpiresAt.Equal(*previous.ExpiresAt) {
+					t.Fatal("refused grant changed expiry")
+				}
+				if (len(p.timers) != 0) != (previousKind == "temporary") {
+					t.Fatal("refused grant left the wrong expiry timer")
+				}
+				if rt.said("tracking retained") || rt.said("Role granted") {
+					t.Fatal("definitive refusal reported as applied or ambiguous")
+				}
+				*now = now.Add(2 * time.Hour)
+				p.fireGrantRevoke("7000001", "7000102", "7000302")
+				if len(ops.roleRemoveCalls) != 0 {
+					t.Fatal("refused attempt revoked the held role")
+				}
+			})
+		}
+	}
+}
 
 // A rehearsing guild's sweep must leave its pending work exactly where it
 // found it. Release and revoke both untrack their row as part of doing the

@@ -19,31 +19,45 @@ hourly that nothing has been added to that category by hand.
 
 **Jail.** `/roles jail @someone 2h` snapshots their roles, strips them and drops
 a shared "Jailed" role on them instead. That role's channel overwrites decide
-what a jailed member can still see, so jailing costs one API call no matter how
-big the server is. They get their roles back automatically when the timer runs
+what a jailed member can still see. They get their roles back automatically when the timer runs
 out, or when a mod runs `/roles release`. Leaving and rejoining doesn't shake it
 off. There's a bulk version and a `/roles jail-role` for when a raid shows up.
-A jailed member is never given more in an allowlisted channel than an ordinary
-member has there (the member role on `/roles settings` says who that is): allow
-an announcements room and they can read it, not post in it, and the command
-says so.
+Choose channel access on `/roles settings`: **Read-only** grants viewing and
+message history while denying posting and voice participation. **Conversation**
+also grants sending in text and announcement channels, and connecting and
+speaking in voice channels. These are explicit grants even when `@everyone`
+denies access or jail strips the member role. A channel can be in only one
+list per marker. Forum, media and stage channels support read-only access.
+Both modes deny thread creation and thread replies, polls, invites and external
+apps. Unrelated overwrite bits are preserved; member-specific restrictions
+still apply. Discord allows use of reactions already present on a message
+even when adding new reactions is denied.
+
+**Upgrade behavior:** every existing jail and vacation allowlist becomes
+read-only, with conversation lists empty. The first roles sweep after startup
+repairs existing overwrites, removing old send allows and granting history.
+Move a channel to Conversation explicitly to restore talking. Sync failures
+are reported and retried by subsequent sweeps; dry-run or paused writes defer
+application. Sync updates categories before re-reading and applying child
+permissions. Cleanup of old member denies requires audit-log evidence that
+Merlin owns them; restrictions without that evidence remain in place.
 
 **Vacation.** The same thing, somewhere nicer. `/roles vacation @someone 2d` is
 jail with a different marker role, one the server already has (the Melting
 Pot's island; elsewhere set on `/roles settings`), hidden from every
-channel except its own allowlist (also on `/roles settings`;
-the Melting Pot's beach by default). merlin never creates that role, and when
-it syncs a channel it moves only the visibility bits and leaves the rest of
-the overwrite as the server set it, so a beach built by hand keeps working.
-On both the jail room and the beach, threads, polls, invites and the like are
-off; talking and voice are not. Moving
+channel except its own read-only and conversation lists on `/roles settings`.
+The Melting Pot's former implicit beach default is saved as read-only during
+the upgrade and can subsequently be changed or removed. merlin never creates
+the vacation role. Its access modes follow the same rules as jail. Moving
 someone between the two is `/roles jail` or `/roles vacation` on them again,
 which takes the new duration; a mod swapping the two roles by hand is noticed
 and the sentence follows the role. It is a script, so it is off until
 turned on under Scripts on `/roles settings`.
 
 **Timed role grants.** `/roles grant @someone @role 24h`, and it comes off by
-itself.
+itself. Tracking is saved before Discord is changed, so an API failure cannot
+lose the expiry record. Expired or revoked grants are excluded from jail
+restoration. Release a member from jail or vacation before granting new roles.
 
 **Contests.** `/contest new title:neon cats` and merlin runs the whole thing:
 an announce window while the prize pool fills, then a forum channel she creates

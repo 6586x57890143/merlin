@@ -31,11 +31,7 @@ import (
 // merlin never creates the vacation role (contrast resolveJailRole): it
 // is the guild's own, the Melting Pot's island or whatever /roles configure
 // vacation-role names, and the command refuses without one. Its channel
-// visibility is managed exactly as the jail marker's is, deny everywhere
-// but the vacation allowlist, with two differences spelled out above
-// syncAllVacationOverwrites: the sync runs on explicit moments rather than
-// on resolve, and it merges with what the guild already set on a channel
-// rather than replacing it.
+// visibility uses the same read-only and conversation modes as jail.
 //
 // A member can be moved between the two, in either direction, and the move
 // keeps their snapshot and takes the new duration: /roles jail on somebody
@@ -131,6 +127,15 @@ func (p *Plugin) resolveVacationRole(guildID string) (string, error) {
 	p.jailRoleMu.Lock()
 	defer p.jailRoleMu.Unlock()
 	if id, ok := p.vacationRoleID[guildID]; ok {
+		p.visibilityMu.Lock()
+		pending := !p.visibilityReady[guildID] || p.visibilityPending[guildID] != 0
+		p.visibilityMu.Unlock()
+		if pending {
+			if err := p.syncAllVacationOverwrites(guildID); err != nil {
+				p.markVisibilityDirty(guildID)
+				return "", err
+			}
+		}
 		return id, nil
 	}
 	want := p.configuredVacationRole(guildID)
@@ -148,6 +153,10 @@ func (p *Plugin) resolveVacationRole(guildID string) (string, error) {
 			}
 		}
 		return "", fmt.Errorf("the vacation role %s no longer exists; set another under Vacation on `/roles settings`", core.MentionRole(want))
+	}
+	if err := p.syncAllVacationOverwrites(guildID); err != nil {
+		p.markVisibilityDirty(guildID)
+		return "", err
 	}
 	p.vacationRoleID[guildID] = want
 	return want, nil
@@ -208,13 +217,41 @@ func (p *Plugin) counterpartMarker(guildID, markerRoleID string) (string, bool) 
 // GUILD_MEMBER_UPDATE lands inside it: HandleMemberUpdate read that as a
 // mod swapping the roles by hand and announced the same move a second
 // time. A caller that finds the row claimed leaves it to whoever holds it.
-func (p *Plugin) transferJail(ctx context.Context, guildID string, t jailTarget, from JailRecord, newMarker string, releaseAt *time.Time) error {
+func (p *Plugin) transferJail(ctx context.Context, guildID string, t jailTarget, _ JailRecord, newMarker string, releaseAt *time.Time) error {
+	_, err := p.transferJailWithDeadline(ctx, guildID, t, newMarker, releaseAt, false)
+	return err
+}
+
+func (p *Plugin) transferJailWithDeadline(ctx context.Context, guildID string, t jailTarget, newMarker string, releaseAt *time.Time, extendOnly bool) (*time.Time, error) {
 	userID := t.userID
 	key := jailKey(guildID, userID)
 	if !p.claim(key) {
-		return errReleaseInProgress
+		return nil, errReleaseInProgress
 	}
 	defer p.unclaim(key)
+	from, ok, err := p.store.GetJail(ctx, guildID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrNotJailed
+	}
+	if !t.absent {
+		member, err := p.ops(guildID).GetMember(core.ID(guildID), core.ID(userID))
+		if err != nil {
+			return nil, err
+		}
+		t.roles = core.IDStrings(member.RoleIDs)
+	}
+	if extendOnly && (from.ReleaseAt == nil || (releaseAt != nil && from.ReleaseAt.After(*releaseAt))) {
+		releaseAt = from.ReleaseAt
+	}
+	return releaseAt, p.transferJailClaimed(ctx, guildID, t, from, newMarker, releaseAt)
+}
+
+// Caller holds the member claim and supplies current record/member state.
+func (p *Plugin) transferJailClaimed(ctx context.Context, guildID string, t jailTarget, from JailRecord, newMarker string, releaseAt *time.Time) error {
+	userID := t.userID
 	// An absent target has no roles to move; only the row does. The marker
 	// they end up wearing is whichever one the row names when they arrive,
 	// which reapplyIfEvaded reads fresh, so moving somebody between the nest
@@ -239,7 +276,8 @@ func (p *Plugin) transferJail(ctx context.Context, guildID string, t jailTarget,
 	return nil
 }
 
-// detectManualTransfer recognises a mod moving somebody between the nest
+// detectManualTransfer runs under the member claim with fresh state. It
+// recognises a mod moving somebody between the nest
 // and the island by hand: rec's marker is gone from roles and the other
 // marker is on them instead. The row follows the marker, keeping its end
 // (a hand swap is a change of place, not of sentence), the member is
@@ -259,7 +297,7 @@ func (p *Plugin) detectManualTransfer(ctx context.Context, guildID string, rec J
 	if !ok || !slices.Contains(roles, other) {
 		return false
 	}
-	if err := p.transferJail(ctx, guildID, jailTarget{userID: rec.UserID, roles: roles}, rec, other, rec.ReleaseAt); err != nil {
+	if err := p.transferJailClaimed(ctx, guildID, jailTarget{userID: rec.UserID, roles: roles}, rec, other, rec.ReleaseAt); err != nil {
 		if !errors.Is(err, errReleaseInProgress) {
 			p.log.Error("roles: record a hand transfer", "guild", guildID, "user", rec.UserID, "err", err)
 		}
@@ -360,7 +398,7 @@ func (p *Plugin) scriptOn(ctx context.Context, guildID, script string) bool {
 // not computed (that is Discord's job and a much longer function); this is
 // what an admin needs to confirm the beach is the only room left open.
 func (p *Plugin) describeRoleAccess(guildID, roleID string) string {
-	const wontTouch = "merlin only moves this role's View (and Connect) bits, deny everywhere but the vacation allowlist; everything else on each channel's overwrite is left as the server set it."
+	const wontTouch = "merlin reconciles read-only and conversation access, hiding other channels. Unrelated overwrite bits and member-specific restrictions remain in place."
 	channels, err := p.ops(guildID).GetGuildChannels(core.ID(guildID))
 	if err != nil {
 		return "Could not read this server's channels to describe what the role sees. " + wontTouch
@@ -393,28 +431,10 @@ func (p *Plugin) describeRoleAccess(guildID, roleID string) string {
 	return core.TruncateEmbedDescription(b.String())
 }
 
-// The island's visibility. The same deny-by-default sync as the jail
-// marker (jailchannels.go), against the vacation allowlist: every managed
-// channel gets a deny for the island's role except the listed ones, so a
-// member on vacation sees the beach and nothing else. What differs from
-// jail is *when* it runs, and how it treats what it finds. It runs when
-// the script is turned on, when the role or the list changes, and on
-// /roles configure sync-channels; never on resolve, so a restart writes
-// nothing (see resolveJailRole for why that matters to the guild's audit
-// log). And desiredOverwrite merges with an overwrite the guild already
-// set rather than replacing it, so the beach keeps working the way it was
-// built and only its visibility bits are ever moved.
-
-// vacationAllowlist is the configured list, or the Melting Pot's beach
-// there when nothing is configured, mirroring the role default.
+// The former implicit beach default is persisted by migration 0051, so
+// removing it from the read-only list remains an explicit saved decision.
 func (p *Plugin) vacationAllowlist(guildID string) []string {
-	if ids := p.jailChannelConfig.VacationAllowedChannelIDs(guildID); len(ids) > 0 {
-		return ids
-	}
-	if guildID == meltingPotGuildID {
-		return []string{meltingPotDefaultVacationChannelID}
-	}
-	return nil
+	return p.jailChannelConfig.VacationAllowedChannelIDs(guildID)
 }
 
 // syncAllVacationOverwrites recomputes every channel for the island's

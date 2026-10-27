@@ -139,12 +139,9 @@ func (p *Plugin) jailMany(ctx context.Context, guildID, jailRoleID string,
 			// Only release_at moves. The member is already stripped, and the
 			// snapshot on record is the only copy of what they held before
 			// that: re-recording it now would capture the marker role alone.
-			if serr := p.store.SetJailRelease(ctx, guildID, t.userID, releaseAt); serr != nil {
+			if serr := p.redateJail(ctx, guildID, t.userID, releaseAt, false); serr != nil {
 				res.failed = append(res.failed, fmt.Sprintf("%s: %v", t.userID, serr))
 				continue
-			}
-			if releaseAt != nil {
-				p.armJailRelease(guildID, t.userID, *releaseAt)
 			}
 			p.publishResentenced(ctx, guildID, t.userID, actorID, reason, duration)
 			res.redated = append(res.redated, t.userID)

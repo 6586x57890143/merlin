@@ -99,8 +99,11 @@ type fakeOps struct {
 	overwrites map[overwriteKey]permPair
 	// roleCreateErr fails the next CreateRole once, standing in for a guild
 	// refusing a role icon; reorders records every UpdateRolePositions.
-	roleCreateErr bool
-	reorders      [][]discord.RolePositionUpdate
+	roleCreateErr       bool
+	roleAddErr          error
+	permWriteErr        error
+	propagateCategories bool
+	reorders            [][]discord.RolePositionUpdate
 
 	// memberFetchErr, when set, fails every GetMember call with it, for
 	// tests that care about how a *kind* of failure is handled rather than
@@ -110,7 +113,8 @@ type fakeOps struct {
 	// be shown carrying on past a single bad row.
 	memberFetchErrFor map[string]error
 	// memberEditErr does the same for UpdateMember.
-	memberEditErr error
+	memberEditErr         error
+	memberEditResponseErr error
 	// onMemberEdit, when set, runs after a role edit lands with the roles
 	// just set, standing in for the GUILD_MEMBER_UPDATE Discord dispatches
 	// for the bot's own edit, which arrives while the caller is still
@@ -255,15 +259,6 @@ func (f *fakeOps) GuildMember(guildID, userID string) (*fmember, error) {
 	return &cp, nil
 }
 
-// disgoRoles is roles as GetRoles hands them out.
-func disgoRoles(roles []*frole) []discord.Role {
-	out := make([]discord.Role, len(roles))
-	for i, r := range roles {
-		out[i] = r.disgo()
-	}
-	return out
-}
-
 func (f *fakeOps) GetMember(guildID, userID snowflake.ID) (*discord.Member, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -335,7 +330,7 @@ func (f *fakeOps) UpdateMember(guildID, userID snowflake.ID, data discord.Member
 		f.onMemberEdit(g, u, roles)
 		f.mu.Lock()
 	}
-	return out, nil
+	return out, f.memberEditResponseErr
 }
 
 // DisconnectMember is the voice disconnect: its own call, never combined
@@ -382,8 +377,6 @@ func (f *fakeOps) CreateMessage(channelID snowflake.ID, data discord.MessageCrea
 
 // everyonePerms is what the fake guild's @everyone role carries: a plain
 // member can see, talk, react and join voice, the ordinary Discord default.
-// memberBaseline caps a marker role against this, so a fixture that never
-// set up an @everyone role would otherwise withhold everything.
 const everyonePerms = discord.PermissionViewChannel | discord.PermissionSendMessages |
 	discord.PermissionReadMessageHistory | discord.PermissionAddReactions |
 	discord.PermissionConnect | discord.PermissionSpeak
@@ -464,6 +457,9 @@ func (f *fakeOps) AddMemberRole(guildID, userID, roleID snowflake.ID, _ ...rest.
 	defer f.mu.Unlock()
 	g, u, r := guildID.String(), userID.String(), roleID.String()
 	f.roleAddCalls = append(f.roleAddCalls, g+":"+u+":"+r)
+	if f.roleAddErr != nil {
+		return f.roleAddErr
+	}
 	if m, ok := f.members[memberKey(g, u)]; ok && !slices.Contains(m.Roles, r) {
 		m.Roles = append(m.Roles, r)
 	}
@@ -499,7 +495,7 @@ func (f *fakeOps) GetAuditLog(guildID, userID snowflake.ID, action discord.Audit
 	}
 	var out []discord.AuditLogEntry
 	for _, e := range f.auditLog {
-		if e.ActionType == action && e.UserID == userID {
+		if (action == 0 || e.ActionType == action) && (userID == 0 || e.UserID == userID) && (before == 0 || e.ID < before) {
 			out = append(out, e)
 		}
 	}
@@ -538,16 +534,45 @@ func (f *fakeOps) UpdatePermissionOverwrite(channelID, targetID snowflake.ID, u 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.permSetCalls++
+	if f.permWriteErr != nil {
+		return f.permWriteErr
+	}
 	f.overwrites[overwriteKey{c, t}] = permPair{allow, deny}
 	ch, ok := f.channel[c]
 	if !ok {
 		return nil
 	}
+	var synced []*fch
+	if f.propagateCategories && ch.Type == discord.ChannelTypeGuildCategory {
+		for _, child := range f.channel {
+			if child.ParentID != c || len(child.PermissionOverwrites) != len(ch.PermissionOverwrites) {
+				continue
+			}
+			matches := true
+			for _, parentOW := range ch.PermissionOverwrites {
+				childOW := discordtest.Find(child.PermissionOverwrites, parentOW.ID, parentOW.Type)
+				if childOW == nil || *childOW != *parentOW {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				synced = append(synced, child)
+			}
+		}
+	}
 	if ow := discordtest.Find(ch.PermissionOverwrites, t, kind); ow != nil {
 		ow.Allow, ow.Deny = allow, deny
-		return nil
+	} else {
+		ch.PermissionOverwrites = append(ch.PermissionOverwrites, &fow{ID: t, Type: kind, Allow: allow, Deny: deny})
 	}
-	ch.PermissionOverwrites = append(ch.PermissionOverwrites, &fow{ID: t, Type: kind, Allow: allow, Deny: deny})
+	for _, child := range synced {
+		child.PermissionOverwrites = nil
+		for _, ow := range ch.PermissionOverwrites {
+			cloned := *ow
+			child.PermissionOverwrites = append(child.PermissionOverwrites, &cloned)
+		}
+	}
 	return nil
 }
 
@@ -576,7 +601,8 @@ type fakeStore struct {
 	mu sync.Mutex
 	// insertJailErr, when set, fails every InsertJail, for testing what the
 	// jail mutation leaves behind when the record can't be written.
-	insertJailErr error
+	insertJailErr  error
+	insertGrantErr error
 	// setJailReleaseErr, when set, fails every SetJailRelease, for testing
 	// what a re-jail reports when the sentence can't be moved.
 	setJailReleaseErr error
@@ -784,6 +810,12 @@ func (f *fakeStore) ActiveJails(ctx context.Context, guildID string, now time.Ti
 }
 
 func (f *fakeStore) InsertGrant(ctx context.Context, rec GrantRecord) error {
+	if f.insertGrantErr != nil {
+		return f.insertGrantErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
@@ -810,6 +842,10 @@ func (f *fakeStore) DeleteGrant(ctx context.Context, guildID, userID, roleID str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.grants, grantKey(guildID, userID, roleID))
+	if rec, ok := f.jails[jailKey(guildID, userID)]; ok {
+		rec.SnapshotRoleIDs = slices.DeleteFunc(append([]string(nil), rec.SnapshotRoleIDs...), func(id string) bool { return id == roleID })
+		f.jails[jailKey(guildID, userID)] = rec
+	}
 	return nil
 }
 
@@ -843,19 +879,21 @@ func (f *fakeStore) ListGrants(ctx context.Context, guildID, userID string) ([]G
 // --- fakeSettings: in-memory JailChannelConfig ---
 
 type fakeSettings struct {
-	mu              sync.Mutex
-	allowed         map[string][]string // guildID -> channel IDs
-	markerRole      map[string]string   // guildID -> configured jail marker role ID
-	announce        map[string]string   // guildID -> configured jail announcement channel ID
-	supporter       map[string]string   // guildID+":role" / ":channel"
-	vacationRole    map[string]string   // guildID -> configured vacation marker role ID
-	vacationAllowed map[string][]string // guildID -> vacation allowlist
-	memberRole      map[string]string   // guildID -> ordinary member role
-	joinRoles       map[string][]string // guildID -> extra join roles
+	mu                   sync.Mutex
+	allowed              map[string][]string // guildID -> channel IDs
+	conversation         map[string][]string
+	vacationConversation map[string][]string
+	markerRole           map[string]string   // guildID -> configured jail marker role ID
+	announce             map[string]string   // guildID -> configured jail announcement channel ID
+	vacationRole         map[string]string   // guildID -> configured vacation marker role ID
+	vacationAllowed      map[string][]string // guildID -> vacation allowlist
+	memberRole           map[string]string   // guildID -> ordinary member role
+	joinRoles            map[string][]string // guildID -> extra join roles
+	supporter            map[string]string   // guildID+":role" / ":channel"
 }
 
 func newFakeSettings() *fakeSettings {
-	return &fakeSettings{allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string), vacationRole: make(map[string]string), vacationAllowed: make(map[string][]string), memberRole: make(map[string]string), joinRoles: make(map[string][]string)}
+	return &fakeSettings{conversation: make(map[string][]string), vacationConversation: make(map[string][]string), allowed: make(map[string][]string), markerRole: make(map[string]string), announce: make(map[string]string), vacationRole: make(map[string]string), vacationAllowed: make(map[string][]string), memberRole: make(map[string]string), joinRoles: make(map[string][]string)}
 }
 
 func (f *fakeSettings) SupporterRoleID(guildID string) string {
@@ -916,6 +954,7 @@ func (f *fakeSettings) JailAllowedChannelIDs(guildID string) []string {
 func (f *fakeSettings) AddJailAllowedChannel(ctx context.Context, guildID, channelID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.conversation[guildID] = slices.DeleteFunc(f.conversation[guildID], func(id string) bool { return id == channelID })
 	for _, id := range f.allowed[guildID] {
 		if id == channelID {
 			return nil
@@ -968,6 +1007,7 @@ func (f *fakeSettings) VacationAllowedChannelIDs(guildID string) []string {
 func (f *fakeSettings) AddVacationAllowedChannel(ctx context.Context, guildID, channelID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.vacationConversation[guildID] = slices.DeleteFunc(f.vacationConversation[guildID], func(id string) bool { return id == channelID })
 	if !slices.Contains(f.vacationAllowed[guildID], channelID) {
 		f.vacationAllowed[guildID] = append(f.vacationAllowed[guildID], channelID)
 	}

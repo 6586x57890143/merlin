@@ -83,8 +83,10 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string)
 		pn.Parts = []discord.ContainerSubComponent{
 			ui.Text("**Island role**: what a member sent on `/roles vacation` holds. merlin never creates it.\n-# " + p.vacationLine(g)),
 			ui.Row(ui.Clearable(ui.RoleSelect(panelJail+"vacrole", "The island's role", []string{cfg.VacationRoleID(g)}, 1, !canJail))),
-			ui.Text("**Visible on vacation**: every other channel is hidden from the island's role.\n-# Now: " + channelList(p.vacationAllowlist(g))),
-			ui.Row(ui.ChannelSelectMany(panelJail+"vacallow", "Channels the island can see", cfg.VacationAllowedChannelIDs(g), ui.MaxSelectValues, !canJail)),
+			ui.Text("**Read-only**: view and message history, without posting or joining voice. Existing allowed channels start here.\n-# Now: " + channelList(p.vacationAllowlist(g))),
+			ui.Row(accessChannelSelect(panelJail+"vacallow", "Read-only vacation channels", cfg.VacationAllowedChannelIDs(g), !canJail, false)),
+			ui.Text("**Conversation**: view, history and sending; voice channels also allow connecting and speaking. Every other channel is hidden.\n-# Now: " + channelList(cfg.VacationConversationChannelIDs(g))),
+			ui.Row(accessChannelSelect(panelJail+"vacconversation", "Vacation conversation channels", cfg.VacationConversationChannelIDs(g), !canJail, true)),
 		}
 
 	case "join":
@@ -145,11 +147,13 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, page, arg, note string)
 		pn.Parts = []discord.ContainerSubComponent{
 			ui.Text("**Marker role**: what a jailed member holds instead of their roles. Empty uses merlin's own.\n-# Now: " + marker),
 			ui.Row(ui.Clearable(ui.RoleSelect(panelJail+"marker", "The jail marker role", []string{cfg.JailMarkerRoleID(g)}, 1, !canJail))),
-			ui.Text("**Visible while jailed**: every other channel is hidden. Appeals usually go here.\n-# Now: " + channelList(cfg.JailAllowedChannelIDs(g))),
-			ui.Row(ui.ChannelSelectMany(panelJail+"allow", "Channels a jailed member can see", cfg.JailAllowedChannelIDs(g), ui.MaxSelectValues, !canJail)),
+			ui.Text("**Read-only**: view and message history, without posting or joining voice. Existing allowed channels start here.\n-# Now: " + channelList(cfg.JailAllowedChannelIDs(g))),
+			ui.Row(accessChannelSelect(panelJail+"allow", "Read-only jail channels", cfg.JailAllowedChannelIDs(g), !canJail, false)),
+			ui.Text("**Conversation**: view, history and sending; voice channels also allow connecting and speaking. Every other channel is hidden.\n-# Now: " + channelList(cfg.JailConversationChannelIDs(g))),
+			ui.Row(accessChannelSelect(panelJail+"conversation", "Jail conversation channels", cfg.JailConversationChannelIDs(g), !canJail, true)),
 			ui.Text("**Announcements**: jail and release notices go " + announce + "."),
 			ui.Row(ui.Clearable(ui.ChannelSelect(panelJail+"announce", "Also announce in", cfg.JailAnnounceChannelID(g), !canJail, discord.ChannelTypeGuildText, discord.ChannelTypeGuildNews))),
-			ui.Text("**Member role**: the plain member role. Jailed and vacationing members never get more than it has in a channel.\n-# Now: " + baseline),
+			ui.Text("**Member role**: the role given to ordinary members by the join-role script. Jail and vacation access follows the lists above.\n-# Now: " + baseline),
 			ui.Row(ui.Clearable(ui.RoleSelect(panelJail+"member", "The plain member role", []string{cfg.MemberRoleID(g)}, 1, !canJail))),
 			ui.Switch("New channels don't pick up the jail and vacation rules on their own.", ui.Button("Sync every channel", panelJail+"sync:", discord.ButtonStyleSecondary, !canJail)),
 		}
@@ -178,6 +182,7 @@ func (p *Plugin) scriptLine(guildID, name string, recs []EternalRoleRecord) stri
 
 // pageOf is the page a control lives on, for the redraw after it.
 var pageOf = map[string]string{
+	"conversation": "jail", "vacconversation": "vacation",
 	"marker": "jail", "allow": "jail", "announce": "jail", "member": "jail", "sync": "jail",
 	"vacrole": "vacation", "vacallow": "vacation", "join": "join",
 	"on": "scripts", "off": "scripts", "eternal": "scripts",
@@ -203,6 +208,10 @@ func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID strin
 		note = p.setAllowlist(ctx, ix, panelJail+"allow", "jailed members", p.jailChannelConfig.AddJailAllowedChannel, p.jailChannelConfig.RemoveJailAllowedChannel, "allow", p.syncJailOne)
 	case "vacallow":
 		note = p.setAllowlist(ctx, ix, panelJail+"vacallow", "members on vacation", p.jailChannelConfig.AddVacationAllowedChannel, p.jailChannelConfig.RemoveVacationAllowedChannel, "vacation_allow", p.syncVacationChannel)
+	case "conversation":
+		note = p.setAllowlist(ctx, ix, panelJail+"conversation", "jailed members", p.jailChannelConfig.AddJailConversationChannel, p.jailChannelConfig.RemoveJailConversationChannel, "conversation", p.syncJailOne)
+	case "vacconversation":
+		note = p.setAllowlist(ctx, ix, panelJail+"vacconversation", "members on vacation", p.jailChannelConfig.AddVacationConversationChannel, p.jailChannelConfig.RemoveVacationConversationChannel, "vacation_conversation", p.syncVacationChannel)
 	case "announce":
 		note = p.setAnnounceChannel(ctx, ix, ix.FirstValue())
 	case "member":
@@ -237,11 +246,14 @@ func (p *Plugin) auditConfig(ctx context.Context, ix *core.Ix, oldValue, newValu
 // role, and resyncs every channel against the new one at the moment it
 // changes rather than as a side effect of some later cold resolve.
 func (p *Plugin) setMarkerRole(ctx context.Context, ix *core.Ix, roleID string) string {
+	defer p.markVisibilityDirty(ix.GuildID)
+	defer p.forgetJailRole(ix.GuildID)
 	if roleID == "" {
 		if err := p.jailChannelConfig.ClearJailMarkerRole(ctx, ix.GuildID); err != nil {
 			return fmt.Sprintf("✗ Failed to clear marker role: %v", err)
 		}
 		p.forgetJailRole(ix.GuildID)
+		p.markVisibilityDirty(ix.GuildID)
 		p.auditConfig(ctx, ix, "", "marker_role=none")
 		return "✓ Cleared jail role: merlin will use its own birdjailed role again."
 	}
@@ -249,10 +261,11 @@ func (p *Plugin) setMarkerRole(ctx context.Context, ix *core.Ix, roleID string) 
 		return fmt.Sprintf("✗ Failed to save marker role: %v", err)
 	}
 	p.forgetJailRole(ix.GuildID)
-	if err := p.syncAllJailChannelOverwrites(ix.GuildID, roleID); err != nil {
-		p.log.Error("roles: failed to sync jail overwrites for configured role", "guild", ix.GuildID, "role", roleID, "err", err)
-	}
+	p.markVisibilityDirty(ix.GuildID)
 	p.auditConfig(ctx, ix, "", "marker_role="+core.MentionRole(roleID))
+	if err := p.syncAllJailChannelOverwrites(ix.GuildID, roleID); err != nil {
+		return fmt.Sprintf("✗ Marker saved, but channel restrictions were not fully applied: %v. The sweep will retry.", err)
+	}
 	return fmt.Sprintf("✓ Configured jail role: jailed members will be assigned %s.", core.MentionRole(roleID))
 }
 
@@ -260,75 +273,100 @@ func (p *Plugin) setMarkerRole(ctx context.Context, ix *core.Ix, roleID string) 
 // role, if the guild has one yet. Without one nothing is synced: the list is
 // saved and applies when the role is first resolved and does its full sync.
 func (p *Plugin) syncJailOne(guildID, channelID string) (discord.Permissions, error) {
-	p.jailRoleMu.Lock()
-	jailRoleID, known := p.jailRoleID[guildID]
-	p.jailRoleMu.Unlock()
-	if !known {
-		// A marker set moments ago clears the cache, and is still the role
-		// this channel has to be synced for.
-		if jailRoleID = p.jailChannelConfig.JailMarkerRoleID(guildID); jailRoleID == "" {
-			return 0, nil
-		}
+	roleID, err := p.existingJailRole(guildID)
+	if err != nil || roleID == "" {
+		return 0, err
 	}
-	return p.syncJailChannelOverwrite(guildID, jailRoleID, channelID)
+	return p.syncJailChannelOverwrite(guildID, roleID, channelID)
 }
 
-// setAllowlist is the jail and vacation channel pickers: each channel added
-// or removed is saved, synced and audited, as the allow and disallow
-// subcommands did one at a time.
+func accessChannelSelect(id, label string, ids []string, disabled, conversation bool) discord.ChannelSelectMenuComponent {
+	menu := ui.ChannelSelectMany(id, label, ids, ui.MaxSelectValues, disabled)
+	menu.ChannelTypes = []discord.ChannelType{discord.ChannelTypeGuildText, discord.ChannelTypeGuildNews, discord.ChannelTypeGuildVoice}
+	if !conversation {
+		menu.ChannelTypes = append(menu.ChannelTypes, discord.ChannelTypeGuildStageVoice, discord.ChannelTypeGuildForum, discord.ChannelTypeGuildMedia)
+	}
+	return menu
+}
+
 func (p *Plugin) setAllowlist(ctx context.Context, ix *core.Ix, customID, who string,
 	add, remove func(ctx context.Context, guildID, channelID string) error, auditKey string, sync func(guildID, channelID string) (discord.Permissions, error)) string {
 	added, removed := ix.SelectDiff(customID)
-	var notes []string
-	for _, ch := range added {
-		if err := add(ctx, ix.GuildID, ch); err != nil {
-			return fmt.Sprintf("✗ Failed to save: %v", err)
-		}
-		withheld, err := sync(ix.GuildID, ch)
+	mode := "read-only"
+	conversation := strings.HasSuffix(customID, "conversation")
+	if conversation {
+		mode = "conversation"
+	}
+	// Validate before saving any changes, including forged/stale selectors.
+	for _, id := range added {
+		ch, err := guildChannel(p.ops(ix.GuildID), core.ID(id))
 		if err != nil {
-			p.log.Error("roles: sync allowlisted channel failed", "guild", ix.GuildID, "channel", ch, "err", err)
+			return fmt.Sprintf("✗ Cannot read channel: %v", err)
 		}
-		p.auditConfig(ctx, ix, "", auditKey+"="+core.MentionChannel(ch)+withheldDetail(withheld))
-		notes = append(notes, p.allowedNote(ix.GuildID, who, ch, withheld))
-	}
-	for _, ch := range removed {
-		if err := remove(ctx, ix.GuildID, ch); err != nil {
-			return fmt.Sprintf("✗ Failed to save: %v", err)
+		if ch.GuildID().String() != ix.GuildID || !jailManagedChannelType(ch.Type()) || (conversation && !conversationChannel(ch.Type())) {
+			return "✗ That channel does not support this access mode. Forums, media and stage channels support read-only access."
 		}
-		if _, err := sync(ix.GuildID, ch); err != nil {
-			p.log.Error("roles: sync disallowed channel failed", "guild", ix.GuildID, "channel", ch, "err", err)
+	}
+	var notes []string
+	bulk := len(added)+len(removed) > 1
+	var savedAdded, savedRemoved int
+	result := func() string {
+		lines := notes
+		if bulk {
+			lines = append([]string{fmt.Sprintf("Channel access updated: %d additions and %d removals saved in the %s list. Pending syncs will be retried by the sweep.", savedAdded, savedRemoved, mode)}, lines...)
 		}
-		p.auditConfig(ctx, ix, auditKey+"="+core.MentionChannel(ch), "")
-		notes = append(notes, fmt.Sprintf("✓ Channel hidden: <#%s> is hidden from %s again.", ch, who))
+		text := []rune(strings.Join(lines, "\n"))
+		// Leave room for both 25-channel lists and the panel's other text.
+		if len(text) > 600 {
+			text = append(text[:550], []rune("\nFurther details omitted; check channel sync.")...)
+		}
+		return string(text)
 	}
-	return strings.Join(notes, "\n")
-}
-
-// allowedNote is a plain success, or a warning naming what the marker was
-// refused because an ordinary member cannot do it in that channel either
-// (memberBaseline). An admin who allowlists an announcements room for jailed
-// members is told they can read it and not post in it, rather than finding
-// out from the post.
-func (p *Plugin) allowedNote(guildID, who, channelID string, withheld discord.Permissions) string {
-	if withheld == 0 {
-		return fmt.Sprintf("✓ Channel allowed: <#%s> stays visible to %s.", channelID, who)
+	change := func(id string, adding bool) bool {
+		// Even a reported save failure can follow a committed write whose
+		// cache refresh failed. Keep reconciliation pending in that case too.
+		p.markVisibilityDirty(ix.GuildID)
+		defer p.markVisibilityDirty(ix.GuildID)
+		var err error
+		if adding {
+			err = add(ctx, ix.GuildID, id)
+		} else {
+			err = remove(ctx, ix.GuildID, id)
+		}
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("✗ Failed to save: %v", err))
+			return false
+		}
+		if adding {
+			savedAdded++
+		} else {
+			savedRemoved++
+		}
+		p.auditConfig(ctx, ix, "", fmt.Sprintf("%s=%s selected=%t", auditKey, core.MentionChannel(id), adding))
+		if p.dryRun(ix.GuildID) {
+			notes = append(notes, "Settings saved; channel sync is pending while dry-run is enabled.")
+		} else if _, err := sync(ix.GuildID, id); err != nil {
+			notes = append(notes, fmt.Sprintf("✗ Settings saved, but access for <#%s> was not synced: %v. The sweep will retry.", id, err))
+		} else if bulk {
+			return true
+		} else if adding {
+			notes = append(notes, fmt.Sprintf("✓ Channel allowed: <#%s> is configured for %s access for %s. Member-specific restrictions still apply.", id, mode, who))
+		} else {
+			notes = append(notes, fmt.Sprintf("✓ Channel access updated: <#%s> was removed from the %s list.", id, mode))
+		}
+		return true
 	}
-	baseline := "@everyone"
-	if id := p.jailChannelConfig.MemberRoleID(guildID); id != "" {
-		baseline = core.MentionRole(id)
+	for _, id := range added {
+		if !change(id, true) {
+			return result()
+		}
 	}
-	if withheld&discord.PermissionViewChannel != 0 {
-		return fmt.Sprintf("! Channel allowed, but hidden anyway: ordinary members (%s) cannot see <#%s>, so %s cannot either.", baseline, channelID, who)
+	for _, id := range removed {
+		if !change(id, false) {
+			break
+		}
 	}
-	return fmt.Sprintf("! Channel allowed, with limits: <#%s> stays visible to %s, but they get no %s there: ordinary members (%s) don't have it in that channel either.",
-		channelID, who, namePermissions(withheld), baseline)
-}
-
-func withheldDetail(withheld discord.Permissions) string {
-	if withheld == 0 {
-		return ""
-	}
-	return " withheld=" + namePermissions(withheld)
+	return result()
 }
 
 func (p *Plugin) setAnnounceChannel(ctx context.Context, ix *core.Ix, channelID string) string {
@@ -346,8 +384,7 @@ func (p *Plugin) setAnnounceChannel(ctx context.Context, ix *core.Ix, channelID 
 	return fmt.Sprintf("✓ Announcement channel set: notices also go to <#%s>.", channelID)
 }
 
-// setMemberRole moves the baseline both markers are capped against, so
-// both are resynced on every channel.
+// The member role drives the join script; marker access uses explicit modes.
 func (p *Plugin) setMemberRole(ctx context.Context, ix *core.Ix, roleID string) string {
 	if err := p.jailChannelConfig.SetMemberRole(ctx, ix.GuildID, roleID); err != nil {
 		return fmt.Sprintf("✗ Failed to save: %v", err)
@@ -358,30 +395,22 @@ func (p *Plugin) setMemberRole(ctx context.Context, ix *core.Ix, roleID string) 
 	}
 	p.auditConfig(ctx, ix, "", "member_role="+detail)
 	p.watchJoinRoles(ix.GuildID)
-	p.jailRoleMu.Lock()
-	jailRoleID, known := p.jailRoleID[ix.GuildID]
-	p.jailRoleMu.Unlock()
-	if known {
-		if err := p.syncAllJailChannelOverwrites(ix.GuildID, jailRoleID); err != nil {
-			p.log.Error("roles: sync jail overwrites after member-role change", "guild", ix.GuildID, "err", err)
-		}
-	}
-	if err := p.syncAllVacationOverwrites(ix.GuildID); err != nil {
-		p.log.Error("roles: sync vacation overwrites after member-role change", "guild", ix.GuildID, "err", err)
-	}
 	if roleID == "" {
-		return "✓ Member role cleared: jailed and vacationing members are capped at what @everyone can do."
+		return "✓ Member role cleared. Channel access follows the read-only and conversation lists."
 	}
-	return fmt.Sprintf("✓ Member role set: jailed and vacationing members are capped at what %s can do. Every channel was re-synced.", core.MentionRole(roleID))
+	return fmt.Sprintf("✓ Member role set: %s. Channel access follows the read-only and conversation lists.", core.MentionRole(roleID))
 }
 
 // setVacationRole sets or clears the island's marker, syncs every channel
 // for the new one, and reads back what it can now see.
 func (p *Plugin) setVacationRole(ctx context.Context, ix *core.Ix, roleID string) string {
+	defer p.markVisibilityDirty(ix.GuildID)
+	defer p.forgetVacationRole(ix.GuildID)
 	if err := p.jailChannelConfig.SetVacationRole(ctx, ix.GuildID, roleID); err != nil {
 		return fmt.Sprintf("✗ Failed to save: %v", err)
 	}
 	p.forgetVacationRole(ix.GuildID)
+	p.markVisibilityDirty(ix.GuildID)
 	detail := "none"
 	if roleID != "" {
 		detail = core.MentionRole(roleID)
@@ -394,7 +423,7 @@ func (p *Plugin) setVacationRole(ctx context.Context, ix *core.Ix, roleID string
 		return "✓ Vacation role cleared."
 	}
 	if err := p.syncAllVacationOverwrites(ix.GuildID); err != nil {
-		p.log.Error("roles: sync vacation overwrites for new role failed", "guild", ix.GuildID, "err", err)
+		return fmt.Sprintf("✗ Vacation role saved, but channel restrictions were not fully applied: %v. The sweep will retry.", err)
 	}
 	return fmt.Sprintf("✓ Vacation role set: members on vacation will hold %s.\n-# %s", core.MentionRole(roleID),
 		strings.ReplaceAll(p.describeRoleAccess(ix.GuildID, roleID), "\n", " "))
@@ -436,14 +465,12 @@ func (p *Plugin) setJoinRoles(ctx context.Context, ix *core.Ix) string {
 // the guild has none) and the island's, and clears member-level denies an
 // older release left behind (clearLeftoverMemberOverwrites).
 func (p *Plugin) syncChannels(ctx context.Context, guildID string) string {
-	jailRoleID, err := p.resolveJailRole(guildID)
+	p.markVisibilityDirty(guildID)
+	_, err := p.resolveJailRole(guildID)
 	if err != nil {
-		return fmt.Sprintf("✗ Failed to resolve jail role: %v", err)
+		return fmt.Sprintf("✗ Sync completed with errors resolving the jail role: %v. The sweep will retry.", err)
 	}
-	syncErr := p.syncAllJailChannelOverwrites(guildID, jailRoleID)
-	if verr := p.syncAllVacationOverwrites(guildID); verr != nil && syncErr == nil {
-		syncErr = verr
-	}
+	syncErr := p.reconcileVisibility(guildID, true)
 	if syncErr != nil {
 		return fmt.Sprintf("✗ Sync completed with errors: %v", syncErr)
 	}
@@ -482,10 +509,11 @@ func (p *Plugin) setScript(ctx context.Context, ix *core.Ix, name string, enable
 			p.log.Error("roles: first enforcement after enabling script", "guild", ix.GuildID, "script", name, "err", err)
 		}
 	case scriptVacation:
-		// The one full sync the island gets on its own: turning the script
+		// Turning the script
 		// on is the moment the admin opts into deny-by-default there.
+		p.markVisibilityDirty(ix.GuildID)
 		if err := p.syncAllVacationOverwrites(ix.GuildID); err != nil {
-			p.log.Error("roles: vacation sync after enabling script", "guild", ix.GuildID, "err", err)
+			return fmt.Sprintf("✗ Vacation enabled, but channel restrictions were not fully applied: %v. The sweep will retry.", err)
 		}
 	}
 	return fmt.Sprintf("! Script on: %s. merlin now overrides admins on what it protects.\n-# %s", name, scriptAbout[name])
@@ -494,7 +522,7 @@ func (p *Plugin) setScript(ctx context.Context, ix *core.Ix, name string, enable
 // scriptAbout is what an admin is told they just turned on.
 var scriptAbout = map[string]string{
 	scriptJoinRole: "New members get the member role and the join roles 15 seconds after joining, except roles they already hold and nothing for anyone jailed or on vacation. Joins from now on only.",
-	scriptVacation: "/roles vacation does what /roles jail does with the island's role as the marker. merlin hides every channel from that role except the vacation list, moving only View and Connect.",
+	scriptVacation: "/roles vacation does what /roles jail does with the island's role as the marker. merlin hides every channel from that role except the vacation list, applying read-only or conversation access to listed channels.",
 	scriptEternalRole: "merlin keeps a copy of each eternal role as it was when added: given back if removed, recreated if deleted, " +
 		"a fresh copy placed above it if edited. Only the server owner can choose them.",
 }

@@ -1,0 +1,95 @@
+package roles
+
+import (
+	"errors"
+	"fmt"
+	"sync"
+
+	"github.com/6586x57890143/merlin/internal/core"
+)
+
+func (p *Plugin) lockVisibility(guildID string) func() {
+	value, _ := p.visibilityLocks.LoadOrStore(guildID, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (p *Plugin) markVisibilityDirty(guildID string) {
+	p.visibilityMu.Lock()
+	defer p.visibilityMu.Unlock()
+	if p.visibilityPending == nil {
+		p.visibilityPending = make(map[string]uint64)
+	}
+	if p.visibilityRevision == nil {
+		p.visibilityRevision = make(map[string]uint64)
+	}
+	p.visibilityRevision[guildID]++
+	p.visibilityPending[guildID] = p.visibilityRevision[guildID]
+}
+
+// existingJailRole resolves a cold cache without creating a role merely
+// because someone edited a list or the startup reconciliation ran.
+func (p *Plugin) existingJailRole(guildID string) (string, error) {
+	roles, err := p.ops(guildID).GetRoles(core.ID(guildID))
+	if err != nil {
+		return "", err
+	}
+	p.jailRoleMu.Lock()
+	id := p.jailRoleID[guildID]
+	p.jailRoleMu.Unlock()
+	if id == "" {
+		id = p.jailChannelConfig.JailMarkerRoleID(guildID)
+	}
+	if id != "" {
+		if findRole(roles, id) != nil {
+			return id, nil
+		}
+		return "", fmt.Errorf("jail marker %s no longer exists", id)
+	}
+	// The Melting Pot preference is optional, like resolveJailRole's default.
+	// A previous process may already have created the named fallback instead.
+	if guildID == meltingPotGuildID && findRole(roles, meltingPotDefaultJailRoleID) != nil {
+		return meltingPotDefaultJailRoleID, nil
+	}
+	for _, role := range roles {
+		if role.Name == jailRoleName {
+			return role.ID.String(), nil
+		}
+	}
+	return "", nil
+}
+
+// Retry on each sweep until both markers agree with settings. Each process
+// also reconciles once after startup, applying the read-only migration to
+// Discord. A settings edit during a sync keeps its newer generation pending.
+func (p *Plugin) reconcileVisibility(guildID string, force bool) error {
+	p.visibilityMu.Lock()
+	generation := p.visibilityPending[guildID]
+	needed := force || !p.visibilityReady[guildID] || generation != 0
+	p.visibilityMu.Unlock()
+	if !needed {
+		return nil
+	}
+	if p.dryRun(guildID) {
+		return fmt.Errorf("channel sync pending while dry-run is enabled")
+	}
+	id, jailErr := p.existingJailRole(guildID)
+	if jailErr == nil && id != "" {
+		jailErr = p.syncAllJailChannelOverwrites(guildID, id)
+	}
+	// A broken jail marker must not block vacation's migration or retries.
+	if err := errors.Join(jailErr, p.syncAllVacationOverwrites(guildID)); err != nil {
+		return err
+	}
+	p.visibilityMu.Lock()
+	defer p.visibilityMu.Unlock()
+	if p.visibilityReady == nil {
+		p.visibilityReady = make(map[string]bool)
+	}
+	p.visibilityReady[guildID] = true
+	if p.visibilityPending[guildID] == generation {
+		delete(p.visibilityPending, guildID)
+	}
+	return nil
+}

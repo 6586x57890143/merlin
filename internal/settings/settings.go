@@ -41,11 +41,10 @@ type GuildSettings struct {
 	DisabledPlugins       []string   // plugin Name()s disabled in this guild (see core.PluginGate)
 	EnabledPlugins        []string   // plugin Name()s switched on, for plugins that are off by default (see DefaultOff)
 
-	// JailAllowedChannelIDs is which channels stay visible to a jailed
-	// member (internal/plugins/roles). Every other channel gets a deny
-	// overwrite for the shared "Jailed" role. Empty means jail denies every
-	// channel until a mod configures exceptions.
-	JailAllowedChannelIDs []string
+	// Legacy allowed-channel columns store read-only access. Conversation
+	// is explicit opt-in and disjoint from read-only for each marker.
+	JailAllowedChannelIDs      []string
+	JailConversationChannelIDs []string
 	// JailAnnounceChannelID is the one extra channel jail/release
 	// announcements are posted to, on top of the channel the command was
 	// run in (internal/plugins/roles/announce.go). Deliberately a single
@@ -56,18 +55,12 @@ type GuildSettings struct {
 	// VacationRoleID is the vacation script's marker role
 	// (internal/plugins/roles/script_vacation.go): what a member on vacation
 	// holds in place of the jail marker. Empty means none is configured.
-	// merlin never creates it and never touches the channel permissions it
-	// carries, which is what makes it different from JailMarkerRoleID.
+	// merlin never creates it; channel access is managed like the jail marker.
 	VacationRoleID string
-	// VacationAllowedChannelIDs is which channels a member on vacation is
-	// additionally allowed into: merlin writes an allow overwrite for
-	// VacationRoleID on each and nothing more, never a deny anywhere else,
-	// which is the opposite of JailAllowedChannelIDs' deny-by-default.
-	VacationAllowedChannelIDs []string
-	// MemberRoleID is the ordinary member role, what a plain member holds
-	// besides @everyone. The roles plugin caps a marker role's allow on an
-	// allowlisted channel to what this role can do there. Empty means the
-	// baseline is @everyone alone.
+	// VacationAllowedChannelIDs stores the vacation read-only list.
+	VacationAllowedChannelIDs      []string
+	VacationConversationChannelIDs []string
+	// MemberRoleID is the ordinary role given by the join-role script.
 	MemberRoleID string
 	// JoinRoleIDs is the extra roles the roles plugin's join-role script
 	// gives every new member besides MemberRoleID (migration 0045).
@@ -248,10 +241,10 @@ func (s *Store) Refresh(ctx context.Context, guildID string) error {
 		rotations: make(map[string]RotationChannel),
 	}
 
-	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids, member_role_id, join_role_ids, supporter_role_id, supporter_channel_id
+	row := s.pool.QueryRow(ctx, `SELECT mod_role_ids, admin_user_ids, audit_log_channel_id, status_channel_id, onboarding_nudge_sent_at, disabled_plugins, jail_allowed_channel_ids, jail_marker_role_id, jail_announce_channel_id, writes_paused, writes_dry_run, archive_viewer_role_ids, enabled_plugins, vacation_role_id, vacation_allowed_channel_ids, member_role_id, join_role_ids, jail_conversation_channel_ids, vacation_conversation_channel_ids, supporter_role_id, supporter_channel_id
 		FROM settings_guild WHERE guild_id = $1`, guildID)
 	var marker, announce, vacation, member, supRole, supChannel sql.NullString
-	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs, &member, &gc.settings.JoinRoleIDs, &supRole, &supChannel); err {
+	switch err := row.Scan(&gc.settings.ModRoleIDs, &gc.settings.AdminUserIDs, &gc.settings.AuditLogChannelID, &gc.settings.StatusChannelID, &gc.settings.OnboardingNudgeSentAt, &gc.settings.DisabledPlugins, &gc.settings.JailAllowedChannelIDs, &marker, &announce, &gc.settings.WritesPaused, &gc.settings.WritesDryRun, &gc.settings.ArchiveViewerRoleIDs, &gc.settings.EnabledPlugins, &vacation, &gc.settings.VacationAllowedChannelIDs, &member, &gc.settings.JoinRoleIDs, &gc.settings.JailConversationChannelIDs, &gc.settings.VacationConversationChannelIDs, &supRole, &supChannel); err {
 	case nil, pgx.ErrNoRows:
 		if marker.Valid {
 			v := marker.String
@@ -798,6 +791,7 @@ func (s *Store) AddJailAllowedChannel(ctx context.Context, guildID, channelID st
 		INSERT INTO settings_guild (guild_id, jail_allowed_channel_ids, updated_at) VALUES ($1, ARRAY[$2], now())
 		ON CONFLICT (guild_id) DO UPDATE SET
 			jail_allowed_channel_ids = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.jail_allowed_channel_ids || $2) AS r),
+			jail_conversation_channel_ids = array_remove(settings_guild.jail_conversation_channel_ids, $2),
 			updated_at = now()`,
 		guildID, channelID); err != nil {
 		return fmt.Errorf("settings: add jail allowed channel: %w", err)
@@ -939,8 +933,7 @@ func (s *Store) SetJailAnnounceChannel(ctx context.Context, guildID, channelID s
 	return nil
 }
 
-// MemberRoleID returns the guild's ordinary member role, or "" when the
-// baseline is @everyone alone.
+// MemberRoleID returns the ordinary join role, or empty when unconfigured.
 func (s *Store) MemberRoleID(guildID string) string {
 	return s.guild(guildID).settings.MemberRoleID
 }
@@ -1001,7 +994,7 @@ func (s *Store) setGuildText(ctx context.Context, guildID, column, value string)
 	return nil
 }
 
-// VacationAllowedChannelIDs is the vacation script's additive allowlist.
+// VacationAllowedChannelIDs is the vacation read-only list.
 func (s *Store) VacationAllowedChannelIDs(guildID string) []string {
 	return s.guild(guildID).settings.VacationAllowedChannelIDs
 }
@@ -1013,6 +1006,7 @@ func (s *Store) AddVacationAllowedChannel(ctx context.Context, guildID, channelI
 		INSERT INTO settings_guild (guild_id, vacation_allowed_channel_ids, updated_at) VALUES ($1, ARRAY[$2], now())
 		ON CONFLICT (guild_id) DO UPDATE SET
 			vacation_allowed_channel_ids = (SELECT array_agg(DISTINCT r) FROM unnest(settings_guild.vacation_allowed_channel_ids || $2) AS r),
+			vacation_conversation_channel_ids = array_remove(settings_guild.vacation_conversation_channel_ids, $2),
 			updated_at = now()`,
 		guildID, channelID); err != nil {
 		return fmt.Errorf("settings: add vacation allowed channel: %w", err)

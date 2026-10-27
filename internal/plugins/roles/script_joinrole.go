@@ -84,6 +84,12 @@ func (p *Plugin) giveJoinRole(ctx context.Context, guildID, userID string) {
 	if len(roleIDs) == 0 || p.dryRun(guildID) || !p.scriptOn(ctx, guildID, scriptJoinRole) {
 		return
 	}
+	key := jailKey(guildID, userID)
+	if !p.claim(key) {
+		p.scheduleJoinRole(guildID, userID)
+		return
+	}
+	defer p.unclaim(key)
 	if _, jailed, err := p.store.GetJail(ctx, guildID, userID); err != nil || jailed {
 		if err != nil {
 			p.log.Error("roles: join-role: look up jail, skipping", "guild", guildID, "user", userID, "err", err)

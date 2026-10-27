@@ -121,22 +121,22 @@ func (p *Plugin) JailAutomatic(ctx context.Context, guildID, userID string, dura
 		// stricter sentence, so the trip ends and the nest takes over, for
 		// the later of the two ends. Compared by sentence, not marker ID: a
 		// jail marker the guild has since reconfigured is still a jail.
-		if err := p.transferJail(ctx, guildID, jailTarget{userID: userID, roles: core.IDStrings(member.RoleIDs)}, rec, jailRoleID, &releaseAt); err != nil {
+		effectiveEnd, err := p.transferJailWithDeadline(ctx, guildID, jailTarget{userID: userID, roles: core.IDStrings(member.RoleIDs)}, jailRoleID, &releaseAt, true)
+		if err != nil {
 			return err
 		}
 		to := p.sentenceFor(guildID, jailRoleID)
-		p.publishTransferred(ctx, guildID, userID, core.ActorSystem, reason, p.sentenceFor(guildID, rec.JailRoleID), to, &releaseAt)
-		p.notifyMoved(ctx, guildID, userID, &releaseAt, to, reason)
-		p.announceMoved(ctx, guildID, "", []string{userID}, &releaseAt, to)
+		p.publishTransferred(ctx, guildID, userID, core.ActorSystem, reason, p.sentenceFor(guildID, rec.JailRoleID), to, effectiveEnd)
+		p.notifyMoved(ctx, guildID, userID, effectiveEnd, to, reason)
+		p.announceMoved(ctx, guildID, "", []string{userID}, effectiveEnd, to)
 		return nil
 	}
 	if releaseAt.Equal(*rec.ReleaseAt) {
 		return nil
 	}
-	if err := p.store.SetJailRelease(ctx, guildID, userID, &releaseAt); err != nil {
+	if err := p.redateJail(ctx, guildID, userID, &releaseAt, true); err != nil {
 		return fmt.Errorf("roles: extend jail: %w", err)
 	}
-	p.armJailRelease(guildID, userID, releaseAt)
 	p.publishResentenced(ctx, guildID, userID, core.ActorSystem, reason, duration)
 	return nil
 }

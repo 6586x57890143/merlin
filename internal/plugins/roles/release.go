@@ -118,6 +118,41 @@ func (p *Plugin) armJailRelease(guildID, userID string, at time.Time) {
 	p.arm(jailKey(guildID, userID), at, func() { p.fireJailRelease(guildID, userID) })
 }
 
+// redateJail shares the release claim so a successful extension cannot be
+// deleted by a release that was already in flight. Automatic extensions
+// preserve whichever deadline is later, including an indefinite sentence.
+func (p *Plugin) redateJail(ctx context.Context, guildID, userID string, at *time.Time, extendOnly bool) error {
+	key := jailKey(guildID, userID)
+	if !p.claim(key) {
+		return errReleaseInProgress
+	}
+	defer p.unclaim(key)
+	rec, ok, err := p.store.GetJail(ctx, guildID, userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotJailed
+	}
+	if extendOnly && (rec.ReleaseAt == nil || (at != nil && rec.ReleaseAt.After(*at))) {
+		at = rec.ReleaseAt
+	}
+	if err := p.store.SetJailRelease(ctx, guildID, userID, at); err != nil {
+		return err
+	}
+	if at != nil {
+		p.armJailRelease(guildID, userID, *at)
+	} else {
+		p.timerMu.Lock()
+		if timer := p.timers[key]; timer != nil {
+			timer.Stop()
+			delete(p.timers, key)
+		}
+		p.timerMu.Unlock()
+	}
+	return nil
+}
+
 func (p *Plugin) armGrantRevoke(guildID, userID, roleID string, at time.Time) {
 	p.arm(grantKey(guildID, userID, roleID), at, func() { p.fireGrantRevoke(guildID, userID, roleID) })
 }
@@ -142,7 +177,7 @@ func (p *Plugin) fireJailRelease(guildID, userID string) {
 	if p.dryRun(guildID) {
 		return
 	}
-	if err := p.releaseJail(ctx, guildID, userID, rec, core.ActorSystem); err != nil && !discordguard.Skipped(err) && !errors.Is(err, errReleaseInProgress) {
+	if err := p.releaseJailChecked(ctx, guildID, userID, rec, core.ActorSystem, true); err != nil && !discordguard.Skipped(err) && !errors.Is(err, errReleaseInProgress) {
 		p.log.Error("roles: release timer: release failed, sweep will retry", "guild", guildID, "user", userID, "err", err)
 	}
 }
@@ -161,7 +196,7 @@ func (p *Plugin) fireGrantRevoke(guildID, userID, roleID string) {
 	if p.dryRun(guildID) {
 		return
 	}
-	if err := p.revokeGrant(ctx, guildID, userID, roleID, core.ActorSystem); err != nil && !discordguard.Skipped(err) && !errors.Is(err, errReleaseInProgress) {
+	if err := p.revokeGrantChecked(ctx, guildID, userID, roleID, core.ActorSystem, true); err != nil && !discordguard.Skipped(err) && !errors.Is(err, errReleaseInProgress) {
 		p.log.Error("roles: expiry timer: revoke failed, sweep will retry", "guild", guildID, "user", userID, "role", roleID, "err", err)
 	}
 }

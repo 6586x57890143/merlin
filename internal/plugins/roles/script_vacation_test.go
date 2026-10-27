@@ -14,7 +14,7 @@ import (
 )
 
 // The vacation script: a jail row whose marker is the island's role. These
-// tests pin what differs from jail (the switch, no channel writes, the
+// tests pin what differs from jail (the switch, the configured marker, the
 // words) and that a move between the two keeps the snapshot and follows
 // the marker whichever way it happened.
 
@@ -101,8 +101,8 @@ func TestVacationClearsADeletedConfiguredRole(t *testing.T) {
 }
 
 // TestVacationIsAJailOnTheIsland: the record is a jail row with the
-// island's marker, the member holds exactly that, no channel overwrite is
-// written, and every surface says vacation: audit, DM, announcement, the
+// island's marker, the member holds exactly that, permissions are reconciled,
+// and every surface says vacation: audit, DM, announcement, the
 // ledger (as a note, never a jail) and the reply.
 func TestVacationIsAJailOnTheIsland(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
@@ -123,8 +123,8 @@ func TestVacationIsAJailOnTheIsland(t *testing.T) {
 	if !slices.Equal(m.Roles, []string{island}) {
 		t.Fatalf("expected the member stripped to the island's role, got %v", m.Roles)
 	}
-	if ops.permSetCalls != 0 || ops.permDeleteCalls != 0 {
-		t.Fatal("vacation must never write a channel overwrite")
+	if ow := ops.overwrites[overwriteKey{"7000601", island}]; ow.deny&discord.PermissionViewChannel == 0 {
+		t.Fatal("vacation must establish channel restrictions before assignment")
 	}
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.vacation"}) {
 		t.Fatalf("audit: %v", got)
@@ -214,6 +214,7 @@ func TestCommandTransferIsAnnouncedOnce(t *testing.T) {
 // inherit: a member-level deny from a hardened jail.
 func TestVacationOnAJailedMemberParolesThemAndClearsTheHardening(t *testing.T) {
 	p, ops, store, audit, _, _ := vacationFixture()
+	recordOwnedOverwrite(p, ops, "7000606", "7000102")
 	ops.setMember("7000001", "7000102", []string{"7000301"})
 	ops.channel["7000606"] = &fch{ID: "7000606", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
 		PermissionOverwrites: []*fow{
@@ -427,8 +428,7 @@ func TestVacationRoleConfigureSyncsDenyByDefault(t *testing.T) {
 	p, ops, _, audit, _, settings := vacationFixture()
 	settings.vacationAllowed["7000001"] = []string{"7000607"}
 	view, send, connect := discord.PermissionViewChannel, discord.PermissionSendMessages, discord.PermissionConnect
-	// The beach as the guild built it: reactions on, attachments off. Both
-	// must survive the sync untouched.
+	// Read-only replaces participation bits but preserves the attachment deny.
 	ops.channel["7000607"] = &fch{ID: "7000607", GuildID: "7000001", Type: discord.ChannelTypeGuildText,
 		PermissionOverwrites: []*fow{{ID: "7000310", Type: discord.PermissionOverwriteTypeRole,
 			Allow: discord.PermissionAddReactions, Deny: discord.PermissionAttachFiles}}}
@@ -447,16 +447,16 @@ func TestVacationRoleConfigureSyncsDenyByDefault(t *testing.T) {
 		t.Fatal("the cache must be dropped when the role changes")
 	}
 	beach := ops.overwrites[overwriteKey{"7000607", "7000310"}]
-	if beach.allow != view|send|discord.PermissionAddReactions || beach.deny != restrictedBits|discord.PermissionAttachFiles {
+	if beach.allow != view|discord.PermissionReadMessageHistory || beach.deny&(send|discord.PermissionAttachFiles) != send|discord.PermissionAttachFiles {
 		t.Fatalf("the beach should be visible with the guild's own bits kept, got %+v", beach)
 	}
 	if vc := ops.overwrites[overwriteKey{"7000608", "7000310"}]; vc.allow != 0 || vc.deny != view|connect {
 		t.Fatalf("an unlisted voice room is hidden, got %+v", vc)
 	}
-	if office := ops.overwrites[overwriteKey{"7000617", "7000310"}]; office.allow != send || office.deny != view {
-		t.Fatalf("an unlisted text room keeps the guild's bits and loses only View, got %+v", office)
+	if office := ops.overwrites[overwriteKey{"7000617", "7000310"}]; office.allow != 0 || office.deny != view {
+		t.Fatalf("an unlisted text room loses managed access, got %+v", office)
 	}
-	if !rt.said("<#7000607>") || !rt.said("<#7000617>") || !rt.said("everything else on each channel") {
+	if !rt.said("<#7000607>") || !rt.said("<#7000617>") || !rt.said("Unrelated overwrite bits") {
 		t.Fatalf("expected the read-back, got %v", rt.bodies)
 	}
 	if got := auditActions(audit); !slices.Equal(got, []string{"roles.configure_jail_channels"}) {
@@ -557,8 +557,8 @@ func TestVacationAllowlistIsOneWriteAndAuditQuiet(t *testing.T) {
 	if !slices.Equal(settings.vacationAllowed["7000001"], []string{"7000607"}) || !rt.said("Channel allowed") {
 		t.Fatalf("expected the channel listed, got %v / %v", settings.vacationAllowed["7000001"], rt.bodies)
 	}
-	if ow := ops.overwrites[overwriteKey{"7000607", island}]; ow.allow != view|send || ow.deny != restrictedBits {
-		t.Fatalf("expected view+send with the restricted bits denied, got %+v", ow)
+	if ow := ops.overwrites[overwriteKey{"7000607", island}]; ow.allow != view|discord.PermissionReadMessageHistory || ow.deny&send == 0 {
+		t.Fatalf("expected read-only access, got %+v", ow)
 	}
 	if ops.permSetCalls != 1 {
 		t.Fatalf("exactly one overwrite written, got %d", ops.permSetCalls)
@@ -583,10 +583,10 @@ func TestVacationAllowlistIsOneWriteAndAuditQuiet(t *testing.T) {
 	}
 
 	set(p, panelJail+"vacallow", []string{"7000607"})
-	if ow := ops.overwrites[overwriteKey{"7000607", island}]; ow.allow != send || ow.deny&view == 0 || len(settings.vacationAllowed["7000001"]) != 0 {
-		t.Fatalf("expected the beach hidden again with only View moved, got %+v / %v", ow, settings.vacationAllowed["7000001"])
+	if ow := ops.overwrites[overwriteKey{"7000607", island}]; ow.allow != 0 || ow.deny&view == 0 || len(settings.vacationAllowed["7000001"]) != 0 {
+		t.Fatalf("expected the beach hidden again, got %+v / %v", ow, settings.vacationAllowed["7000001"])
 	}
-	if !rt.said("Channel hidden") {
+	if !rt.said("Channel access updated") {
 		t.Fatalf("got %v", rt.bodies)
 	}
 }
@@ -613,16 +613,17 @@ func TestVacationSyncNeedsARole(t *testing.T) {
 	}
 }
 
-// TestMeltingPotBeachIsTheDefaultAllowlist: the beach is the island's one
-// room there until the guild lists its own.
-func TestMeltingPotBeachIsTheDefaultAllowlist(t *testing.T) {
+// The migration persists the former implicit beach default. Clearing it
+// must stay cleared instead of restoring the default on the next sync.
+func TestMeltingPotBeachDefaultCanBeCleared(t *testing.T) {
 	p, _, _, _, _, settings := vacationFixture()
+	settings.vacationAllowed[meltingPotGuildID] = []string{meltingPotDefaultVacationChannelID}
 	if got := p.vacationAllowlist(meltingPotGuildID); !slices.Equal(got, []string{meltingPotDefaultVacationChannelID}) {
 		t.Fatalf("got %v", got)
 	}
-	settings.vacationAllowed[meltingPotGuildID] = []string{"7000340"}
-	if got := p.vacationAllowlist(meltingPotGuildID); !slices.Equal(got, []string{"7000340"}) {
-		t.Fatalf("a configured list replaces the default, got %v", got)
+	settings.vacationAllowed[meltingPotGuildID] = nil
+	if got := p.vacationAllowlist(meltingPotGuildID); len(got) != 0 {
+		t.Fatalf("clearing the list must persist, got %v", got)
 	}
 	if got := p.vacationAllowlist("7000117"); got != nil {
 		t.Fatalf("no default elsewhere, got %v", got)
@@ -636,7 +637,7 @@ func TestListChannelsShowsTheVacationAllowlist(t *testing.T) {
 	settings.vacationAllowed["7000001"] = []string{"7000607"}
 	rt := handlerSession(t)
 	showPage(p, "vacation")
-	if !rt.said("Visible on vacation") || !rt.said("Now: <#7000607>") {
+	if !rt.said("Read-only") || !rt.said("Conversation") || !rt.said("Now: <#7000607>") {
 		t.Fatalf("got %v", rt.bodies)
 	}
 }
