@@ -34,3 +34,23 @@ golangci-lint run
 The Postgres-backed tests skip themselves when `TEST_DATABASE_URL` isn't set, so
 a plain `go test ./...` works with no setup. To actually run them, bring up the
 compose Postgres and point the variable at it.
+# One-time supporter smoke
+
+`TestLiveSupporterSelfBotLifecycle` is skipped by default. After explicit operator
+authorization, build the roles test binary for the deployment host and run only
+that test with `MERLIN_LIVE_SUPPORTER_SMOKE=self-bot-one-time`. Supply a JSON object
+on private stdin containing `Token`, `Guild`, `Channel`, `Role` and `Bot`; never put
+the token in argv, environment variables, logs or a committed file. Preflight the
+guild's write controls and confirm the chosen channel belongs to it. Run in an
+isolated, resource-limited container with logging disabled and no published ports.
+
+The test targets only the authenticated bot itself, refuses a role it already
+holds, and requires a permissionless unmanaged role below the bot. It exercises
+the actual supporter sync, event bus, welcome plugin, write guard and Discord REST
+calls. It posts one card labelled as an integration test in the supplied channel,
+checks renewal sends no second welcome, and verifies expiry removes the role.
+Cleanup also attempts to remove an uncertain grant. The grant store and channel
+override exist only in memory; production settings, supporter periods and grant
+rows are not written. This smoke does not replace funded checkout, fleet-link or
+production database validation. Keep the production thank-you channel unchanged.
+
