@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	cards "github.com/6586x57890143/cygnet/support"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
@@ -40,11 +41,28 @@ type Emoji struct {
 // Emojis is every emoji merlin uploads, read from the embedded art.
 func Emojis() []Emoji {
 	entries, _ := emojiArt.ReadDir("assets/emoji") // embedded; the pattern matched at build
-	out := make([]Emoji, 0, len(entries))
+	art := map[string][]byte{}
 	for _, e := range entries {
 		png, _ := emojiArt.ReadFile("assets/emoji/" + e.Name())
-		sum := sha256.Sum256(png)
 		key := strings.TrimSuffix(e.Name(), ".png")
+		art[key] = png
+	}
+	// The shared generator owns payment marks. Register each in merlin's
+	// existing hashed application-emoji library, overriding old copies.
+	for _, key := range cards.Icons {
+		if png, ok := cards.IconPNG(key); ok {
+			art["support_"+key] = png
+		}
+	}
+	keys := make([]string, 0, len(art))
+	for key := range art {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	out := make([]Emoji, 0, len(keys))
+	for _, key := range keys {
+		png := art[key]
+		sum := sha256.Sum256(png)
 		out = append(out, Emoji{Key: key, Name: key + "_" + hex.EncodeToString(sum[:3]), PNG: png})
 	}
 	return out
@@ -134,7 +152,9 @@ func AppEmoji(key string) string { return inlineEmoji(key) }
 
 // PluginOptionEmoji is plugin's icon for a select option or a button, or
 // nil until the emoji are synced.
-func PluginOptionEmoji(plugin string) *discord.ComponentEmoji { return AppComponentEmoji("plugin_" + plugin) }
+func PluginOptionEmoji(plugin string) *discord.ComponentEmoji {
+	return AppComponentEmoji("plugin_" + plugin)
+}
 
 // AppComponentEmoji is the app emoji key for a select option or a button,
 // or nil until the emoji are synced.

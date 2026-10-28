@@ -57,8 +57,12 @@ type Plugin struct {
 	log      *slog.Logger
 	now      func() time.Time
 
-	mu     sync.Mutex
-	posted map[string]time.Time // channel ID -> when /support last posted there
+	mu             sync.Mutex
+	posted         map[string]time.Time // channel ID -> when /support last posted there
+	readMethods    func(context.Context) ([]cards.Method, error)
+	methods        []cards.Method
+	methodsUntil   time.Time
+	readingMethods bool
 }
 
 // New makes the plugin; owner is the Discord ID of whoever builds the
@@ -68,6 +72,37 @@ func New(ops func(guildID string) Sender, settings Settings, speaker voice.Sourc
 }
 
 func (p *Plugin) Name() string { return "support" }
+
+// WithPaymentMethods wires the public offer without coupling this plugin
+// to the fleet client. Call before Start.
+func (p *Plugin) WithPaymentMethods(read func(context.Context) ([]cards.Method, error)) {
+	p.readMethods = read
+}
+
+func (p *Plugin) paymentMethods(ctx context.Context) []cards.Method {
+	p.mu.Lock()
+	if p.readMethods == nil || p.readingMethods || p.now().Before(p.methodsUntil) {
+		out := append([]cards.Method{}, p.methods...)
+		p.mu.Unlock()
+		return out
+	}
+	p.readingMethods = true
+	p.mu.Unlock()
+	// Stay inside Discord's initial response window even during a hub outage.
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	methods, err := p.readMethods(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.readingMethods = false
+	p.methods = append([]cards.Method{}, methods...)
+	p.methodsUntil = p.now().Add(5 * time.Minute)
+	if err != nil {
+		p.methods = []cards.Method{}
+		p.methodsUntil = p.now().Add(30 * time.Second)
+	}
+	return append([]cards.Method{}, p.methods...)
+}
 
 func (p *Plugin) Init(deps core.Deps) error {
 	p.log = deps.Logger
@@ -107,7 +142,9 @@ func panel(pg cards.Page) core.Panel {
 // handleSupport posts the advert in the channel, or, inside the cooldown
 // after the last one there, shows it to whoever asked.
 func (p *Plugin) handleSupport(ctx context.Context, ix *core.Ix) {
-	pn := panel(cards.Advert(p.brand()))
+	brand := p.brand()
+	brand.Methods = p.paymentMethods(ctx)
+	pn := panel(cards.Advert(brand))
 	if !p.claim(ix.ChannelID) {
 		if err := ix.RespondPanel(pn); err != nil {
 			p.log.Error("support: respond", "err", err)

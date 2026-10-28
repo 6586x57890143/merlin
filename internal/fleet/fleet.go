@@ -17,6 +17,7 @@ import (
 
 	"github.com/6586x57890143/cygnet/link"
 	"github.com/6586x57890143/cygnet/link/perms"
+	cards "github.com/6586x57890143/cygnet/support"
 
 	"github.com/6586x57890143/merlin/internal/core"
 )
@@ -95,6 +96,15 @@ func (l *Link) Supporters(ctx context.Context) ([]Backer, error) {
 	}
 	err := l.c.Call(ctx, "cygnet.supporters", nil, &a)
 	return a.Supporters, err
+}
+
+// PaymentMethods is the public rails on offer, without checkout or user data.
+func (l *Link) PaymentMethods(ctx context.Context) ([]cards.Method, error) {
+	var result struct {
+		Rails []cards.Method `json:"rails"`
+	}
+	err := l.c.Call(ctx, "cygnet.payment_methods", nil, &result)
+	return result.Rails, err
 }
 
 // Run keeps the link up until ctx ends, then says goaway.

@@ -328,7 +328,11 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	registry.Register(sched)
 	registry.Register(ping.New(speaker))
 	// /support and the new-supporter card; roles publishes who joined.
-	registry.Register(support.New(func(guildID string) support.Sender { return guard.For(guildID) }, settingsStore, speaker, cfg.BootstrapAdminUserIDs[0]))
+	supportPlugin := support.New(func(guildID string) support.Sender { return guard.For(guildID) }, settingsStore, speaker, cfg.BootstrapAdminUserIDs[0])
+	if hub != nil {
+		supportPlugin.WithPaymentMethods(hub.PaymentMethods)
+	}
+	registry.Register(supportPlugin)
 	registry.Register(rotationPlugin)
 	registry.Register(rolesPlugin)
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)

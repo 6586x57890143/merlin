@@ -1,5 +1,19 @@
 # What merlin does
 
+**Backing the birds.** `/support` shares the checkout at support.cygnet.lol. Its
+currency list follows cygnet's current offer, with a short cache and a plain fallback
+when the hub is unavailable. Payment marks come from the shared supporter library
+and use merlin's normal application emoji storage, so each unchanged icon uploads
+only once. Merlin receives public payment choices and supporter expiry dates, never
+wallet keys or RPC credentials.
+
+On `/roles settings`, turn supporters on and choose a thank-you channel. Merlin
+checks cygnet every ten minutes, gives timed supporter grants and extends them on
+renewal. Its normal expiry sweep removes tracked grants; manually assigned roles
+and permanent grants stay under the server's control. New grants produce a welcome
+card, while a renewal changes the expiry without another welcome. Welcome messages
+are currently best-effort; a send failure or process interruption can lose one.
+
 **Channel rotation.** Point it at a channel and every so often it swaps that
 channel out for a fresh empty one under the same name, in the same place in the
 sidebar. The old one gets renamed, moved into a hidden archive category and
