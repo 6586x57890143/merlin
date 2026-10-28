@@ -34,6 +34,7 @@ golangci-lint run
 The Postgres-backed tests skip themselves when `TEST_DATABASE_URL` isn't set, so
 a plain `go test ./...` works with no setup. To actually run them, bring up the
 compose Postgres and point the variable at it.
+
 # One-time supporter smoke
 
 `TestLiveSupporterSelfBotLifecycle` is skipped by default. After explicit operator
@@ -53,4 +54,3 @@ Cleanup also attempts to remove an uncertain grant. The grant store and channel
 override exist only in memory; production settings, supporter periods and grant
 rows are not written. This smoke does not replace funded checkout, fleet-link or
 production database validation. Keep the production thank-you channel unchanged.
-
