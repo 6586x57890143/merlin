@@ -113,3 +113,12 @@ func TestHere(t *testing.T) {
 		t.Errorf("a link that's down: %v %v", ok, err)
 	}
 }
+
+func TestPaymentMethodsFailWithoutAnAvailableHub(t *testing.T) {
+	l := Dial("ws://127.0.0.1:1/v1/link", "t", "", quiet)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if methods, err := l.PaymentMethods(ctx); err == nil || len(methods) != 0 {
+		t.Fatalf("unavailable hub invented an offer: %v %v", methods, err)
+	}
+}
