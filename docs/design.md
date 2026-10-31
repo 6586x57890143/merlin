@@ -1,10 +1,10 @@
-# CLAUDE.md
+# Design notes
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+The reasoning behind the rules in `CLAUDE.md`: what each rule prevents, the bug that produced it, and the alternatives that were rejected. Same headings as `CLAUDE.md`. Read the matching section before changing how a subsystem behaves.
 
 ## What this is
 
-`merlin` is a production-grade, modular Discord bot (Go 1.27, disgo, pgx v5). Full design doc: [`spec.MD`](./spec.MD). Read it before any non-trivial change, especially §4 (security model), §4a (command/permission framework), and §9 (milestone plan). The project is built for a high-free-speech community with real exposure to weaponized/mass reporting, so **fail-safe behavior and defense in depth are first-class requirements**, not polish.
+`merlin` is a production-grade, modular Discord bot (Go 1.27, disgo, pgx v5). Full design doc: [`spec.MD`](../spec.MD). Read it before any non-trivial change, especially §4 (security model), §4a (command/permission framework), and §9 (milestone plan). The project is built for a high-free-speech community with real exposure to weaponized/mass reporting, so **fail-safe behavior and defense in depth are first-class requirements**, not polish.
 
 ## Commands
 
