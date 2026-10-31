@@ -1,1381 +1,292 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## What this is
 
-`merlin` is a production-grade, modular Discord bot (Go 1.27, disgo, pgx v5). Full design doc: [`spec.MD`](./spec.MD). Read it before any non-trivial change, especially §4 (security model), §4a (command/permission framework), and §9 (milestone plan). The project is built for a high-free-speech community with real exposure to weaponized/mass reporting, so **fail-safe behavior and defense in depth are first-class requirements**, not polish.
+`merlin` is a production-grade, modular Discord bot (Go 1.27, disgo, pgx v5). Design doc: [`spec.MD`](./spec.MD); read §4 (security), §4a (commands/permissions) and §9 (milestones) before any non-trivial change. Built for a high-free-speech community exposed to weaponized mass reporting, so **fail-safe behaviour and defense in depth are requirements, not polish**.
+
+This file is the rules. **[`docs/design.md`](./docs/design.md) is the why**: the bug behind each rule and the alternatives rejected, under the same headings. Read the matching section before changing how a subsystem behaves, and keep both in step.
 
 ## Commands
 
 ```sh
-go build ./...                              # compile everything
-go vet ./...
-golangci-lint run                           # matches CI's golangci-lint v2.13.1
-go test ./...  -cover                       # full suite
-go test ./... -race -cover -covermode=atomic  # matches CI exactly (needs CGO_ENABLED=1 / a C toolchain)
-go test ./internal/plugins/rotation/... -run TestRotateFullCycle -v   # single package / single test
-go run ./tools/icons                        # redraw every plugin icon into internal/core/assets/emoji
-go test ./internal/obs -bench . -run x      # what a /perf sample costs
+go build ./... && go vet ./...
+golangci-lint run                             # CI's golangci-lint v2.13.1
+go test ./... -race -cover -covermode=atomic  # matches CI (needs CGO_ENABLED=1)
+go test ./internal/plugins/rotation/... -run TestRotateFullCycle -v
+go test ./... -coverprofile=coverage.out && scripts/coverage-floor.sh coverage.out   # coverage gate
+go test ./internal/... -run x -bench . -benchmem   # hot paths
+go run ./tools/icons                          # redraw plugin icons
 govulncheck ./...
-
-go test ./... -coverprofile=coverage.out && scripts/coverage-floor.sh coverage.out   # the CI coverage gate
-go test ./internal/... -run x -bench . -benchmem                                  # hot paths: aimod intake and rung 1, statistics, event bus, write guard
 ```
 
-Every package under `internal/plugins/` must hold at least 70% statement coverage (`scripts/coverage-floor.sh`, run by CI). Plugins that predate the floor are pinned in that script at the coverage they had and may only go up; anything new gets the full 70% with no way to opt out but an edit somebody reviews.
+Every package under `internal/plugins/` needs 70% statement coverage; older plugins are pinned at their coverage and may only go up.
 
-`internal/settings` and `internal/storage` also have Postgres-backed tests (`internal/dbtest` is the shared harness). They skip themselves, rather than failing, when `TEST_DATABASE_URL` isn't set, so `go test ./...` still runs everywhere with zero setup; CI sets it via a `postgres:16-alpine` service on the `lint-test` job. To run them locally: `docker compose up -d postgres` (or any Postgres reachable at the DSN below), then `TEST_DATABASE_URL=postgres://merlin:changeme@localhost:5432/merlin?sslmode=disable go test ./internal/settings/... ./internal/storage/...` (substitute your own `.env` credentials if you changed them from `.env.example`'s defaults).
+`internal/settings` and `internal/storage` have Postgres tests (`internal/dbtest`) that skip without `TEST_DATABASE_URL`. Locally: `docker compose up -d postgres`, then `TEST_DATABASE_URL=postgres://merlin:changeme@localhost:5432/merlin?sslmode=disable go test ./internal/settings/... ./internal/storage/...`.
 
-Local run:
-```sh
-cp .env.example .env                 # DISCORD_BOT_TOKEN, DISCORD_APP_ID, MERLIN_BOOTSTRAP_ADMIN_USER_ID, ...
-cp config.example.yaml config.yaml   # bootstrap-only: just log_level as of Milestone 4
-docker compose up --build            # bot + Postgres
-# or, natively (Postgres is a hard runtime requirement; migrations run automatically at startup):
-go run ./cmd/bot
-```
+Local run: copy `.env.example` to `.env` and `config.example.yaml` to `config.yaml`, then `docker compose up --build` or `go run ./cmd/bot` (migrations run at startup).
 
-CI (`.github/workflows/ci.yml`) runs on every push/PR: `go vet`, `golangci-lint`, `go test -race -cover`, `govulncheck`, `gitleaks` secret scan, and a Docker build. On push to `main` only, it also builds+pushes a multi-arch (amd64/arm64) image to GHCR and deploys to the VPS over SSH via `docker-compose.prod.yml`. There is no separate lint config file beyond `golangci-lint`'s defaults; check `.github/workflows/ci.yml` for the pinned version if a rule looks unfamiliar.
+CI (`.github/workflows/ci.yml`): vet, lint, race tests, govulncheck, gitleaks, Docker build, the prose check (no em dashes or curly quotes anywhere), a js/wasm build of `cmd/lab`, `scripts/check-contest.mjs`. Push to `main` builds a multi-arch image to GHCR and deploys via `docker-compose.prod.yml`.
 
 ## Architecture
 
-### Plugin model: modular by package, monolithic by binary
+### Plugin model
 
-Every feature is a Go package implementing `core.Plugin` (`internal/core/registry.go`): `Name() string`, `Init(deps Deps) error`, `Start(ctx) error`, `Shutdown(ctx) error`. Plugins are compiled into one binary and registered in `cmd/bot/main.go`, with **no dynamic/hot-loading, ever** (spec.MD Design Principle 1). `Init` runs for every plugin (in registration order) before any `Start`; `Shutdown` runs in reverse start order. `Registry` (`internal/core/registry.go`) wraps every lifecycle call in `recover()`: a panicking plugin fails startup/shutdown loudly, it never limps along or takes the process down silently.
+- Every feature implements `core.Plugin` (`Name/Init/Start/Shutdown`), registered in `cmd/bot/main.go`. **No dynamic loading.** All `Init`s before any `Start`; `Shutdown` in reverse; every lifecycle call under `recover()`.
+- **Plugins never import each other.** They talk through `Deps`, the `core.EventBus`, or a narrow interface wired in `main.go` (`aimod.Jailer`, `aimod.History`, `aimod.Traffic`, `roles.SupportersFunc`).
+- `EventBus.Publish` runs subscribers synchronously under `recover()`: don't block, don't publish/subscribe reentrantly under a lock.
+- **Narrow interface seams**: a consumer defines its own minimal interface (`core.GuildAuthData`, `rotation.SettingsProvider`) instead of importing the concrete store. Prevents cycles (`core` never imports `settings`) and allows tiny fakes.
 
-Plugins never import or call each other directly. They only communicate via:
-- **`Deps`** (`internal/core/registry.go`): the fixed set of shared services injected at `Init`: `Session`, `Bus`, `Config`, `Perms`, `Commands`, `Audit`, `Logger`, `DB`, `Scheduler`. A plugin that needs something narrower than the full `internal/settings.Store` (e.g. `rotation`, `adminconfig`) takes it as an explicit constructor parameter instead (`rotation.New(settingsStore)`), not through `Deps`. See the narrow-interface pattern below.
-- **`core.EventBus`** (`internal/core/eventbus.go`): pub/sub by `EventType` (`core.EventReady`, `core.EventConfigChanged`, `core.EventChannelRotated`, ...). `Publish` runs every subscriber synchronously on the publisher's goroutine, each under its own `recover()`, so handlers must not block for long, and must never call `Publish`/`Subscribe` reentrantly while holding a lock that could deadlock against the bus's own (it copies the subscriber slice under `RLock` before dispatching, precisely to avoid that).
+### Command & Permission Framework (spec.MD §4a)
 
-### Narrow interface seams (the dominant pattern in this codebase)
-
-Concrete stores (`internal/settings.Store`, `internal/config.Loader`) are never imported directly by every consumer. Instead each consumer package defines its own minimal interface for exactly what it needs, and the concrete type satisfies it structurally with zero glue code: `core.GuildAuthData`, `rotation.SettingsProvider`, `adminconfig.SettingsAdmin`, `scheduler.statusChannelResolver`, `audit.channelResolver`, `rotation.DiscordChannelOps`/`ArchiveStore`. This exists so (a) packages never form import cycles (e.g. `internal/settings` must import `internal/core` for `EventBus`, so `internal/core` can never import `internal/settings` back; it depends on the interface `GuildAuthData` instead), and (b) every plugin can be unit-tested against a tiny in-memory fake instead of live Postgres. When adding a new consumer of settings/config, define a narrow interface in the consumer's own package rather than depending on the concrete store.
-
-### Command & Permission Framework (spec.MD §4a: read this before adding any command)
-
-`core.CommandRouter` (`internal/core/commands.go`) is the **single owner** of slash-command registration and dispatch. This replaced an ad-hoc per-plugin `session.AddHandler`/`ApplicationCommandBulkOverwrite` approach that had a live collision bug (two plugins each bulk-overwriting would silently wipe out each other's commands) and no discoverability story. Rules that follow from this, binding for all new plugins:
-
-- **One top-level command per plugin** (`/rotation`, `/scheduler`, `/config`, ...), not a central `/admin` dumping ground. The only sanctioned exception is `/config` (`internal/plugins/adminconfig`), because mod roles/admins/permission whitelists don't belong to any single feature plugin. `rapsheet` is the other: `/ban`, `/kick` and `/timeout` are its own leaves lifted to top level, because they are what a moderator types by name under pressure and nobody looks under `/rapsheet` for them. They are registered under the `rapsheet` plugin name (so disabling it disables them) and keep their `rapsheet.ban`/`rapsheet.kick`/`rapsheet.timeout` action names (so a guild's tier/allow/deny settings carry over). This is not a precedent for more of them.
-- Register via `Commands.RegisterCommand(pluginName, cmd)` (a `discord.SlashCommandCreate`) + `Commands.HandleIx(topLevelName, path, PermSpec, handler)` during `Init`. Never set commands or listen for interactions yourself. `pluginName` (almost always the plugin's own `Name()`) is what lets the router check per-guild plugin enable/disable before dispatch.
-- **`PermSpec{Tier, Action}` is mandatory** for every leaf. `Tier` is `TierPublic` / `TierMod` / `TierAdmin`; its zero value (`tierUnset`) is deliberately invalid and rejected at `Finalize()`: a forgotten tier fails the build at startup, it never silently defaults to public. Any tier above `TierPublic` also requires a non-empty `Action`.
-- `Authorize` (`internal/core/permissions.go`) checks four layers in order, coarsest first (spec.MD §4/§4a): (0) is the owning plugin enabled in this guild (`core.PluginGate`, `/config plugins set`), checked by `CommandRouter` before Authorize even runs; (1) deny, via `ActionPolicy.DenyRoleIDs/DenyUserIDs` (`/config permissions deny`), wins over everything below except the bootstrap admin, which nothing can deny; (2) tier, the guild's `ActionPolicy.RequiredTier` override if set (`/config permissions set-tier`), else the command's own `PermSpec.Tier`; `TierAdmin` passes for a DB-listed admin, the bootstrap identity, or anyone holding Discord's own Administrator permission bit (`member.Permissions`, already on every interaction, no extra API call); `TierMod` deliberately has no permission-bit shortcut, only DB-listed mod roles or admins; (3) allow, the additive per-action whitelist (`/config permissions allow`), independent of tier. Mutating any of admins/mod-roles/tier-overrides/allow/deny/plugin-toggle is itself `TierAdmin`-only, never `TierMod`, so a mod can never escalate. That invariant is enforced against the tier-override mechanism too: `/config permissions set-tier` refuses to lower `config.mutate` below `TierAdmin` (`adminconfig.validateTierChange`), since a guild that set it to `TierMod` would be letting any mod run `/config admins add @themselves`, the same class of self-inflicted lockout as disabling `adminconfig`, and guarded the same way.
-- Only `TierMod`/`TierAdmin` overrides are honored; a stored `RequiredTier` of `TierPublic` is ignored. `set-tier` never offers it, so one could only arrive from a corrupt row, a hand-edited DB, or a future import path, and honoring it would strip every check off a privileged action. Loosening Admin→Mod is a deliberate feature; loosening anything to "no check at all" is the one direction a stored value must never move a command.
-- The effective tier is resolved **before** the `TierPublic` shortcut, not after. Short-circuiting on the compiled-in `spec.Tier` would silently ignore a guild's `set-tier` override on a public action, a fail-open in the one function that must fail closed. The reverse can't happen: `set-tier` only offers Mod/Admin, so an override can raise a public command's bar but never lower a privileged one to public.
-- Discord's own `default_member_permissions` is **deliberately left unset** on Mod/Admin commands (see spec.MD §4a): the internal checks above are the sole real gate, so they can't be bypassed by a mismatched Discord permission bit. The one exception is `/statistics` (`internal/plugins/statistics`), which sets it to `0`, and the distinction is *listed* rather than *reachable*: every registered command shows in every member's picker whoever may run it, so leaving it unset there publishes the fact that somebody can ask merlin who was talking and when, to the people it is about, for a command none of them can run. It sits under the operator check rather than replacing it, so it can only ever narrow. `TestCommandIsNotListedToTheServer` pins it, since it is exactly the line a later reader deletes for matching this rule rather than its reasoning.
-- `adminconfig` (owning `/config`) can never be disabled from `/config`'s plugins page: it is never offered there and `applyPlugins` refuses it anyway, since disabling it would permanently lock a guild out of ever re-enabling anything.
-- Commands register **per-guild** (via `RegisterGuild`, called reactively from a `GuildCreate` handler in `cmd/bot/main.go`), not globally, giving instant availability with no propagation delay. Because Discord stores those registrations and they survive restarts, **a guild whose `GuildCreate` handling failed still answers every command**, which makes that handler a uniquely deceptive place to bail out early. It used to `return` when `settingsStore.Refresh` failed, skipping both plugins' `SyncGuild`; the guild had never been through a settings mutator so it was never queued for retry either, and nothing re-ran for the life of the process. The visible result was a server where `/roles jail` worked perfectly and jails silently never expired and were escapable by rejoining, because `roles-sweep` had never been registered. The handler now marks the guild stale (`settings.Store.MarkStale`, feeding `RetryStale`) and continues with everything that doesn't need settings; the roles sweep needs none. Only rotation is skipped, since it *derives* which jobs should exist from settings and reconciling against fail-closed defaults would read as "this guild rotates nothing" and unregister real work; `RetryStale` publishes `EventConfigChanged` on recovery, which is what reconciles it. Registering the sweep is not the same as letting it act, though: while the guild is stale its writes read as paused (below), so jails are released late rather than never.
-- Every dispatch (`dispatchCommand`/`dispatchAutocomplete`) runs under `recover()`, so a panicking handler costs one reply, not the process.
-- Any option whose valid values come from bot state (job keys, action names, ...) gets Discord autocomplete *plus* a plain `list` subcommand as a redundant, no-typing discovery path. Any channel/role/user-valued option uses the native `Channel`/`Role`/`User` option type, never a raw string ID. The one exception is `/rapsheet view`'s `user`, a string taking `@name` (Discord's member picker still opens in a string option and inserts `<@id>`) or a bare ID, because the `User` picker lists only current members and a sheet outlives membership; `viewTarget` validates it and refuses an ID Discord says belongs to no account. Autocomplete must return at most `25` choices, since Discord rejects a longer response outright, leaving the user with *no* suggestions rather than a truncated list.
-- **Discord's hard response limits are correctness constraints, not polish.** A handler has 3 seconds to respond at all. Anything that knowingly does real work (`/scheduler run-now`, `/roles jail`'s first-ever run, `/roles configure sync-channels`) should `core.DeferResponse` first and finish with `core.FollowUpOK`/`FollowUpErr`. Everything else is covered by the router: a handler that has not answered 2s after Discord created the interaction is deferred for (`Ix.autoDefer`, an update for a click or a form opened from one, a private placeholder otherwise), keeps its context, and its first response becomes an edit or a follow-up. That replaced cancelling the context at the window, which killed the write the member was waiting on (an `/aimod settings` key form that stored nothing) and still showed "the application did not respond". It cannot open a form after it has deferred, and it cannot make a late answer public, so a slow public surface defers itself with `DeferPublic`. Likewise an embed field over 1024 bytes (`core.TruncateEmbedField`) fails the whole message rather than being trimmed, and repeated `UpdateEmbedWithComponents` edits must replace attachments rather than append them.
-- Use `core.LeafArgs(i)` inside handlers to read the invoked subcommand's arguments by name. Don't re-walk `i.ApplicationCommandData().Options` yourself; this exists specifically because that walk was independently reimplemented in three places before being consolidated.
+- `core.CommandRouter` **alone** registers and dispatches slash commands: `Commands.RegisterCommand(pluginName, cmd)` + `HandleIx(top, path, PermSpec, handler)` in `Init`. Never add interaction handlers or bulk-overwrite yourself.
+- **One top-level command per plugin.** Exceptions: `/config`, and rapsheet's `/ban`, `/kick`, `/timeout`. Not a precedent.
+- **`PermSpec{Tier, Action}` is mandatory.** Zero tier fails `Finalize()`; above `TierPublic` needs an `Action`.
+- `Authorize` order: (0) plugin enabled in guild; (1) deny list, beats everything but bootstrap; (2) tier: guild `RequiredTier` override else the spec's. `TierAdmin` = DB admin, bootstrap, or Administrator bit; `TierMod` = DB mod role or admin, no permission-bit shortcut; (3) allow list, additive.
+- Only Mod/Admin overrides are honoured; resolve the effective tier **before** the public shortcut.
+- Mutating admins, mod roles, tiers, allow/deny or toggles is `TierAdmin`. `validateTierChange` refuses lowering `config.mutate` below Admin.
+- `default_member_permissions` stays **unset** on Mod/Admin commands. Exceptions set to `0`: `/statistics` (`TestCommandIsNotListedToTheServer`) and `/perf`.
+- `adminconfig` can never be disabled; it and `help` are never offered as toggles.
+- Commands register **per guild** from `GuildCreate`, which must never bail early: on settings refresh failure call `settings.Store.MarkStale` and continue; only rotation's `SyncGuild` is skipped (`RetryStale` reconciles).
+- Every dispatch runs under `recover()`.
+- State-backed options get autocomplete (max 25) **plus** a `list` subcommand. Channel/role/user options use native types (sole exception: `/rapsheet view`'s `user`, validated by `viewTarget`).
+- **Discord limits are correctness constraints.** Over 3s: `core.DeferResponse` then `FollowUpOK/Err`. `core.TruncateEmbedField` (1024), `TruncateEmbedDescription` (4096). Repeated edits replace attachments. `validateCommandShape` checks limits at `Finalize()` because one bad definition silently fails the whole `BulkOverwrite`.
+- Read arguments with `core.LeafArgs(i)`.
 
 ### On disgo (`internal/core/ix.go`)
 
-merlin runs on disgo alone; discordgo is gone (the port ran #156 to #201).
-
-- **Interactions:** the gateway decodes each one into a `*core.Ix`: disgo's interaction, `GuildID`/`UserID`/`ChannelID` as merlin's string IDs, and the REST client it answers through (`core.NewRest`, mentions off by default). The plugin gate and `Authorize` run on it, refusals go out through it (`Ix.Tell`), and handlers register with `HandleIx`/`AutocompleteIx`/`HandleComponentIx`/`HandleModalIx`. Embeds come from `core.Embed`, panels draw from `Parts` with `core/ui`.
-- **Gateway:** `core.NewGateway` (zstd, async listeners, a cache of guilds, roles, channels, voice states and the bot's own member). `Permissions` and the plugins' lookups read `gw.Caches`. Events arrive typed; aimod and statistics read a message through their own small views, `gatewayMessage` and `post`.
-- **REST:** one client, built in `main.go` on the transport that times `/perf` and reports refusals to cygnet. Every write the bot makes as itself goes through `discordguard`'s disgo methods, which take `snowflake.ID`; `core.ID` parses a stored string ID and the guard refuses 0. Command definitions are `discord.SlashCommandCreate`.
-- Tests decode real interactions (`paneltest.IxCommand`/`IxClick`/`IxPick`/`IxSubmit`, or a plugin's own JSON builder); disgo IDs are snowflakes, so a test whose fixtures predate that points the Ix's string keys at them after decoding.
+- Interactions arrive as `*core.Ix` (string IDs, REST client with mentions off). Register with `HandleIx/AutocompleteIx/HandleComponentIx/HandleModalIx`; refuse with `Ix.Tell`. Gateway: `core.NewGateway`; lookups read `gw.Caches`.
+- Every write the bot makes as itself goes through `discordguard` (`snowflake.ID`; `core.ID` parses a stored string, the guard refuses 0).
+- Tests decode real interactions (`paneltest.IxCommand/IxClick/IxPick/IxSubmit`).
 
 ### Settings panels (`internal/core/panel.go`)
 
-A plugin's configuration is a **panel**, not a tree of `configure` subcommands: one Components V2 container opened by a bare top-level command, read and changed with pickers, redrawn in place. `/config` (`adminconfig/panel.go`) is the reference and was eighteen subcommands. Moderation *actions* on a person (`/roles jail`, `/rapsheet warn`) stay commands; it is settings that move.
-
-- **Layout** is skua's, kept because it reads on a phone: title and one `-#` line beside the mood thumbnail, everything else below at full width. **The art is merlin's**: the mood still comes from the colour (`moodForColor`), and the rule (`merlin_rule.png`) closes the page above the footer, as a media gallery. It is there for its width, exactly as on `NewEmbed`: a container sizes to its content, so without it every page of a panel would be a different width and the controls would jump on each click. Facts go through `core.Readout` as a code block grid, labels in one column and values lined up beside them, wrapping after a comma inside their column: Components V2 has no field layout, and a monospace grid is the one that holds on every client. Bold-label lines were tried and read worse. A code block shows markup as typed, so Readout itself moves a row whose value is a mention, timestamp or link under the grid as a bold-label line; never hand-build one. `/help`'s command list is the same grid.
-- **No session.** Everything is re-read on every render and a control's state rides in its CustomID, so an old panel still works and two admins can drive one at once (the `/config setup` choice).
-- **Two prefixes, two specs**: a `view:` prefix for navigation at the read tier, a `set:` prefix for every mutation at the mutate tier, both re-checked by the router on every click. The panel additionally draws mutating controls `Disabled` for anyone `Authorize` would refuse. Keep each control's action name identical to the subcommand it replaced, so stored tier overrides, allows and blocks keep applying; `CommandRouter.Actions` lists component and modal actions for that reason.
-- **Set pickers diff against what was drawn** (`core.SelectDiff`), read back off the interaction's message, never against current settings. Diffing against settings lets the second of two admins silently remove what the first just added. Every add and remove is still its own settings call and its own audit line.
-- A click answers by redrawing with a `Note` (`✓ ...`/`✗ ...`), not with a separate embed. Anything that can outrun 3 seconds uses `DeferPanelUpdate` + `FollowUpPanel`.
+- Plugin settings are a **panel** (one Components V2 container from a bare top-level command, redrawn in place), not `configure` subcommands. Reference: `adminconfig/panel.go`. Moderation actions on a person stay commands.
+- Layout: title and one `-#` line beside the mood thumbnail, body full width, `merlin_rule.png` gallery above the footer. Facts via `core.Readout`; code blocks only for things to copy.
+- **No session**: re-read everything each render; control state rides in the CustomID.
+- `view:` = navigation at read tier, `set:` = mutation at mutate tier, both re-checked by the router; mutating controls drawn `Disabled` for anyone `Authorize` would refuse. Action names match the subcommands they replaced.
+- Set pickers diff against **what was drawn** (`core.SelectDiff`), never current settings; each add/remove is its own call and audit line.
+- A click redraws with a `Note` (`✓ ...`/`✗ ...`). Slow work: `DeferPanelUpdate` + `FollowUpPanel`.
 
 ### Plugin icons (`tools/icons`, `internal/core/emoji.go`)
 
-**Every plugin has an icon**, and `TestEveryPluginHasAnIcon` fails a plugin whose `Name()` has no `assets/emoji/plugin_<name>.png`. Each is an 11 by 11 glyph kept as a text grid in `tools/icons/main.go` (reviewable as text; `balanced` refuses one that sits off centre), painted at 2 cells a pixel onto a 32-cell tile in merlin's own palette: an umber ground, a bronze frame with cut corners lit top-left and shaded bottom-right like the mood badges, a cream glyph with a one-cell shadow. Edit the grid and run `go run ./tools/icons`; never edit the PNGs. `TestIconsAreOnTheirGrid` holds them to 128 px, flat 4 px cells and a few hundred bytes.
-
-At boot `core.SyncEmoji` uploads any missing icon as an **application emoji**, named `<key>_<hash>` so a redrawn icon is a new emoji and an unchanged one is never uploaded twice (one list call when nothing changed). Once synced, `PluginEmoji` writes it inline, `PluginComponentEmoji` puts it on a select option, and `PluginIcon` gives a CDN URL for a thumbnail; before that a heading is text alone and a thumbnail is attached, so nothing points at an emoji that is not there. A panel leads its title with its plugin's icon (`Panel.Plugin`); its thumbnail stays merlin's mood, which is the art.
+- Every plugin has `assets/emoji/plugin_<name>.png` (`TestEveryPluginHasAnIcon`), drawn from 11x11 grids in `tools/icons/main.go`. Edit the grid and run `go run ./tools/icons`; never edit PNGs (`TestIconsAreOnTheirGrid`).
+- `core.SyncEmoji` uploads missing icons as `<key>_<hash>` app emoji. Use `PluginEmoji/PluginComponentEmoji/PluginIcon`; before sync, headings fall back to text. Panels lead their title with the icon; the thumbnail stays the mood.
 
 ### The field guide (`internal/plugins/help`)
 
-`/help` is skua's field guide in merlin's art: an index with merlin's avatar, every plugin as its icon and title on a short line with what it does as `-#` subtext below, and a page per plugin wearing its icon tile, its `About` first at full width and then its commands, each in bold and branching into subcommands on short `├ └` lines, each marked `mod` or `admin` from its compiled-in `PermSpec` (`CommandRouter.LeafTier`; the panels say what a guild changed). **Every plugin implements `core.Helper`** and `TestEveryPluginHasAHelpPage` fails one that doesn't. Pages are written in her voice: lowercase, first person, plain where somebody is trying to find out how a thing works.
-
-It holds no state, so any guide ever posted keeps working. Clicking a guide an admin posted (`/help post:true`) answers with a private copy rather than editing the one everybody is reading. A plugin switched off here is listed to admins marked `off here` and hidden from everyone else; its page carries the same switch as `/config`'s plugins page, behind the same `config.mutate`, and `adminconfig` and `help` are never offered.
+- **Every plugin implements `core.Helper`** (`TestEveryPluginHasAHelpPage`). merlin's voice: lowercase, first person, plain. Tiers from `CommandRouter.LeafTier`.
+- Stateless; clicks on a posted guide answer privately. Disabled plugins: `off here` to admins, hidden from others.
 
 ### Observability (`internal/obs`, `/perf`)
 
-Ported from skua and always on: a sample is one read lock and a few atomic adds with no allocation (`BenchmarkAdd`, about 45 ns). Every interaction is timed in the router (`timed` in `commands.go`) as **in**, from the snowflake's own timestamp to dispatch, and **run**, the handler, both against the owning plugin; every scheduled job as **run** against `job <kind>` (no guild, no slot ID, so one kind of work is one row); every REST call as **http** by route through the client's transport (IDs and interaction tokens dropped from the name), and as **wait** the time it queued behind its rate limit bucket (`obs.Limiter`, which also holds a 429's retry, so that is counted once).
+- Always on, allocation-free: interactions per plugin (timed in `commands.go`), jobs as `job <kind>`, REST per route plus rate-limit wait (`obs.Limiter`).
+- `/perf` is the bootstrap operator's alone (TierAdmin + identity check, permissions 0).
+- `MERLIN_DEBUG_ADDR` (pprof + flight recorder) **refuses non-loopback addresses**; use `ssh -L`.
 
-`/perf` shows it slowest first as a record (an embed, cygnet `DESIGN.md`): one field a route with an eighth-block bar against the slowest, its p99, p50 and count, the Go scheduler's and GC's p99 after them and the build revision in the footer. The numbers are the whole process's, so it is **the bootstrap operator's alone** (TierAdmin is the floor, the handler checks the identity) and `default_member_permissions` is 0. `MERLIN_DEBUG_ADDR` starts pprof and a ten-second flight recorder (`/debug/merlin/flight`, open with `go tool trace`); it **refuses any non-loopback address**, because merlin is outbound-only and profiles carry message content. Reach it with `ssh -L`.
+### Self-serve, DB-backed config
 
-### Self-serve, DB-backed config, not `config.yaml`
-
-`config.yaml`/`.env` are bootstrap-only: Discord token/App ID, DB DSN, log level, and the **bootstrap admin user IDs** (`MERLIN_BOOTSTRAP_ADMIN_USER_ID`, comma separated: the break glass), each of which always satisfies `TierAdmin` in every guild regardless of DB state, so a wiped/misconfigured guild's settings can never permanently lock the operators out. Every check asks `Permissions.IsBootstrapAdmin`, so all of them hold the same power; the first is the one operator a surface names (the `/support` advert). Everything guild-scoped (mod roles, admins, permission whitelists, rotation settings) lives in Postgres via `internal/settings.Store`, in-memory cached per guild, refreshed on every mutation, and invalidated bot-wide via `core.EventConfigChanged`. Admins configure all of it through Discord commands (`/config`, `/rotation configure`), never by editing files on the host. `/config setup` (`internal/plugins/adminconfig/setup.go`) is a paginated wizard (audit-log channel, status channel, mod role, admins) that **creates nothing on its own**: each step offers a native picker for what the guild already has, plus an optional button to create the default (`#bird-audit-log`, `#bird-status`, a `merlin Mod` role). Every step re-derives its state from live settings at render time, so there's no wizard session to expire, two admins can drive it concurrently, and re-running it is a status review rather than a redo. `/config import` is an explicit, one-time YAML→DB migration path for pre-Milestone-4 deployments, never automatic.
+- `config.yaml`/`.env` are bootstrap only: token, app ID, DSN, log level, `MERLIN_BOOTSTRAP_ADMIN_USER_ID` (comma separated; each always `TierAdmin`; `Permissions.IsBootstrapAdmin`).
+- Everything guild scoped is in Postgres via `settings.Store`, cached per guild, refreshed on mutation, invalidated by `core.EventConfigChanged`. Admins configure through Discord, never host files.
+- `/config setup` creates nothing on its own: pickers for existing things, optional create buttons, state re-derived each render. `/config import` is a one-time explicit YAML migration.
+- `config.Loader.OnReload` hooks run outside the write lock, only for valid reloads.
 
 ### Scheduler (`internal/scheduler`)
 
-Generic cron core other plugins register recurring jobs with. Recurrence is a `core.Schedule` (`internal/core/schedule.go`), not a raw cron expression or a bare interval: `next_due = spec.Schedule.Next(last_run)`, persisted per job key `guildID:name` in Postgres, so a restart never resets or double-fires a rotation window. Two implementations: `IntervalSchedule{Interval}` ("every 24h"/"every 3 days", the original and still most common shape) and `CalendarSchedule{Weekday, HourUTC, MinuteUTC}` (wall-clock-anchored: daily when `Weekday` is nil, weekly when set, so a late or missed tick never drifts a "daily at 17:00 UTC" job off its intended time of day the way re-deriving from elapsed time would). `Scheduler.Register` never type-switches on which kind it got; both satisfy the same `Next`/`String`/`Validate`/`TypicalPeriod` interface. Named tunables live in `internal/scheduler/scheduler.go`'s const block (`tickInterval`, `maxConsecutiveFailures`, `backoffBase`/`backoffMax`, `maxJitter`, `jobTimeout`, `stateWriteTimeout`); extend that block rather than adding new inline literals. Every run is bounded by `jobTimeout` under a base context cancelled at `Shutdown`, and the last-run/failure bookkeeping that follows it deliberately runs on a *detached* context (`context.WithoutCancel`): writing through the same context that just killed the run would drop the failure, leaving a wedged job looking permanently healthy: never backing off, never tripping the `maxConsecutiveFailures` alert. Jobs whose existence can change at runtime (rotation channels added/removed via `/rotation configure`) must call `Scheduler.Unregister` to stay in sync; see rotation's `reconcile` pattern below. A job freshly registered for something a user just configured (not a restart) that shouldn't fire on the very next tick (e.g. a rotation channel someone just added) can call `Scheduler.Seed(ctx, jobKey, now)` right after `Register` to mark it as if it had just run, deferring its first real fire by one full schedule period (see rotation's `deferFirstRotation`); a job the Scheduler has never seen is otherwise treated as immediately due, which is correct for jobs like sweep jobs but was a real bug for rotation itself (a newly-added channel used to rotate on the very next tick instead of waiting a full interval).
+- Recurrence is a `core.Schedule` (`IntervalSchedule`/`CalendarSchedule`), `next_due = Next(last_run)`, persisted per `guildID:name`. Never type-switch on the kind.
+- Tunables live in the const block in `scheduler.go`; no inline literals.
+- Runs bounded by `jobTimeout`; bookkeeping uses a **detached** context (`context.WithoutCancel`).
+- Runtime-varying jobs must `Unregister` (reconcile pattern). A never-seen job is due at once; `Seed(ctx, key, now)` after `Register` to wait a period.
+- **A job exists only where it has work** (`reconcileSweepJob`, `reconcileNoticeJob`, rapsheet sweep, statistics backfill, funding poll).
 
 ### Channel Rotation (`internal/plugins/rotation`)
 
-Implements spec.MD §6. Config is entirely DB-backed; because a guild's set of rotating channels can change at runtime, job registration is **not** a static Init-time loop: `reconcile(guildID)` (in `rotation.go`) diffs current settings against currently-registered Scheduler jobs (register new/changed-interval, unregister removed) and is invoked both from `SyncGuild` (called by `cmd/bot/main.go` on every `GuildCreate`) and reactively via a `core.EventConfigChanged` subscription set up in `Init`. A settings mutation already triggers reconcile through the event; don't also call `SyncGuild` explicitly after one (that was a real redundant-call bug fixed here once already).
-
-Each rotation cycle re-derives "is this step already done?" from live Discord/Postgres state, so a crash mid-rotation self-heals on the next scheduled retry without duplicate channels or reposted stickies. That re-derivation has to cover the *whole* cycle, including the steps after the flip: an attempt that archived the old channel and then failed (recording the archive, retargeting the config) leaves the old channel renamed, so `archivedChannelOrigin` recovers its pre-archive name from the archive-name format plus its category, and the retry resumes at bookkeeping instead of rotating a second time. Replacement-channel matching is likewise name **plus** category rather than name alone: Discord allows duplicate channel names, and matching on name alone let an unrelated same-named channel elsewhere in the guild pass as an already-revealed replacement, at which point rotation archived a live channel and retargeted itself onto a stranger's. It flips visibility **new channel first** (create and populate the replacement before touching the original), trading the literal step order in spec.MD for a stronger safety property: the worst failure case is a brief moment where both channels are visible, never a moment with no live channel at all. Archived channels are swept for permanent deletion by a separate hourly `rotation-sweep` job per guild, once past `retention_hours` (nil = keep forever, never swept); a mod manually moving an archived channel out of its archive category is treated as an implicit "keep this one."
-
-**The retention deadline is re-derived on every sweep, never read from a frozen column** (`archiveDeadline` in `sweep.go`). `rotation_archives.delete_after` is written once at archive time and nothing ever updates it, so treating it as authoritative meant a retention change only applied to *future* archives: an admin who widened retention (or switched to `retention_forever`) still watched the sweep permanently delete existing archives on the old, earlier schedule, and channel deletion has no undo. Tightening it leaked in the other direction, keeping content past the new window, which is the promise the whole feature exists to make. The sweep now lists a guild's archives and computes `ArchivedAt + the slot's current RetentionHours` per row, via `rotation_archives.rotation_id` (migration 0013): the stable `settings_rotation_channels.id`, not `source_channel_id`, which can't serve as the link because `rotate()` retargets a slot's `channel_id` every cycle (the same reason `archive_category_id` had to be denormalized in migration 0008). `delete_after` survives only as the fallback for pre-0013 rows and for archives whose slot was removed via `/rotation configure remove`, which promises existing archives are left untouched.
-
-**`rotation-sweep` is only registered where it has something to sweep** (`reconcileSweepJob`): a guild with at least one rotating channel, or one with archives still pending. It used to be registered for every guild on `GuildCreate` regardless: a permanent-deletion job armed in servers that never opted into rotation, firing within one tick of startup since a job with no run history is immediately due, and harmless only because the table it read happened to be empty. Pending archives keep it alive after the last rotating channel is removed, so a retention window that's still owed is still enforced; a failed archive lookup leaves the current registration untouched rather than guessing in either direction. The top-of-`rotate()` reads (fetching the live channel and the guild's channel list) run concurrently via a plain `sync.WaitGroup`; the reveal/archive swap itself is deliberately *not* parallelized (see `execute.go`'s comment at that exact spot): it would reintroduce a window with **no** correctly-named live channel at all, a strictly worse failure mode than today's brief dual-visible window, for well under a second of saved latency.
+- `reconcile(guildID)` diffs DB settings against registered jobs, from `SyncGuild` and `EventConfigChanged`. Don't also call `SyncGuild` after a mutation.
+- Each cycle re-derives every step from live Discord/Postgres state so a crash self-heals, including after the archive (`archivedChannelOrigin`). Replacements match name **plus** category.
+- **New channel first**: create and populate the replacement before touching the original. The reveal/archive swap is deliberately serial.
+- `restorePosition` runs **after** the archive, is non-fatal, skipped on the resumed path.
+- Retention deadline is **re-derived every sweep** (`archiveDeadline`: `ArchivedAt` + the slot's current `RetentionHours`, via `rotation_archives.rotation_id`); `delete_after` is a fallback. nil = keep forever; moving an archive out of its category = keep it.
+- `rotation-sweep` exists only where there are rotating channels or pending archives; a failed lookup leaves it as is.
+- `interval_minutes`, floor `minRotationInterval` (1h). `core.ParseFlexibleDuration` takes m/h/d.
+- **Disclosure** (`full|cadence|retention|generic`) maps to six voice keys via `introKey` (key and vars together); `plainRetentionNotice` honours it. Closed set (validation, normalization, CHECK); unreadable = `full`. `archive_visibility: whitelist` accepted, no longer offered.
+- **Heads-up**: `notice_lead_minutes` (default 10, 0 off, below the interval), `ColorWarning` embed, countdown via `NextDue`. Claimed in `rotation_notices` (`ON CONFLICT DO NOTHING`) **before** posting; none when overdue or under a minute out; `generic` gets no countdown. `reconcileNoticeJob` assumes `p.mu` is held.
+- Member-facing durations are prose (`humanDuration`); admin/audit ones compact (`core.FormatDuration`).
 
 ### Audit and status rendering (`internal/audit`, `adminconfig/status.go`)
 
-The audit log is read by a human under time pressure, and until recently it was not written for one: every entry was `ColorSuccess` (including permanent channel deletion), the title was the raw dotted action string, the actor was a bare snowflake, and automated actions were attributed to the literal word `system` with nothing saying what that meant.
-
-- **`core.ActorSystem`** is the sentinel every automated call site passes (`rotation`, `roles`), and **`core.FormatActor`** renders it as "merlin (automatic)". The stored `audit_log.actor_id` keeps the sentinel: the row is the machine-readable copy, the embed is the human one.
-- **`core.MentionUser`/`MentionChannel`/`MentionRole`** are used **at the call site**, so the durable row is readable too, rather than adding a render-time layer or changing `core.AuditWriter`'s signature (which would touch `core/registry.go` and both `fakes_test.go`). A mention still contains the raw snowflake, so a future audit search matches exactly as before. All three return `""` for `""`, which is load bearing: the permission audit lines build `role=%s user=%s` where exactly one is ever set, and `<@&>` renders as literal garbage.
-- **Every entry is a `cygnet/ledger` entry, and every post is a ledger card** (`audit.toEntry`, `ledger.Render`), the same card shape every bird posts to the shared log channel: an embed, because its fields are the summary list (bold key over value, three abreast) the published card guidance cygnet `DESIGN.md` cites asks for, which a Components V2 container cannot lay out. Posted with `core.EmbedUploads`, so the face and the rule always go with it. Call sites still write `key=value` strings; `toEntry` is the one place they become fields. Message links (`core.MessageLink` in a masked link) come out first, before `parseDetail` splits at spaces, and their own words become the label (`deleted: [message]`). Mentions become subjects, labelled by their key when it says what they are to the entry (`kept`, `restored`), so they read as a `kept` field. `reason=` is the entry's reason, quoted on the card; every other pair is a field; an RFC 3339 time reads as `17 oct 14:00 utc`. Without pairs, old and new are a change, and mentions on the old side are labelled `was` only when the new side has mentions too (a move). The table's colour becomes the mood, its error colour as `danger`, since every entry wearing it is irreversible. Lists of IDs still go in as `[%s]` of `core.MentionRoles`/`MentionUsers`, never `%v` of a slice. `TestEveryCallSiteShapeIsAValidEntry` holds the shapes real call sites write to `ledger.Validate`; add a row there when a call site writes a new shape.
-- **`audit_log` is each guild's sha256 chain** (migration 0047: `seq`, `entry`, `prev`, `hash`, appends serialised by a per-guild advisory lock, `audit.Store` held to `ledgertest.Run`), so a range can be checked with `ledger.Verify` rather than trusted. The legacy columns are still written, the call site's own strings included, since they are the greppable copy and the one thing `toEntry` may lose. Rows from before 0047 have no `seq` and sit outside every chain; retention pruning removes a chain's start, so a range verifies from its first remaining row's `prev`.
-- **A run of the same action by the same actor is one card that edits itself** (`ledger.Batcher`: 10s, up to 25), so a bulk jail or an archive sweep is one card in the channel and one row each in the table. A failed edit posts a fresh card rather than drop the entry.
-- **`audit.actions`** maps an action to a human title and a severity colour, backed by a mechanical `humanize` fallback (`config.mod_role_added` → "Config: mod role added"). A table alone can drift from call sites; a mechanical de-dot alone never drifts but reads worse. The pair degrades to *readable*, never blank and never the raw key, which makes a missing row a polish gap rather than a bug. Unlisted actions get `ColorInfo`: never claim success for something the code does not recognise, never cry wolf either. `*.dryrun` actions wear `MoodIdle`, matching `/config pause`'s precedent that a bot doing what it was told has not failed.
-- **The audit post stays on the raw session, not `discordguard`**, and this is deliberate: the guard refuses writes when a guild is paused or in dry-run, so routing audit through it would silence the trail exactly when somebody hit the emergency stop, and would guarantee the `rotation.dryrun`/`archive.dryrun` records (which exist *because* the guild is in dry-run) were never posted. `AllowedMentions` is therefore zeroed explicitly, as `scheduler.alert` does.
-- **`scheduler.alert` takes `(jobKey, failures, cause error)`, not a preformatted string**, so the test hook and the real path cannot describe the same failure differently, and it posts an embed with the error in a `TruncateEmbedField`-bounded field. That last part is a bug fix, not polish: it was a `Content` string with no truncation, so an error over 2000 bytes made the send fail outright and the wedged-job alert reached nobody, which is the single failure the mechanism exists to prevent.
-- **`/config status` names roles and admins** (`<@&id>`/`<@id>`, capped at `maxMentionsListed` with "and N more") rather than counting them, matching the channel lines on the same screen. Its severity is tracked as the body is built, not recovered by scanning the finished text for `❌`/`⚠️`/`⛔`: that read the control signal for the response colour out of prose this bot does not author (interpolated Discord and database errors), so any error string containing a warning glyph turned a healthy server amber. The emoji are cues for the reader now, not state. The body is `core.TruncateEmbedDescription`'d for the same reason: it interpolates unbounded error text into a single 4096-byte description, and over-limit rejects the whole message, so `/config status` would fail precisely when it had something long and important to report.
-
-**Audit-failure policy**: an audit card post failure (e.g. `#bird-audit-log` not configured or deleted) must never fail the operation that triggered it: the actual action already succeeded, and the durable audit record write happens independently of the embed post inside `audit.Writer.Record`. Every call site logs-and-continues on a non-nil `Record` error; this was a real bug in `rotation/execute.go` (an audit failure was making the Scheduler treat a successful rotation as failed) fixed by matching the policy every other call site already used.
+- Automated actors pass `core.ActorSystem` ("merlin (automatic)" via `core.FormatActor`).
+- `core.MentionUser/Channel/Role` at the call site; they return `""` for `""` (load bearing). ID lists as `[%s]` of `core.MentionRoles/MentionUsers`, never `%v`.
+- Every entry is a `cygnet/ledger` card (`audit.toEntry`, `ledger.Render`). Call sites write `key=value`; `toEntry` makes fields. New shape = new row in `TestEveryCallSiteShapeIsAValidEntry`.
+- `audit_log` is a per-guild sha256 chain (migration 0047); legacy columns still written.
+- Runs of one action by one actor batch into one self-editing card (`ledger.Batcher`).
+- `audit.actions` maps action to title/colour (`humanize` fallback, `ColorInfo` default); `*.dryrun` wears `MoodIdle`.
+- **The audit post uses the raw REST client, not `discordguard`** (posts while paused/dry-run), `AllowedMentions` zeroed.
+- `scheduler.alert(jobKey, failures, cause)` posts an embed with a truncated error field.
+- `/config status` caps names at `maxMentionsListed`, tracks severity while building (never by scanning for glyphs), truncates its description.
+- **An audit failure never fails the operation.** Log and continue.
 
 ### Mood icons (`internal/core/embeds.go`)
 
-Six drawings of merlin (`assets/merlin_{ok,error,warn,info,notice,idle}.png`), plus three tip jar faces only `/aimod funding show` uses (see the tip jar section), shown as the embed **thumbnail**. Not the author icon: Discord renders that at around 24px and circle-crops it, which turns a detailed square sprite into a smudge with its corners cut off.
-
-**The mood is derived from the embed's colour** (`moodForColor`), not passed in. That is what let all ~113 existing `RespondOK/Err/Info/Warn` call sites pick up an icon without being touched: the colour already encodes exactly this distinction, and a second argument saying the same thing again is only an opportunity for the two to disagree. `core.WithMood` overrides it for the cases the palette cannot express, which today is `MoodIdle` on `/config pause` and `/config dryrun`: both report as warnings, and a paused bot is doing what it was told rather than failing.
-
-**Attachments are derived from the finished embed** (`embedFiles`/`EmbedFiles`), never hand-listed. An `attachment://` URL with no matching upload renders as a broken frame, and nothing about the code that built the embed would look wrong, so reading the URLs back off the embed is what stops the two drifting apart. Any non-interaction sender (a DM, a channel post) must use `core.EmbedFiles(embed)` rather than listing `AvatarFile()` itself. `NewLandmarkEmbed` deliberately clears the thumbnail: the banner is already carrying the visual weight. **`NewEmbed` sets no footer and no timestamp**: together they drew a second "merlin, today at 14:32" line right under the one Discord already puts above every message the bot sends, so the identity now comes from the mood thumbnail and the palette alone. That is also why the avatar is no longer attached unconditionally (`referencesAvatar`): with nothing pointing at it, uploading it on every response was bytes and an extra entry in Discord's attachment list for an image nobody could see.
-
-**Every `NewEmbed` carries `merlin_rule.png` as its image**: a 1040x32 transparent pixel-art separator (a small falcon over a barred line). It is there for its width: Discord sizes an embed to its content, so short and field-heavy entries rendered as boxes of every width, and an image as wide as an embed allows pins them all to one. A caller setting its own image (the landmark banner, a statistics chart) replaces it. It was drawn by throwaway tooling like the moods, and `embedFiles` uploads it the same way.
-
-The icons were cut from a single 1024x1536 sheet (kept at `assets/source/`, not embedded) by throwaway tooling outside the repo module. Two details that mattered: the trim uses per-row/column ink counts rather than a plain bounding box, because one faint speck near a cell corner pinned the alert sprite's box to the whole cell and made that one icon render visibly smaller than the other five; and the alpha threshold was measured rather than guessed, since the sprites sit on a glow that fades to nothing and the resulting bounds are stable only above `0x4000`.
+- Mood thumbnail is **derived from the embed colour** (`moodForColor`); override only with `core.WithMood`.
+- Attachments are derived from the finished embed (`core.EmbedFiles`), never hand-listed.
+- `NewEmbed`: no footer, no timestamp, `merlin_rule.png` image unless set. `NewLandmarkEmbed` clears the thumbnail.
 
 ### merlin's voice (`internal/voice`)
 
-Every member-facing message merlin writes herself comes from here. Not string literals at call sites, for two reasons: a bot that says the identical sentence every rotation reads as furniture rather than a character, and, more importantly, **some of what she says is load bearing**.
-
-The split is the whole design. **Lines are data** (`lines/*.yaml`, `go:embed`ed) so they can be reviewed as writing; **the contract is code** (`keys.go`) so it cannot drift. Each `Key` declares a `Register` (playful for ambient surfaces, plain for moderation outcomes), its **required placeholders**, a length limit, and a compiled-in `fallback`.
-
-**The required-placeholder rule is the point, and it cuts both ways.** Every `rotation.intro.full` line must contain `{cadence}` *and* `{retention}`, because that notice is the server's published retention policy and the code has already reported the cadence as though it were the deletion window once (see `rotation/templates.go`'s comment). Personality varies the wording; it can never vary the facts. The reverse matters just as much now that disclosure is configurable (see "Rotation disclosure modes" below): `loadCatalog` rejects any placeholder outside a key's `required` set, so a line that slipped `{retention}` into `rotation.intro.cadence` fails to boot rather than publishing a deletion window the guild deliberately withheld. That guarantee holds only while `spec.optional` stays empty on those keys, which is why the field is documented as deliberately unused rather than deleted. `loadCatalog` refuses to boot on a line missing one, exactly as `CommandRouter.Finalize()` refuses to boot on a command with no declared tier. It also rejects unknown placeholders (`{cadance}`), unbalanced braces (a malformed placeholder otherwise passes the "has none" check and posts a literal brace), fewer than `minLinesPerKey` (8) lines per key, a line duplicated within a key (which passes the count while quietly costing a permutation and doubling that line's odds), and the same em dashes/curly quotes CI rejects repo-wide. Each playful key deliberately spans calm to blunt rather than settling on one tone, grouped by band in the YAML so the balance is visible to whoever adds to it; `moderation.*` spans warmth only, never wit. Selection is uniform across the whole key, because a person is not in a consistent mood either. `Validate` is exported because it is the contract: **any future generator has to pass its output through it**, which is what makes "add an LLM later" a change of source rather than a second unchecked path into a public channel.
-
-Consumers depend on `voice.Source`, never `*Speaker`, so that swap stays a constructor change. `Line` never returns an error (every call site is about to post something, and an error there just means silence); it falls back to the spec's compiled-in line, and returns `""` only if even that cannot render, which callers treat as "say nothing" rather than posting visible braces. Selection is random with **guaranteed** no-immediate-repeat per guild+key: one re-roll, then a deterministic step, because a plain re-roll still repeats about one time in twenty five with five lines and the one place people notice is a channel they are watching. `WithRand` injects the RNG, mirroring the Scheduler's `now func() time.Time`.
-
-`PERSONA.md` is the brief the lines are written against, and is what a generator would get as its system prompt. Operator-supplied sticky messages are deliberately **not** routed through any of this: those are the guild's own words, posted verbatim in order.
-
-Admin surfaces (the `/config` and `/rotation` panels) are not in the catalog at all. They are read by someone making a decision, often under time pressure, where warmth costs scanning speed.
+- Every member-facing message comes from here. Lines are data (`lines/*.yaml`); the contract is code (`keys.go`: register, **required placeholders**, length, fallback).
+- `loadCatalog` refuses to boot on: missing required placeholder, **any placeholder outside the required set** (keep `spec.optional` empty on rotation keys), unbalanced braces, fewer than 8 lines, duplicates, em dashes/curly quotes.
+- Playful keys span calm to blunt by band; `moderation.*` is warm, never witty.
+- Depend on `voice.Source`. `Line` never errors; `""` means say nothing. Generators pass output through `Validate`. Pin `voice.WithRand` in tests that read a line.
+- `PERSONA.md` is the brief. Operator sticky messages and admin panels are **not** voiced.
 
 ### Temporary Role Management (`internal/plugins/roles`)
 
-Jail (snapshot-and-strip a member's roles, restore automatically or on demand) and timed single-role grants, mirroring rotation's shape end to end: a plugin-owned Postgres store (`role_jails`/`role_grants`, migration 0011) for runtime state (not `internal/settings.Store`, which is guild *configuration* only), and a per-guild `roles-sweep` Scheduler job (every 1 minute, not rotation's hourly cadence: jail/grant durations are realistically minutes-to-hours, not day-scale) that re-derives idempotency from live Discord state rather than trusting stored assumptions.
+- Own store (`role_jails`, `role_grants`). Per-guild `roles-sweep` every minute.
+- **Release/expiry fire on their own timers** (`release.go`, `time.AfterFunc`), armed wherever `release_at`/`expires_at` is written and by the sweep within `armLookahead`. Timers re-read the row; `releaseJail`/`revokeGrant` `claim` it; a miss returns `errReleaseInProgress`. Drop a row only on Unknown **Member**, never Unknown Guild. `ForgetGuild` disarms.
+- **Jail is role-based**: one `GuildMemberEdit` to the shared marker role plus roles the bot can't manage (kept, reported). Visibility from the marker's channel overwrites (`jailchannels.go`); **Sync every channel** recomputes them, also on first marker creation.
+- Marker denies only where they do something (`markerOverwrite`): skip rooms whose **channel-level** @everyone already denies View (+Connect); delete merlin-shaped ones there; leave edited ones.
+- No member-level jail overwrites. `clearMemberJailOverwrites` checks every channel on release/transfer for `jailMemberShape` only; sync clears leftovers only where the audit log says merlin wrote them.
+- **A marker never gets more than an ordinary member on an allowlisted channel** (`memberBaseline` = @everyone + `member_role_id`, `desiredOverwrite`). Withheld bits go in the deny. Merge `(existing.Allow|wantAllow)&^wantDeny`. `restrictedBits` denied on allowlisted rooms. Changing the member role re-syncs both markers.
+- **`applyJail` records before it strips**, rolling back on failure. Drop the cached marker ID only on `ErrCodeUnknownRole`.
+- **Confused deputy**: sweep and `/roles release`/`revoke` re-fetch the member; marker or granted role missing = already handled, untrack without restoring.
+- **Jail survives rejoin**: `JoinedAt` after `JailedAt` (+`rejoinGrace`) re-applies the marker without rewriting snapshot or `ReleaseAt`; `MarkJailApplied` answers each rejoin once. `HandleMemberJoin` closes the window with `GUILD_MEMBERS` (intents follow the portal via `core.Probe`).
+- **No `GuildMemberRemove` handler in roles, deliberately**: the row must survive leaving (`evasion_test.go`).
+- Grant/revoke `TierAdmin`; jail/release `TierMod`. `CanModerate` gates jail.
+- **Bulk jail** (`bulkjail.go`): up to five `User` options or `/roles jail-role` (`TierAdmin`), both via `jailMany`; one `roles.jail_bulk` entry. `partitionByRank` before `resolveJailRole`. Over `maxBulkJailTargets` (raw count) refuses; `membersWithRole` returns `complete=false` on truncation.
+- **Absent targets** (`resolveTargets`): a row only if `GET /users/{id}` confirms the account; other failures fail. No DM or announcement; audit `roles.jail_pending`/`vacation_pending`. In-effect is derived live.
+- **Supporters** (`supporters.go`): merlin creates her own Supporter role per guild; `roles-supporters` (10 min) mirrors `cygnet.supporters` as timed grants, only adds and re-dates later, never converts a hand-given role, skips jailed members, publishes `core.EventSupportersJoined` for first grants, DMs a reminder a week before expiry (claimed in `supporter_reminders` first).
 
-- **Release and expiry fire on their own timers, at the due instant** (`release.go`), not on the sweep. A five minute jail used to end up to ~90s late (sweep period + scheduler tick + jitter), which next to an instant `/roles jail` reads as merlin having forgotten. `time.AfterFunc` per row, armed wherever `release_at`/`expires_at` is written (`applyJail`, the re-date branches, `handleGrant`) and by the sweep for anything due within `armLookahead` that this process never wrote (a restart). The timer re-reads the row before acting, so a re-date's old timer cannot release early and a hand-released jail is a no-op; `releaseJail`/`revokeGrant` `claim` the row so a timer and a sweep landing together do not both restore, audit and DM. The sweep is the retry path (a failed timer logs and leaves the row), the dry-run/pause deferral, and the evasion check. `ForgetGuild` disarms the guild's timers, and `releaseJail`/`revokeGrant` drop a row only on Discord's *Unknown Member* code, not any unknown resource: the same call answers Unknown Guild once the bot has been removed, and reading that as "the member left" would drop the row `ForgetGuild` keeps for a re-invite. A claim miss returns `errReleaseInProgress`, which the sweep and timer ignore and the command handlers report, rather than a `nil` that told a mod "released" while the timer holding the claim could still fail.
-- **Jail is role-based, not per-member channel overwrites.** `/roles jail` replaces a member's roles with a single shared "Jailed" marker role (auto-created/reused per guild, mirroring rotation's archive-category pattern) plus any role `Permissions.CanManageRole` says the bot can't touch (kept in place, reported, never silently dropped, per spec.MD §4 item 4, previously written but never wired up until this plugin). Channel visibility is enforced entirely by the *Jailed role's own* per-channel permission overwrites (`jailchannels.go`): every channel gets a deny overwrite (View Channel, plus Connect for voice) except a guild-configured allowlist (`/roles configure allow-channel`, backed by `settings_guild.jail_allowed_channel_ids`). This means jailing/releasing a member is always exactly one `GuildMemberEdit` call, regardless of guild size; the alternative (per-member overwrites on every channel) would cost O(channel count) API calls per jail/release and doesn't scale.
-- New channels don't automatically inherit the deny overwrite (no gateway listener for channel creation, by design; see `jailchannels.go`'s doc comment); **Sync every channel** on `/roles settings` recomputes every channel against the current allowlist and is also run automatically the first time the Jailed role is created for a guild.
-- **A marker deny is written only where it does something** (`markerOverwrite`). A room whose own @everyone overwrite already denies View (plus Connect on voice) gets none, and one already there in exactly merlin's shape is deleted; one the guild edited is left alone. That is every channel in a gated guild like the Melting Pot (@everyone sees nothing, the member role sees the server), so a jail there costs overwrites only on the allowlisted rooms. A jailed member never holds the member role: the strip removes it, the join-role script yields to any `role_jails` row, and `HandleMemberUpdate` strips anything regranted. Only a *channel-level* @everyone deny counts: where @everyone merely lacks View at guild level, a kept role (above merlin, a booster role) could still carry View, and the channel deny is what stops it. This also ended the archive resyncs: the member denies below landed on archived channels (the archive category's mod-role allow made them look "at risk"), which then differed from their category, so rotation's hourly `syncArchivePermissions` rewrote them and posted `rotation.archive_perms_fixed`, and the next evasion check wrote them again.
-- **There are no member-level jail overwrites any more.** They were a hardening against the guild's Onboarding flow handing a jailed member back a role whose channel allow beats the marker's deny; Onboarding is gone and merlin hands out the member role itself. Release used to clear them only on channels still "at risk" *at release time*, so a channel whose role allow or allowlist entry changed during the sentence kept its deny forever, which is the "released but still locked out" bug. `clearMemberJailOverwrites` now checks every channel on release and on a transfer out of jail, matching only merlin's exact shape (`jailMemberShape`: no allow, deny exactly View, plus Connect on voice). Leftovers on members already released are cleared by **Sync every channel** (`clearLeftoverMemberOverwrites`), but only where Discord's own audit log says merlin created the overwrite, since a mod hiding one text channel from one member writes the identical overwrite. No candidates means no audit log read; an unreadable log (no View Audit Log) removes nothing and says so.
-- **A rejoin is answered once** (`MarkJailApplied`). `JailedAt` is read only by `rejoinedSinceJail`, and re-applying a jail for a join moves it to now. Before that, a join stayed "later than the jail" for the whole sentence, so a mod taking the marker off afterwards read as the evasion again and the sweep put it back every tick: 51 times in 75 minutes for one member in production, each an audit entry.
-- **A marker role is never allowed more on an allowlisted channel than an ordinary member can do there** (`memberBaseline`, `desiredOverwrite` in `jailchannels.go`). A jailed member holds nothing but @everyone and the marker, so the marker's allow is exactly where an escalation comes from, and it did: allowlisting an announcements room, where every role but mods is denied Send, handed jailed members Send there and one of them posted. The baseline is Discord's own resolution for @everyone plus the guild's configured member role (`/roles configure member-role`, `settings_guild.member_role_id`, migration 0040; `melted` in the Melting Pot, @everyone alone when unset): guild permissions of both, Administrator meaning everything, then the channel's @everyone overwrite, then the member role's. What jail would normally grant (View, Send or Connect) but the baseline lacks is **withheld**: left out of the marker's allow *and put into its deny*, because a room locked by a deny on the member role alone would otherwise leave a jailed member @everyone's Send, and the marker's own deny is the one overwrite guaranteed to apply to them. The same rule strips a grant an earlier sync already wrote. A room the baseline cannot see grants nothing at all. Both allow leaves answer with `RespondWarn` naming what was withheld and the baseline role, and the audit detail carries `withheld=...`; changing the member role re-syncs both markers, since the baseline moved everywhere. The merge in `desiredOverwrite` is `(existing.Allow|wantAllow)&^wantDeny`, parenthesised on purpose: `&^` binds tighter than `|` in Go, and the unparenthesised form kept an existing Send in allow on a read-only room, which is the bug the tests caught.
-- **The jail mutation records before it strips** (`applyJail`). Ordering is the whole correctness argument: stripping first and then failing to record left a member holding nothing but the marker with nothing tracking them: no sweep would release them, no `/roles release` would find a record, and it looks from the outside like an ordinary jail that never ends. Recording first can only fail the other way, and a record for an un-stripped member self-heals on the next sweep via the confused-deputy check below (marker absent ⇒ already handled ⇒ untrack, restore nothing); the explicit rollback just makes that immediate. Relatedly, the cached Jailed-role ID is dropped only on Discord's `ErrCodeUnknownRole` (`core.HasDiscordErrorCode`), never on any "unknown resource": the same `GuildMemberEdit` call reports Unknown *Member* when the target left, which says nothing about the role.
-- **Confused-deputy re-check**: both the sweep job and on-demand `/roles release`/`revoke` re-fetch the member fresh before acting; if a mod already manually restored/changed roles (jail marker or granted role no longer present), that's treated as an implicit "already handled": stop tracking, don't fight the manual override. Same rescue-hatch pattern as `rotation.sweepOne`.
-- **Jail survives leaving and rejoining** (`reapplyEvadedJails`, `rejoinedSinceJail` in `jail.go`). Discord does not preserve roles across a rejoin, so a jailed member who left and came back returned with no marker role, and therefore none of the channel denials the Jailed role carries, while `role_jails` still said they were jailed and nothing was checking. `member.JoinedAt` (free with the REST fetch the sweep already makes) is the discriminator: a join later than `JailedAt` is a rejoin and the marker goes back on; a missing marker *without* a later join is the mod-released case the confused-deputy rule above protects, and stays honored. That's why the check is `JoinedAt`-based rather than "marker missing ⇒ re-apply", which would have destroyed the rescue hatch. `rejoinGrace` absorbs clock skew between Discord's `JoinedAt` and this bot's own `JailedAt` stamp, so a member jailed seconds after joining isn't mistaken for an evader. Re-applying deliberately does **not** rewrite the stored snapshot (it holds the member's real pre-jail roles and is the only copy; overwriting it with what they hold on rejoin, i.e. nothing, is the same class of bug as the `ON CONFLICT DO UPDATE` jail race) or `ReleaseAt` (how long someone is jailed is a moderator's decision; leaving neither serves nor extends it). The bounded `ActiveJails` query (`maxActiveJailChecks`, newest-first) keeps the per-sweep REST cost proportional to concurrent jails. The privileged `GUILD_MEMBERS` intent additionally registers a `GuildMemberAdd` handler (`HandleMemberJoin`) that closes the ≤1-tick window to near-instant. It is requested **by default** whenever the Developer Portal grants it: merlin reads the application's flags at boot (`core.Probe`) and identifies with what they grant, so the portal toggle means what it appears to mean and close code 4014 cannot happen. A toggle changed later restarts her onto it within ten minutes. Asking by default makes the portal toggle mean what it appears to mean. `core.OpenGateway` still waits for READY and fails startup if it never comes.
-- **The supporter role follows cygnet's ledger** (`supporters.go`). A guild turns supporters on from `/roles settings`' Supporters page, and merlin creates her own permissionless **Supporter** role for it, hoisted, in her beak-blue to bronze-cream gradient where the guild has `ENHANCED_ROLE_COLORS` (the blue alone otherwise) and wearing cygnet's dusk feathered-heart badge where it has `ROLE_ICONS` (`supporterRoleCreate`); where it sits in the role list is each server's to choose (`settings_guild.supporter_role_id`, migration 0050; Discord puts a new role under hers, so she can always manage it). Every 10 minutes a `roles-supporters` job, registered wherever the fleet link is up and a no-op where supporters are off, reads `cygnet.supporters` and gives each current supporter that role as an ordinary timed `role_grants` row ending when their paid time does, so the existing grant timer and sweep take it away again. It only adds and re-dates later, never earlier; a member holding the role without a grant from merlin is never turned into one that expires, and a jailed member is skipped until released. Members who just became supporters (a first grant, never a renewal) are published once per sync as `core.EventSupportersJoined`; the support plugin (below) thanks them in the channel picked on the same page (`supporter_channel_id`, unset means no card). The same job DMs a supporter a week before their time ends (`roles.supporter_reminder`), once per paid period: `supporter_reminders` (migration 0049) is claimed before the DM is sent, the rotation-notice rule. Wired in `main.go` as `roles.SupportersFunc` over `fleet.Link.Supporters`, so roles never imports the link.
-- Grant escalates (any role the bot can manage), jail only restricts, so grant/revoke are `TierAdmin`, jail/release are `TierMod`.
-- **Bulk jail** (`bulkjail.go`): `/roles jail` takes up to five members via separate native `User` options (`collectJailUserIDs`; Discord has no multi-user option type, and spec.MD §4a forbids taking IDs as raw strings), and `/roles jail-role` jails every holder of one role. Both funnel into `jailMany`, so single and bulk can't diverge in behaviour, only in *reporting*, where one member keeps the original precise wording and its `roles.jail` audit action, and a batch gets one `roles.jail_bulk` entry (per-member audit records would post one embed each, blowing the guild's `message.send` budget for no gain; per-member state stays in `role_jails`). `jail-role` is a separate leaf, not an option on `jail`: Discord requires required options before optional ones, so folding it in would push `duration` ahead of the far more common single-member path, and a separate leaf gets its own `PermSpec`: `TierAdmin`/`roles.jail_role`, by the same blast-radius reasoning that already isolates `configure_jail_channels`, lowerable per guild via `set-tier`. `partitionByRank` runs the per-target `CanModerate` check **before** `resolveJailRole`, because resolving can *create* the role and write an overwrite to every channel: a batch the actor outranks nobody in must leave nothing behind. The `maxBulkJailTargets` cap is about reversibility, not Discord's limits: jail and release share the guild's `member.edit` budget, so a batch big enough to drain it would block the releases undoing it; over the cap the command refuses rather than jailing an arbitrary subset. `membersWithRole` pages the member list (Discord has no "members with role" endpoint, and this needs `GUILD_MEMBERS`), stops one past the cap, and returns `complete=false` rather than letting a truncated scan read as "this is everyone". The cap is checked on the **raw** match count before self/bot exclusion, or trimming two names could bring an apparent 200 down to 50.
-- **Sentencing somebody who is not here** (`resolveTargets`, `jailTarget.absent`). `/roles jail` and `/roles vacation` accept an account that is not in the guild: Discord's own user picker takes a pasted ID, so this needed no new option and no raw-string option that spec.MD §4a forbids. **The mechanism is the row, not a second code path.** A record with no member to strip is exactly what an evader who has left already leaves behind, and `reapplyIfEvaded`'s `JoinedAt`-after-`JailedAt` test puts the marker on somebody arriving for the first time for the same reason it puts it back on somebody returning, so a stranger cannot buy a clean slate by joining after the decision to sentence them. `applyJail` therefore only skips the strip; `HandleMemberJoin` and the sweep are unchanged.
-  Unknown Member alone is **not** enough to record one. Discord words "real account, somewhere else" and "snowflake nobody has ever had" identically, so the ID is put to `GET /users/{id}`, which is guild-free and answers exactly that, and only an account Discord confirms becomes an absent target. Any other member-fetch failure (a rate limit, a 5xx, an unknown *guild*) fails rather than resolving as absence: reading an outage as "they must not be here" would record a sentence that strips nothing against a member standing in the room.
-  Nothing member-facing fires for one. No DM, no channel announcement (`announceJail` runs on `res.jailed`, and `pending` is its own bucket), because there is nobody in the server to tell. The audit action is its own too (`roles.jail_pending`/`roles.vacation_pending`), on the same reasoning `roles.jail_resentenced` is: a reader counting jails must not count a sentence that has not started and may never. Whether one is **in effect** is a fact about Discord rather than about the row, so `/roles list` re-derives it from a live member fetch instead of storing a `pending` column that would still say "pending" the day after they joined.
+### Scripts (`internal/scripts`)
 
-### Scripts (`internal/scripts`, first one in `roles/script_eternalrole.go`)
-
-A category below plugins: small, hyper-specific, per-server behaviour that is a Go file in the owning plugin (a table of data plus a hook into work the plugin already does), **off by default**, toggled by `/<plugin> scripts set` (`TierAdmin`, answers with a `ColorWarning` embed rather than a success), and **deliberately stronger than the guild's admins while on**: the only sanctioned way to stop one is turning it off. `internal/scripts.Store` is the one shared piece (a row in `scripts_enabled` means on; an unreadable switch reads as off, since a script is extra behaviour and the failure direction has to be doing nothing). Definitions are code, not commands, so no admin surface can change what a script does, only whether it runs.
-
-`vacation` (`roles/script_vacation.go`) is jail somewhere warmer: `/roles vacation` does everything `/roles jail` does with the island's marker role instead of the nest's. **A vacation is a `role_jails` row whose `jail_role_id` is the vacation role, and which of the two a row is gets derived from that column** (`sentenceFor`), never stored beside it, for the same reason aimod derives its gateway from the key: two columns that must agree will one day disagree, and what that produces here is a member released with the wrong words or hardened with the wrong overwrites. Everything the jail machinery does (record-before-strip, release timers, the sweep, evasion re-apply, the confused-deputy rule, `ErrAlreadyJailed`) therefore runs unchanged; only two things branch on the derived kind, both through the `sentence` table: the words (DM, announcement, audit action) and the ledger (`Kind: "note"`, zero points, never a jail). The role is **never created**: `resolveVacationRole` only confirms it exists (the configured role, else the Melting Pot's `meltingPotDefaultVacationRoleID`) and refuses otherwise. Its visibility is **the same deny-by-default sync as the jail marker's** (`visibilityMarker`, `syncAllVisibility`, `syncChannelVisibility`: one code path, two markers, two allowlists; `vacation_allowed_channel_ids`, defaulting to the Melting Pot's beach `meltingPotDefaultVacationChannelID` there), with two differences. *When*: on `scripts set vacation enabled:true`, on `configure vacation-role`, on the allow/disallow leaves and on `sync-channels`, never on resolve, so a restart writes nothing (the same audit-log reasoning as `resolveJailRole`'s no-sync branch). *How*: `desiredOverwrite` **merges** with an overwrite the guild already set rather than replacing it, moving only the visibility bits (View, plus Connect on voice) and, on an allowlisted channel, granting what jail always granted there (send, or connect) and denying `restrictedBits`; every other bit stays as the guild set it, so a beach built by hand keeps working and a sync that changes nothing writes nothing. That merge now serves the jail marker too, and `restrictedBits` (threads, polls, events, invites, external apps, activities, @everyone) is denied on both markers' allowlisted rooms: the ways out of a room that is meant to be the whole server for a while, with plain talk and voice left alone. **A transfer is the `ErrAlreadyJailed` branch when the other sentence is on record** (`jailMany`, compared by sentence and not by marker ID so a reconfigured jail marker still re-dates): the member is stripped to the new marker first, then `TransferJail` moves the row's marker and end (snapshot untouched, the new duration is the sentence), and leaving jail clears any member-level denies an older version left (`clearMemberJailOverwrites`). The strip-first order is deliberate: the other way, a failed edit leaves a row saying "vacation" over a member holding the jail marker, which release reads as already gone and drops. A mod swapping the two roles by hand gets the same treatment from `detectManualTransfer` (`HandleMemberUpdate` and the sweep, checked before the "marker gone ⇒ released by hand" rule and only when the *other* marker is on them), keeping the existing end since a hand swap is a change of place, not of sentence. `JailAutomatic` on somebody on vacation moves them to jail for the later of the two ends: an automatic sanction is the stricter one. The script switch gates only the `/roles vacation` command; a transfer or release of somebody already on the island works whatever it says, because turning a script off must never strand anyone in it.
-
-`eternal-role` pins a role to a member. Definitions are rows in `script_eternal_roles` (any server can use it; none is named in code), chosen per member on `/roles settings`' Scripts page, **guild owner or bootstrap operator only** (`canDefineEternal`, the same gate as `/aimod funding set-address`, enforced in the handler because `PermSpec` cannot express it): a `TierAdmin` who could add themselves on a role carrying Administrator would have merlin entrench them faster than anyone could strip it. It rides the per-guild `roles-sweep` and the role/member gateway handlers, all funnelling into `enforceEternalRoles`, which re-derives everything from live state so double-firing settles in one pass. Removed from the member ⇒ given back; deleted ⇒ recreated from the stored copy (name, colour, hoist, mentionable, permissions, emoji, **icon bytes**) and the copy retargeted; edited ⇒ the edited role is left alone, a fresh copy is created, assigned, and placed directly above it. **The copy is captured once, at `eternal-add`, and never re-captured from Discord**: a second add for the same pair is refused, and turning the script off keeps every row, or disable-edit-enable would launder an admin's edit into the eternal version; only merlin's own recreate moves `role_id`/`icon_hash`. It **yields to jail**, or it would loop against `HandleMemberUpdate`'s re-strip. Position is never compared (it moves whenever any role is reordered). Changing the eternal version is `eternal-remove` then `eternal-add`.
+- Small per-server behaviours as Go code in the owning plugin, **off by default**, toggled by `/<plugin> scripts set` (`TierAdmin`, warns), stronger than admins while on. Unreadable switch = off. Definitions are code, never commands.
+- **vacation**: a `role_jails` row whose `jail_role_id` is the vacation role; the kind is **derived** (`sentenceFor`), never stored; only words and ledger kind branch (`sentence` table). The role is never created. Visibility via `visibilityMarker`/`syncAllVisibility`, synced only on enable, role config, allow/disallow, `sync-channels`. Transfers strip to the new marker **first**, then `TransferJail`; `detectManualTransfer` handles hand swaps; `JailAutomatic` on a vacationer moves them to jail for the later end. The switch gates only the command.
+- **eternal-role**: rows in `script_eternal_roles`, added only by owner or operator (`canDefineEternal`). `enforceEternalRoles` re-derives from live state: give back, recreate from the stored copy, or copy above an edited role. The copy is captured once at `eternal-add`; second add refused; disabling keeps rows. Yields to jail. Never compares position.
 
 ### AI Moderation (`internal/plugins/aimod`)
 
-Milestone 10. Reads messages and checks them against Discord's own Community
-Guidelines, removing or rewriting what breaches them. Requested intent is
-`MESSAGE_CONTENT`, used whenever its Developer Portal toggle is on
-(`core.Granted`); the toggle is the opt-in, because it is every message in
-every guild and spec.MD's least-privilege section names it specifically. Without it
-the plugin registers its commands, scans nothing, and says so in `/aimod
-status` rather than appearing to work.
+- Needs `MESSAGE_CONTENT`; without it commands register, nothing is scanned, `/aimod status` says so.
+- **The ladder**: rung 0 free skips; rung 1 regex table (tokens, phishing, SSN, slurs); rung 2 cheap batched model; rung 3 better model, one message, full policy and context. **Rung 2 can only flag. Delete/rewrite needs rung 3 above `actThreshold`. A failed deep pass acts on nothing.**
+- Rung 1 slur hits get a second look (`secondlook.go`): the deep model sees only the matched words and can only route *to* the model rungs; failure leaves the hit. Whole-word slurs (`wholeWordSlur`) are never sent. `acrossWords` refuses cross-word matches, retrying inside the first word.
+- Rung-1 readers see folded text (`fold.go`), applied inside the readers.
+- Rung 1 is gated (`gate.go`); **the gate may never change an answer** (`gate_test.go`). `HandleMessage` reads rung 1 once.
+- The hard-slur block runs **ahead of `shouldSkip`**, obeys mode off and hate_speech off, takes the early path only when the slur is the whole hit, logs `aimod: hard slur`.
+- `nWordShape`, `hiddenSlur`, `looseSlur`, `nearNWord`: check every new entry against a 370k-word English list. Their hits go to the deep pass regardless (`withSlurHints`).
+- **Policy** is `policy/*.yaml`, each with `violations` **and** `not_violations` (validated at boot). `child_safety` cannot be disabled, humour is no defence, `validateCalibration` refuses loosening examples; `calibrationPreamble` carries the same carve-out (`TestCalibrationPromptCarriesTheSameChildSafetyRule`).
+- Fast prompt: one `short` line per enforced bucket; full policy only to the deep pass. `temperature: 0` always.
+- **Budget**: exact cost from responses (OpenRouter `usage.cost`, OrcaRouter `usage.cost_usd` via header, in `chatOnce`). Book usage even on parse failure. Unreadable spend fails **closed**. Over cap: rungs 0-1 only, one audit entry a day.
+- **Every model call goes through `paidChat`**, never `p.client.Chat`: `maxPaidCalls` slots, allowance reserved, cost booked; no call until a failed receipt lands.
+- **Cost-drain**: `userMeter` ceilings (`scanCeilings`, `maxUserDeep`); over the deep ceiling = flagged, never dropped. `similarSpam` skips near-copies, yields to `mustScan`; `forgetSimilar` on a confirmed violation.
+- **Sanctions use jail** via `aimod.Jailer` (`roles.JailAutomatic`), duration from severity, doubling per prior in `repeatWindow`. Priors from the rapsheet (`aimod.History`), falling back to `CountSanctions`, never zero. Sanction row written whether or not the jail lands; reversed incidents don't count.
+- **Never aimable at staff**: `CanModerate` with nil actor; `timeoutMember` refuses owner/Administrator/Moderate Members/Manage Messages, failing closed. `/aimod moderate-me` only waives the rank check; only bootstrap adds others. Bootstrap is never sanctionable.
+- **Member opt-out** (`optout.go`): guild switch off by default, flipped only by owner/operator (`ownerOrOperator`); members opt only themselves. Opt-out = exempt role (`scanExempt` atop `scan`), still under the slur block and **`mustScan`**. Switch off keeps the list. The DM mentions opt-out only where offered.
+- `/aimod status` is paginated and stateless; every page wears the report's severity; clicks `core.DeferUpdate`.
+- **Rewrite** = delete and repost via webhook as the author; resolve the webhook **before** deleting; mentions zeroed; "edited by merlin" marker with a random code for `/aimod why`. Failure after the delete becomes a removal (`rewriteFellShort`, `aimod.rewrite_failed`); too long = removal decided before deleting.
+- **Verdicts are re-checked before acting** (`revision.go`): per-message lock, discard on edited text, `stillActs` re-reads gate and config, only moves an action down.
+- **Dedupe** keys clears on words+reply; a confirmed violation is reused only for the same author and reply target, else it's a `confirmHint` to a fresh deep pass.
+- **Record the incident before touching the message.** Evidence retention re-derived at prune from `aimod_config`.
+- **Guild word list** (`wordlist.go`) is house style: `BucketWordList`, outside `AllBuckets`, never sanctions or reaches the rapsheet; run over model rewrites before `redactSlurs`.
+- Config is cached (`cachingStore`, `configTTL`); **every new `Store` setter must invalidate**.
 
-- **The ladder, and the one rule that must not move.** Rung 0 is a free skip
-  filter (bot/webhook author, exempt channel/role, too short, content-hash
-  dedupe); rung 1 is a deliberately tiny regex table for things that are
-  unambiguous *and* urgent (leaked bot token, phishing/IP-grabber domains, an
-  SSN); rung 2 is a cheap model over a 1.5s micro-batch of up to 20 messages;
-  rung 3 is a better model on one message with the full policy file and five
-  lines of channel context. **A rung-2 hit can only ever `flag`.** Deleting or
-  rewriting requires rung 3 to have confirmed above `actThreshold`. That single
-  rule is what keeps a nano model's false positives off a free-speech server,
-  and it is also why the expensive tier stays affordable: it only ever sees the
-  ~1% that already tripped. A failed or unparseable deep pass acts on nothing;
-  treating an outage as a confirmation would let Discord being down delete
-  messages.
-- **Rung 1's slur table checks itself before acting** (`secondlook.go`). It is
-  the one pattern that acts with no model, and every widening against an
-  evasion also widens what lines up by accident ("nitro on" was reposted as
-  "nicartoon"). So a regex slur hit shows the deep model the matched words,
-  and nothing else from the message, and a confident "ordinary words" hands
-  the message to rungs 2 and 3 instead. It can only route a message *to* the
-  model rungs, never publish it unread, and every other outcome (error, spent
-  budget, deep ceiling, a hesitant answer) leaves the hit standing, which is
-  the opposite failure direction from the deep pass above and deliberately so:
-  here the default being overruled is an action, not a scan. A word that is a
-  slur end to end (`wholeWordSlur`: the n-word by shape, or a table entry with
-  no `notIf`) is never sent, since there are no letters lining up by accident
-  to judge and a model may call "faggot" a bundle of sticks. The "nitro on"
-  fix itself (`acrossWords`) refuses a match that runs over whitespace into
-  ordinary words, and a refused match is **retried inside its first word**
-  rather than dropped: letters may repeat across a separator and plurals are
-  an optional s, so a real slur followed by "sissy" or "today" ran into that
-  word, was refused whole, and "Shut up faggot sissy retard" was published.
-- **Every rung-1 reader sees folded text** (`fold.go`): NFKD, a lookalike
-  table (Cyrillic, Greek, small capitals, stroked letters), regional
-  indicators, and invisible characters (ZWSP, soft hyphen, Hangul filler)
-  dropped, with combining marks dropped only after a letter so emoji
-  sequences survive. It sits inside `redactSlurs`, `redactWords`,
-  `normalizeWord`, `squash` and `mustScan` rather than at call sites, so the
-  guild word list gets it too. A hit publishes the folded text as the
-  rewrite (a disguised slur costs the message its accents); a miss returns
-  the original untouched.
-- **Rung 1 is gated, and the gate may never change an answer** (`gate.go`).
-  Each pattern's required characters, and the letters a slur match can start
-  with, are read off its own parsed syntax at init, so a table entry needs no
-  gate written for it. A clean message costs ~2us and no allocations instead
-  of 15us and 62. `gate_test.go` holds gated and ungated rung 1 equal over
-  every string literal in this package's tests and under fuzzing, and walks
-  every rune through `squash` for the n-word shape gate: a new evasion test
-  is automatically a gate test. `HandleMessage` reads rung 1 once and hands
-  it to `scan`.
-- **The policy catalogue is data, validated like `internal/voice`'s.** Ten
-  `policy/*.yaml` files, `go:embed`ed, each carrying `violations` **and**
-  `not_violations`, both with a `minListItems` floor. The second list is the
-  half that matters here: Discord's own explainers mostly state no exceptions,
-  so those lines are derived from the definitions' own qualifiers ("with the
-  intention to cause harm", "intentional actions meant to cause distress").
-  Without them a general-purpose model reads "hate speech" as "rude" and this
-  plugin becomes the thing it was built to protect the server from. A file
-  missing a boundary fails `LoadPolicies` at startup, exactly as a voice line
-  missing a required placeholder does. `child_safety` is not disableable, the
-  same guard shape as `adminconfig` refusing to disable itself.
-- **`child_safety` is the one bucket where humour is not a defence**, and it
-  has to say so in its own file because every other force in this package
-  pushes the other way: `systemPreamble` tells the model dark humour is
-  ordinary here and to report nothing when a message is ambiguous, and a joke
-  framing is exactly what makes one ambiguous. Discord's policy has no such
-  exception. The gap that exposed this was narrower than the posture, though:
-  every `violations` line described content *involving* a minor (sharing,
-  soliciting, roleplay, grooming), so a first-person boast about sexual
-  interest matched nothing and a model following the file correctly cleared
-  it. Stated interest is now in `short` too, since that single line is all
-  rung 2 ever sees and nothing reaches the deep pass unflagged. The added
-  `not_violations` lines are load bearing in the other direction: on a blunt
-  server "you're a pedo" is an ordinary insult, and a bucket that started
-  removing those would be the over-broad censor this catalogue exists to
-  prevent. Relatedly, `validateCalibration` refuses any example that tells the
-  filter to stand down on this bucket: the weekly reviewer is asked to hunt
-  for over-strictness, is told irony is the default reading, and on
-  `CalibrationAuto` applies its own answer, so one such example would reach
-  every prompt from then on. That is turning the bucket off by a route
-  `EffectiveAction` does not guard. Examples that *tighten* it stay allowed.
-  The guard is a backstop, not the mechanism: `calibrationPreamble` carries
-  the same carve-out the policy file does (the irony-is-the-default-reading
-  rule is scoped to exclude this one bucket) and routes a genuine overreach
-  to a `too_strict` **finding** instead, which a moderator reads in
-  `/aimod calibrate show` and answers by editing the policy file. So the
-  observation survives and only the unattended 4am self-application is
-  blocked. `TestCalibrationPromptCarriesTheSameChildSafetyRule` is what stops
-  the const and the YAML drifting apart, since a reviewer reporting the
-  filter as too strict for enforcing a policy it must enforce is the worst
-  version of this mechanism.
-- **Two-stage token use is the whole cost design.** The fast prompt carries one
-  `short` line per *enforced* bucket and nothing else (~350 tokens, amortized
-  across the batch); the full policy file is sent only to the deep pass, only
-  for the one flagged bucket. Turning a bucket off is therefore a cost saving
-  as well as a policy choice. Every request pins `temperature: 0`, so a
-  classifier answers the same twice; the `provider: {zdr: true,
-  data_collection: "deny", require_parameters: true}` block is per gateway,
-  and see "Two gateways" below for why that is now a statement with an
-  exception rather than an invariant.
-- **Budget and its failure directions.** `usage.cost` comes back on every
-  OpenRouter response (and on an OrcaRouter one as `usage.cost_usd`, but only
-  when `X-OrcaRouter-Include-Cost` asked for it; `chatOnce` folds the two into
-  one field the moment the body is parsed, so nothing downstream knows there
-  are two gateways), so the per-guild daily cap is an exact figure rather
-  than an estimate. Usage is booked for any response carrying it, *including*
-  one whose body failed to parse: the money left the account either way, and a
-  budget that only counts successes is one a misbehaving model walks through.
-  An unreadable spend row fails **closed** (`checkBudget` returns exhausted),
-  because assuming zero spent turns an unreachable database into an uncapped
-  budget. Over the cap the plugin degrades to rungs 0-1 and posts one audit
-  entry per day, never a silent downgrade.
-- **The cap governs each call, not each batch** (`allowance.go`). Every model
-  call goes through `paidChat`, never `p.client.Chat` directly: it takes one of
-  the guild's `maxPaidCalls` slots (concurrency is bounded at the HTTP boundary,
-  across batches, escalations, fallbacks and calibration), reserves an
-  allowance, and books the real cost before releasing it. `checkBudget` alone
-  used to admit a batch's fast call, twenty deep calls and their fallbacks on
-  one snapshot. The allowance is the largest call this guild paid for today on
-  that rung, so the remaining overshoot is bounded by `maxPaidCalls` times the
-  amount a call exceeds every call before it. A receipt that fails to write is
-  held and retried before the next call, and **no paid call is made until it
-  lands**: spending against an understated total is spending blind.
-- **Cost-drain abuse is a first-class attack, not spam.** The daily budget caps
-  the bill; the damage it does not cap is the hours of unprotected server after
-  somebody exhausts it, which is exactly what a person planning to post
-  something reportable would arrange first. So `userMeter` adds per-member
-  sliding-window ceilings, tighter on the deep rung (`maxUserDeep`) than the
-  fast one because the two cost two orders of magnitude apart. A member over
-  the deep ceiling is still **recorded as flagged**, never silently dropped, or
-  the ceiling itself becomes a way to bury a real violation inside a flood.
-  The fast rung's ceiling is ten windows at once (`scanCeilings`, 30s to 24h),
-  generous at the short end and tightening as the window grows: an argument is
-  fast but short, draining a budget has to be sustained. They are approximate
-  two-bucket counts, not timestamps, since a day's worth per member would be
-  thousands. Near-copy spam (`similarSpam`: a MinHash of letter shingles,
-  digits folded to 0, matched against the member's last two minutes) is
-  skipped after `spamRepeats` copies and never spends the ceiling. It yields to
-  `mustScan`, and a confirmed violation calls `forgetSimilar` so a run that
-  turned out to violate something is read again rather than waved through.
-- **Sanctions use jail, not Discord's timeout.** `roles.JailAutomatic` (added
-  for this) is reached through the narrow `aimod.Jailer` interface wired in
-  `cmd/bot/main.go`, so this package never imports `roles`. Duration scales
-  with the policy file's own `severity` and doubles per prior sanction in
-  `repeatWindow`, capped. **The prior count comes from the rapsheet** when one
-  is wired (`aimod.History`, `p.priors`): scored offences across the member's
-  link group, so a mod's manual jail counts too. It falls back to this
-  package's own `CountSanctions` when the rapsheet has no opinion or fails,
-  never to zero. A timeout is the fallback for when jail is genuinely
-  unavailable. The sanction row is written **whether or not the jail lands**,
-  because it is what the next offence counts; losing it to a brief Discord
-  outage would quietly reset somebody's history. Reversed incidents do not
-  count, so one false positive cannot lengthen every future sentence.
-- **Automatic actions must never be aimable at staff.** `JailAutomatic` runs
-  `CanModerate` with a nil actor (which refuses every admin-equivalent target
-  and allows everyone else, precisely the rule an automated caller needs) and
-  `timeoutMember` refuses the owner and anyone holding Administrator, Moderate
-  Members or Manage Messages, failing closed on roles it cannot resolve. The
-  `/aimod moderate-me` opt-in list waives *only* the rank check and is **purely
-  additive**: nothing reads it to decide whether to protect anyone, anybody can
-  add themselves, and only the bootstrap operator can add somebody else. The
-  bootstrap identity is never sanctionable, listed or not.
-- **The member opt-out (`optout.go`) is optin.go's mirror image and the one
-  setting here that makes the filter cover *less*.** Three limits hold it in
-  place, none redundant: the guild switch (`Config.MemberOptOut`, migration
-  0031) is **off by default**, so this changed the behaviour of zero existing
-  deployments; only the guild owner or the bootstrap operator may flip it
-  (`ownerOrOperator`, the same gate the tip jar's address uses, and TierAdmin
-  is only the coarse floor on the leaf); and **nobody opts anybody else out**,
-  the exact opposite of `moderate-user`'s rule and from the same principle,
-  since an admin who could opt a member out could exempt an account they
-  control. An opted-out member is treated **like an exempt role**: `scanExempt`
-  runs at the top of `scan`, so the hard patterns, the word list and the
-  models are all skipped, and only the slur block in `HandleMessage` (which
-  runs ahead of every exemption) still applies. It used to sit after rung 1
-  and skip only the models, which made opt-out and exempt roles read as one
-  thing on `/aimod status` while behaving as two. It still
-  **yields to `mustScan`**, so the child-safety vocabulary is scanned exactly
-  as it would have been. That carve-out is the reason the guard is where it
-  is: `EffectiveAction` refuses to let the policy page turn `child_safety`
-  off and `validateCalibration` refuses to let the weekly review stand it
-  down, so a per-member opt-out that suppressed it would be turning the bucket
-  off by a third route, one command at a time, for whoever wanted it off most.
-  Turning the switch off keeps the list rather than clearing it (turning it
-  back on restores what people chose instead of re-enrolling everybody), which
-  is why `/aimod status` labels a kept list "not in effect". The moderation DM
-  mentions the opt-out **only where the guild offers it**: that DM is the one
-  moment this bot has somebody's attention on the subject, and advertising a
-  command that would refuse is worse than saying nothing.
-- **`/aimod status` is paginated** (`status.go`), rebuilt from live data on
-  every click with no session to expire, the same stateless choice
-  `/config setup` makes. It was one embed and had outgrown both the format and
-  Discord's own 25-field/6000-byte caps, and the opt-out list is unbounded, so
-  the split is by who is asking: is it working (overview), what does it act on
-  (policy), what is it costing and through whom (provider), and who is not
-  covered (opt-outs, `core.PageSize` per page). Every page wears the **whole
-  report's** severity rather than its own, because paging away from a problem
-  fixes nothing. The click path defers first (`core.DeferUpdate`, new): the
-  provider page reaches the gateway, bounded by `httpTimeout`, comfortably
-  past Discord's 3 seconds to acknowledge an interaction.
-- **Rewrite is delete-and-repost through a channel webhook** wearing the
-  author's name and avatar, because a bot cannot edit another user's message.
-  The webhook is resolved *before* the delete, so a webhook failure does not
-  silently downgrade a rewrite into a removal. `discordguard.WebhookExecute`
-  zeroes `AllowedMentions`, which matters more here than anywhere else in that
-  file: the reposted text is member-authored and moments old. The
-  "edited by merlin" marker is not optional; the repost carries somebody's name
-  and is not what they wrote. It carries a random code (`aimod_incidents.code`,
-  migration 0041) that `/aimod why` takes at `TierPublic`: a member gets the
-  policy and reason by code only, a mod gets the full record by code or
-  message ID. Random rather than the row or message ID, since either would let
-  any member probe whether a message had been quietly flagged.
-- **A verdict is re-checked against the present before it acts**
-  (`revision.go`). Model work holds a config and message snapshot for as long
-  as a deep pass takes, and acting on it anyway let a guild switch moderation
-  off and still watch an in-flight call delete and sanction, and let an author
-  who corrected a message have the old text rewritten back over it. So
-  `enforce` takes a per-message lock, discards a verdict on text the author has
-  since edited (`HandleMessageEdit` records a hash, never the text, before its
-  rescan), and `stillActs` re-reads the plugin gate and config: off or the
-  bucket off means nothing, a change to flag means a flag. It only moves an
-  action down. An edit that lands between that check and Discord carrying out
-  the delete is the race left, since Discord has no conditional delete.
-- **A cached verdict is only as good as the context it was reached in**
-  (`dedupeCache`, `dedupeText`). Both model rungs read more than the words:
-  the fast pass the reply target, the deep pass the surrounding speakers. So a
-  clear is keyed on the words plus the reply, and a confirmed violation is
-  reused as is only for the same author replying to the same thing. For
-  anybody else it is a hint (`confirmHint`): their message skips the fast pass
-  and goes straight to a deep pass in its own context, or is recorded as a flag
-  if the budget is spent. Keyed on guild and text alone, a benign reply cleared
-  the same words used as harassment, and one member's violation sanctioned an
-  unrelated member with no model ever reading theirs. A raid from many
-  accounts now costs a deep call per account, bounded by `maxUserDeep`.
-- **A rewrite that fails after the delete is a removal** (`rewriteFellShort`).
-  Resolving the webhook first narrows the gap but cannot close it: the repost
-  can still fail after the original is gone. `rewriteMessage` reports whether
-  it deleted, and a rewrite that stopped there is re-recorded as a removal
-  (through `RecordIncident`'s upsert), audited as `aimod.rewrite_failed` and
-  DMed as a removal, so nothing claims a rewrite that is not in the channel.
-  With evidence kept, `/aimod undo` restores the original; with evidence 0
-  there is nothing to restore and the incident says removed. A replacement too
-  long for Discord is decided as a removal before anything is deleted.
-- **The incident is recorded before the message is touched** (same ordering
-  argument as `roles.applyJail`): the other order leaves the message gone with
-  no copy of it, nothing for `/aimod undo`, and nothing to show the member.
-  Evidence retention is per guild and **re-derived on every prune** by joining
-  `aimod_config`, never frozen into a per-row column: that is the
-  `rotation_archives.delete_after` mistake pointing the other way, and here the
-  direction that has to work is *shortening* the window.
-- **The guild word list (`wordlist.go`, the word list page) is house style, not
-  policy.** A per-guild list of words rewritten to a replacement the guild
-  chose, or removed when it chose none, checked right after rung 1's hard
-  patterns with no model involved. Matching reuses `slurRe` (so `w.o.r.k`
-  and `w0rk` land) but, unlike the slur patterns, is anchored at the start of
-  a word and allows only a short suffix list, so "work" catches "working" and
-  never "network". An entry marked `noun_only` matches only the bare word
-  and skips it when the words before it say verb (`verbBefore`: "doesn't
-  work", "I work", "need to work", but "go to work" stays a noun), which
-  is a word list rather than a tagger and errs toward replacing. It records under `BucketWordList`, deliberately outside
-  `AllBuckets`, and **never sanctions, never reaches the rap sheet and never
-  counts toward `CountSanctions`**: one server's running joke is not a rule
-  anybody broke. A rewrite skips the DM (the marker under the repost already
-  says so); a removal keeps it. `enforce` also runs the list over every
-  model rewrite, before `redactSlurs`, so a guild's chosen replacement is
-  still held to the slur floor.
-- **Config is cached** (`cachingStore`, `configTTL`) because this is the only
-  hot path in the codebase: without it a busy guild pays a Postgres round trip
-  per message. Every setter invalidates; a new setter added to `Store` and not
-  listed there serves a stale config for up to the TTL, which is most of why
-  the TTL exists at all.
+### Rung 1.5: the local triage model (`triage.go`)
 
-### Rung 1.5: the local triage model (`internal/plugins/aimod/triage.go`)
+- Per-guild logistic regression predicting **rung 2's output**. Only skips or passes; never flags or acts.
+- Online training from fast-pass verdicts, **nothing retained**; `aimod_triage` holds only weights.
+- Fails toward scanning: `triageWarmup` 500, `triageSkipThreshold` 0.02, `neverSkipPattern` and `hiddenSlur` vetoes before the model, `triagePosWeight` 12, `triageSampleRate` 5% of skips still scanned.
+- `triage_mode` off/shadow/on, default shadow; counters run in every mode.
+- The skip sits ahead of `userMeter.allowScan`, behind the dedupe lookup.
+- Weights saved every 500 examples and on `Shutdown`; a wrong-length blob is refused.
 
-A per-guild logistic regression over hashed character n-grams that decides
-whether a message is worth a model call at all. Roughly a hundred lines of
-`math` and no new dependency.
+### Two gateways (`provider.go`)
 
-**It approximates rung 2 rather than judging policy, and that framing is the
-safety argument.** Rung 2 is already the gate for everything below it: nothing
-reaches the deep pass unflagged. So this rung predicts *the fast pass's own
-output* and its only decision is whether to spend that call. It can skip or
-pass through. It can never flag, remove, rewrite or sanction, which is the same
-rule that keeps rung 2 off the delete path, and it means the rung adds its own
-error rate on top of rung 2's without introducing a new class of miss.
+- `providerSpec` is a two-row table (OrcaRouter default, OpenRouter fallback), not an interface. nil = OpenRouter on `c.base`.
+- **The gateway is derived from which key is stored** (`route`), never a column; key form infers it from the prefix.
+- OrcaRouter: singular `model`, cost header required, free-tier 429s not retried (`freeRateLimited`).
+- **Only the deep rung falls over** (`escalate`).
+- OrcaRouter has no ZDR: `strictPrefs` false, `chatOnce` strips the provider block, `/aimod status` says so (`privacyLine`).
+- OrcaRouter "free" means no fees, not free models: never tell a guild it cannot run out of credit.
 
-**Training is online, from verdicts, with nothing retained.** The label is what
-the fast pass just decided, and the text is the copy already in hand; both are
-discarded when the batch returns. There is no training set and no table of
-examples, which is deliberate: a nightly pass over stored messages would mean
-storing messages, and `aimod_incidents` holds only what was acted on (no
-negatives) and prunes its content on `evidence_hours` anyway. `aimod_triage`
-holds a block of gradient-updated float32s and nothing a member wrote is
-recoverable from it, so continuous learning extends this plugin's retention by
-zero bytes. This is the one place the milestone plan was wrong and the code
-deviates from it on purpose.
+### The tip jar (`funding.go`, `erc20.go`)
 
-**Five things stand between the model and a missed violation**, and each fails
-toward scanning:
-- `triageWarmup` (500 examples) before it may skip anything, so a fresh guild,
-  a new deployment and a restored backup all behave exactly as before.
-- `triageSkipThreshold` (0.02) is not "probably fine", it is "the model has
-  essentially never seen the fast pass flag anything like this".
-- `neverSkipPattern` vetoes the child-safety vocabulary outright, checked
-  *before* the model is consulted so no amount of confidence routes around it.
-  Deliberately over-inclusive: a false positive costs one call that would have
-  happened anyway, and it is not a detector, since nothing acts on a match.
-  `hiddenSlur` is the same kind of veto for hard slurs rung 1 missed: it squashes
-  the whole message (spaces, symbols, digits and Cyrillic lookalikes out) and
-  runs the slur table over what is left. Too loose to act on ("which ink"
-  squashes to chink), so it only blocks the skip and adds a bracketed note to
-  both model prompts saying what the letters spell, which `systemPreamble`
-  explains. `looseSlur` goes one step further for the hard-R word: any doubled
-  consonant in its shape ("nixxers", "nizzer") gets a "may be" note, since
-  rung 1 can only rewrite spellings it names and that list never ends. A
-  single consonant does not count (Niger), and `looseInnocent` spares
-  "nippers" and "knitter". It also matches by sound word by word (an n, a g or
-  stand-in, an r, any order of i and vowels between: "nigers", "ngr"),
-  anchored to the word start so "stingier" and "finger" stay quiet. Rung 1
-  itself rewrites the transposed and i-less forms ("ngiers", "nggers") via
-  a `wordStart` entry, since "stingier" and "youngberry" contain them
-  mid-word. Every one of these was checked against a 370k-word English list
-  before being added; do the same for any new entry. The broadest check,
-  `nearNWord`, is any word within two edits (optimal string alignment) of the
-  word or its plural, minus the casual "-a" ending and a named list of
-  ordinary words that land that close ("nicer", "nugget", "niggle").
-  **A message any of these point at goes to the deep pass whatever the fast
-  pass said** (`withSlurHints`): the small fast model is what cleared
-  "nibbers" and "ngiers" as nothing, so it does not get the last word on
-  them. The deep pass still has to confirm above `actThreshold`, so the
-  "nothing acts without rung 3" rule is intact, and `allowDeep` bounds the
-  cost. `similarSpam` yields to the same check, since cycling through
-  spellings of one word is exactly what near-copy spam looks like.
-- **Rung 1 reads the n-word by shape** (`nWordShape`), per word: lookalikes
-  back to letters, b/q/x read as g and y as i, runs collapsed, then
-  `^n(ig|gi|g)(ie|e|i|u|o|a)?rs?$`. "Nibber", "N!bb3r", "ni66er", "ngiers",
-  "nggers", "ngr" and a Cyrillic "nіgger" all land. Against a 370k-word list it
-  adds only "nixer" beyond the slur itself, which is spared by name like
-  Niger (possessive included); the casual "-a" ending is not the shape.
-- **The hard-slur block runs ahead of `shouldSkip`**, not just ahead of the
-  models: exempt channels, exempt roles, the clean-text cache and the length
-  floor no longer sit in front of it. "Nibber" passed live on 2026-09-27
-  after the pattern matching it had deployed, with nothing logged, so
-  something in front of rung 1 dropped it; a slur is not something a channel
-  or role should buy silence for. It still obeys mode off and hate_speech
-  off, only takes the early path when the slur is the whole hit (a message
-  that also carries a leaked token or a phishing link is removed, not
-  rewritten around it), and logs `aimod: hard slur` on every decision.
-- `triagePosWeight` (12) is what stops the model collapsing to always-clean.
-  About 1% of messages are flagged, so the loss is minimised by answering
-  "clean" to everything, and that model is right 99% of the time while skipping
-  every violation on the server.
-- `triageSampleRate` (5% of would-be skips) is scanned anyway. **This is not a
-  hedge.** A model that skips a region of its input stops receiving labels from
-  it, so its picture freezes on the day it started skipping and later drift is
-  invisible precisely where it is trusted most. Sampling keeps labels flowing
-  from the skipped region and is the only honest measure of the miss rate,
-  which `/aimod status` reports as "missed N of M sampled".
-
-**`triage_mode` is off/shadow/on, defaulting to shadow**, the same
-suggest-before-auto shape as `calibration_mode` and for the same reason: this
-changes what gets looked at, so a guild watches it work rather than discovering
-it. Shadow scores and learns and changes nothing, which is what makes the
-`/aimod status` figures evidence an admin can act on. The counters behind them
-(`considered`/`wouldSkip`) are incremented in every mode for exactly that
-reason.
-
-The skip sits ahead of `userMeter.allowScan` in `HandleMessage`, and behind the
-dedupe lookup. Ahead of the meter because a message that was never scanned must
-not draw on the member's scan ceiling, or ordinary chatter would exhaust the
-quota that exists for content nobody has judged; a sampled message is exempt
-too, since the audit must not spend somebody else's protection. Behind the
-dedupe because that answer is remembered fact and this one is a guess, and a
-guess must never override a verdict already reached on identical text.
-
-Weights live in `aimod_triage` rather than on `aimod_config`, the same split
-the tip jar uses: they are runtime state written every `triageSaveEvery` (500)
-examples and on `Shutdown`, and the config row behind `cachingStore` is read on
-every message. Persistence matters because this bot redeploys on every push to
-main, and a model that never saved would be cold most of the time. A stored
-blob of the wrong length is refused rather than reinterpreted: it means the
-table size changed between releases, and old weights against a new hash space
-give a model that is confidently wrong about everything, where starting again
-is only a warmup during which nothing is skipped.
-
-### Two gateways (`internal/plugins/aimod/provider.go`)
-
-`providerSpec` is a table of two: OrcaRouter, the default, and OpenRouter, the
-fallback. Not an interface with two implementations, because the differences
-are five fields and a base URL, and a type with methods would mean reading two
-files to learn what the second one does differently. The gateway is carried on
-the unexported `chatRequest.spec`, so it never reaches the wire, and **nil
-means OpenRouter on `c.base`**, which is what every request meant before there
-was a second gateway and is what keeps the tests that predate one honest.
-
-**Which gateway a guild is on is derived, never stored** (`route`): OrcaRouter
-if it holds an `orca_key_sealed`, OpenRouter otherwise. A provider column
-beside a key column is two facts that must agree, and what a disagreement
-produces is a guild whose scanning silently stopped pointing at a gateway it
-has no credential for. The same reasoning runs through the whole change:
-The key form on `/aimod settings` reads the gateway off the key's own prefix (with an
-explicit option only as the escape hatch for a gateway that changes what its
-keys look like), and the tip jar reads its chain off its address.
-
-**OrcaRouter is free, and that is the point**: `orcarouter/free` routes by
-difficulty across the free lineup at $0 per token, limited by request rate
-rather than balance. Three things follow that are correctness issues rather
-than cosmetics. It is OpenAI-shaped, so it takes singular `model` and not the
-`models` fallback array, and a request carrying neither is refused outright.
-Its cost arrives as `usage.cost_usd` only when a header asks, and a gateway
-whose every call reads as free turns the daily cap into no cap at all.
-And its 429 is not the ordinary kind: a free window refills at its boundary
-(the minute bucket, or the day bucket at 00:00 UTC) rather than easing back,
-so `Retry-After` can be hours and the usual answer of waiting a moment and
-retrying the same gateway is the one thing certainly wrong. The lowest tier's
-oversized-prompt refusal reports *identically* and never passes on a retry at
-all, so `freeRateLimited` refuses to retry either and the deep rung falls over
-instead.
-
-**Only the deep rung falls over** (`escalate`). It is the rung whose verdict
-can delete or rewrite, its gateway is a free tier, and there is no OrcaRouter
-equivalent of `require_parameters`, so a model that quietly ignores the JSON
-schema is a real failure mode there. That arrives as an error exactly as a
-rate limit does, and no attempt is made to tell them apart: both mean this
-gateway produced no verdict, and a failed deep pass acts on nothing, which is
-safe and also useless. The fast rung deliberately gets none of this, since it
-can only flag, everything it flags is re-read anyway, and re-running a twenty
-message batch at OpenRouter prices is the bill the default gateway exists to
-avoid.
-
-**The privacy loss is disclosed rather than papered over.** OrcaRouter
-documents no per-request equivalent of the `provider` block, so `strictPrefs`
-is false for it and `chatOnce` *strips* the block rather than sending one that
-may be silently ignored: a guarantee the surrounding code still reads as
-holding is worse than one never claimed. `/aimod status` names the active
-gateway and states plainly, via `privacyLine`, that ZDR is not enforceable on
-it and how to move back.
-
-### The tip jar (`internal/plugins/aimod/funding.go`, `erc20.go`)
-
-`/aimod funding` is a per-guild donation wallet shown next to a fuel gauge for
-the gateway credit that pays for scanning. **The bot holds no key and moves
-no money, and that is forced rather than chosen**: OpenRouter removed the
-programmatic crypto purchase endpoint (`POST /api/v1/credits/coinbase` now
-returns `410 Gone`) and their Auto Top-Up charges a saved card, never a wallet;
-OrcaRouter's crypto top-up is a NOWPayments checkout, and NOWPayments having an
-API is not a reason to custody anybody's donations. No credential turns crypto
-into credits unattended, so custodying would buy nothing while putting the
-money behind a Discord bot's threat model. What is automated is the
-*visibility*: balances, burn rate, runway, and a once-per-day
-`aimod.funding_low` audit entry telling the operator to go click the checkout.
-
-The gauge reads whichever gateway the guild is routed to. `Client.KeyInfo`
-(`GET /key`) for OpenRouter, `Client.OrcaBalance` for OrcaRouter, which is two
-OpenAI-shaped billing calls (`/dashboard/billing/subscription` for the ceiling,
-`/usage` for the spend, **in cents**) subtracted into the *same* `KeyInfo`
-struct. Mapping onto the existing struct rather than adding a second one is
-what lets `bar`, `runway`, `checkCredit`, `noticeFunding` and both renderers
-stay gateway-agnostic, nil-pointer "no limit set" branch included. A free-tier
-guild has no balance to draw at all, and both surfaces say so rather than
-rendering an empty bar: what runs out there is a request rate.
-
-**OpenRouter's `limit_remaining` is the key's remaining spending allowance.**
-Keep it visible as a bar against `limit` in the funding Scanning credit field,
-including with free models selected. Label it as key allowance,
-not account balance. The user wants that allowance; the total account balance
-is not needed, so do not add a management key or `/credits` lookup. Missing
-allowance remains unknown rather than being inferred from the limit.
-
-A 402 sets `paymentRefused`, displayed separately from OpenRouter's allowance.
-It must not zero or hide that figure: a key can retain allowance while the
-account cannot fund a paid request. An accepted paid call clears the warning;
-a free call proves connectivity but says nothing about paid requests.
-On `/aimod status`, a known payment refusal empties the paid-scanning meter
-and suppresses its runway. The actual key allowance stays visible as text
-under it: an unused spending cap must not look like money available to scan.
-The normal allowance meter returns after an accepted paid request clears the
-refusal. The funding allowance display continues to report the key's figures.
-
-**An address selects a family, not a chain** (`familyFor`). A `0x` address is
-the same account on Base, Ethereum, Polygon, Arbitrum and BNB Chain, because
-one private key controls all five, so "which chain is this address on" has no
-answer to derive. merlin reads every rail in the family and sums them, which
-deletes the derive-versus-store dilemma rather than solving it: nothing about
-the chain is stored, nothing is guessed, and a donor sends on whichever listed
-network is cheapest for them. `T...` is TRON, and a 32 byte base58 address is
-Solana. The three forms cannot collide, since a TRON address decodes to 25
-bytes and a Solana one to 32, which needs at least 43 base58 characters.
-
-**`fundingRail` and `providerSpec.topUpChains` are deliberately separate,
-because they are facts of different kinds.** A rail is a property of a
-blockchain: stable, verifiable from here, and every contract in the table was
-checked live against its own `symbol()` and `decimals()` before being added.
-That check is not ceremony; it caught BNB Chain's **18** decimals, where the
-usual assumption of 6 would have reported a one dollar donation as a trillion,
-and the table already had to dodge Base's USDbC and Polygon's USDC.e, the
-latter reporting the symbol `USDC` identically to the native token. What a
-gateway's checkout *accepts*, by contrast, is somebody else's merchant
-configuration: it can change without notice and this bot cannot observe it. So
-everything rendered from `topUpChains` is dated (`topUpCheckedOn`) and hedged,
-and everything rendered from a rail is not. The previous version conflated the
-two and told donors that Ethereum mainnet USDC would be lost, which
-OpenRouter's checkout takes perfectly well: their flow runs on Coinbase
-Commerce's onchain payment protocol, which settles supported tokens across the
-Ethereum, Polygon and Base ecosystems. OrcaRouter's NOWPayments checkout has
-only been seen offering TRON, and NOWPayments supporting ~350 assets is a fact
-about the platform rather than about that merchant's configuration.
-
-**A partial read must never be booked.** `Balances` reads a family's rails
-concurrently and is all or nothing, because a sum missing one unreachable rail
-is indistinguishable from a smaller balance, and `pollFunding` reads a fall as
-the operator withdrawing to buy credits. One dead RPC would therefore record a
-withdrawal that never happened and then book the recovery as a donation nobody
-made. An error costs one fifteen minute retry. `set-address` runs the same
-read for the same reason: a baseline banked while one chain was unreachable
-would report that chain's existing holdings as a gift on the next poll.
-
-`aimod_funding.balances` (migration 0027) stores the per-rail breakdown behind
-the total, written only by a complete poll, because `/aimod funding show` is
-`TierPublic` and must not fan a dozen RPC calls out on a member's command. The
-public view renders only rails holding something (a family has up to nine, and
-eight zeroes would bury the useful line), each linked to that chain's explorer,
-plus a whole-address explorer link so anybody can audit the jar without
-trusting merlin's arithmetic. For an EVM address that link is deliberately
-Etherscan's multi-chain view: a single per-chain explorer would show one of
-five ledgers and imply the other four were empty. The network list carries full
-weight and the caveat below it does not, since with several chains accepted
-"which networks are OK" is the actionable fact.
-
-TRON and every EVM chain share one code path: TronGrid answers Ethereum's
-JSON-RPC for reads, so the same `eth_call`, the same `balanceOf` selector, the
-same left-padded argument and the same `math/big` parse all stand. What TRON
-needed was a base58check decoder (`tronAddressToHex`, on `math/big` and
-`crypto/sha256`) for the `T...` form, applied to the **token contract as well
-as the wallet** since both fields want Ethereum-shaped addresses. Solana is the
-one rail read differently, with `getTokenAccountsByOwner` rather than
-`eth_call`, marked by a single bool on the rail rather than a second client
-type since the timeout, the body cap and the HTTP-200-carries-a-JSON-RPC-error
-trap are all identical. Its accounts are **summed**, because an owner can hold
-several token accounts for one mint and reading the first would under report
-money somebody genuinely sent.
-
-Address validation is deliberately unequal and says so. A TRON address carries
-a checksum, so `set-address` genuinely catches a mistyped one. A Solana address
-is a raw ed25519 public key with **no** checksum, so a typo that still decodes
-to 32 bytes is accepted and cannot be caught short of asking the chain; an EVM
-address is not EIP-55 checked either, since a fully lowercase one is valid.
-`TestSolanaAddressValidation` pins that asymmetry so nobody later assumes
-parity between the families.
-
-**Stablecoins from a fixed table, not arbitrary tokens** (a `ponytail:` note
-marks the ceiling). Reading whatever a donor might send needs a token indexer
-plus a price oracle, which is an API key and a dependency for something a donor
-solves by swapping first. Overrides are `MERLIN_RPC_<CHAIN>` per chain and
-`MERLIN_TOKEN_<CHAIN>_<ASSET>` per rail, scanned by prefix so adding a rail
-needs no loader edit; the four superseded single-chain names still map onto
-base and tron so a deployed `.env` keeps working. An endpoint and its token
-contract must be set together: an endpoint on one chain with a token address
-from another reports a zero balance rather than an error. Reading the balance is one `eth_call` with
-the `balanceOf` selector and a left-padded address, parsed through `math/big`
-(a `uint256` does not fit a `uint64`), so there is no web3 dependency. A
-JSON-RPC error arrives with **HTTP 200**, so status-only checking would read a
-rejected call as a zero balance.
-
-**Only the guild owner or the bootstrap operator may set the address**
-(`canSetFunding`), enforced in the handler because `PermSpec` cannot express
-either identity, exactly as `/aimod moderate-user` does. `TierAdmin` is only
-the coarse floor: a guild with five admins would otherwise have five accounts
-able to silently repoint where donated money goes, and nothing sent on chain
-can be recovered. It fails closed on an unresolvable guild. `clear` is
-deliberately open to any admin, because it can only ever stop donations and
-never redirect them. Every change writes an audit entry naming both addresses,
-and the public view names who set it and leads with a warning for 24 hours.
-
-**Donations are balance deltas, not parsed transactions.** The first poll after
-an address is set is a *baseline* and counts nothing, or pointing the bot at a
-wallet that already holds money reports a phantom gift on day one; the baseline
-is written with the address in one statement, from the balance the `set-address`
-command already read. A fall in balance is the operator buying credits, never a
-negative donation. Two gifts inside one 15 minute poll read as one, which is
-why the display says "donations" and never "donors". `aimod_funding` is a
-separate table from `aimod_config` on purpose: the poller writes every 15
-minutes and `aimod_config` is the hot-path row behind `cachingStore`, so these
-setters are the only ones in the package that correctly need **no** cache
-invalidation. The job is registered only where there is a wallet and is
-deliberately **not** `Seed`ed, the opposite of the calibration job beside it: a
-freshly set address should show a balance on the next tick, and its first fire
-costs one public RPC call rather than a model bill.
-
-**`funding/show` is the one command that answers the channel rather than the
-invoker**, via `core.DeferResponsePublic`. Everything else in this bot is
-ephemeral, which is right for a surface read to make a decision and wrong for
-one whose purpose is to be seen by other people. It has to be a separate defer
-rather than a flag on the follow-up, because Discord fixes ephemerality when
-the interaction is acknowledged: deferring privately and editing in a public
-answer silently stays private. Use it only where the answer contains nothing
-the invoker would mind posting in the channel they ran it in, which is why the
-mod-facing figures stay on `/aimod status`. `followUp` zeroes
-`AllowedMentions` for the same reason `discordguard.GuildOps` does: embeds
-cannot ping today, and that is what keeps it true if a `Content` line is ever
-added to a public path. The field renders in three weights (fenced address,
-bold chain warning, `subtext()` for guidance and provenance) because sending
-on the wrong chain is the mistake people actually make, and the money does not
-come back.
-
-`funding.ask`/`thanks`/`low`/`dry` are in the voice catalog because
-`funding/show` is `TierPublic`; the address, both balances, the runway and the
-"funds go to whoever controls it" warning are **code-authored embed fields**,
-since `voice.Line` selects at random and falls back silently, which is right
-for a greeting and wrong for the sentence saying where somebody's money goes.
-Member-facing durations render through `humanRunway` ("6 days"), the audit and
-`/aimod status` ones through `core.FormatDuration` ("6d").
-
-**merlin's face on `funding/show` follows the scanning-credit gauge, not the
-jar** (`tipJarMood`): crying (`MoodTipJarEmpty`) when the credit is gone,
-sweating (`MoodTipJarLow`) inside `lowCreditRunway` or under
-`tipJarLowFraction` of the cap, dry-eyed over a full jar (`MoodTipJarFull`)
-from `tipJarFullFraction` up. The gauge rather than the donation balance
-because "mostly full" needs a capacity and only the cap gives one; a wallet
-has no top. Empty and low reuse `fundingWords`' thresholds so the face cannot
-weep beside a line saying all is well. An unknown allowance or balance, or one
-in between, returns `MoodNone` and the embed keeps its colour's face. A payment
-refusal also keeps the error face rather than drawing a full jar over it.
-The low and full frames are edits of the crying emote kept in
-`assets/source/`, keyed by flood fill from the border rather than a global
-black key, which would have eaten the outline and the pupil.
+- **The bot holds no key and moves no money.** Automated: balances, burn, runway, a daily `aimod.funding_low`.
+- Gauge reads the routed gateway: `KeyInfo` (OpenRouter `GET /key`) or `OrcaBalance` (same struct, cents). Free tier has no balance.
+- OpenRouter `limit_remaining` is **key allowance** against `limit`, not account balance. A 402 sets `paymentRefused`, shown separately, never zeroing the allowance; on status it empties the paid meter and suppresses runway. An accepted paid call clears it.
+- **An address selects a family, not a chain** (`familyFor`): `0x` = all EVM rails summed, `T...` TRON, 32-byte base58 Solana.
+- `fundingRail` (verified chain facts, contracts checked live for `symbol()`/`decimals()`) is separate from `topUpChains` (dated merchant config).
+- **A partial read is never booked**: `Balances` is all or nothing.
+- Per-rail breakdown in `aimod_funding.balances`; public view shows non-zero rails and the explorer link.
+- JSON-RPC errors arrive with HTTP 200; parse `uint256` with `math/big`; no web3 dependency. `MERLIN_RPC_<CHAIN>` and `MERLIN_TOKEN_<CHAIN>_<ASSET>` set together.
+- **Only owner or operator sets the address** (`canSetFunding`); any admin may `clear`. Audit names both addresses; public view warns for 24h.
+- Donations are balance deltas; first poll is a baseline; a fall is a withdrawal. `aimod_funding` is separate from `aimod_config`. Funding job not `Seed`ed.
+- `funding/show` is the one public answer (`core.DeferResponsePublic`); mentions zeroed. Addresses, balances and warnings are code-authored, not voiced.
+- Face follows the credit gauge (`tipJarMood`). `/aimod funding` needs a redesign; not a reference.
 
 ### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)
 
-merlin's own packages compiled to WebAssembly, so two of this codebase's
-promises stop requiring a Go toolchain to collect on. `internal/voice` is built
-so its lines are data that can be reviewed as writing, and reviewing one meant
-running the bot; the rotation notice is a guild's **published retention
-policy**, and the only way to see what a channel would be told was to configure
-it in a live server and wait.
-
-**Nothing in the lab reimplements anything, and that is the entire design.** A
-JavaScript simulator would be a second copy of the schedule arithmetic and the
-disclosure rules, and a second copy drifts. What it would drift on is a
-deletion window somebody had already published. So the page calls
-`rotation.RetentionNotice`, `rotation.HeadsUpNotice`, `rotation.ValidateChannel`,
-`core.IntervalSchedule.Next` and `voice.Validate`: the same functions the bot
-calls, which is what justifies shipping a several-megabyte binary to a browser.
-
-Those four `rotation` identifiers were exported *for* this, and the bot's own
-call sites now route through them (`retentionNotice` is a one-line delegation),
-so there is exactly one path and the preview cannot diverge from what gets
-posted. Exporting was cheap because none of them needed anything from `Plugin`
-beyond the speaker.
-
-The split is `internal/lab` (no build tag, plain Go, tested natively) under
-`cmd/lab` (`//go:build js && wasm`, pure JSON-in/JSON-out marshalling). Logic
-that cannot be reached by `go test` is therefore about forty lines of glue, and
-`scripts/check-lab.mjs` drives the real compiled blob in Node to cover even
-that. CI builds `cmd/lab` for js/wasm on every push, because a signature moving
-under the binding breaks no test and would otherwise rot silently.
-
-Size is ~13.7MB raw and ~3.6MB gzipped, and it measured **identical** with and
-without the `aimod` package: the Go runtime dominates and dead-code elimination
-handles the rest, so scope here is not size-constrained. TinyGo would cut it
-substantially and is deliberately not used, since it would add a second
-toolchain and does not support everything the real packages rely on.
-
-The build (`scripts/build-lab.sh`) copies `wasm_exec.js` out of the local
-`GOROOT` rather than vendoring it: it is part of the runtime and must match the
-compiler that produced the blob beside it, and a committed copy drifts silently
-on a Go upgrade into a page that loads and then does nothing. Both it and
-`lab.wasm` are gitignored.
-
-**There is deliberately no authentication.** The repository is public, so every
-line, policy file, pattern and rule the lab renders is already readable on
-GitHub and gating the page would protect nothing. Discord OAuth specifically
-would be worse than nothing here: the authorization-code flow needs a client
-secret, which means a server, and merlin is outbound-only by design. Adding an
-inbound HTTP surface to a bot whose threat model is weaponized reporting, in
-order to guard public information, is the wrong trade. If the page ever does
-need gating (keeping it out of search results, say), the answer is an identity
-proxy in front of the static files, not auth code in this repository.
-
-Also fixed on the way in: `internal/config`'s reload files were tagged
-`windows` / `!windows`, so js/wasm matched the SIGHUP one and the whole tree
-failed to compile for a browser. They are now `unix` / `!unix`, and the no-op
-was renamed off the `_windows.go` suffix, because a GOOS filename suffix
-carries an implicit constraint that ANDs with the explicit tag and would have
-left js/wasm with no definition at all.
+- merlin's real packages compiled to WebAssembly. **The lab reimplements nothing**: it calls the same functions the bot does (`rotation.RetentionNotice`, `HeadsUpNotice`, `ValidateChannel`, `core.IntervalSchedule.Next`, `voice.Validate`).
+- Logic in `internal/lab` (native tests), glue in `cmd/lab` (`js && wasm`), driven by `scripts/check-lab.mjs`. No TinyGo.
+- `scripts/build-lab.sh` copies `wasm_exec.js` from `GOROOT`; it and `lab.wasm` are gitignored.
+- **No authentication, deliberately.**
+- `internal/config` reload files are tagged `unix`/`!unix`; no GOOS filename suffixes there.
 
 ### Contests (`internal/plugins/contest`)
 
-Milestone 11. Four phases (announce, submit, vote, results) on one per-guild
-`contest-tick` job, entries arriving as posts in a Discord forum channel, and
-a Cloudflare Worker serving the gallery and the ballot.
-
-- **Submissions come in through a forum, and that is what makes the storage
-  problem disappear.** merlin creates one forum channel per contest and
-  members post in it; Discord's own CDN hosts every file for free and
-  forever, so there is no R2 bucket, no upload endpoint, no size or type
-  validation, and no bytes on the VPS. The signed CDN links expire in about a
-  day, and re-reading the thread's starter message returns a fresh one, so
-  `media_url` is a cache with a known refresh path rather than a record and
-  the tick refreshes it before it expires, during voting and for
-  `artRefreshWindow` after the contest closes.
-- **Reading a post needs no gateway intent.** `ThreadCreate` carries the
-  thread's id, name and owner, none of which are message-content fields, so
-  it arrives unprivileged; the plugin then fetches exactly that one starter
-  message over REST (a forum post's first message shares the thread's id, so
-  `ChannelMessages(threadID, 1, "", "", threadID)` returns it). That is
-  strictly narrower than aimod, which needs the live firehose. It does need
-  the portal's Message Content toggle, which is HTTP-side and independent of
-  what is passed at identify, and that dependency **fails loud**: an
-  unreadable post and an empty one look identical over the wire, so
-  `ErrNoMessageContent` says so in the thread and in `/contest status` rather
-  than dropping somebody's entry.
-- **The entry list is re-derived from the forum's threads, but only
-  withdrawn while submissions are open.** Deleting your post is how you
-  withdraw, which is why there is no `/contest withdraw` to keep in sync.
-  Once voting starts the list freezes: people are casting votes against a
-  specific set, and letting a deleted post retroactively remove an entry
-  would discard every vote already cast for it, so somebody losing could
-  delete their post and take their voters' ballots with them.
-- **"The forum's threads" is the active list plus the archived one**
-  (`forumThreads`), and the withdraw list is what Discord said exists, not
-  what merlin managed to read. Both halves were the same bug wearing
-  different clothes: `GuildThreadsActive` omits archived threads and a forum
-  post archives itself after its parent's inactivity window, so a quiet
-  entry read as a deleted one; and building the live list out of the threads
-  whose starter-message read and upsert both succeeded meant one 429
-  withdrew a live entry. Withdrawal is untracking, so it obeys the same
-  "only on gone, never on failed" rule as `rotation.sweepOne` and
-  `roles.releaseJail`. The withdraw runs **before** the upsert loop for a
-  third reason: a member who deletes and reposts between two ticks otherwise
-  has the replacement inserted against their own still-live row, which is
-  `contest_submissions_one_live_idx` rather than the statement's
-  `ON CONFLICT (thread_id)`, so it errors and the new entry is missing for a
-  whole tick. `fakeStore.UpsertSubmission` models that index for exactly
-  that reason.
-- **The refresh is driven by the links, not by a clock, and it outlives the
-  contest.** A signed Discord attachment URL carries `?ex=<hex unix seconds>`,
-  so every entry states exactly when it dies; `soonestExpiry` takes the
-  earliest across the contest and `dueForRefresh` goes when that is within
-  `refreshMargin`. A fixed interval was wrong in both directions: it refreshed
-  links with eighteen hours left, and it would have gone on refreshing at the
-  same cadence on the day Discord shortened the lifetime, at which point the
-  gallery breaks and nothing in the file is wrong. A URL with no readable
-  expiry falls back to `refreshFallback`, and `refreshFloor` stops a contest
-  whose links always look urgent from re-reading its forum every tick.
-  Anything unparseable is "no expiry", never "expired", for the same reason.
-
-  It also has to survive the contest, which is what `artRefreshWindow` (30
-  days) is for. `afterFinish` used to unregister the tick at close, so a
-  results gallery went permanently dead within a day of its last refresh:
-  every finished contest this bot had run was a page of broken images, which
-  is what the live one was found to be. Cancelled contests are excluded, since
-  nothing points at their gallery. Past the window the page falls back to
-  linking the Discord thread the art still lives in, which is what makes
-  stopping honest rather than merely cheap.
-
-  The rate limit sits on the reads, not just the push: syncing is one REST
-  call per entry and the push is one call total, so rate-limiting the push
-  alone (which is what it used to do) left a 200-entry contest making 200
-  calls a minute through its whole vote phase. Submissions still sync every
-  tick while they are open, where a new entry appearing within a minute is
-  the point.
-
-  Discord's undocumented `POST /attachments/refresh-urls` would turn N calls
-  into one and is deliberately not used: re-reading the thread is the
-  documented path and already works, and an undocumented endpoint is not
-  something to put a gallery's whole art pipeline on.
-- **A contest nobody voted in crowns nobody** (`noVotes`). Every entry ties
-  at zero when the Worker is unconfigured, and a real tally can come back
-  empty, and `sortResults` tiebreaks on a random entry ID: falling through
-  to `announceWinners` meant `awardPrizes` DMing a sealed prize code to an
-  arbitrary entrant and then wiping the ciphertext, which is the one
-  irreversible thing this plugin does.
-- **Every phase transition claims the move before doing anything visible**
-  (`AdvancePhase` is `UPDATE ... WHERE phase = $old`), the same
-  claim-before-acting rule as rotation's pre-rotation notices and chosen the
-  same way: a missed announcement is invisible, a doubled one reads as a
-  broken bot. `finish` is the exception that proves it, claiming *last*,
-  because the tally comes from the Worker and claiming first would leave a
-  contest sitting in results with no winner and nothing scheduled to retry.
-  A failed close records `tally_error`, stays in vote, and lets the
-  Scheduler's own backoff have another go.
-- **The Worker is dumb storage and a vote ledger, deliberately.** merlin owns
-  the schema and pushes a complete snapshot on every change rather than
-  diffing, so a push landing after a missed one is still correct with nothing
-  to reconcile. It computes no standings and decides no winners: merlin ranks
-  and pushes the numbers, so the results post and the page cannot disagree.
-  Three calls out (`PUT` a snapshot, `POST` a close, `GET` stats) and nothing
-  in. There is still no inbound HTTP surface on this bot.
-- **One vote per member is Discord OAuth, not a link.** The page sends people
-  through Discord with `identify guilds.members.read`; the second scope is
-  the one that matters, since `identify` alone would let anybody with a
-  Discord account vote in any server's contest, and Discord answers 404 on
-  the member endpoint for a stranger. The Discord ID is hashed the instant it
-  arrives with the same HMAC merlin uses, so the ledger holds opaque strings
-  and cannot be turned back into a list of who voted for what. That shared
-  hash is also what refuses a self-vote, which is why `TestTokenGoldenVector`
-  and `scripts/check-contest.mjs` pin the same vector from both sides.
-- **A prize code is sealed with `internal/secret` and lives in merlin's
-  Postgres**, never on Cloudflare and never in a snapshot. `/contest prize`
-  is a Discord modal because that is the only surface that takes free text
-  from a member without it landing in a channel or in their command history.
-  The ordering is `roles.applyJail`'s: the pairing is recorded, then the DM
-  carrying the code is sent, and only a DM that actually landed wipes the
-  ciphertext. A failed DM therefore leaves a recoverable state, which is what
-  `/contest claim` finishes, and closed DMs are the common case. That makes
-  `claim` guild-scoped rather than contest-scoped (`PrizesAwardedTo`):
-  reading only the latest contest gave a winner until the next `/contest new`
-  to collect, after which their prize was unreachable and its ciphertext sat
-  in `contest_prizes` for good.
-- **A pledge waits for a mod, and the mod is not shown the code.** `/contest
-  prize` is `TierPublic` and used to publish on submission: row written,
-  snapshot pushed and the announce line posted before anybody had read a word
-  of it, so the gallery carried whatever any member typed under their own
-  name. Approval (migration 0033, `reviewed_at IS NULL` is pending) gates all
-  of that, and `awardPrizes` filters on it too, since an unreviewed code
-  reaching a winner is the queue having been for nothing. The mod is not
-  shown the code because a moderator is not a smaller exception to the
-  sealing than anybody else, and a review flow that decrypted would make
-  every mod somebody who could pocket a key and reject the pledge. What they
-  get is the donor, their account age (off the snowflake, no API call), the
-  title, the details, and one line of `codeShape` derived at pledge time in
-  the only function that holds the plaintext: "steam-shaped key, 17
-  characters", "link to discord.gift" (host only, never the path, which is
-  the entire secret), "4 words of prose". That is enough to throw out "lol
-  get rekt idiot" and deliberately not enough to catch a plausible fake,
-  because nothing short of redeeming a code can and a queue that looked like
-  a guarantee would be worse than one that does not. Rejecting keeps the row
-  and wipes the ciphertext **in the same statement** as the decision, DMs the
-  donor, and survives a bounced DM. `/contest status` counts what is pending,
-  which is what stops an undrained queue from being invisible given a pledge
-  nobody rules on appears nowhere else at all.
-- **Cancelling deletes nothing.** The forum, the posts and the pledges all
-  stay: calling a contest off is a decision about the contest, not about
-  anybody's work, and channel deletion has no undo.
-- Degrades rather than failing: with no `MERLIN_CONTEST_WORKER_URL` the whole
-  Discord half runs and `/contest status` says there is nowhere to vote; with
-  no `MERLIN_SECRET_KEY` pledges work and codes are refused rather than
-  stored in the clear. A Worker URL with no link key is the one combination
-  that refuses to boot, since an empty HMAC key makes every session forgeable.
-
-The gallery (`web/contest`) is one HTML file with inline CSS and JS, no
-framework and no build step, the same call `web/lab` made. It is a sticker
-collage on paper: everything is drawn as ink outlines on paper with a fixed
-six-pen marker palette, which is the whole reason dark mode is one media
-query, since a felt tip reads on white paper and on a blackboard alike. The
-wobble is a `border-radius` trick, the collage is the six merlin mood PNGs
-`internal/core/assets` already ships, and the headline's per-letter tilt is
-seeded from the contest slug so it is stable for that contest and different
-from the next. `scripts/check-contest.mjs` drives the real Worker under Node
-with D1 as in-memory SQLite on `schema.sql` and Discord stubbed, and CI runs
-it (`contest-worker`). **A ballot's open-voting checks belong in its own
-batch** (`ballotOpen`): `castVote` validates and then reads the body, and a
-close that freezes and counts in between used to leave the ballot to commit
-after the final tally and report success.
-
-Sprite sheets are kept, and cut by throwaway tooling, exactly as the mood
-sheet is: `internal/core/assets/source/merlin_moods_sheet.png` holds the six
-moods the bot embeds, and `web/contest/art/source/merlin_contest_sheet.png`
-the five contest-only ones. Two rules govern that cut, both of them learned
-by getting it wrong and shipping visibly broken art. **Never chroma key a
-sheet that already carries alpha**: one arrived flattened onto black, keying
-it ate every part of a sprite that was genuinely dark, and the bomb lost its
-body. **Find the gutters by projecting alpha onto each axis** rather than
-slicing into equal cells: the rows are not evenly spaced and the smoke and
-confetti push past where a third would fall, so five of six bounding boxes
-ran to a cell edge, which is a fragment rather than a frame. Names are
-matched against the existing exports by image difference rather than read off
-the grid, since guessing which cell is `notice` and which is `info` is how
-the wrong bird ends up on a jail notice. `scripts/build-contest.sh` stages
-both sets into the gitignored `web/contest/public/stickers/`.
+- Four phases on one per-guild `contest-tick`; entries are posts in a merlin-created forum; the Cloudflare Worker `contest` serves gallery and ballot.
+- Discord hosts the files; `media_url` is a cache refreshed from the starter message before its `?ex=` expiry (`soonestExpiry`, `dueForRefresh`, `refreshMargin`, `refreshFallback`, `refreshFloor`) for 30 days after close (`artRefreshWindow`), not for cancelled contests.
+- No gateway intent, but needs the portal's Message Content toggle; `ErrNoMessageContent` fails loud.
+- Entries re-derived from active **plus archived** threads (`forumThreads`); withdrawal only while submissions are open, only for threads Discord says are gone, **before** the upsert loop.
+- `noVotes`: nobody voted, nobody crowned.
+- Phase moves claim first (`AdvancePhase`); `finish` claims last and records `tally_error` on failure.
+- The Worker is dumb storage: full snapshot pushes, no standings, three outbound calls, nothing inbound.
+- Votes via Discord OAuth `identify guilds.members.read`; IDs HMAC-hashed on arrival (`TestTokenGoldenVector`, `check-contest.mjs`). `ballotOpen` checks in the vote's own batch.
+- Prize codes sealed with `internal/secret` in Postgres only, entered via modal; record, DM, wipe only on a landed DM; `/contest claim` is guild-scoped (`PrizesAwardedTo`).
+- Pledges wait for mod approval; mods see `codeShape`, never the code. Reject wipes ciphertext in the same statement.
+- Cancelling deletes nothing. No Worker URL degrades; no secret key refuses codes; Worker URL without link key refuses to boot.
+- `web/contest` is one HTML file, no framework or build. Sprite cuts: never chroma key a sheet with alpha; gutters by alpha projection; names by image difference.
 
 ### Statistics (`internal/plugins/statistics`)
 
-Hourly activity buckets, counted from the gateway as messages arrive, and
-the commands that read them: `/statistics report` (who was talking, the
-card and the list; operator-only, see the package doc), `channels`, `daily`,
-`members`, `status`, `backfill` (operator-only) and `configure retention`.
-This replaced `/activity`, which paged Discord's history over REST for every
-report at about one page a second per channel, so two weeks of one busy
-room was a half-hour scan that any push to `main` killed, and the answer
-was "who was talking in the 20 minutes it managed".
-
-- **`/statistics daily` is the pulse on its own** (`daily.go`): chat
-  messages per UTC day as the main chart, voice hours per day as a smaller
-  control underneath on the same date axis, and a `daily.csv` of every day.
-  It names nobody, so it is `statistics.view` like `channels`, not
-  operator-only. Two charts, never one with a second y-axis: messages and
-  hours are different units, and a shared plot lets whichever scale was
-  drawn last decide what looks busy. Days are zero filled (`Days` returns
-  only days with rows, and a missing bar must read as quiet, not skipped),
-  but a day before coverage (counting began, or pruned) is **not counted**,
-  drawn as a shaded band and left blank in the csv, because zeroes there
-  draw a server that went silent on the days merlin was not looking. Days
-  cut short by the window or by coverage are dimmed and kept out of every
-  figure, the 7-day average included, which breaks rather than dipping.
-- **Counting is free and exact; the scan is now only a backfill.**
-  `GUILD_MESSAGES` is unprivileged and always requested
-  (`core.NewSession`); the events carry author, channel and timestamp with
-  no text, which is all `HandleMessage` reads. Tallies sit in a map under a
-  lock and land every `flushEvery` as one `unnest` upsert per table, so a
-  busy guild costs one statement per ten seconds rather than one per
-  message. A failed flush puts the cells back for the next one (up to
-  `pendingCap`), swapped out under the lock first so nothing is counted
-  twice. `Shutdown` flushes once more, which is what makes a redeploy lose
-  nothing. Joins and departures are counted per hour with **no user id**:
-  that would be a different, more sensitive record than "is the server
-  growing" needs, and `GuildMemberRemove` gets a handler for this alone
-  (roles deliberately has none, see the note above it in `main.go`).
-- **Names are recorded as seen, not looked up at render.** `stats_users`
-  keeps the display name and avatar each member last posted under, newest
-  sighting wins; `stats_channels` does the same for channel names, so a
-  report over last month still says where after rotation has deleted the
-  room. A member never seen is named by id, which is ugly and unambiguous.
-- **The backfill is idempotent by construction** (`backfill.go`). It pages
-  newest-first and writes an hour only once the first message of an older
-  hour proves it complete, replacing the channel-hour (`SetHour`) rather
-  than adding to it, and moves the cursor to one above the newest unwritten
-  message; so a restart re-reads at most one partial hour and double counts
-  nothing. It runs as a per-guild Scheduler job in `backfillSlice` (5m)
-  runs that end by choice inside `jobTimeout`, registered only while
-  channels are pending, so a deploy pauses it and the next process resumes
-  it. It fills strictly before `live_since` truncated to the hour: the
-  partial hour between that and the moment counting began belongs to
-  neither source and stays uncounted once, rather than being counted by
-  both. Missing Access marks the channel done with the error and moves on.
-- **Voice time is booked from channel changes, never logged as sessions**
-  (`HandleVoiceState`, `stats_voice_hourly`, migration 0037). Discord keeps
-  no voice history to backfill from, so the only source is having watched:
-  `GUILD_VOICE_STATES` is always requested, a member's open sitting is one
-  cursor in memory (`counter.open`), and the seconds since it are split at
-  hour boundaries into the same cell shape messages use, on every change
-  and on every flush, so a crash costs at most one flush interval. A mute
-  or deafen toggle arrives as the same event with the channel unchanged and
-  is ignored, or one sitting would be many rows. `SyncVoice` seeds the
-  cursors from `GuildCreate.VoiceStates` at `now`, so a redeploy loses the
-  minutes it was down and never invents time nobody was there for. The
-  report shows hours per member and nothing finer; `Report` is a full join
-  so a member who only sat in voice is still a person, ranked after the
-  same message count by voice.
-- **The heatmap is drawn, not explained** (`heatmap` in `render.go`).
-  GitHub's contribution grid on GitHub's dark greens, so a reader already
-  knows what it means, in two shapes chosen by the window: up to
-  `hourlyHeatMax` (a week) it is one row per day and a cell per hour from
-  `Store.Hours`, since a handful of day cells says nothing a totals line
-  does not and the hours show when the server is awake; longer windows get
-  weekday rows and a column per week from `Store.Days`. A cell's shade is
-  the quartile of its messages and voice seconds each normalised to the
-  window's own busiest cell and averaged, a metric the window has none of
-  left out rather than halving every score. Cells grow to fill the canvas up
-  to `cellPitch`, since Discord shows the whole image at about a third of
-  its scale; slots the window does not cover (the rest of today, the days
-  before a window's first Tuesday) are drawn in a faint `heatOutside` so a
-  strip still reads as a whole day; GitHub's "less ... more" legend sits
-  beside the grid where there is room. A window wider than the canvas at
-  the minimum pitch keeps its most recent weeks (a `ponytail:` note).
-  `TestRenderSamples` writes realistic renders to `ACTIVITY_SAMPLE_DIR`
-  for eyeballing a layout change.
-  The hour by hour / day by day listing rides only in the full `.md`, since
-  the embed already carries the picture.
-- **Chat and voice are two listings** (`chatters`/`voicers`), in the
-  markdown and as two card grids: the people in voice are mostly not the
-  people typing, and one ranking buries whichever it is not sorted by. A
-  member doing both is in both, with the voice grid leading on hours and
-  naming the rooms they sat in (`Row.VoiceChannels`, a speaker prefix
-  rather than a hash) instead of where they typed.
-- **Statistics informs aimod's cost projection** through `aimod.Traffic`
-  (`WithTraffic`, wired in `main.go` like `WithJailer`; aimod never imports
-  statistics). `estimateFor` takes the server's own counted messages a day
-  in place of `assumedScannedPerDay` **only while there are no receipts**:
-  once scanning has run, what reached a model is measured directly and is
-  the better number, since the skip filters see to it that not every
-  message does. Before that, a guess of two thousand for a server doing two
-  hundred is a budget set ten times too high, and the volume is the half of
-  a projection an admin cannot guess. `Basis` says which it used.
-- **A window that starts before the buckets do says so.** `report.partial`
-  compares `from` with the oldest hour held (or `live_since`), and both the
-  markdown and the card carry "counting began ..." so a quiet week cannot be
-  mistaken for an uncounted one; the embed turns `ColorWarning`.
-- **Retention is per guild, re-read at prune time, 90 days by default, and
-  capped at ten years**: the `rotation_archives.delete_after` rule, and
-  the direction that has to work is shortening. `Prune` runs hourly on the
-  plugin's own loop over every hourly table, voice included; there is
-  nothing per guild to register. The table is
-  metadata (counts, never content) but it is still a durable record of who
-  was talking where, which is why the reporting leaf keeps the operator
-  gate and why "forever" is not offered.
-
-The card image draws emoji as Twemoji art fetched from a pinned CDN path
-(`emoji.go`), the way it already fetches avatars, because the Go fonts carry
-none and `x/image/font` cannot rasterise a colour font. `segments` splits a
-name into face-drawable text and emoji sequences (ZWJ, skin tones, flags,
-keycaps, tags) and drops what is neither (CJK); `TestTwemojiKeys` pins the
-file-name convention, including the rule that U+FE0F is dropped unless a
-joiner is present. A symbol the face *can* draw (©) stays text unless
-U+FE0F asks for the emoji.
+- Hourly buckets from the gateway (no text read), flushed every `flushEvery` as one `unnest` upsert; failed flushes put cells back (`pendingCap`); `Shutdown` flushes.
+- Joins/departures counted with **no user id**. Names recorded as seen (`stats_users`, `stats_channels`), not looked up.
+- `/statistics report` is operator-only; `daily`/`channels` are `statistics.view`. `daily`: two charts, never a shared y-axis; zero-fill days, pre-coverage days blank and shaded; partial days dimmed and out of figures.
+- **Backfill is idempotent** (`backfill.go`): complete hours only, `SetHour` replaces, cursor-resumed, `backfillSlice` 5m runs, registered only while pending, stops before `live_since` truncated to the hour.
+- Voice time from channel changes into `stats_voice_hourly`; mute/deafen ignored; `SyncVoice` seeds from `GuildCreate`.
+- Heatmap GitHub-style (hourly up to a week, weekly beyond). `TestRenderSamples` writes to `ACTIVITY_SAMPLE_DIR`.
+- Chat and voice listed separately. Partial windows say "counting began ..." in `ColorWarning`.
+- Feeds aimod via `aimod.Traffic` only while aimod has no receipts.
+- Retention per guild, re-read at prune, default 90 days, max ten years, no "forever".
+- Card emoji are Twemoji from a pinned CDN path (`TestTwemojiKeys`).
 
 ### Rapsheets (`internal/plugins/rapsheet`)
 
-Milestone 13. A per-member moderation ledger, the escalation ladder that
-reads it, and the consequences (timeout, kick, temporary ban) the ledger
-applies itself. Before it, merlin had no moderation history at all:
-`role_jails` is current state deleted on release, an aimod sanction's length
-and prior count lived inside a reason string, and `audit_log` has no target
-column and no read path. Bernard's rapsheet is the bar it was built against:
-case IDs, warn/note/tempban, an additive score over a fixed two-week window
-with thresholds that cannot be changed.
-
-- **`rapsheet_entries` is the record and everything else is a view of it.**
-  One row per warning, jail, timeout, kick, ban, aimod removal, note or
-  ladder suggestion, with a case number (`#123`, global `BIGSERIAL`), a
-  category (the ten aimod policy buckets plus `server_rule` and `other`),
-  points, who decided it, and a void that strikes an entry without deleting
-  it. Every write goes through `record()`, whatever produced it, so nothing
-  downstream can tell a mod's warning from an aimod removal. **Points are
-  frozen at write time**: retuning a category must not re-weight decisions
-  already taken. `pointsFor` gives an *automatic consequence* (a jail aimod
-  or the ladder applied, actor `core.ActorSystem`) zero points, because the
-  offence behind it already scored; a ladder row scores zero whoever clicked
-  Apply, or the ladder would walk itself up.
-- **The score decays, it does not window.** `Decayed` is points times
-  2^(-age/half-life), default half-life 30 days, guild-configurable. An
-  entry from three weeks ago counts for something and one from three months
-  ago for almost nothing, and there is no cliff a member can wait out to the
-  day. `Ladder` maps the sum onto guild-configurable bands; `ValidateBands`
-  refuses a ban band with no duration, which is what makes a permanent ban
-  unreachable by automation. The defaults are 25 notice, 50 jail 2h, 100
-  jail 1d, 200 ban 7d, 400 ban 30d.
-- **Ingestion is the bus, not an injected interface.** roles publishes every
-  jail, re-sentence and release and aimod every removal, rewrite and undo as
-  `core.EventModerationAction` / `EventModerationReversed`, because the
-  publisher must not care whether a ledger exists or is enabled: the jail
-  already happened and there is nothing it could do with an error. The
-  subscriber checks the guild's plugin toggle, dedupes on the publisher's
-  `(source, ref)` through a partial unique index, drops jails carrying its
-  own `ladderReasonPrefix` (they come back over the bus like any other), and
-  writes on a detached goroutine so a slow write never holds roles' sweep.
-  Two bugs came out on the way in: `/roles release` audited every release as
-  `system` and now takes the actor, and `/aimod undo` left the
-  `<message>:sanction` row counting as a prior and now reverses it, and
-  releases the jail behind a member's only standing sanction via
-  `Jailer.ReleaseAutomatic`.
-- **aimod keeps its own per-incident ladder; only its prior count moved.**
-  `aimod.History` (`rapsheet.Priors`: scored offences across the member's
-  link group) is wired in `main.go`, so a mod's `/roles jail` last week is
-  visible to the escalation deciding this week's sentence. aimod falls back
-  to `CountSanctions` when the rapsheet has no opinion or fails, never to
-  zero. The rapsheet's band ladder does cumulative escalation on top, and
-  `covers` stops it suggesting a 24h jail over the 24h jail aimod just
-  applied.
-- **Suggest by default, and auto never acts on a moderator's own command.**
-  `escalation_mode` is off/suggest/auto. In auto, only an entry whose
-  source is `aimod` or `discord` is applied; a `command` entry gets a
-  suggestion even in auto, because a mod who just typed `/rapsheet warn`
-  decided that offence cost a warning and a bot jailing on top of it is the
-  surprise the rule exists to prevent. `applyLadder` refuses the bootstrap
-  operator and anyone `CanModerate` (nil actor) calls staff. Idempotency
-  lives in the ledger: a suggestion and an applied consequence are rows
-  carrying the band they were for, so "already suggested at this band"
-  survives restarts and shows in the case file; a dismissed suggestion does
-  not count, and a suggestion whose tipping entry is later voided is
-  withdrawn (`withdrawStaleSuggestions`), since it would otherwise sit open
-  asking for a jail nobody is owed and silence every lower band for a
-  half-life. Nothing is recorded when there is no mod channel to post in,
-  for the same reason. The Apply button re-derives everything on the click,
-  claims the suggestion against a second mod clicking at once, and raises
-  the bar to `TierAdmin` for a ban however the component was registered.
-- **Consequences follow `roles.applyJail`'s ordering**: entry written, member
-  told, Discord asked, and a refusal voids the entry with the error. Told
-  *before* asked for a kick or a ban, because afterwards the member shares no
-  server with the bot and the DM fails. Voiding a standing timeout lifts it.
-  `rapsheet-sweep` (1 minute, registered only where a temporary ban is
-  pending) lifts served bans and **only untracks on "gone"**: Unknown Ban
-  means a human already lifted it and the audit-log ingestion recorded
-  theirs; any other failure waits for the next tick and is returned so the
-  Scheduler's backoff sees it.
-- **Bans, kicks and timeouts done through Discord's own client** arrive as
-  `GUILD_AUDIT_LOG_ENTRY_CREATE` under the always-on `IntentsGuildBans`
-  (what Discord now calls GUILD_MODERATION), already attributed and with
-  the reason the mod typed, so there is no race against the audit log being
-  written. merlin's own actions are told apart by the actor and skipped.
-  Discord delivers nothing without View Audit Log, so `/rapsheet status`
-  checks for it; rapsheet's `Perms` puts it in the install. The timeout
-  parser compares against the plugin's injected clock, not the wall clock.
-- **Case files are a view, lazily created.** `configure forum` points at a
-  forum or creates `#rapsheets` (hidden from @everyone, readable by the mod
-  roles). A member's post is opened on their first entry, never on join, so
-  five thousand members do not become five thousand empty threads; every
-  later entry is one message, and a void or edit rewrites the mirrored
-  message in place (`ChannelMessageEditComplex`, attachments replaced) rather
-  than posting again. Best effort throughout: detached goroutine, never fails
-  the entry, `/rapsheet status` counts the unmirrored. A thread Discord says
-  is gone is reopened once; a forum that is gone unsets itself.
-- **Alt hints never link.** On `GUILD_MEMBER_ADD` the joiner is compared with
-  the members on file (the case-file identity snapshot, so no REST call per
-  candidate and it survives the candidate being banned) on four cheap
-  signals: identical avatar hash (3), same name letters-only (2, prefix 1),
-  account created within 10 minutes of one on file (2), joined within 15
-  minutes of somebody's jail/ban/kick (2). Stored at 2, posted to the mod
-  channel with a Link button at 3, with the candidate's score and the
-  joiner's account age beside it. A wrongly merged stranger inherits somebody
-  else's record, which is worse than an alt getting a head start. Linked
-  accounts share one sheet and one score.
-- **The model reads, it does not decide.** `/rapsheet summary`, the Monday
-  consistency review and the alt second opinion all go through
-  `aimod.Complete` (the guild's key, budget, ZDR and provider rules, no
-  schema, temperature zero) via the narrow `rapsheet.Reviewer` seam. A guild
-  with no key or no budget gets an error that reports itself `Unavailable()`
-  through an anonymous interface, so the rapsheet degrades to the plain sheet
-  without importing aimod. Prompts carry ledger text only: kinds, categories,
-  points, ages, durations, mod-typed reasons, and actor *class*; never a user
-  id, never message content. The tests grep for both.
-- **Two audiences, one renderer.** `/rapsheet me` shows a member what was
-  done to them: no notes, no voided entries, no ladder rows, no linked
-  accounts, moderators as "a moderator", and the band explained in a
-  sentence. Every user-facing surface was rendered Discord-style and read by
-  a reviewer before this shipped (`preview_test.go` writes the scenes when
-  `RAPSHEET_PREVIEW_DIR` is set); the sheet pages by eight and clips reasons
-  so ten long ones cannot push a description past Discord's 4096 bytes.
+- `rapsheet_entries` is the record; every write through `record()`. **Points frozen at write time**; automatic consequences and ladder rows score zero.
+- Score decays (half-life 30d default); `ValidateBands` refuses a ban band without a duration.
+- Ingestion via the bus (`EventModerationAction`/`Reversed`): dedupe on `(source, ref)`, drop own `ladderReasonPrefix` jails, write on a detached goroutine.
+- `escalation_mode` off/suggest/auto; **auto never acts on a `command` entry**. `applyLadder` refuses bootstrap and staff. Suggestions are ledger rows; voided tipping entries withdraw them (`withdrawStaleSuggestions`); no mod channel = nothing recorded. Apply re-derives, claims, needs `TierAdmin` for a ban.
+- Consequences: entry written, member told (before kick/ban), Discord asked, refusal voids the entry. `rapsheet-sweep` lifts served bans, untracks only on Unknown Ban.
+- Client-side bans/kicks/timeouts come from `GUILD_AUDIT_LOG_ENTRY_CREATE` (needs View Audit Log); merlin's own skipped; timeout parser uses the injected clock.
+- Case files: forum posts opened lazily on first entry, edits in place, best effort.
+- **Alt hints never auto-link** (stored at 2, posted at 3). Linked accounts share one sheet.
+- The model reads, never decides: `aimod.Complete` via `rapsheet.Reviewer`; prompts carry **no user ids and no message content** (tests grep).
+- `/rapsheet me` hides notes, voids, ladder rows, links, moderator names. Sheets page by eight. `preview_test.go` writes to `RAPSHEET_PREVIEW_DIR`.
 
 ### Backing the birds (`internal/plugins/support`)
 
-`/support` posts the advert for support.cygnet.lol, and a new supporter gets a welcome card. **The words are shared, the layout is merlin's**: both cards come from `github.com/6586x57890143/cygnet/support` (a module every bird imports, like `cygnet/ledger`), which returns a `Page` that this plugin lays out in `core.Panel`. The advert sets `Hero`, so the panel leads with the supporter campaign's banner (`merlin_supporter_hero.png`, merlin in flight at dusk, halved to 1024x384 and stripped of its C2PA metadata) and puts the head under it with no thumbnail (`Panel.Hero`); the welcome wears `MoodSupporter`, her heart-in-beak face. Perk and coin icons are app emoji (`assets/emoji/support_*.png`, the dusk tiles support.cygnet.lol draws), read through `core.AppEmoji`/`AppComponentEmoji` and handed to the module as a `Brand`, with the bootstrap operator as the owner the advert names by mention (no handle in the repo).
+- Card words from `github.com/6586x57890143/cygnet/support`; layout is `core.Panel`. App emoji as a `Brand`; the owner named by mention, never a handle in the repo.
+- `/support` is public, 10 minute per-channel cooldown (`claim`).
+- Welcome cards from `core.EventSupportersJoined`, through `discordguard`, at most `maxThanked` names.
 
-- **`/support` is public, with a 10 minute per-channel cooldown** (`claim`): anyone may share it, and a repeat inside the window answers only whoever asked, so nobody can flood a channel with it.
-- **The welcome is driven by the bus, not by roles**: roles publishes `core.EventSupportersJoined` and neither knows nor cares who listens. The handler checks this plugin's switch, then posts off the bus's goroutine through `discordguard` (paused and dry-run guilds post nothing, nothing pings), one card per event naming at most `maxThanked` people.
+### Security model (spec.MD §4)
 
-### Rotation disclosure modes
+- **A stale guild is its own state** (`settings.Store.Stale`): writes paused, plugins off except `Store.Recovery`, `ActionPolicy` returns `Unknown` (refused for all but bootstrap). Nothing stale is kept to answer with.
+- Layered authorization on every command; `Permissions.CanManageRole` stops the bot touching roles above its own.
+- **`CanModerate` on restrictive actions**: refuses admin-equivalent targets unless the actor is one, refuses bootstrap for everyone, fails closed, re-derives the Administrator bit from roles.
+- Fail at boot, not silently: unset tier, missing handler, invalid command shape.
+- **Only untrack on "gone", never on "failed"** (`core.IsUnknownResource`, a 100xx code).
+- **Nothing merlin posts can ping**: guard senders force an empty parse list (`noPings`); a needed ping gets a named method with an explicit allowlist. Raw-client senders zero mentions themselves.
+- `everyoneCanRead` answers yes when unsure; `/config status` re-checks every time.
+- `GuildRoleDelete` prunes mod roles and allow/deny lists and drops cached marker IDs.
+- Log IDs, not content. Self-throttle below Discord's limits (`channelCapHeadroom`).
 
-`settings_rotation_channels.disclosure` (migration 0018, default `full`) is how much a freshly rotated channel is told about its own rotation: `full` (cadence + archival window), `cadence`, `retention`, or `generic` (neither). Per channel rather than per guild, matching `retention_hours` itself. Set via `/rotation configure add|edit`, a fixed four-value `Choices` option rather than autocomplete, since §4a's autocomplete rule is about values that come from bot state and cannot be enumerated at compile time.
+## Conventions (CONTRIBUTING.md)
 
-The four modes cross with bounded-vs-forever retention onto **six** voice keys (`rotation.intro.full`, `.full_forever`, `.cadence`, `.retention`, `.retention_forever`, `.generic`); `cadence` and `generic` say nothing about the archive and so need no forever variant. `rotation.introKey` returns the key **and** its vars together, deliberately: `voice.Line` falls back silently on a missing placeholder, so a selection split across two switches would degrade every notice for that mode to the compiled-in line with nothing saying why. `plainRetentionNotice`, the catalog-failed backstop, switches on the same mode for the same reason in the worse direction: a fallback that ignored the mode would publish exactly what the guild suppressed, at the one moment nobody is reading the logs.
-
-**Three layers keep an illegal mode out**: `validateRotationChannel` rejects it at the point of mutation, `UpsertRotationChannel` normalizes the empty value to `full`, and a `CHECK` constraint on the column is the backstop against a hand-edited row. Unlike `archive_visibility` next door (bare TEXT, designed to grow per spec.MD §6), this is a closed set: a fifth value would need code in `templates.go` and lines in the catalog before it could mean anything. Anything unreadable resolves to `full`, since over-disclosing is a wording problem while under-disclosing would silently retract a promise the guild believes it is still making.
-
-`archive_visibility: whitelist` is no longer offered by `/rotation configure`, because nothing but `/config import`'s legacy YAML path ever populated the whitelist arrays, so selecting it produced a mode that behaved identically to `mod_only`. `archiveOverwrites` still implements it and `validateRotationChannel` still **accepts** it: `edit` is a read-modify-write of the whole struct, so rejecting it would refuse an imported guild's every future edit over a field the admin never touched and can no longer select.
-
-### Pre-rotation heads-up
-
-`settings_rotation_channels.notice_lead_minutes` (migration 0017, default 10, 0 = off) is how long before a rotation the channel is warned. Validation keeps it strictly below the interval: a lead at or beyond it would leave a permanent "about to wipe" banner and the words would stop meaning anything. Under a minute out the notice is skipped without consuming its claim, since `remaining.Round(time.Minute)` renders "0 minutes" and the rotation fires on the next tick anyway: same reasoning as the overdue case, wrong in the one direction that matters.
-
-The heads-up is an embed (`ColorWarning` → `MoodWarn`), not bare content. It used to be the one member-facing message that was not, while its sibling intro notice in the same channel minutes later was a branded embed; the pair now reads as escalate-then-settle against the intro's `ColorPrimary`/`MoodNotice`. Its countdown renders through `humanDuration` ("6 minutes"), not `core.FormatDuration` ("6m"): **every member-facing duration is prose, every admin/audit one is compact**, and those two messages land in the same channel minutes apart. A channel on `generic` disclosure gets `rotation.headsup.generic`, which carries no countdown at all, since a countdown *is* the rotation schedule. Lead and disclosure otherwise stay independent switches: disclosure decides how much is said, `notice: off` decides whether anything is.
-
-One `rotation-notice` job per guild on a 1 minute schedule, registered only where some channel actually wants one (`reconcileNoticeJob`, same "a job exists only where it has work" rule as `reconcileSweepJob`, and it assumes the caller holds `p.mu` exactly as that one does; taking the lock again deadlocks, which is how it was first written). It asks `Scheduler.NextDue` rather than recomputing last-run plus interval, so the number in the message and the moment the rotation happens cannot drift apart.
-
-**Idempotency is a database constraint, not an in-process check.** The job runs every minute and the lead window is many minutes wide, so without a claim every tick inside the window would post again. `rotation_notices` is keyed on `(rotation_id, notice_for)` where `notice_for` is the instant the notice is *for*, not when it was sent, so two overlapping runs compute the same key and `INSERT ... ON CONFLICT DO NOTHING` lets exactly one win. **Claim before posting**: the other order double-warns whenever the write fails, and being told six times that a channel is about to wipe reads as a broken bot, whereas a missed notice is invisible. An overdue rotation (`NextDue` says not-ok) gets no notice at all, since it fires on the next tick and a countdown would be wrong in the one direction that matters.
-
-`core.ParseFlexibleDuration` accepts `m` as well as `h`/`d`, and `FormatDuration`/`humanDuration` render minutes when hours would lie. This was a real gap: migration 0016 made intervals minute-precise and the option descriptions started advertising `"90m"`, but the parser still rejected anything with an `m` on it, so the one input the change existed to enable failed with "isn't a valid duration". The test suite was green throughout, because a test asserted the old contract (`"90m"` must be rejected).
-
-### Rotation interval and placement
-
-Interval is stored as `settings_rotation_channels.interval_minutes` (migration 0016; it was `interval_hours`, and `/rotation configure` parsed a flexible duration then truncated it with `int(interval / time.Hour)`, silently rounding `90m` down to an hour). `minRotationInterval` (1h, in `configure.go`) is now a validation floor rather than a storage granularity, which is the right place for it, since the reason for a floor is the guild's 20/hour channel-create budget and member whiplash, not the column's type. Anything at or above the floor is allowed to the minute. `internal/settings/import.go` still parses `interval_hours` from legacy YAML (that file format is fixed history) and multiplies on the way in.
-
-`restorePosition` (`execute.go`) puts the replacement back in the slot the original occupied, and **must run after the archive**: while both channels are in the category they compete for the index, and Discord breaks ties between equal positions by channel ID, so the newer replacement sorts below the channel it replaced. Setting `Position` at create time is undone the moment the old channel moves out. It is deliberately non-fatal and skipped on the resumed-after-archive path (where the old channel's position is its position *inside* the archive category): by that point the rotation is already correct, and returning an error would have the Scheduler retry `rotate()`, which creates a second replacement. Same log-and-continue policy as audit failures.
-
-### Security model (spec.MD §4, enforced in code, not just documented)
-
-- **A stale guild is its own state, not an empty one** (`settings.Store.Stale`). When a refresh fails after a committed write, or a guild's first load does, its cache is dropped and its zero values would read as "nothing configured": no pause, no dry run, no disabled plugin, no deny. Those are exactly the controls an admin reaches for in an incident, and the write that failed to refresh may have been one. So until `RetryStale` reads the guild back, `WritesPaused` is true, `PluginEnabled` is false for everything but `Store.Recovery`'s plugins (`adminconfig`, so `/config status` can say what is wrong), and `ActionPolicy` returns `Unknown`, which `Authorize` refuses for everybody but the bootstrap identity. Nothing stale is kept to answer with instead: a cached grant that the failed write had revoked would be the same fail-open in the other direction.
-- Layered authorization: `core.CommandRouter` → plugin-enable gate → `Permissions.Authorize` (deny → tier → allow, see above) is the mandatory check on every command; `Permissions.CanManageRole` enforces the bot can never touch a Discord role positioned above its own top role.
-- **Rank check on restrictive actions** (`Permissions.CanModerate`, called by `/roles jail`): the tier layer asks "may you run this command", never "may you run it *against this person*", and that gap is exploitable in exactly one place. Jail is `TierMod` and strips every manageable role, so for an admin whose authority comes from Discord's Administrator bit, being jailed also strips their `TierAdmin` access to this bot, so a rogue mod could dismantle a guild's whole admin team one jail at a time with every individual action looking perfectly authorized. `CanModerate` refuses when the target is admin-equivalent (DB-listed, bootstrap, Discord Administrator, or guild owner) and the actor isn't, and refuses bootstrap as a target for *everyone*, matching the deny-list's own carve-out. Deliberately narrow: mod-on-mod moderation stays allowed, and admins remain peers. It fails closed: an unresolvable guild state refuses the jail rather than assuming the target is ordinary. Note `member.Permissions` can't be reused for this: Discord computes that bitmask only for the interaction's own member, so an arbitrary target's Administrator bit has to be re-derived from the guild's roles.
-- Fail safe, not fail silent: an unset `PermTier` fails `Finalize()` at startup; a missing top-level handler for a declared subcommand also fails `Finalize()`; so does a command definition Discord would reject (`validateCommandShape`: names 1-32 lowercase, descriptions 1-100, at most 25 options and 25 choices). The last one exists because of how the rejection fails in production: `RegisterGuild` is one `BulkOverwrite` of the guild's whole set, so one description a few characters over makes Discord refuse the entire request, the guild keeps its previous commands, everything else keeps working, and the new command never appears. `/rapsheet` shipped that way (two descriptions over 100 characters) and was invisible in every guild until somebody asked where it was.
-- **Only untrack on "gone", never on "failed"** (`core.IsUnknownResource`): every place this bot drops its own tracking state because a Discord resource seems to have disappeared (`rotation.sweepOne`, `roles.releaseJail`, `roles.revokeGrant`) must first confirm Discord actually said the thing doesn't exist (a 100xx "Unknown ..." code), and otherwise fail so the next sweep retries. Treating a rate limit or 5xx as "gone" silently abandons pending work: an archived channel that never gets swept past its retention window, a jailed member nobody ever releases. Both failed exactly that way before this check existed, and neither is visible from the outside.
-- **Nothing this bot posts is allowed to ping.** The guard's senders (`CreateMessage`, `CreateWebhookMessage`, `CreatePostInThreadChannel`, `UpdateMessage`) overwrite `AllowedMentions` with an explicit empty parse list (`noPings`), whatever the caller set; disgo writes an empty `AllowedMentions` as `"parse":null`, and what nothing pinging rests on should not be how Discord reads a null. This matters because the text is not always ours: rotation reposts operator-supplied sticky messages on every cycle, so one user mention pings that person on a schedule forever and a mentionable role pings its whole membership, and aimod's rewrite reposts a member's own words under their name. `@everyone`/`@here` additionally need Mention Everyone, which the documented invite does not request but any admin can grant at any time. Suppressing at the guard rather than per call site is the same reasoning as `core.DenyEveryone`; a caller that genuinely needs to ping should add a named method taking an explicit allowlist, never reach past the guard. `audit.Writer` and `scheduler.alert` spell the same thing out locally because they send on the raw REST client, outside the guard, and interpolate arbitrary text.
-- **`everyoneCanRead` (`adminconfig/status.go`) answers "yes" when unsure, on purpose.** `/config setup`'s "create it for me" path applies `core.DenyEveryone`, but *picking an existing channel* deliberately changes no permissions on a channel the guild already uses, so an admin can point the audit log at a public channel and publish every jail and config change. Both `/config status` and the pick step warn. The check re-runs on every `/config status` rather than only at pick time because the answer drifts: a channel that was private when it was chosen stops being private the moment someone removes the overwrite, and nothing about the audit log continuing to fill up says otherwise. The two mistakes are not symmetric, so a spurious warning is the acceptable one.
-- `GuildRoleDelete` prunes the deleted role from mod roles and from every action's allow/deny lists (`settings.Store.PruneDeletedRole`) and drops `roles`' cached jail-role ID (`roles.HandleRoleDeleted`), since that cache is held for the process lifetime and would otherwise fail every later jail against a dead ID. **There is deliberately no `GuildMemberRemove` handler**: a jailed member's `role_jails` row is the only copy of the roles they held before being jailed and is what re-applies the marker if they return inside their window, so dropping or flagging it on leave is exactly the evasion bug fixed once already (`evasion_test.go` asserts the row survives a departure).
-- `config.Loader.OnReload` exists so a value applied once at startup can keep tracking the file. `LogLevel` was the motivating case: parsed, validated, used, then never read again, so SIGHUP reloaded it into a field nothing consulted and raising verbosity mid-incident still meant a restart. Hooks run outside the write lock (reading the config they are handed is the obvious thing for one to do, and would otherwise deadlock against `Global`) and never fire for a reload that failed validation.
-- Minimal logging: log IDs, not message content, by default; this matters doubly for rotation, whose whole point is *not* retaining content longer than necessary.
-- Self-throttling independent of Discord's own rate limits (e.g. `channelCapHeadroom` in `rotation/execute.go` staying well clear of Discord's 500-channel guild cap) rather than relying solely on the REST client's rate-limit backoff.
-
-## Conventions (from CONTRIBUTING.md)
-
-- Small, reviewable PRs: one milestone (or a slice of one) per PR, per `spec.MD` §9's breakdown.
-- `main` is protected: PR review + all CI checks required, no direct/force pushes.
-- Run `go vet ./...`, `go test ./... -race -cover`, and `golangci-lint run` before opening a PR.
+- Small PRs: one milestone or slice each (spec.MD §9). `main` is protected: review and all CI checks.
+- Before a PR: vet, race tests, lint, the coverage floor, and the prose grep from `ci.yml`.
