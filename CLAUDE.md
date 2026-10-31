@@ -49,7 +49,7 @@ CI (`.github/workflows/ci.yml`): vet, lint, race tests, govulncheck, gitleaks, D
 - Commands register **per guild** from `GuildCreate`, which must never bail early: on settings refresh failure call `settings.Store.MarkStale` and continue; only rotation's `SyncGuild` is skipped (`RetryStale` reconciles).
 - Every dispatch runs under `recover()`.
 - State-backed options get autocomplete (max 25) **plus** a `list` subcommand. Channel/role/user options use native types (sole exception: `/rapsheet view`'s `user`, validated by `viewTarget`).
-- **Discord limits are correctness constraints.** Over 3s: `core.DeferResponse` then `FollowUpOK/Err`. `core.TruncateEmbedField` (1024), `TruncateEmbedDescription` (4096). Repeated edits replace attachments. `validateCommandShape` checks limits at `Finalize()` because one bad definition silently fails the whole `BulkOverwrite`.
+- **Discord limits are correctness constraints.** Known-slow work: `core.DeferResponse` then `FollowUpOK/Err`; anything else unanswered at 2s is auto-deferred by the router (`Ix.autoDefer`), which can't then open a form or go public, so slow public surfaces use `DeferPublic`. `core.TruncateEmbedField` (1024), `TruncateEmbedDescription` (4096). Repeated edits replace attachments. `validateCommandShape` checks limits at `Finalize()` because one bad definition silently fails the whole `BulkOverwrite`.
 - Read arguments with `core.LeafArgs(i)`.
 
 ### On disgo (`internal/core/ix.go`)
@@ -61,7 +61,7 @@ CI (`.github/workflows/ci.yml`): vet, lint, race tests, govulncheck, gitleaks, D
 ### Settings panels (`internal/core/panel.go`)
 
 - Plugin settings are a **panel** (one Components V2 container from a bare top-level command, redrawn in place), not `configure` subcommands. Reference: `adminconfig/panel.go`. Moderation actions on a person stay commands.
-- Layout: title and one `-#` line beside the mood thumbnail, body full width, `merlin_rule.png` gallery above the footer. Facts via `core.Readout`; code blocks only for things to copy.
+- Layout: title and one `-#` line beside the mood thumbnail, body full width, `merlin_rule.png` gallery above the footer. Facts via `core.Readout` as a code block grid (labels in one column, values beside); it moves mention/timestamp/link rows under the grid itself, never hand-build one. `/help`'s command list is the same grid.
 - **No session**: re-read everything each render; control state rides in the CustomID.
 - `view:` = navigation at read tier, `set:` = mutation at mutate tier, both re-checked by the router; mutating controls drawn `Disabled` for anyone `Authorize` would refuse. Action names match the subcommands they replaced.
 - Set pickers diff against **what was drawn** (`core.SelectDiff`), never current settings; each add/remove is its own call and audit line.
