@@ -282,10 +282,9 @@ func (p *Plugin) record(ctx context.Context, ix *core.Ix, action, name string) {
 	}
 }
 
-// grid is a plugin's commands, one a line: each command in bold, its
-// subcommands branching below it, and who may run each when that isn't
-// everyone. Plain lines, not a code block, which is for what somebody
-// copies; a branch line stays short enough never to wrap.
+// grid is a plugin's commands as a code block grid (core.Readout): each
+// command, its subcommands branching below it, and who may run each when
+// that isn't everyone, lined up in a column.
 func (p *Plugin) grid(plugin string) string {
 	var rows [][2]string
 	for _, cmd := range p.commands.CommandsOf(plugin) {
@@ -301,10 +300,10 @@ func (p *Plugin) grid(plugin string) string {
 			}
 		}
 		if len(leaves) == 0 {
-			rows = append(rows, [2]string{"**/" + cmd.Name + "**", tierWord(p.commands.LeafTier(cmd.Name, ""))})
+			rows = append(rows, [2]string{"/" + cmd.Name, tierWord(p.commands.LeafTier(cmd.Name, ""))})
 			continue
 		}
-		rows = append(rows, [2]string{"**/" + cmd.Name + "**", ""})
+		rows = append(rows, [2]string{"/" + cmd.Name, ""})
 		for n, leaf := range leaves {
 			branch := "├ "
 			if n == len(leaves)-1 {

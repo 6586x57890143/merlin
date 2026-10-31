@@ -3,6 +3,7 @@ package core
 import (
 	_ "embed"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/disgoorg/disgo/discord"
 )
@@ -137,16 +138,65 @@ func (p Panel) Uploads() []*discord.File {
 	return files
 }
 
-// Readout lays facts out one a line, the label in bold: the fact lines of
-// the shared design guide. Plain lines rather than a code block grid, which
-// read as a terminal, cut off on phones and showed a mention as its raw
-// snowflake; a code block is for what somebody copies.
+// readoutWidth holds a grid's value column to 28, so a line stays inside
+// the 40 or so columns a phone shows of a code block.
+const readoutWidth = 28
+
+// Readout lays facts out as a code block grid: the label column is the
+// longest label plus two, so values line up the same on every client, and a
+// value too long for its column wraps after a comma, staying in it. Discord
+// gives Components V2 no field layout, and a monospace grid is the one that
+// holds. A code block shows markup as typed, so a row whose value is a
+// mention, a timestamp or a link goes under the grid as a bold-label line,
+// where it renders.
 func Readout(rows [][2]string) string {
-	lines := make([]string, 0, len(rows))
+	var grid, below []string
+	width := 0
 	for _, r := range rows {
-		lines = append(lines, "**"+r[0]+"** "+r[1])
+		if !hasMarkup(r[1]) {
+			width = max(width, utf8.RuneCountInString(r[0]))
+		}
 	}
-	return strings.Join(lines, "\n")
+	for _, r := range rows {
+		if hasMarkup(r[1]) {
+			below = append(below, "**"+r[0]+"** "+r[1])
+			continue
+		}
+		for n, line := range wrapList(r[1], readoutWidth) {
+			label := ""
+			if n == 0 {
+				label = r[0]
+			}
+			grid = append(grid, strings.TrimRight(label+strings.Repeat(" ", width+2-utf8.RuneCountInString(label))+line, " "))
+		}
+	}
+	if len(grid) > 0 {
+		below = append([]string{"```\n" + strings.Join(grid, "\n") + "\n```"}, below...)
+	}
+	return strings.Join(below, "\n")
+}
+
+// hasMarkup is whether v holds something a code block would show as typed:
+// a mention, emoji or timestamp (<...>) or a masked link.
+func hasMarkup(v string) bool { return strings.Contains(v, "<") || strings.Contains(v, "](") }
+
+// wrapList breaks a comma separated list into lines of at most width,
+// breaking only after a comma. A single item longer than width stays whole.
+func wrapList(s string, width int) []string {
+	var lines []string
+	line := ""
+	for n, item := range strings.Split(s, ", ") {
+		if n > 0 {
+			item = ", " + item
+		}
+		if line != "" && utf8.RuneCountInString(line+item) > width {
+			lines = append(lines, line+",")
+			item = strings.TrimPrefix(item, ", ")
+			line = ""
+		}
+		line += item
+	}
+	return append(lines, line)
 }
 
 // MaxSelectValues is Discord's cap on a select's options and picks.
