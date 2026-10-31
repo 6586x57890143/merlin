@@ -362,9 +362,18 @@ func (ix *Ix) FollowUpPanel(p Panel) error {
 	return ix.edit(discord.MessageUpdate{Components: &c, Files: p.Uploads(), Attachments: noAttachments(), AllowedMentions: noPings()})
 }
 
-// OpenModal answers with a form; see the core helper of the same name.
+// OpenModal answers with a form; see the core helper of the same name. A
+// form Discord refuses is said so to the member: a button that opens
+// nothing otherwise reads as merlin not responding, and only the log knew.
 func (ix *Ix) OpenModal(customID, title string, fields ...discord.LayoutComponent) error {
-	return ix.respond(discord.InteractionResponseTypeModal, discord.ModalCreate{CustomID: customID, Title: title, Components: fields})
+	if r := []rune(title); len(r) > 45 {
+		title = string(r[:45])
+	}
+	err := ix.respond(discord.InteractionResponseTypeModal, discord.ModalCreate{CustomID: customID, Title: title, Components: fields})
+	if err != nil {
+		ix.Tell("✗ That form could not open. This is merlin's fault, not yours; the operator can see why in the log.")
+	}
+	return err
 }
 
 // Args is LeafArgs: the invoked leaf's options by name. disgo has already
