@@ -12,9 +12,10 @@ import (
 
 // captureTransport records the body of every Discord request, so a test can
 // assert what was actually put on the wire rather than what a helper meant.
-type captureTransport struct{ bodies []string }
+type captureTransport struct{ bodies, calls []string }
 
 func (c *captureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.calls = append(c.calls, r.Method+" "+r.URL.Path)
 	if r.Body != nil {
 		raw, _ := io.ReadAll(r.Body)
 		c.bodies = append(c.bodies, string(raw))

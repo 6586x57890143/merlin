@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"sync/atomic"
+	"sync"
 
 	"github.com/6586x57890143/merlin/internal/obs"
 	"github.com/6586x57890143/merlin/internal/ratelimit"
@@ -33,11 +33,19 @@ type Ix struct {
 	// UserID is whoever the interaction is from, and ChannelID the channel
 	// it came from.
 	UserID, ChannelID string
-	// answering is set once a first response is on its way, which is what
-	// lets the handler's context outlive Discord's response window
-	// (handlerCtx).
-	answering atomic.Bool
+	// mu orders the handler's first response against the router's
+	// automatic defer (handlerCtx), and ack is which of them got there:
+	// ackNone, ackHandler, or the deferral type the router sent.
+	mu  sync.Mutex
+	ack discord.InteractionResponseType
 }
+
+// ackNone and ackHandler are Ix.ack's states that are not a deferral sent by
+// the router. Neither is a response type Discord defines.
+const (
+	ackNone    discord.InteractionResponseType = 0
+	ackHandler discord.InteractionResponseType = -1
+)
 
 // NewIx decodes raw, an INTERACTION_CREATE's data, as the gateway would.
 func NewIx(raw []byte, r rest.Rest) (*Ix, error) {
@@ -102,14 +110,90 @@ func NewRest(token string, client *http.Client) rest.Rest {
 }
 
 func (ix *Ix) respond(t discord.InteractionResponseType, data discord.InteractionResponseData) error {
-	// Set before the request, so a response sent at the window's last
-	// moment does not have its handler's context cancelled under it.
-	ix.answering.Store(true)
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if ix.ack > ackNone {
+		return ix.afterAutoDefer(t, data)
+	}
 	err := ix.Rest.CreateInteractionResponse(ix.I.ID(), ix.I.Token(), discord.InteractionResponse{Type: t, Data: data})
-	if err != nil {
-		ix.answering.Store(false)
+	if err == nil {
+		ix.ack = ackHandler
 	}
 	return err
+}
+
+// autoDefer acknowledges for a handler still working as Discord's window
+// closes. A click, or a form opened from one, is deferred as an update, so
+// the redraw lands on the panel it came from; anything else as a private
+// "thinking" message.
+func (ix *Ix) autoDefer() {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if ix.ack != ackNone {
+		return
+	}
+	t, data := discord.InteractionResponseTypeDeferredCreateMessage, discord.InteractionResponseData(discord.MessageCreate{Flags: discord.MessageFlagEphemeral})
+	switch i := ix.I.(type) {
+	case discord.ComponentInteraction:
+		t, data = discord.InteractionResponseTypeDeferredUpdateMessage, nil
+	case discord.ModalSubmitInteraction:
+		if i.Message != nil {
+			t, data = discord.InteractionResponseTypeDeferredUpdateMessage, nil
+		}
+	}
+	if ix.Rest.CreateInteractionResponse(ix.I.ID(), ix.I.Token(), discord.InteractionResponse{Type: t, Data: data}) == nil {
+		ix.ack = t
+	}
+}
+
+// afterAutoDefer delivers the handler's first response once the router has
+// deferred for it: a deferral is already done, an update edits the message,
+// and a new message replaces the "thinking" placeholder, or is a follow-up
+// when the deferral was an update, so it does not overwrite the panel.
+//
+// ponytail: a public answer lands private, since Discord fixed that at the
+// router's defer; a public surface slow enough to hit this should DeferPublic
+// itself first.
+func (ix *Ix) afterAutoDefer(t discord.InteractionResponseType, data discord.InteractionResponseData) error {
+	switch t {
+	case discord.InteractionResponseTypeDeferredCreateMessage, discord.InteractionResponseTypeDeferredUpdateMessage:
+		return nil
+	case discord.InteractionResponseTypeUpdateMessage:
+		if m, ok := data.(discord.MessageUpdate); ok {
+			return ix.edit(m)
+		}
+	case discord.InteractionResponseTypeCreateMessage:
+		m, ok := data.(discord.MessageCreate)
+		if !ok {
+			break
+		}
+		if ix.ack == discord.InteractionResponseTypeDeferredUpdateMessage {
+			_, err := ix.Rest.CreateFollowupMessage(ix.I.ApplicationID(), ix.I.Token(), m)
+			return err
+		}
+		return ix.edit(updateOf(m))
+	}
+	return fmt.Errorf("core: a response of type %d came after merlin had already deferred for it", t)
+}
+
+// updateOf is m as an edit of the deferred placeholder. Ephemerality was
+// fixed by the defer and cannot be edited, so only Components V2 carries.
+func updateOf(m discord.MessageCreate) discord.MessageUpdate {
+	u := discord.MessageUpdate{Files: m.Files, Attachments: noAttachments(), AllowedMentions: m.AllowedMentions}
+	if m.Content != "" {
+		u.Content = &m.Content
+	}
+	if len(m.Embeds) > 0 {
+		u.Embeds = &m.Embeds
+	}
+	if len(m.Components) > 0 {
+		u.Components = &m.Components
+	}
+	if m.Flags.Has(discord.MessageFlagIsComponentsV2) {
+		f := discord.MessageFlagIsComponentsV2
+		u.Flags = &f
+	}
+	return u
 }
 
 func (ix *Ix) edit(m discord.MessageUpdate) error {
