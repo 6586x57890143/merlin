@@ -74,3 +74,16 @@ func TestFieldIsALabelledInput(t *testing.T) {
 		}
 	}
 }
+
+// One character over Discord's caps refuses the whole form, so a field is
+// clipped to them rather than sent to be refused.
+func TestFieldStaysInsideDiscordsCaps(t *testing.T) {
+	f := Field("k", strings.Repeat("é", 60), "", strings.Repeat("x", 150), false, false)
+	in := f.Component.(discord.TextInputComponent)
+	if n := len([]rune(f.Label)); n != maxFieldLabel {
+		t.Errorf("label is %d characters", n)
+	}
+	if n := len([]rune(in.Placeholder)); n != maxFieldPlaceholder {
+		t.Errorf("placeholder is %d characters", n)
+	}
+}

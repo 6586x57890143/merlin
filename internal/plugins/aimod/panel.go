@@ -313,7 +313,7 @@ func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID strin
 	case "key":
 		p.openForm(ix, formCfg+"key", "Model provider key",
 			ui.Field("key", "API key (stored encrypted, never shown again)", "", "sk-orca-... or sk-or-...", false, true),
-			ui.Field("provider", "Provider, only if the key's prefix isn't known", "", "orcarouter or openrouter", false, false))
+			ui.Field("provider", "Provider, if the key's prefix isn't known", "", "orcarouter or openrouter", false, false))
 		return
 	case "limits":
 		if cfg, err := p.store.Config(ctx, ix.GuildID); err == nil {

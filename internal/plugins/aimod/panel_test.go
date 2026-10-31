@@ -3,7 +3,9 @@ package aimod
 import (
 	"context"
 	"strings"
+	"regexp"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/6586x57890143/merlin/internal/core/paneltest"
 	"github.com/disgoorg/disgo/discord"
@@ -47,6 +49,14 @@ func TestEverySettingsControlAnswers(t *testing.T) {
 		if !wire.Answered() {
 			t.Errorf("%s left the interaction unanswered", id)
 		}
+		// Discord refuses a form with a label over 45 characters, and the
+		// test wire does not: the key form's label was 46 and the button
+		// opened nothing in production while this test passed.
+		for _, m := range formLabel.FindAllStringSubmatch(wire.All(), -1) {
+			if n := utf8.RuneCountInString(m[1]); n > 45 {
+				t.Errorf("%s opens a form with a %d-character label %q", id, n, m[1])
+			}
+		}
 	}
 	for id, fields := range map[string]map[string]string{
 		formCfg + "key":    {"key": "nonsense"},
@@ -69,6 +79,9 @@ func TestEverySettingsControlAnswers(t *testing.T) {
 		t.Errorf("limits form saved budget %v evidence %v", cfg.DailyBudgetUSD, cfg.EvidenceHours)
 	}
 }
+
+// formLabel finds a form field's label in a request body.
+var formLabel = regexp.MustCompile(`"type":18,"label":"([^"]*)"`)
 
 func disabled(c discord.InteractiveComponent) bool {
 	switch m := c.(type) {

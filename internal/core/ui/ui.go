@@ -119,15 +119,32 @@ func Clearable[M discord.UserSelectMenuComponent | discord.RoleSelectMenuCompone
 	return m
 }
 
+// Discord's caps on a form field: one character over refuses the whole form,
+// so the button that opens it does nothing at all.
+const (
+	maxFieldLabel       = 45
+	maxFieldPlaceholder = 100
+)
+
 // Field is one text input in a form, prefilled with value, under its label.
+// The label and placeholder are clipped to Discord's caps: the key form's
+// 46-character label once kept /aimod settings from taking a key at all.
 func Field(id, label, value, placeholder string, paragraph, required bool) discord.LabelComponent {
 	style, maxLen := discord.TextInputStyleShort, 200
 	if paragraph {
 		style, maxLen = discord.TextInputStyleParagraph, 4000
 	}
-	return discord.LabelComponent{Label: label, Component: discord.TextInputComponent{
-		CustomID: id, Value: value, Placeholder: placeholder, Style: style, Required: required, MaxLength: maxLen,
+	return discord.LabelComponent{Label: clip(label, maxFieldLabel), Component: discord.TextInputComponent{
+		CustomID: id, Value: value, Placeholder: clip(placeholder, maxFieldPlaceholder), Style: style, Required: required, MaxLength: maxLen,
 	}}
+}
+
+// clip is s cut to n characters, not bytes.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // PaginationRow is the Prev/Next row for page (0-based) of totalPages, with
