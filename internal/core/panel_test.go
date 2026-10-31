@@ -65,11 +65,28 @@ func TestPanelCarriesTheRule(t *testing.T) {
 	}
 }
 
-func TestReadoutIsFactLines(t *testing.T) {
-	got := Readout([][2]string{{"db", "up"}, {"jobs", "3"}})
-	want := "**db** up\n**jobs** 3"
+// Facts are a code block grid lined up in one column, a long list wraps
+// inside it after a comma, and a mention or link, which a code block would
+// show as typed, goes under the grid where it renders.
+func TestReadoutIsACodeBlockGrid(t *testing.T) {
+	got := Readout([][2]string{
+		{"db", "up"},
+		{"exempt", "general, memes, art, music, voice-chat, bots"},
+		{"by", "<@11>"},
+		{"jobs", "3"},
+	})
+	want := "```" + `
+db      up
+exempt  general, memes, art, music,
+        voice-chat, bots
+jobs    3
+` + "```" + `
+**by** <@11>`
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+	if got := Readout([][2]string{{"by", "<@11>"}}); got != "**by** <@11>" {
+		t.Fatalf("markup alone drew an empty grid: %q", got)
 	}
 }
 
