@@ -56,24 +56,28 @@ func TestRegisterGuildSendsTheWholeTree(t *testing.T) {
 	}
 }
 
-// A handler that has not answered by the end of Discord's window has its
-// context cancelled, so its calls fail while it can still say why.
-func TestAnUnansweredHandlerIsCutAtTheWindow(t *testing.T) {
-	rt, _ := router()
-	done := make(chan time.Duration, 1)
+// A handler that has not answered as the window closes is deferred for and
+// keeps its context: the slow write it is in the middle of (an API key being
+// stored) finishes, and its answer replaces the placeholder.
+func TestAnUnansweredHandlerIsDeferredForAndFinishes(t *testing.T) {
+	rt, wire := router()
+	errs := make(chan error, 1)
 	rt.RegisterCommand("slow", discord.SlashCommandCreate{Name: "slow", Description: "d"})
 	rt.HandleIx("slow", "", core.PermSpec{Tier: core.TierPublic}, func(ctx context.Context, ix *core.Ix) {
-		start := time.Now()
-		<-ctx.Done()
-		done <- time.Since(start)
+		time.Sleep(500 * time.Millisecond)
+		ix.RespondOK("stored", "it worked")
+		errs <- ctx.Err()
 	})
 	if err := rt.Finalize(); err != nil {
 		t.Fatal(err)
 	}
-	// Created 2.3s ago: 200ms of the window left.
-	rt.HandleRaw(commandAt(t, "slow", time.Now().Add(-2300*time.Millisecond)))
-	if d := <-done; d > time.Second {
-		t.Fatalf("cancelled after %s, want at the window", d)
+	// Created 1.8s ago: 200ms until the router defers.
+	rt.HandleRaw(commandAt(t, "slow", time.Now().Add(-1800*time.Millisecond)))
+	if err := <-errs; err != nil {
+		t.Fatalf("the handler lost its context: %v", err)
+	}
+	if len(wire.Paths) != 2 || !strings.Contains(wire.Bodies[0], `"type":5`) || !strings.HasSuffix(wire.Paths[1], "/messages/@original") {
+		t.Fatalf("want a defer then the answer as an edit, got %v: %s", wire.Paths, wire.All())
 	}
 }
 

@@ -646,7 +646,9 @@ func (r *CommandRouter) dispatchAutocomplete(ix *Ix, i discord.AutocompleteInter
 	var focusedValue string
 	_ = json.Unmarshal(focused.Value, &focusedValue)
 
-	ctx, cancel := handlerCtx(ix, 5*time.Second)
+	// Autocomplete cannot be deferred: an answer after the window is
+	// simply not shown.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	choices := leaf.autocomplete(ctx, ix, focused.Name, focusedValue)
 	if len(choices) > 25 {
