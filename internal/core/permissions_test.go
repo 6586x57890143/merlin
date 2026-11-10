@@ -235,7 +235,7 @@ func TestAuthorizeNoMemberContextFails(t *testing.T) {
 func gatewayState(owner snowflake.ID, roles []discord.Role, botRoles ...snowflake.ID) cache.Caches {
 	c := cache.New(cache.WithCaches(cache.FlagGuilds, cache.FlagRoles, cache.FlagMembers))
 	c.SetSelfUser(discord.OAuth2User{User: discord.User{ID: 900}})
-	c.AddGuild(discord.Guild{ID: 100, OwnerID: owner})
+	c.AddGuild(discord.CacheGuild{Guild: discord.Guild{ID: 100, OwnerID: owner}})
 	for _, r := range roles {
 		r.GuildID = 100
 		c.AddRole(r)

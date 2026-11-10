@@ -424,7 +424,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// handler covers "known at startup" and "joined while running" the same
 	// way, with no restart required for the latter.
 	var typed []bot.EventListener
-	guildUp := func(g discord.GatewayGuild) {
+	guildUp := func(g discord.CacheGuild) {
 		gid := g.ID.String()
 		defer install.poke()
 		guildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
