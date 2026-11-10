@@ -380,7 +380,7 @@ func (p *Permissions) guild(guildID string) (snowflake.ID, discord.Guild, error)
 	if !ok {
 		return 0, discord.Guild{}, fmt.Errorf("core: guild %s is not in the gateway cache", guildID)
 	}
-	return gid, g, nil
+	return gid, g.Guild, nil
 }
 
 // CanManageRole enforces layer 3: the bot's own top role must sit strictly

@@ -6,7 +6,7 @@ require (
 	github.com/6586x57890143/cygnet/ledger v0.7.0
 	github.com/6586x57890143/cygnet/link v0.9.0
 	github.com/6586x57890143/cygnet/support v0.1.1-0.20261028142741-750d84172967
-	github.com/disgoorg/disgo v0.19.6
+	github.com/disgoorg/disgo v0.20.0
 	github.com/disgoorg/json/v2 v2.0.0
 	github.com/disgoorg/omit v1.0.0
 	github.com/disgoorg/snowflake/v2 v2.0.3
@@ -21,7 +21,7 @@ require (
 
 require (
 	github.com/coder/websocket v1.8.15 // indirect
-	github.com/disgoorg/godave v0.1.0 // indirect
+	github.com/disgoorg/godave v0.3.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
@@ -29,7 +29,7 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/rogpeppe/go-internal v1.15.0 // indirect

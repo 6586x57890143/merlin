@@ -300,7 +300,7 @@ func permissionTarget(action, roleID, userID string) string {
 // returns without marking the nudge as sent, so it retries on the next
 // restart. No public fallback, by design, since a private nudge was the
 // whole point.
-func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, g discord.GatewayGuild) {
+func (p *Plugin) NudgeIfUnconfigured(ctx context.Context, g discord.CacheGuild) {
 	guildID := g.ID.String()
 	gs := p.settings.GuildSettings(guildID)
 	if gs.IsConfigured() || gs.OnboardingNudgeSentAt != nil {
