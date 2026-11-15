@@ -73,17 +73,10 @@ func dailyPoints(stats []DayStat, from, to, covered time.Time) []dayPoint {
 	for _, d := range stats {
 		by[d.Day.UTC().Truncate(dayLen)] = d
 	}
-	var out []dayPoint
-	for d := from.UTC().Truncate(dayLen); d.Before(to); d = d.Add(dayLen) {
-		s := by[d]
-		pt := dayPoint{day: d, messages: s.Messages, voice: time.Duration(s.VoiceSeconds) * time.Second, avg: math.NaN()}
-		switch {
-		case !covered.IsZero() && !d.Add(dayLen).After(covered):
-			pt.state = dayNotCounted
-		case d.Before(from) || d.Add(dayLen).After(to) || (!covered.IsZero() && d.Before(covered)):
-			pt.state = dayPartial
-		}
-		out = append(out, pt)
+	out := dayAxis(from, to, covered)
+	for i := range out {
+		s := by[out[i].day]
+		out[i].messages, out[i].voice = s.Messages, time.Duration(s.VoiceSeconds)*time.Second
 	}
 	// The average only runs over whole counted days: a partial or uncounted
 	// day in the window would drag it down for a week afterwards.
@@ -102,6 +95,23 @@ func dailyPoints(stats []DayStat, from, to, covered time.Time) []dayPoint {
 		if ok {
 			out[i].avg = float64(sum) / avgWindow
 		}
+	}
+	return out
+}
+
+// dayAxis is every UTC day the window touches, each marked with what the
+// buckets can say about it, and nothing counted on it yet.
+func dayAxis(from, to, covered time.Time) []dayPoint {
+	var out []dayPoint
+	for d := from.UTC().Truncate(dayLen); d.Before(to); d = d.Add(dayLen) {
+		pt := dayPoint{day: d, avg: math.NaN()}
+		switch {
+		case !covered.IsZero() && !d.Add(dayLen).After(covered):
+			pt.state = dayNotCounted
+		case d.Before(from) || d.Add(dayLen).After(to) || (!covered.IsZero() && d.Before(covered)):
+			pt.state = dayPartial
+		}
+		out = append(out, pt)
 	}
 	return out
 }
@@ -486,16 +496,38 @@ func (c barChart) draw(dst *image.RGBA, withAvg bool) float64 {
 // drawAvg strokes the trailing average as an antialiased 2 unit line, broken
 // wherever it is undefined rather than bridged across a gap.
 func (c barChart) drawAvg(dst *image.RGBA, ceil float64) {
+	avg := make([]float64, len(c.pts))
+	for i, p := range c.pts {
+		avg[i] = p.avg
+	}
+	c.stroke(dst, avg, 0, ceil, avgLine)
+}
+
+// stroke draws vs, one per day, as a 2 unit line against an axis running
+// from lo to hi, broken at every NaN. A point with no neighbour to join
+// gets a dot, so a one-day run is still on the chart.
+func (c barChart) stroke(dst *image.RGBA, vs []float64, lo, hi float64, col color.RGBA) {
 	x0, y0, _, h := c.plot()
 	slot := c.slot()
 	at := func(i int) (float32, float32) {
 		return float32(float64(px(x0)) + (float64(i)+0.5)*slot),
-			float32(float64(px(y0+h)) - c.pts[i].avg/ceil*float64(px(h)))
+			float32(float64(px(y0+h)) - (vs[i]-lo)/(hi-lo)*float64(px(h)))
 	}
 	r := vector.NewRasterizer(dst.Bounds().Dx(), dst.Bounds().Dy())
 	half := float32(scale) // a 2 unit stroke
-	for i := 1; i < len(c.pts); i++ {
-		if math.IsNaN(c.pts[i-1].avg) || math.IsNaN(c.pts[i].avg) {
+	gone := func(i int) bool { return i < 0 || i >= len(vs) || math.IsNaN(vs[i]) }
+	for i := range vs {
+		if !gone(i) && gone(i-1) && gone(i+1) {
+			x, y := at(i)
+			r.MoveTo(x-half*1.5, y-half*1.5)
+			r.LineTo(x+half*1.5, y-half*1.5)
+			r.LineTo(x+half*1.5, y+half*1.5)
+			r.LineTo(x-half*1.5, y+half*1.5)
+			r.ClosePath()
+		}
+	}
+	for i := 1; i < len(vs); i++ {
+		if gone(i-1) || gone(i) {
 			continue
 		}
 		ax, ay := at(i - 1)
@@ -511,7 +543,7 @@ func (c barChart) drawAvg(dst *image.RGBA, ceil float64) {
 		r.LineTo(ax-nx-ex, ay-ny-ey)
 		r.ClosePath()
 	}
-	r.Draw(dst, dst.Bounds(), &image.Uniform{avgLine}, image.Point{})
+	r.Draw(dst, dst.Bounds(), &image.Uniform{col}, image.Point{})
 }
 
 // dates labels the x axis at a stride that keeps labels apart: every day

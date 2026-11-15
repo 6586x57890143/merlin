@@ -232,7 +232,7 @@ func command() discord.SlashCommandCreate {
 			},
 			discord.ApplicationCommandOptionSubCommand{
 				Name:        "members",
-				Description: "Joins and departures over a window of time",
+				Description: "Server population over time, with joins and departures, as a chart and a csv",
 				Options:     window,
 			},
 			discord.ApplicationCommandOptionSubCommand{
@@ -611,38 +611,6 @@ func (p *Plugin) handleChannels(ctx context.Context, ix *core.Ix) {
 	ix.RespondInfo("Where the traffic went", core.TruncateEmbedDescription(b.String()))
 }
 
-func (p *Plugin) handleMembers(ctx context.Context, ix *core.Ix) {
-	opts, err := parseOptions(ix.Args(), p.now())
-	if err != nil {
-		ix.RespondErr("That window doesn't work", err)
-		return
-	}
-	days, err := p.store.MemberDays(ctx, ix.GuildID, opts.from, opts.to)
-	if err != nil {
-		ix.RespondErr("Could not read the statistics", err)
-		return
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "`%s` to `%s` utc\n\n", opts.from.Format("2006-01-02 15:04"), opts.to.Format("2006-01-02 15:04"))
-	joined, departed := 0, 0
-	for _, d := range days {
-		joined += d.Joined
-		departed += d.Departed
-	}
-	if len(days) == 0 {
-		b.WriteString("no joins or departures were counted in that window.")
-	} else {
-		fmt.Fprintf(&b, "`%d` joined, `%d` left, net `%+d`\n\n", joined, departed, joined-departed)
-		// Newest first, since the question is usually "what happened this
-		// week" and the tail of a long window is the part that fits.
-		for n := len(days) - 1; n >= 0 && len(days)-1-n < core.PageSize; n-- {
-			d := days[n]
-			fmt.Fprintf(&b, "`%s` `+%d` `-%d`\n", d.Day.Format("2006-01-02"), d.Joined, d.Departed)
-		}
-	}
-	ix.RespondInfo("Members", core.TruncateEmbedDescription(b.String()))
-}
-
 func (p *Plugin) handleBackfill(ctx context.Context, ix *core.Ix) {
 	if !p.refuseUnlessOperator(ix) {
 		return
@@ -699,15 +667,26 @@ func fileFrom(name string, body []byte) *discord.File {
 // active" with no server on it is unidentifiable a week later, but not
 // knowing the name is a reason to be vague and not a reason to give up.
 func (p *Plugin) guildName(guildID string) string {
+	name, _ := p.guildInfo(guildID)
+	return name
+}
+
+// guildInfo is guildName plus Discord's approximate member count, which is
+// zero when it could not be read.
+func (p *Plugin) guildInfo(guildID string) (name string, members int) {
+	name = "this server"
 	gid, err := snow.Parse(guildID)
 	if p.guilds == nil || err != nil {
-		return "this server"
+		return name, 0
 	}
-	g, err := p.guilds.GetGuild(gid, false)
-	if err != nil || g == nil || g.Name == "" {
-		return "this server"
+	g, err := p.guilds.GetGuild(gid, true)
+	if err != nil || g == nil {
+		return name, 0
 	}
-	return g.Name
+	if g.Name != "" {
+		name = g.Name
+	}
+	return name, g.ApproximateMemberCount
 }
 
 // Perms is what the backfill does as merlin: read a channel's history.
