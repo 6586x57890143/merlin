@@ -93,6 +93,9 @@ type deepVerdict struct {
 	Confidence float64 `json:"confidence"`
 	Reason     string  `json:"reason"`
 	Rewrite    string  `json:"rewrite"`
+	// own is a verdict merlin reached herself (rung 1's slur swap), whose
+	// rewrite no model wrote and so needs no bounding to the original.
+	own bool
 }
 
 // candidate is one message on its way through the ladder.

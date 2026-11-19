@@ -6,7 +6,9 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -111,6 +113,18 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	// all four in agreement.
 	if action == ActionRewrite && strings.TrimSpace(v.Rewrite) == "" {
 		action = ActionRemove
+	}
+	// The rewrite comes from a model that read the channel around the
+	// message, and anyone in that channel can write instructions to it. So
+	// what it hands back is held to the message it replaces: mostly the same
+	// words, nothing rung 1 would stop, and no link, invite or mention the
+	// author didn't write. A rewrite that isn't the author's sentence with
+	// the violation swapped out would put someone else's words under their
+	// name; removing says what happened instead.
+	if action == ActionRewrite && !v.own {
+		if _, _, _, hit := hardHit(v.Rewrite); hit || !faithful(c.Content, v.Rewrite) {
+			action = ActionRemove
+		}
 	}
 	// A forward cannot be rewritten, for the same reason it is decided here
 	// rather than further down: rewriteMessage deletes and reposts through a
@@ -543,4 +557,48 @@ func (p *Plugin) undo(ctx context.Context, guildID string, inc Incident) error {
 		return err
 	}
 	return p.store.MarkUndone(ctx, inc.ID)
+}
+
+// faithful is whether rewrite is recognisably original with words swapped
+// out: it keeps at least half of original's words, adds no more than two
+// for each it drops (plus two, for a one-word slur that needs a phrase),
+// and brings in no link, invite or mention that original doesn't have.
+//
+// ponytail: a word count, not a meaning check. A hostile rewrite that keeps
+// half the words and swaps the rest still passes; the link and mention
+// rule is what stops it carrying anything to click or anyone to ping.
+func faithful(original, rewrite string) bool {
+	orig, rw := words(original), words(rewrite)
+	left := map[string]int{}
+	for _, w := range orig {
+		left[w]++
+	}
+	kept := 0
+	for _, w := range rw {
+		if left[w] > 0 {
+			left[w]--
+			kept++
+		}
+	}
+	novel, dropped := len(rw)-kept, len(orig)-kept
+	if 2*kept < len(orig) || novel > 2*dropped+2 {
+		return false
+	}
+	for _, m := range carriers.FindAllString(rewrite, -1) {
+		if !strings.Contains(strings.ToLower(original), strings.ToLower(m)) {
+			return false
+		}
+	}
+	return true
+}
+
+// carriers is what can carry a reader somewhere or ping someone: links,
+// invites, user, role and channel mentions, @everyone and @here.
+var carriers = regexp.MustCompile(`(?i)\bhttps?://\S+|\bdiscord(?:app)?\.(?:gg|com/invite)/\S+|<[@#][!&]?\d+>|@(?:everyone|here)\b|\b[a-z0-9-]+\.(?:com|gg|ru|xyz|link|io|net|org|me)\b`)
+
+// words is s lowercased and split into runs of letters and digits.
+func words(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
