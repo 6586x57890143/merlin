@@ -126,7 +126,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// every REST call is timed by route for /perf, so the two wrap the one
 	// client and nothing merlin sends goes unseen by either.
 	hub := fleet.Dial(os.Getenv("MERLIN_CYGNET_URL"), os.Getenv("MERLIN_CYGNET_TOKEN"), os.Getenv("MERLIN_ATTEST"), log)
-	httpClient := &http.Client{Timeout: 20 * time.Second, Transport: obs.Transport(hub.Transport(nil, log), obs.Default)}
+	httpClient := &http.Client{Timeout: 20 * time.Second, Transport: discordguard.Brake(obs.Transport(hub.Transport(nil, log), obs.Default), func(n int) {
+		log.Error("discord: braked, too many refused requests; holding off so the ip isn't banned", "count", n)
+	})}
 	// Every REST call merlin makes goes through this one client.
 	restClient := core.NewRest(cfg.Discord.Token, httpClient)
 	// The privileged intents are read from the Developer Portal, not
