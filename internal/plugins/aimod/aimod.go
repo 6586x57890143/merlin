@@ -722,7 +722,7 @@ func (p *Plugin) enforceHardHit(ctx context.Context, cfg Config, c candidate, bu
 	}
 	p.enforce(ctx, cfg, c, bucket, action, deepVerdict{
 		Violation: true, Bucket: bucket, Confidence: 1,
-		Reason: reason, Rewrite: rewrite,
+		Reason: reason, Rewrite: rewrite, own: true,
 	})
 }
 

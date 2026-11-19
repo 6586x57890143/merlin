@@ -466,10 +466,10 @@ func TestNonEmptyRewriteStaysARewrite(t *testing.T) {
 	p := testPlugin(t, store, &fakeClassifier{}, ops, audit)
 
 	v := confirmed("one line had a phone number in it")
-	v.Rewrite = "the rest of what they said"
+	v.Rewrite = "call me tomorrow ok"
 	store.setConfig(enforcingConfig())
 	p.enforce(context.Background(), enforcingConfig(),
-		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "original"},
+		candidate{MessageID: "m1", ChannelID: "c1", AuthorID: "u1", Content: "call me at 555 0100 tomorrow ok"},
 		BucketDoxxing, ActionRewrite, v)
 
 	if inc := store.recorded(); len(inc) != 1 || inc[0].Action != ActionRewrite {
