@@ -179,6 +179,11 @@ type Plugin struct {
 	actingMu   sync.Mutex
 	acting     map[string]*messageLock
 
+	// moves is what Repost moved, keyed by both the original and the repost.
+	// See repost.go.
+	movesMu sync.Mutex
+	moves   map[string]*move
+
 	// budgetNoticeMu guards budgetNoticed, which keeps the
 	// budget-exhausted audit entry to one per guild per day rather than one
 	// per message, which is the difference between a useful warning and a
@@ -450,6 +455,7 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	// on the next GuildCreate.
 	p.reconcileFundingJob(guildID, false)
 
+	p.forgetMoves(guildID)
 	p.meter.forgetGuild(guildID)
 	p.models.forgetGuild(guildID)
 

@@ -181,6 +181,8 @@ CI (`.github/workflows/ci.yml`): vet, lint, race tests, govulncheck, gitleaks, D
 - `/aimod status` is paginated and stateless; every page wears the report's severity; clicks `core.DeferUpdate`.
 - **Rewrite** = delete and repost via webhook as the author; resolve the webhook **before** deleting; mentions zeroed; "edited by merlin" marker with a random code for `/aimod why`. Failure after the delete becomes a removal (`rewriteFellShort`, `aimod.rewrite_failed`); too long = removal decided before deleting.
 - **Verdicts are re-checked before acting** (`revision.go`): per-message lock, discard on edited text, `stillActs` re-reads gate and config, only moves an action down.
+- **Reposting for another plugin goes through `aimod.Repost`** (`repost.go`), never a webhook of its own: it holds the message's lock, reads the live message first, posts before deleting, and scans the repost as the author's message. A verdict on the original follows the move (`moved`), by removal unless the repost is already its rewrite (softened, word list, slur swap). `Policy` sends the original to the deep pass; `child_safety` is never reposted.
+- `Ask` takes a `Reserve`: the share of the cap past which only moderation may spend.
 - **Dedupe** keys clears on words+reply; a confirmed violation is reused only for the same author and reply target, else it's a `confirmHint` to a fresh deep pass.
 - **Record the incident before touching the message.** Evidence retention re-derived at prune from `aimod_config`.
 - **Guild word list** (`wordlist.go`) is house style: `BucketWordList`, outside `AllBuckets`, never sanctions or reaches the rapsheet; run over model rewrites before `redactSlurs`.

@@ -38,10 +38,13 @@ func (a answers) RoundTrip(r *http.Request) (*http.Response, error) {
 // only the webhooks merlin can post through.
 func TestGuardOpsReadsDiscordIntoAimodsViews(t *testing.T) {
 	r := rest.New(rest.NewClient("t", rest.WithHTTPClient(&http.Client{Transport: answers{
-		"/guilds/100/members/": `{"nick":"Nick","user":{"id":"4","username":"u"},"roles":["7"],"joined_at":"2026-01-01T00:00:00Z"}`,
-		"/guilds/100":          `{"id":"100","name":"G","owner_id":"5","roles":[{"id":"7","name":"mods","permissions":"8","position":1,"color":0}]}`,
-		"/messages":            `[{"id":"9","channel_id":"2","content":"hi","author":{"id":"4","username":"u"}},{"id":"8","channel_id":"2","content":"","author":{"id":"6","username":"v"}}]`,
-		"/webhooks":            `[{"id":"11","type":1,"name":"merlin","token":"tok","channel_id":"2"},{"id":"12","type":2,"name":"follow","channel_id":"2"}]`,
+		"/guilds/100/members/":   `{"nick":"Nick","user":{"id":"4","username":"u"},"roles":["7"],"joined_at":"2026-01-01T00:00:00Z"}`,
+		"/guilds/100":            `{"id":"100","name":"G","owner_id":"5","roles":[{"id":"7","name":"mods","permissions":"8","position":1,"color":0}]}`,
+		"/channels/2/messages":   `[{"id":"9","channel_id":"2","content":"hi","author":{"id":"4","username":"u"}},{"id":"8","channel_id":"2","content":"","author":{"id":"6","username":"v"}}]`,
+		"/channels/2/messages/9": `{"id":"9","channel_id":"2","content":"now","author":{"id":"4","username":"u"}}`,
+		"/channels/2":            `{"id":"2","type":0,"guild_id":"100","name":"c"}`,
+		"/channels/3":            `{"id":"3","type":11,"guild_id":"100","parent_id":"2","name":"t","thread_metadata":{}}`,
+		"/channels/2/webhooks":   `[{"id":"11","type":1,"name":"merlin","token":"tok","channel_id":"2"},{"id":"12","type":2,"name":"follow","channel_id":"2"}]`,
 	}})))
 	g := discordguard.New(r, openGate{}, slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 	ops := GuardOps(g.For("100"))
@@ -54,12 +57,20 @@ func TestGuardOpsReadsDiscordIntoAimodsViews(t *testing.T) {
 	if err != nil || gd.Name != "G" || gd.OwnerID != "5" || !gd.RolePerms["7"].Has(discord.PermissionAdministrator) {
 		t.Fatalf("guild %+v, err %v", gd, err)
 	}
+	one, err := ops.Message("2", "9")
+	if err != nil || one.Content != "now" || one.AuthorID != "4" {
+		t.Fatalf("message %+v, err %v", one, err)
+	}
 	lines, err := ops.History("2", "", 10)
 	if err != nil || len(lines) != 2 || lines[0].AuthorID != "4" || lines[0].Content != "hi" {
 		t.Fatalf("history %+v, err %v", lines, err)
 	}
 	hooks, err := ops.Webhooks("2")
-	if err != nil || len(hooks) != 1 || hooks[0].ID != "11" || hooks[0].Token != "tok" {
+	if err != nil || len(hooks) != 1 || hooks[0].ID != "11" || hooks[0].Token != "tok" || hooks[0].ThreadID != "" {
 		t.Fatalf("webhooks %+v, err %v", hooks, err)
+	}
+	// A thread's webhooks are its parent's, posted through into the thread.
+	if hooks, err = ops.Webhooks("3"); err != nil || len(hooks) != 1 || hooks[0].ThreadID != "3" {
+		t.Fatalf("thread webhooks %+v, err %v", hooks, err)
 	}
 }

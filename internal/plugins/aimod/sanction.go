@@ -306,7 +306,11 @@ func (p *Plugin) clearPendingFlags(ctx context.Context, cfg Config, userID strin
 		if !EffectiveAction(cfg.BucketActions, inc.Bucket).acts() {
 			continue
 		}
-		err := p.ops(cfg.GuildID).DeleteMessage(inc.ChannelID, inc.MessageID)
+		c := candidate{ChannelID: inc.ChannelID, MessageID: inc.MessageID}
+		if mv := p.moved(inc.MessageID); mv != nil {
+			c = mv.follow(c)
+		}
+		err := p.removeMessage(ctx, cfg.GuildID, c)
 		switch {
 		case err == nil:
 			removed++

@@ -477,6 +477,14 @@ status` rather than appearing to work.
   listed there serves a stale config for up to the TTL, which is most of why
   the TTL exists at all.
 
+#### Reposting for another plugin (`repost.go`)
+
+A translator that deleted a message and posted its own webhook copy would be a way round moderation. The verdict on a message takes six seconds or more (`batchWindow`, then the deep pass), webhook messages are never scanned, and `enforce` reads a missing message as one somebody else already removed, which skips the sanction. So posting a violation in Dutch would have left it up in English, under the author's name, free of charge.
+
+`Repost` therefore lives here rather than in the plugin that wants it. It holds the per-message lock `enforce` holds and reads the live message inside it, so neither order puts a removed message back. The move is remembered for `moveTTL`, and a verdict that lands on the original acts on the repost. The repost is scanned as the author's own message, which also means an English model gets to read it. It posts before it deletes, the reverse of `rewriteMessage`: nothing here is a violation that has to come down, so the thing to rule out is a member's words vanishing because a webhook failed.
+
+Where the new words are a softened version, the repost is already what a rewrite would have produced, so a rewrite verdict leaves it up and still records, tells and sanctions. Softening would otherwise be laundering, so whoever softened names the policy area and the original goes to the deep pass on its own words. Child safety is the exception: it has no harmless version, so it is refused and left for moderation to remove.
+
 ### Rung 1.5: the local triage model (`internal/plugins/aimod/triage.go`)
 
 A per-guild logistic regression over hashed character n-grams that decides
