@@ -30,6 +30,7 @@ import (
 	"github.com/6586x57890143/merlin/internal/plugins/adminconfig"
 	"github.com/6586x57890143/merlin/internal/plugins/aimod"
 	"github.com/6586x57890143/merlin/internal/plugins/contest"
+	"github.com/6586x57890143/merlin/internal/plugins/dragoman"
 	"github.com/6586x57890143/merlin/internal/plugins/fleetgrant"
 	"github.com/6586x57890143/merlin/internal/plugins/help"
 	"github.com/6586x57890143/merlin/internal/plugins/perf"
@@ -182,7 +183,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// rows. aimodStore ignores the cutoff it is handed, because its window is
 	// per guild and admin-settable; see aimod.PruneEvidence.
 	aimodStore := aimod.NewPostgresStore(db.Pool)
-	auditWriter.StartRetention(ctx, log, journal, aimodStore)
+	dragomanStore := dragoman.NewPostgresStore(db.Pool)
+	auditWriter.StartRetention(ctx, log, journal, aimodStore, dragomanStore)
 
 	botID, err := core.SelfID(cfg.Discord.Token)
 	if err != nil {
@@ -326,6 +328,14 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// with no key gets the plain versions.
 	rapsheetPlugin.WithReviewer(aimodPlugin)
 
+	// Translation, on aimod's key, budget and repost. Structural like the
+	// rest: neither package imports the other.
+	dragomanPlugin := dragoman.New(dragomanStore, aimodPlugin, scripts.NewPostgresStore(db.Pool), settingsStore,
+		func(guildID string) dragoman.Ops { return guard.For(guildID) },
+		func(guildID string) bool { return guard.Paused(guildID) || guard.DryRun(guildID) },
+		granted.MessageContent,
+	)
+
 	registry := core.NewRegistry(deps, log)
 	registry.Register(sched)
 	registry.Register(ping.New(speaker))
@@ -340,6 +350,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	adminconfigPlugin := adminconfig.New(settingsStore, configPath, db, sched)
 	settingsStore.Recovery(adminconfigPlugin.Name())
 	registry.Register(aimodPlugin)
+	registry.Register(dragomanPlugin)
 	registry.Register(contestPlugin)
 	registry.Register(rapsheetPlugin)
 	// Channel names come off the gateway cache, the only piece of it this
@@ -379,7 +390,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 	// link and cygnet both read. Recomputed a little after anything that
 	// could change it, since guilds arrive in a burst at boot; cygnet's
 	// manifest waits for the first.
-	permissioned := []core.Permissioned{rotationPlugin, rolesPlugin, aimodPlugin, contestPlugin, rapsheetPlugin, statisticsPlugin, adminconfigPlugin}
+	permissioned := []core.Permissioned{rotationPlugin, rolesPlugin, aimodPlugin, dragomanPlugin, contestPlugin, rapsheetPlugin, statisticsPlugin, adminconfigPlugin}
 	install := newInstaller(installSettle, func() {
 		var guilds []string
 		for g := range gw.Caches.Guilds() {
@@ -593,6 +604,8 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		// a one-step bypass: post something innocuous, wait for it to be
 		// cleared, then edit it into whatever you like. Nothing looked again.
 		onEdit = append(onEdit, aimodPlugin.HandleMessageEdit)
+		// After aimod, which has read rung 1 by the time it returns.
+		onMessage = append(onMessage, dragomanPlugin.HandleMessage)
 	} else {
 		log.Info("MESSAGE_CONTENT not granted: AI moderation will scan nothing. " +
 			"Enable Message Content Intent in the Developer Portal to use it.")
@@ -696,6 +709,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		rotationPlugin.ForgetGuild(gd.ID)
 		rolesPlugin.ForgetGuild(gd.ID)
 		aimodPlugin.ForgetGuild(gd.ID)
+		dragomanPlugin.ForgetGuild(gd.ID)
 		contestPlugin.ForgetGuild(gd.ID)
 		rapsheetPlugin.ForgetGuild(gd.ID)
 		statisticsPlugin.ForgetGuild(gd.ID)

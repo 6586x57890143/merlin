@@ -423,6 +423,8 @@ Given the free-speech context and the explicit worry about weaponized reporting:
 
 | 13 | Rapsheets (delivered ahead of Factions/Reporting) | `internal/plugins/rapsheet` \- a per-member moderation ledger every warning, jail, timeout, kick, ban and aimod removal lands in, with case numbers, points that decay over a guild-set half-life, and a band ladder that suggests (default) or applies the next consequence, never against staff and never a permanent ban. roles and aimod report to it over `core.EventBus`; aimod's own ladder counts priors from it. Temporary bans lifted by a per-guild sweep; bans, kicks and timeouts done through Discord's own client ingested from `GUILD_AUDIT_LOG_ENTRY_CREATE`; a mod-only forum with one post per member on record; moderator-confirmed account links with join-time alt hints that never link by themselves; and, on aimod's model and budget, per-member summaries, a weekly consistency review and a second opinion on hints |
 
+| 14 | Translation | `internal/plugins/dragoman` - messages in another language put into English and reposted as their author, in context, on aimod's key, budget and repost path. A free local gate keeps English from costing anything; harmful content is softened by aimod's rewrite rule while the original is still judged; a script picks the English variety per source language. Transcribing and translating voice messages is the planned second half |
+
 
 
 \---
