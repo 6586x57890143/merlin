@@ -66,9 +66,35 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 			"guild", cfg.GuildID, "channel", c.ChannelID, "message", c.MessageID)
 		return
 	}
+	// A message reposted while it was being judged is judged on the repost.
+	// Both sides take the repost's lock, so only one of two verdicts on the
+	// same words acts.
+	mv := p.moved(c.MessageID)
+	cleanable, onOriginal := true, false
+	if mv != nil {
+		onOriginal = c.MessageID != mv.repost
+		if onOriginal {
+			defer p.lockMessage(mv.repost)()
+		}
+		if mv.done || (onOriginal && mv.answered) {
+			return
+		}
+		// A rewrite can only replace the words it was made from, and can't
+		// replace an original that was left up.
+		cleanable = !onOriginal && !mv.keep
+		c = mv.follow(c)
+	}
 	var ok bool
 	if cfg, action, ok = p.stillActs(ctx, cfg, bucket, action, c); !ok {
 		return
+	}
+
+	// The repost may already be the rewrite: a softened one is, and every
+	// repost has had the word list and the slur swap run over it.
+	rewritten := onOriginal && !mv.keep && action == ActionRewrite &&
+		(mv.softened || v.own || bucket == BucketWordList)
+	if rewritten {
+		c.MessageID = mv.original
 	}
 
 	// A confirmed violation means this member's run of similar messages is
@@ -111,7 +137,7 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	// moderator then read "message rewritten" for a message that was
 	// deleted, and went looking for a broken webhook. Deciding here keeps
 	// all four in agreement.
-	if action == ActionRewrite && strings.TrimSpace(v.Rewrite) == "" {
+	if action == ActionRewrite && !rewritten && strings.TrimSpace(v.Rewrite) == "" {
 		action = ActionRemove
 	}
 	// The rewrite comes from a model that read the channel around the
@@ -121,7 +147,7 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	// author didn't write. A rewrite that isn't the author's sentence with
 	// the violation swapped out would put someone else's words under their
 	// name; removing says what happened instead.
-	if action == ActionRewrite && !v.own {
+	if action == ActionRewrite && !rewritten && !v.own {
 		if _, _, _, hit := hardHit(v.Rewrite); hit || !faithful(c.Content, v.Rewrite) {
 			action = ActionRemove
 		}
@@ -131,12 +157,12 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	// webhook wearing the author's name, so a rewritten forward would publish
 	// somebody else's words as this member's own plain text and erase the
 	// fact that it was a forward at all. Removing says what happened.
-	if action == ActionRewrite && c.Forwarded {
+	if action == ActionRewrite && (c.Forwarded || (!cleanable && !rewritten)) {
 		action = ActionRemove
 	}
 	// A repost Discord would reject for length fails after the delete, which
 	// is the partial outcome below. Known now, so decided now.
-	if action == ActionRewrite && utf8.RuneCountInString(strings.TrimSpace(v.Rewrite)+rewriteMarker(newIncidentCode())) > maxContentLen {
+	if action == ActionRewrite && !rewritten && utf8.RuneCountInString(strings.TrimSpace(v.Rewrite)+rewriteMarker(newIncidentCode())) > maxContentLen {
 		action = ActionRemove
 	}
 
@@ -156,11 +182,13 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	// "log IDs, not content" and costs it the ability to undo.
 	if cfg.EvidenceHours > 0 {
 		inc.Content = c.Content
-		inc.Replacement = v.Rewrite
+		if !rewritten {
+			inc.Replacement = v.Rewrite
+		}
 	}
 	// Only a rewrite that will actually be reposted gets a code, since the
 	// repost is the one place it is ever printed.
-	if action == ActionRewrite && cfg.Mode != ModeFlag {
+	if action == ActionRewrite && !rewritten && cfg.Mode != ModeFlag {
 		inc.Code = newIncidentCode()
 	}
 	incidentID, err := p.store.RecordIncident(ctx, inc)
@@ -183,6 +211,10 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 	case ActionRemove:
 		err = p.removeMessage(ctx, cfg.GuildID, c)
 	case ActionRewrite:
+		if rewritten {
+			repostID = mv.repost
+			break
+		}
 		var deleted bool
 		repostID, deleted, err = p.rewriteMessage(ctx, cfg.GuildID, c, v.Rewrite, inc.Code)
 		if err != nil && deleted {
@@ -195,6 +227,11 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 		return
 	}
 
+	if mv != nil && err == nil {
+		// A repost that stands as the rewrite can still be acted on for its
+		// own words.
+		mv.done, mv.answered = !rewritten, true
+	}
 	switch {
 	case err == nil:
 		p.auditRepost(ctx, cfg.GuildID, auditAction, c, bucket, v, repostID)
@@ -240,7 +277,19 @@ func (p *Plugin) enforce(ctx context.Context, cfg Config, c candidate, bucket Bu
 }
 
 func (p *Plugin) removeMessage(ctx context.Context, guildID string, c candidate) error {
-	return p.ops(guildID).DeleteMessage(c.ChannelID, c.MessageID)
+	ops := p.ops(guildID)
+	if c.AlsoDelete == "" {
+		return ops.DeleteMessage(c.ChannelID, c.MessageID)
+	}
+	first := ops.DeleteMessage(c.ChannelID, c.AlsoDelete)
+	if first != nil && !core.IsUnknownResource(first) {
+		return first
+	}
+	// Gone only if both were.
+	if err := ops.DeleteMessage(c.ChannelID, c.MessageID); !core.IsUnknownResource(err) {
+		return err
+	}
+	return first
 }
 
 // rewriteMessage deletes the original and reposts the cleaned text through a

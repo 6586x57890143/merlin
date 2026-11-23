@@ -47,14 +47,14 @@ func restGuard(gate GuildGate, body string) (*Guard, *wire) {
 // A reposted member's text pings nobody, whatever the caller asked for.
 func TestWebhookPostsPingNobody(t *testing.T) {
 	g, w := restGuard(fakeGate{}, `{"id":"9","channel_id":"2","content":"x","author":{"id":"3","username":"u"}}`)
-	id, err := g.For("100").CreateWebhookMessage(5, "tok", discord.WebhookMessageCreate{
+	id, err := g.For("100").CreateWebhookMessage(5, "tok", 7, discord.WebhookMessageCreate{
 		Content: "@everyone hi", AllowedMentions: &discord.AllowedMentions{Parse: []discord.AllowedMentionType{discord.AllowedMentionTypeEveryone}},
 	}, true)
 	if err != nil || id == nil || id.ID != 9 {
 		t.Fatalf("posted %+v, err %v", id, err)
 	}
 	if len(w.requests) != 1 || !strings.Contains(w.requests[0], `"allowed_mentions":{"parse":[],`) ||
-		!strings.Contains(w.requests[0], "/webhooks/5/tok") || !strings.Contains(w.requests[0], "wait=true") {
+		!strings.Contains(w.requests[0], "/webhooks/5/tok") || !strings.Contains(w.requests[0], "wait=true") || !strings.Contains(w.requests[0], "thread_id=7") {
 		t.Fatalf("sent %v", w.requests)
 	}
 }

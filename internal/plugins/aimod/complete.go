@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // Complete: one free-text model call, for another plugin.
@@ -19,8 +22,8 @@ import (
 // text. Wired in cmd/bot/main.go through a narrow interface on the caller's
 // side; this package still imports nothing of theirs.
 //
-// What it will not do is take a schema or a temperature. A caller wanting
-// structured output is a classifier, and classifiers live in this package.
+// Ask is the same path for a caller that needs its answer held to a schema.
+// Neither takes a temperature.
 
 // unavailableError is what Complete returns when the guild has no way to
 // pay for the call. It is not a failure of the request, and a caller should
@@ -51,6 +54,14 @@ const (
 // Complete answers user under system with the guild's deep model, booking
 // the cost against the guild's daily budget whether or not the body parses.
 func (p *Plugin) Complete(ctx context.Context, guildID, system, user string) (string, error) {
+	return p.Ask(ctx, guildID, core.Prompt{
+		System: system, User: user, MaxTokens: completeMaxTokens, Timeout: completeTimeout,
+	})
+}
+
+// Ask is one call to the guild's deep model, retried once on the other
+// gateway as the deep rung is. See deepPass.
+func (p *Plugin) Ask(ctx context.Context, guildID string, q core.Prompt) (string, error) {
 	if p.gate != nil && !p.gate.PluginEnabled(guildID, p.Name()) {
 		return "", ErrNoKey
 	}
@@ -65,25 +76,41 @@ func (p *Plugin) Complete(ctx context.Context, guildID, system, user string) (st
 	if err != nil {
 		return "", fmt.Errorf("aimod: check budget: %w", err)
 	}
-	if state.Exhausted {
+	if state.Exhausted || (q.Reserve > 0 && state.Spent >= state.Budget*q.Reserve) {
 		return "", ErrBudgetExhausted
 	}
-	out, _, err := p.paidChat(ctx, guildID, state, true, chatRequest{
+	out, err := p.askOnce(ctx, cfg, state, q)
+	if err != nil && state.FallbackKey != "" && worthFallback(err) {
+		fb := state
+		fb.APIKey, fb.Spec = state.FallbackKey, state.fallback()
+		out, err = p.askOnce(ctx, cfg, fb, q)
+	}
+	var apiErr *APIError
+	if errors.Is(err, errOverBudget) || (errors.As(err, &apiErr) && apiErr.Status == http.StatusPaymentRequired) {
+		return "", ErrBudgetExhausted
+	}
+	return out, err
+}
+
+func (p *Plugin) askOnce(ctx context.Context, cfg Config, state budgetState, q core.Prompt) (string, error) {
+	req := chatRequest{
 		spec:     state.Spec,
-		timeout:  completeTimeout,
+		timeout:  q.Timeout,
 		Models:   modelsOr(cfg.DeepModels, state.Spec.deepModels),
 		Provider: strictProvider(),
 		Messages: []chatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
+			{Role: "system", Content: q.System},
+			{Role: "user", Content: q.User},
 		},
-		MaxTokens: completeMaxTokens,
-	})
+		MaxTokens: q.MaxTokens,
+	}
+	if q.Schema != nil {
+		req.ResponseFormat = &responseFormat{Type: "json_schema",
+			JSONSchema: jsonSchema{Name: q.SchemaName, Strict: true, Schema: q.Schema}}
+	}
+	out, usage, err := p.paidChat(ctx, cfg.GuildID, state, true, req)
+	p.notePayment(cfg.GuildID, err, usage.Cost > 0)
 	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.Status == 402 {
-			return "", ErrBudgetExhausted
-		}
 		return "", err
 	}
 	return out, nil

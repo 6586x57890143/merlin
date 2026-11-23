@@ -609,6 +609,8 @@ type fakeOps struct {
 	guild      Guild
 	guildErr   error
 	members    map[string]Member
+	// live is what Message answers, by ID; an absent one is unknown.
+	live       map[string]string
 	history    []Line
 	historyErr error
 }
@@ -629,6 +631,15 @@ func (f *fakeOps) DeleteMessage(_, messageID string) error {
 	}
 	f.deleted = append(f.deleted, messageID)
 	return nil
+}
+
+func (f *fakeOps) Message(_, messageID string) (Line, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if text, ok := f.live[messageID]; ok {
+		return Line{Content: text}, nil
+	}
+	return Line{}, unknownMessageError()
 }
 
 func (f *fakeOps) History(string, string, int) ([]Line, error) {

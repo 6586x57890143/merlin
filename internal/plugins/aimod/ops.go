@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
@@ -16,6 +17,8 @@ import (
 // any of that exists.
 type DiscordOps interface {
 	DeleteMessage(channelID, messageID string) error
+	// Message is one message as it reads now.
+	Message(channelID, messageID string) (Line, error)
 	// History is up to limit of channelID's messages older than before (""
 	// for the newest), newest first.
 	History(channelID, before string, limit int) ([]Line, error)
@@ -35,8 +38,9 @@ type DiscordOps interface {
 type Line struct{ AuthorID, Content string }
 
 // Hook is a webhook merlin can post through. Token is empty for one another
-// application made, which cannot be.
-type Hook struct{ ID, Name, Token string }
+// application made, which cannot be. ThreadID is the thread it posts into,
+// since a webhook belongs to the thread's parent.
+type Hook struct{ ID, Name, Token, ThreadID string }
 
 // Member is what aimod reads of a member: the name and avatar a rewrite is
 // reposted under, and the roles the rank check reads.
@@ -61,6 +65,28 @@ func (g guardOps) DeleteMessage(channelID, messageID string) error {
 	return g.o.DeleteMessage(core.ID(channelID), core.ID(messageID))
 }
 
+func (g guardOps) Message(channelID, messageID string) (Line, error) {
+	m, err := g.o.GetMessage(core.ID(channelID), core.ID(messageID))
+	if err != nil {
+		return Line{}, err
+	}
+	return Line{AuthorID: m.Author.ID.String(), Content: m.Content}, nil
+}
+
+// hookChannel is where channelID's webhooks live, and channelID again as the
+// thread to post into when that is its parent.
+func (g guardOps) hookChannel(channelID string) (parent snowflake.ID, threadID string, err error) {
+	id := core.ID(channelID)
+	ch, err := g.o.GetChannel(id)
+	if err != nil {
+		return 0, "", err
+	}
+	if t, ok := ch.(discord.GuildThread); ok && t.ParentID() != nil {
+		return *t.ParentID(), channelID, nil
+	}
+	return id, "", nil
+}
+
 func (g guardOps) History(channelID, before string, limit int) ([]Line, error) {
 	msgs, err := g.o.GetMessages(core.ID(channelID), core.ID(before), limit)
 	if err != nil {
@@ -77,29 +103,41 @@ func (g guardOps) History(channelID, before string, limit int) ([]Line, error) {
 }
 
 func (g guardOps) Webhooks(channelID string) ([]Hook, error) {
-	hooks, err := g.o.GetWebhooks(core.ID(channelID))
+	parent, thread, err := g.hookChannel(channelID)
+	if err != nil {
+		return nil, err
+	}
+	hooks, err := g.o.GetWebhooks(parent)
 	if err != nil {
 		return nil, err
 	}
 	var out []Hook
 	for _, h := range hooks {
 		if in, ok := h.(discord.IncomingWebhook); ok {
-			out = append(out, Hook{ID: in.ID().String(), Name: in.Name(), Token: in.Token})
+			out = append(out, Hook{ID: in.ID().String(), Name: in.Name(), Token: in.Token, ThreadID: thread})
 		}
 	}
 	return out, nil
 }
 
 func (g guardOps) CreateWebhook(channelID, name string) (Hook, error) {
-	h, err := g.o.CreateWebhook(core.ID(channelID), name)
+	parent, thread, err := g.hookChannel(channelID)
 	if err != nil {
 		return Hook{}, err
 	}
-	return Hook{ID: h.ID().String(), Name: h.Name(), Token: h.Token}, nil
+	h, err := g.o.CreateWebhook(parent, name)
+	if err != nil {
+		return Hook{}, err
+	}
+	return Hook{ID: h.ID().String(), Name: h.Name(), Token: h.Token, ThreadID: thread}, nil
 }
 
 func (g guardOps) PostAs(hook Hook, m discord.WebhookMessageCreate, wait bool) (string, error) {
-	msg, err := g.o.CreateWebhookMessage(core.ID(hook.ID), hook.Token, m, wait)
+	var thread snowflake.ID
+	if hook.ThreadID != "" {
+		thread = core.ID(hook.ThreadID)
+	}
+	msg, err := g.o.CreateWebhookMessage(core.ID(hook.ID), hook.Token, thread, m, wait)
 	if err != nil || msg == nil {
 		return "", err
 	}

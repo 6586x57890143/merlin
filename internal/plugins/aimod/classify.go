@@ -123,6 +123,9 @@ type candidate struct {
 	// Forwarded reports that Content came from a message snapshot rather than
 	// from the member's own typing. It changes the action; see enforce.
 	Forwarded bool
+	// AlsoDelete is a second message that goes when this one does: the
+	// original a repost was posted beneath. See repost.go.
+	AlsoDelete string
 	// TriageSampled marks a message the local rung 1.5 model wanted to skip
 	// that is being scanned anyway, as the sampled share that keeps that rung
 	// honest. It changes nothing about how the message is judged; it only

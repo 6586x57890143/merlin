@@ -273,14 +273,15 @@ func (o *GuildOps) CreateWebhook(channelID snowflake.ID, name string) (*discord.
 // CreateWebhookMessage posts through a webhook with every mention
 // suppressed. It carries text a member wrote moments ago, reposted under
 // their own name: without this a rewrite of "@everyone" would ping the
-// server in that member's name. wait returns the message posted.
-func (o *GuildOps) CreateWebhookMessage(webhookID snowflake.ID, token string, m discord.WebhookMessageCreate, wait bool) (*discord.Message, error) {
+// server in that member's name. threadID is the thread to post into, 0 for
+// the webhook's own channel. wait returns the message posted.
+func (o *GuildOps) CreateWebhookMessage(webhookID snowflake.ID, token string, threadID snowflake.ID, m discord.WebhookMessageCreate, wait bool) (*discord.Message, error) {
 	if err := known(webhookID); err != nil {
 		return nil, err
 	}
 	m.AllowedMentions = noPings()
 	return gated(o, opWebhookExecute, webhookID, func() (*discord.Message, error) {
-		return o.guard.rest.CreateWebhookMessage(webhookID, token, m, rest.CreateWebhookMessageParams{Wait: wait})
+		return o.guard.rest.CreateWebhookMessage(webhookID, token, m, rest.CreateWebhookMessageParams{Wait: wait, ThreadID: threadID})
 	})
 }
 
