@@ -112,6 +112,8 @@ func (s *memStore) PruneBefore(context.Context, time.Time) (int64, error) { retu
 type fakeEngine struct {
 	mu       sync.Mutex
 	out      string
+	styled   string // the answer to a dialect call
+	styleErr error
 	askErr   error
 	postErr  error
 	optedOut bool
@@ -137,6 +139,9 @@ func (e *fakeEngine) Ask(_ context.Context, _ string, q core.Prompt) (string, er
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.inAsk--
+	if q.SchemaName == "dialect" {
+		return e.styled, e.styleErr
+	}
 	return e.out, e.askErr
 }
 
@@ -394,16 +399,50 @@ func TestNoEvidenceLogsNoText(t *testing.T) {
 }
 
 func TestTheDialectsScript(t *testing.T) {
-	r := newRig(t)
-	r.script.on = true
-	r.say(msg(dutch))
-	if !strings.Contains(r.engine.prompts[0].System, "Vernacular") || !strings.Contains(r.audit.all(), `english="African American Vernacular English"`) {
-		t.Error("the script did not reach the prompt or the log")
+	const english, aave = "the train's always late", "that train be late every time"
+	for name, tc := range map[string]struct {
+		change func(*rig)
+		calls  int
+		text   string
+	}{
+		"on":             {func(*rig) {}, 2, aave},
+		"off":            {func(r *rig) { r.script.on = false }, 1, english},
+		"unreadable":     {func(r *rig) { r.script.err = errors.New("x") }, 1, english},
+		"another source": {func(r *rig) { r.engine.out = strings.Replace(good, `"nl"`, `"de"`, 1) }, 1, english},
+		// A dialect that can't be had costs the dialect, not the translation.
+		"no answer":   {func(r *rig) { r.engine.styleErr = errors.New("x") }, 2, english},
+		"prose":       {func(r *rig) { r.engine.styled = "sure!" }, 2, english},
+		"empty":       {func(r *rig) { r.engine.styled = `{"text":" "}` }, 2, english},
+		"a link":      {func(r *rig) { r.engine.styled = `{"text":"see evil.com"}` }, 2, english},
+		"much longer": {func(r *rig) { r.engine.styled = `{"text":"` + strings.Repeat("late ", 60) + `"}` }, 2, english},
+	} {
+		r := newRig(t)
+		r.script.on, r.engine.styled = true, `{"text":"`+aave+`"}`
+		tc.change(r)
+		r.say(msg(dutch))
+		got := r.engine.reposts()
+		if len(got) != 1 || got[0].Text != tc.text || r.engine.asked() != tc.calls {
+			t.Errorf("%s: %d calls, posted %+v", name, r.engine.asked(), got)
+		}
+		// The log names the dialect only where it was really written, and
+		// the panel says when it should have been and wasn't.
+		if said := strings.Contains(r.audit.all(), `english="African American Vernacular English"`); said != (tc.text == aave) {
+			t.Errorf("%s: audit %s", name, r.audit.all())
+		}
+		if failed := r.p.trouble[guild] != ""; failed != (tc.calls == 2 && tc.text == english) {
+			t.Errorf("%s: trouble %q", name, r.p.trouble[guild])
+		}
 	}
-	r.script.err = errors.New("unreadable")
-	r.say(msg(dutch))
-	if strings.Contains(r.engine.prompts[1].System, "Vernacular") {
-		t.Error("an unreadable switch is on")
+
+	r := newRig(t)
+	r.script.on, r.engine.styled = true, `{"text":"`+aave+` `+tok("1")+`"}`
+	r.engine.out = strings.Replace(good, "always late", "always late "+tok("1"), 1)
+	r.say(msg(dutch + " <@123456789012345678>"))
+	if got := r.engine.reposts(); len(got) != 1 || got[0].Text != aave+" <@123456789012345678>" {
+		t.Errorf("posted %+v", got)
+	}
+	if q := r.engine.prompts[1]; strings.Contains(q.User, "1234567") || q.Reserve != reserve || !strings.Contains(q.User, "the train's always late") {
+		t.Errorf("dialect prompt %+v", q)
 	}
 }
 

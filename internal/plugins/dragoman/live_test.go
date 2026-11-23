@@ -44,7 +44,8 @@ func TestLive(t *testing.T) {
 		{name: "idiom", text: "helaas pindakaas", source: "nl", hasNot: []string{"peanut"}},
 		{name: "plain", text: "de trein is echt altijd te laat joh", source: "nl", has: []string{"train"}},
 		{name: "dialect", text: "ik heb echt geen zin om vandaag te werken, hij is altijd aan het klagen", dialects: true, source: "nl"},
-		{name: "dialect is dutch only", text: "ich habe heute echt keine Lust zu arbeiten", dialects: true, source: "de"},
+		{name: "dialect, formal", text: "Ik heb een langere zin in het Nederlands nodig over gebeurtenissen die ergens plaatsvinden en mensen overkomen.", dialects: true, source: "nl"},
+		{name: "dialect, short", text: "je bent me een sixpack verschuldigd", dialects: true, source: "nl"},
 		{name: "context", text: "nee die andere", reply: "bedoel je de rode fiets?", lines: []string{"B: welke fiets wil je", "A: die in de schuur"}, source: "nl", has: []string{"other"}},
 		{name: "pronoun", text: "elle est cassée", lines: []string{"B: et ta voiture ?"}, source: "fr", hasNot: []string{"she"}},
 		{name: "insult is kept", text: "je bent een ongelooflijke eikel, houd je bek", source: "nl", hasNot: []string{"boop"}},
@@ -58,11 +59,7 @@ func TestLive(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			masked, parts, _ := mask(c.text)
-			var on map[string]variety
-			if c.dialects {
-				on = dialects
-			}
-			out := liveAsk(t, base, key, model, systemPrompt(policies, on), userPrompt(masked, c.reply, c.lines, "A"))
+			out := liveAsk(t, base, key, model, systemPrompt(policies), userPrompt(masked, c.reply, c.lines, "A"), "translation", schema)
 			got, err := judge(out, masked, parts)
 			t.Logf("%s\n  %s\n  %s", c.text, out, got.text)
 			if c.source == "" {
@@ -81,6 +78,15 @@ func TestLive(t *testing.T) {
 			if baseOf(got.source) != c.source || got.policy != c.policy {
 				t.Errorf("source %v policy %q", got.source, got.policy)
 			}
+			if c.dialects {
+				out := liveAsk(t, base, key, model, restylePrompt(dialects[c.source]), "It was translated from, for reference only:\n"+masked+
+					"\n\nThe message to rewrite:\n"+got.masked, "dialect", restyleSchema)
+				t.Logf("dialect: %s", out)
+				var a struct{ Text string }
+				if err := json.Unmarshal([]byte(out), &a); err != nil || strings.EqualFold(a.Text, got.masked) {
+					t.Errorf("still Standard English: %q, %v", a.Text, err)
+				}
+			}
 			low := strings.ToLower(got.text)
 			found := len(c.has) == 0
 			for _, w := range c.has {
@@ -96,13 +102,13 @@ func TestLive(t *testing.T) {
 	}
 }
 
-func liveAsk(t *testing.T, base, key, model, system, user string) string {
+func liveAsk(t *testing.T, base, key, model, system, user, name string, schema map[string]any) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{
 		"model": model, "temperature": 0, "max_tokens": maxTokens,
 		"messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}},
 		"response_format": map[string]any{"type": "json_schema",
-			"json_schema": map[string]any{"name": "translation", "strict": true, "schema": schema}},
+			"json_schema": map[string]any{"name": name, "strict": true, "schema": schema}},
 	})
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
 	if err != nil {

@@ -848,6 +848,8 @@ A message in another language is replaced with its English, under its author's n
 
 **The model is not trusted with the result** (`judge`). It reads a channel anyone can write in, and what it returns is posted under somebody's name, so `faithful` is what aimod uses for a rewrite and cannot be used here: a translation shares no words with its original. What can be held is everything that isn't words. Links, mentions, emoji and code are swapped for numbered tokens before the call and must come back exactly once each, and nothing that should have been a token may be added. So planted instructions can at worst produce a wrong sentence, which is then moderated as its author's own.
 
+**A dialect is its own call** (`script_dialects.go`). The first version asked for it in the translation prompt, beside "keep the register" and "never add anything", and with the script on the Dutch messages we saw still came out in Standard English. Giving each call one job is the answer, and it moves the choice of language out of the model's hands. The cost is a second call for those languages only.
+
 **Softening** uses aimod's rewrite rule in the same call, because the model has already read the message and the policies cost a few hundred tokens. The policies are the guild's enforced ones, so dragoman never softens something the server allows. It names the area it softened, and aimod sends the original to the deep pass; see the same section.
 
 **The budget** is aimod's, less a fifth: a translator that could spend the last cent would be a way to switch moderation off. The per-member limit is the same argument one level down.

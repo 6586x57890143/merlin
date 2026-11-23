@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -34,6 +32,7 @@ const (
 // translation is one message in English.
 type translation struct {
 	text    string
+	masked  string // text before its tokens were put back
 	source  language.Tag
 	english variety
 	// policy is the area the original breaks, where text is a harmless
@@ -72,7 +71,7 @@ func leave(why string) error { return fmt.Errorf("%w: %s", errLeave, why) }
 // systemPrompt is what the model is told. policies is one line per area this
 // guild enforces, from aimod, and the harm rule is aimod's own rewrite rule
 // (classify.go, deepPrompt) asked for in the same breath as the translation.
-func systemPrompt(policies string, varieties map[string]variety) string {
+func systemPrompt(policies string) string {
 	var b strings.Builder
 	b.WriteString(`You translate chat messages into English. Your translation is posted in place of the message, under its author's own name, so it has to say what they said.
 
@@ -89,12 +88,8 @@ Set translate to false, and text to "", when the message is English (with or wit
 
 source is the BCP 47 code of the language the message is in ("nl", "de", "ja"). Add a region only where the wording makes it plain ("pt-BR"). confidence is 0.0 to 1.0: how sure you are of both the language and the meaning.
 
-English to write:
-- Any language: ` + standard.how + "\n")
-	for _, base := range slices.Sorted(maps.Keys(varieties)) {
-		fmt.Fprintf(&b, "- Only when source is %q, instead: %s\n", base, varieties[base].how)
-	}
-	b.WriteString(`
+` + standard.how + `
+
 The harm rule. These are the policies of the server this is posted on:
 ` + policies + `
 When the message breaches one of them as written, still set translate to true, set harmful to that policy's name, and make text the translation with only the breaching words swapped for silly, harmless ones. Keep the author's sentence structure, length, punctuation and everything else they said: "kill all <slur>" becomes "tickle all nice people", "I will find you and hurt you" becomes "I will find you and boop you". Prefer a playful substitution over giving up. When the policy is child_safety, or when nothing of the message is left without the breach, set text to "". When you are unsure whether something breaches a policy, it does not. Otherwise harmful is "".
@@ -137,9 +132,8 @@ func (p *Plugin) translate(ctx context.Context, j job) (translation, error) {
 		return translation{}, leave("the text holds a token of ours")
 	}
 	lines, self := p.engine.Context(j.guildID, j.channelID, j.messageID, j.authorID)
-	varieties := p.varietiesOn(ctx, j.guildID)
 	out, err := p.engine.Ask(ctx, j.guildID, core.Prompt{
-		System:     systemPrompt(p.engine.Policies(ctx, j.guildID), varieties),
+		System:     systemPrompt(p.engine.Policies(ctx, j.guildID)),
 		User:       userPrompt(masked, j.replyTo, lines, self),
 		SchemaName: "translation", Schema: schema,
 		MaxTokens: maxTokens, Timeout: askTimeout, Reserve: reserve,
@@ -148,8 +142,19 @@ func (p *Plugin) translate(ctx context.Context, j job) (translation, error) {
 		return translation{}, err
 	}
 	t, err := judge(out, masked, parts)
-	t.english = englishFor(varieties, baseOf(t.source))
-	return t, err
+	if err != nil {
+		return t, err
+	}
+	v := p.englishFor(ctx, j.guildID, baseOf(t.source))
+	if v == standard {
+		return t, nil
+	}
+	styled, err := p.restyle(ctx, j, t, v, masked, parts)
+	if err != nil {
+		p.log.Warn("dragoman: posting without the dialect", "guild", j.guildID, "message", j.messageID, "err", err)
+		p.setTrouble(j.guildID, "dialect: "+err.Error())
+	}
+	return styled, nil
 }
 
 // judge turns the model's reply into a translation of masked, or into the
@@ -175,8 +180,8 @@ func judge(out, masked string, parts []string) (translation, error) {
 	if !ok {
 		return translation{}, leave(fmt.Sprintf("source %.20q", a.Source))
 	}
-	t := translation{source: tag, policy: strings.TrimSpace(a.Harmful)}
 	text := strings.TrimSpace(a.Text)
+	t := translation{source: tag, masked: text, english: standard, policy: strings.TrimSpace(a.Harmful)}
 	if t.policy != "" && text == "" {
 		return t, leave("harmful with nothing left")
 	}
