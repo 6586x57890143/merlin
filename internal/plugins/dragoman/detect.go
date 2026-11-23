@@ -1,9 +1,11 @@
 package dragoman
 
 import (
+	_ "embed"
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/rangetable"
 )
@@ -16,6 +18,10 @@ import (
 // still say leave it alone. So it is tuned to miss a one-word message in
 // Dutch rather than to pay for "wat" and "lol", and a member who was just
 // speaking Dutch needs less to go on (sticky).
+//
+// Three tests, any of which is enough: a foreign script, the small words of
+// one language (which catch short messages), or words that mostly are not
+// English at all (which catch a sentence with no small words in it).
 
 // cjk is the scripts Chinese and Japanese mix in one word.
 var cjk = rangetable.Merge(unicode.Han, unicode.Hiragana, unicode.Katakana)
@@ -79,12 +85,83 @@ var englishWords = set(`the and you to that it for this with are be have not but
 	always something nothing anyone everyone lol lmao bro yeah gonna wanna ain't can't won't didn't doesn't
 	isn't that's what's he's she's you're they're we're i've i'll let's please thanks`)
 
+// vocabulary is the 40,000 commonest words of English, from SCOWL (its
+// licence is english.LICENSE), and slang is what people type that no word
+// list has. Regenerated from the wordlist-english npm package, sizes 10 to
+// 35: lowercase, letters only, and of the two-letter entries only the words.
+//
+//go:embed english.txt
+var vocabularyList string
+
+var (
+	vocabulary = set(vocabularyList)
+	slang      = set(`lol lmao lmfao rofl bruh bro bros sis fam yo ya yall ayo nah naw yea yeah yep yup nope ok okay kk idk idc
+		idgaf tbh ngl imo imho fr frfr ong smh tf wtf wth stfu omg omfg btw brb afk gg ggs ez wp glhf irl dm dms lmk hmu
+		wyd wya wdym hbu tysm ty thx pls plz ppl smth smthn sth nvm rn atm asap fyi jk gn gm hru ik ikr ion ig iirc iykyk
+		istg tho thru cuz cus coz bc bcuz gonna wanna gotta gimme lemme kinda sorta dunno tryna finna boutta imma ima aint
+		ur u r n y k im ive id ill dont doesnt didnt cant wont isnt wasnt arent werent couldnt wouldnt shouldnt hasnt
+		havent thats whats hes shes theyre youre weve theres heres lets based cringe mid sus cap nocap bet goat goated
+		rizz gyatt skibidi sigma ohio slay yeet simp stan vibe vibes vibing delulu bussin drip lit af asf fuckin fucking
+		fucked fucker motherfucker shit shitty bullshit bitch bitches asshole dumbass jackass badass ass damn goddamn
+		dude dudes guys homie homies chill ded oof yikes pog poggers kek kekw copium hopium meme memes noob newb op nerf
+		buff buffed lag laggy hacker cheater app apps wifi online email emails blog vlog streamer twitch discord reddit
+		youtube google tiktok insta instagram snapchat twitter spotify netflix xbox ps steam minecraft valorant fortnite
+		roblox iphone android pc gpu cpu ram ai llm gpt bot bots admin admins mod mods ping pinged server servers emoji
+		emojis gif gifs pfp nitro vc ava avi selfie selfies cringey weirdo lame legit lowkey highkey deadass facts cope
+		ratio mald malding seethe hella mf mfs mfer mfers tn tmr tmrw yday pic pics vid vids sec secs mins hrs aight alr
+		alright bday prolly def defo obv obvs totes whatcha watcha gotcha betcha innit bloke mate mates lads wanker cunt
+		bollocks oi bruv gov naur heh hehe haha hahaha hah lolol uh uhh um umm hmm hm mhm eh meh ugh huh yay wow whoa woah
+		welp ew eww aw aww hey heyo hiya sup wassup whaddup howdy yessir nuh uhuh ts pmo sm`)
+)
+
+// known reports whether w, in lowercase, is English enough: a word, slang, a
+// word stretched out ("sooooo"), or one ending in what chat adds to words.
+func known(w string) bool {
+	if vocabulary[w] || slang[w] {
+		return true
+	}
+	short := unstretch(w)
+	if vocabulary[short] || slang[short] {
+		return true
+	}
+	if base, _, ok := strings.Cut(w, "'"); ok {
+		return base == "" || known(base) // it's, goin', y'all
+	}
+	for _, end := range []string{"s", "in", "ing", "ed", "er", "y"} {
+		if base, ok := strings.CutSuffix(w, end); ok && len(base) > 2 && (vocabulary[base] || vocabulary[base+"e"] || slang[base]) {
+			return true
+		}
+	}
+	return false
+}
+
 func set(s string) map[string]bool {
 	out := map[string]bool{}
 	for _, w := range strings.Fields(s) {
 		out[w] = true
 	}
 	return out
+}
+
+// unstretch cuts a letter typed three times or more down to one.
+func unstretch(w string) string {
+	var b strings.Builder
+	r := []rune(w)
+	for i := 0; i < len(r); {
+		j := i
+		for j < len(r) && r[j] == r[i] {
+			j++
+		}
+		n := j - i
+		if n >= 3 {
+			n = 1
+		}
+		for range n {
+			b.WriteRune(r[i])
+		}
+		i = j
+	}
+	return b.String()
 }
 
 // wordTable turns the lists inside out: word to the languages it is in.
@@ -107,16 +184,28 @@ func candidate(text, sticky string) bool {
 	if foreignScript(text) {
 		return true
 	}
-	var english int
+	var english, words, unknown int
 	hits := map[string]int{}
 	seen := map[string]bool{}
-	text = strings.ToLower(strings.ReplaceAll(text, "’", "'"))
-	for w := range strings.FieldsFuncSeq(text, func(r rune) bool { return !unicode.IsLetter(r) && r != '\'' }) {
-		w = strings.Trim(w, "'")
+	shouting := strings.ToUpper(text) == text
+	first := true
+	for typed := range strings.FieldsFuncSeq(strings.ReplaceAll(text, "\u2019", "'"), func(r rune) bool { return !unicode.IsLetter(r) && r != '\'' }) {
+		w := strings.ToLower(strings.Trim(typed, "'"))
 		if w == "" || seen[w] {
 			continue
 		}
 		seen[w] = true
+		// A capital inside a sentence is a name, which says nothing about
+		// the language around it.
+		name := !first && !shouting && unicode.IsUpper([]rune(typed)[0])
+		acronym := !shouting && len(w) > 1 && strings.ToUpper(typed) == typed
+		first = false
+		if !name && !acronym && utf8.RuneCountInString(w) > 1 {
+			words++
+			if !known(w) {
+				unknown++
+			}
+		}
 		if englishWords[w] {
 			english++
 			continue
@@ -125,7 +214,11 @@ func candidate(text, sticky string) bool {
 			hits[lang]++
 		}
 	}
-	if sticky != "" && hits[sticky] > english {
+	// Three words that are not English, out of at most five.
+	if unknown >= 3 && unknown*5 >= words*3 {
+		return true
+	}
+	if sticky != "" && (hits[sticky] > english || (unknown >= 2 && unknown*2 > words)) {
 		return true
 	}
 	best := 0
