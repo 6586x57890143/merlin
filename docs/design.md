@@ -840,6 +840,24 @@ The low and full frames are edits of the crying emote kept in
 `assets/source/`, keyed by flood fill from the border rather than a global
 black key, which would have eaten the outline and the pupil.
 
+### Translation (`internal/plugins/dragoman`)
+
+A message in another language is replaced with its English, under its author's name, with a footer saying which language it came from. The swap itself is `aimod.Repost`; see "Reposting for another plugin" for why it cannot be done anywhere else.
+
+**The gate** (`detect.go`) exists because the default is an English server: anything that asks a model "is this English?" pays for every message to hear yes. It looks for function words, which no language can be written without and which barely overlap, and drops every one that is also an English word, a name or chat slang ("die", "was", "con", "los", "gut", "ben"). Trigram detectors were the alternative and are worst exactly where chat lives, at under ten words. The cost is recall on one-word messages. The sticky language buys most of it back: "nee" alone says nothing, and "nee" a minute after a Dutch sentence says plenty.
+
+**The model is not trusted with the result** (`judge`). It reads a channel anyone can write in, and what it returns is posted under somebody's name, so `faithful` is what aimod uses for a rewrite and cannot be used here: a translation shares no words with its original. What can be held is everything that isn't words. Links, mentions, emoji and code are swapped for numbered tokens before the call and must come back exactly once each, and nothing that should have been a token may be added. So planted instructions can at worst produce a wrong sentence, which is then moderated as its author's own.
+
+**Softening** uses aimod's rewrite rule in the same call, because the model has already read the message and the policies cost a few hundred tokens. The policies are the guild's enforced ones, so dragoman never softens something the server allows. It names the area it softened, and aimod sends the original to the deep pass; see the same section.
+
+**The budget** is aimod's, less a fifth: a translator that could spend the last cent would be a way to switch moderation off. The per-member limit is the same argument one level down.
+
+**Attachments** keep the original up with the translation beneath. Deleting it would delete the image from Discord's CDN, and a caption isn't worth that.
+
+**The log** carries the original text, which aimod's entries deliberately don't. A translation replaces innocent words with no appeal and nothing else keeps them, so a moderator asked "what did they really say" needs it. A guild that set evidence to 0 asked for no durable copies and gets none here either.
+
+There is no `why` command: the footer already says why.
+
 ### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)
 
 merlin's own packages compiled to WebAssembly, so two of this codebase's

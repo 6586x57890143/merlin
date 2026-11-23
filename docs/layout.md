@@ -18,6 +18,7 @@ event bus.
 | `internal/plugins/rotation` | channel rotation and the archive sweep |
 | `internal/plugins/roles` | jail and timed role grants |
 | `internal/plugins/aimod` | the AI moderation ladder, its policy files and the tip jar |
+| `internal/plugins/dragoman` | messages in other languages, put into English on aimod's key and budget |
 | `internal/plugins/contest` | contests: phases, the entry forum, the prize ledger |
 | `internal/plugins/rapsheet` | the per-member moderation ledger, the escalation ladder, bans, case files, alt hints |
 | `internal/plugins/statistics` | hourly activity and membership counts, `/statistics` |

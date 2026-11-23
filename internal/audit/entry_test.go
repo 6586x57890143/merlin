@@ -32,6 +32,7 @@ var callSites = []struct{ action, old, new string }{
 	{"rotation.edit", "sticky:\nline one", "sticky:\nline two"},
 	{"config.setup", "", ""},
 	{"aimod.rewrite", "", "user=<@1001> message=[Deleted](https://discord.com/channels/100/300/400) → [Reposted](https://discord.com/channels/100/300/401) policy=harassment"},
+	{"dragoman.translated", "", `user=<@1001> channel=<#300> language="Dutch" english="African American Vernacular English" softened="threats" message="[Deleted](https://discord.com/channels/100/300/400) → [Reposted](https://discord.com/channels/100/300/401)" reason="die trein is altijd te laat\nniet normaal"`},
 	{"nodot", "", ""},
 	{"roles.jail_reapplied", "", `user=<@1001> release_at=2026-10-17T14:00:00Z unmanageable_roles=[<@&501>] reason="joined while a sentence was in force"`},
 	{"roles.jail_bulk", "", `role=<@&7> duration=2h reason="raid" jailed=3 protected=1 users=[<@1> <@2> <@3>]`},

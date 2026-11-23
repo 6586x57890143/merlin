@@ -111,6 +111,18 @@ var actions = map[string]meta{
 	"aimod.calibration_mode_set": {title: "AI moderation: calibration mode changed", color: core.ColorWarning},
 	"roles.jail_reasserted":      {title: "Jail reasserted (roles regranted)", color: core.ColorWarning},
 
+	// internal/plugins/dragoman. A translation replaces what a member wrote,
+	// so a softened one reads no louder than a plain one: aimod's own entry
+	// says whether it broke a rule.
+	"dragoman.translated":       {title: "Dragoman: message translated", color: core.ColorInfo},
+	"dragoman.deleted":          {title: "Dragoman: translation deleted", color: core.ColorInfo},
+	"dragoman.enabled_set":      {title: "Dragoman: translation switched", color: core.ColorWarning},
+	"dragoman.channel_exempted": {title: "Dragoman: channel left alone", color: core.ColorInfo},
+	"dragoman.channel_included": {title: "Dragoman: channel translated again", color: core.ColorInfo},
+	"dragoman.optout_changed":   {title: "Dragoman: member opt-out changed", color: core.ColorInfo},
+	"dragoman.script_enabled":   {title: "Script turned on", color: core.ColorWarning},
+	"dragoman.script_disabled":  {title: "Script turned off", color: core.ColorWarning},
+
 	// internal/plugins/rapsheet. A ban and a kick are the two things here
 	// with no undo on Discord's side, so they read as errors; everything
 	// that adds to a member's record is a warning; what settles or corrects

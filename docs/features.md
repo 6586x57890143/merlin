@@ -141,6 +141,18 @@ Every action is explained to the member in a DM, recorded in the audit log, and
 reversible with `/aimod undo` while the evidence window lasts. Start with
 the mode on `/aimod settings` set to flag, and watch it for a week before letting it act.
 
+**Translation.** Off until you turn it on at `/dragoman settings`, and it runs on
+the AI moderation key and budget. A message in another language is read in the
+context of the conversation, put into English and reposted under its author's
+name with the flag of the language it came from. English messages cost nothing:
+merlin tells them apart herself. Anything in a message that breaks a policy you
+enforce comes out harmless, and the original still answers to moderation. It can
+use four fifths of the daily budget at most, so moderation always has the rest.
+What was really written goes to the audit log. Members can take down a
+translation of theirs with `/dragoman delete` or have their messages left alone
+with `/dragoman opt-out`. The `dialects` script changes which English a language
+becomes; off, it is Standard American English for all of them.
+
 **Rapsheets.** Every warning, jail, timeout, kick, ban and AI removal a member
 collects lands on one per-member record with a case number, whoever or whatever
 decided it, including bans your mods place from Discord's own menus.
