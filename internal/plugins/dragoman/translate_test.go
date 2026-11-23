@@ -106,16 +106,12 @@ func TestFlags(t *testing.T) {
 }
 
 func TestPromptSaysWhichEnglish(t *testing.T) {
-	plain := systemPrompt("- threats: no threats\n", nil)
+	plain := systemPrompt("- threats: no threats\n")
 	if strings.Contains(plain, "Vernacular") || !strings.Contains(plain, standard.how) || !strings.Contains(plain, "- threats: no threats") {
 		t.Error("the plain prompt carries a dialect, or lacks the English or the policies")
 	}
-	on := systemPrompt("", dialects)
-	if !strings.Contains(on, `Only when source is "nl"`) || !strings.Contains(on, dialects["nl"].how) || !strings.Contains(on, standard.how) {
-		t.Error("the dialect prompt does not name Dutch")
-	}
-	if englishFor(dialects, "de") != standard || englishFor(nil, "nl") != standard || englishFor(dialects, "nl") == standard {
-		t.Error("the wrong language got the dialect")
+	if on := restylePrompt(dialects["nl"]); !strings.Contains(on, dialects["nl"].how) || !strings.Contains(on, dialects["nl"].name) {
+		t.Error("the dialect prompt does not say which")
 	}
 }
 

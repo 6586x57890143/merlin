@@ -224,7 +224,7 @@ CI (`.github/workflows/ci.yml`): vet, lint, race tests, govulncheck, gitleaks, D
 ### Translation (`internal/plugins/dragoman`)
 
 - Detect, translate, repost. The model call and the swap are aimod's (`Engine`: `Ask`, `Repost`); dragoman has no key, budget or webhook of its own. Off per guild by default; needs Message Content.
-- **The gate is free and says no to English** (`candidate`): most letters in a foreign script, or two function words of one language outnumbering English ones; a member confirmed speaking a language in the last 10 minutes needs one. Add a word only if `TestEnglishCostsNothing` still passes. The model has the final say.
+- **The gate is free and says no to English** (`candidate`): most letters in a foreign script, two function words of one language outnumbering English ones, or three words in five (three at least) that aren't English (`english.txt`, `slang`); a member confirmed speaking a language in the last 10 minutes needs less. Add a word only if `TestEnglishCostsNothing` still passes. The model has the final say.
 - **`judge` decides what is published**: confidence 0.8, a real non-English source, every masked token back exactly once, no new link or mention, bounded length. Anything else leaves the message alone.
 - Links, mentions, emoji and code go to the model as tokens (`mask.go`); no IDs are sent.
 - Harm is judged against the guild's enforced policies and softened in the same call, by aimod's rewrite rule; the policy goes to `Repost`, so the original is still judged.
@@ -232,7 +232,7 @@ CI (`.github/workflows/ci.yml`): vet, lint, race tests, govulncheck, gitleaks, D
 - Attachments and stickers keep the original, with the translation beneath.
 - The audit log keeps the original text (`dragoman.translated`), left out where `evidence` is 0. `dragoman_translations` holds IDs only, so an author can take a repost down.
 - **Member controls** (`/dragoman delete` on your own, `/dragoman opt-out`) are off until an admin turns them on; off keeps the opt-out list and reads it nowhere. Mods can always delete.
-- Script **dialects** (`script_dialects.go`): which English a language becomes. Off, unreadable or unlisted is Standard American English.
+- Script **dialects** (`script_dialects.go`): which English a language becomes. Off, unreadable or unlisted is Standard American English. A dialect is a **second call** over the finished translation, chosen by code from the detected language; a failed one posts the plain translation and shows on the panel. The audit names a dialect only where it was written.
 
 ### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)
 

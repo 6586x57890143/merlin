@@ -384,7 +384,9 @@ func (p *Plugin) run(ctx context.Context, j job) {
 	// is not lost to a context that ran out while it was being posted.
 	ctx = context.WithoutCancel(ctx)
 	p.confirmed(j, baseOf(t.source))
-	p.setTrouble(j.guildID, "")
+	if t.english == p.englishFor(ctx, j.guildID, baseOf(t.source)) {
+		p.setTrouble(j.guildID, "")
+	}
 	if err := p.store.Record(ctx, Translation{
 		GuildID: j.guildID, ChannelID: j.channelID, RepostID: repostID, AuthorID: j.authorID,
 		Language: t.source.String(), CreatedAt: p.now(),
