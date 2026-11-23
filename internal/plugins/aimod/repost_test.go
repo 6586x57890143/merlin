@@ -245,8 +245,19 @@ func TestASoftenedOriginalIsJudged(t *testing.T) {
 	if _, err := p.Repost(context.Background(), r); !unavailable(err) {
 		t.Errorf("err = %v", err)
 	}
+	r.Policy, r.Keep = string(BucketThreats), true
+	if _, err := p.Repost(context.Background(), r); !unavailable(err) {
+		t.Errorf("kept: err = %v", err)
+	}
 	if _, posted := ops.snapshot(); len(posted) != 1 {
 		t.Errorf("posted %d", len(posted))
+	}
+	p.wg.Wait()
+	if spent, limit, ok := p.Budget(context.Background(), "g1"); !ok || limit <= 0 || spent < 0 {
+		t.Errorf("budget %v of %v, %v", spent, limit, ok)
+	}
+	if _, _, ok := p.WithGate(gateOff{}).Budget(context.Background(), "g1"); ok {
+		t.Error("a disabled plugin has no budget to spend")
 	}
 }
 

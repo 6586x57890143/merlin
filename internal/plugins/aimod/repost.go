@@ -131,7 +131,8 @@ func (p *Plugin) Repost(ctx context.Context, r core.Repost) (string, error) {
 	}
 	// Nothing in this area has a harmless version, as it has no rewrite that
 	// is a joke: it is moderation's to take down, not ours to reword.
-	if Bucket(r.Policy) == BucketChildSafety {
+	// And an original that stays up beneath a softened copy is not softened.
+	if Bucket(r.Policy) == BucketChildSafety || (r.Policy != "" && r.Keep) {
 		return "", errRepostRefused
 	}
 	text := strings.TrimSpace(r.Text)
@@ -220,6 +221,20 @@ func (p *Plugin) Context(guildID, channelID, messageID, authorID string) (lines 
 func (p *Plugin) OptedOut(ctx context.Context, guildID, userID string) bool {
 	cfg, err := p.store.Config(ctx, guildID)
 	return err != nil || (cfg.MemberOptOut && slices.Contains(cfg.OptOutUserIDs, userID))
+}
+
+// Budget is what the guild has spent on models today and its daily cap. ok is
+// false where there is no key to spend with, or no reading it.
+func (p *Plugin) Budget(ctx context.Context, guildID string) (spent, limit float64, ok bool) {
+	if p.gate != nil && !p.gate.PluginEnabled(guildID, p.Name()) {
+		return 0, 0, false
+	}
+	cfg, err := p.store.Config(ctx, guildID)
+	if err != nil {
+		return 0, 0, false
+	}
+	state, err := p.checkBudget(ctx, cfg)
+	return state.Spent, state.Budget, err == nil && state.APIKey != ""
 }
 
 // EvidenceHours is how long the guild keeps message text; zero, or an
