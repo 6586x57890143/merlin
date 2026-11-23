@@ -25,7 +25,8 @@ var (
 	viewSpec      = core.PermSpec{Tier: core.TierMod, Action: "dragoman.read"}
 	configureSpec = core.PermSpec{Tier: core.TierAdmin, Action: "dragoman.configure"}
 	scriptsSpec   = core.PermSpec{Tier: core.TierAdmin, Action: "dragoman.scripts"}
-	// deleteSpec is for somebody else's translation; anyone may delete theirs.
+	// deleteSpec is for anyone's translation. Authors may delete their own
+	// where the member controls are on.
 	deleteSpec = core.PermSpec{Tier: core.TierMod, Action: "dragoman.delete"}
 )
 
@@ -113,6 +114,10 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 	if cfg.Enabled {
 		toggle, state = ui.Button("Turn off", panelSet+"off", discord.ButtonStyleDanger, !canSet), "**on**"
 	}
+	members, offered := ui.Button("Turn on", panelSet+"members:on", discord.ButtonStyleSecondary, !canSet), "off"
+	if cfg.MemberControls {
+		members, offered = ui.Button("Turn off", panelSet+"members:off", discord.ButtonStyleDanger, !canSet), "**on**"
+	}
 	if cfg.Enabled && (!ok || !p.scanning || why != "") {
 		pn.Color = core.ColorWarning
 	}
@@ -130,6 +135,7 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 		ui.Switch("Translation is "+state+"\n-# A message in another language is replaced with its English, under its author's name. Harmful ones are made harmless.", toggle),
 		ui.Text("**Left alone**: these channels are never translated."),
 		ui.Row(ui.ChannelSelectMany(panelSet+"exempt", "Channels left alone", cfg.ExemptChannelIDs, ui.MaxSelectValues, !canSet)),
+		ui.Switch("Member controls are "+offered+"\n-# Members can opt out and take down translations of their own messages. Mods can always take one down.", members),
 		ui.Gap(),
 		ui.Text("-# " + scripts.Warning),
 		ui.Switch(fmt.Sprintf("`%s` is %s\n-# %s", scriptDialects, script, dialectsAbout()), sb),
@@ -160,6 +166,8 @@ func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID strin
 	switch verb := strings.TrimPrefix(customID, panelSet); verb {
 	case "on", "off":
 		note = p.setEnabled(ctx, ix, verb == "on")
+	case "members:on", "members:off":
+		note = p.setMemberControls(ctx, ix, verb == "members:on")
 	case "exempt":
 		note = p.setExempt(ctx, ix)
 	default:
@@ -183,6 +191,18 @@ func (p *Plugin) setEnabled(ctx context.Context, ix *core.Ix, on bool) string {
 		return "✓ Translation off. What is already translated stays."
 	}
 	return "✓ Translation on. New messages in another language are put into English from now on."
+}
+
+func (p *Plugin) setMemberControls(ctx context.Context, ix *core.Ix, on bool) string {
+	if err := p.store.SetMemberControls(ctx, ix.GuildID, on); err != nil {
+		return fmt.Sprintf("✗ Not saved: %v", err)
+	}
+	p.forgetConfig(ix.GuildID)
+	p.record(ctx, ix, "dragoman.member_controls_set", onOff(!on), onOff(on))
+	if !on {
+		return "✓ Member controls off. Anyone who opted out is translated again; their choice is kept."
+	}
+	return "✓ Member controls on: `/dragoman delete` and `/dragoman opt-out` work for everyone, on their own messages."
 }
 
 // setExempt is the channel picker; each one added or removed is its own
@@ -247,9 +267,14 @@ func (p *Plugin) handleDelete(ctx context.Context, ix *core.Ix) {
 		ix.RespondErr("Could not look it up", err)
 		return
 	}
-	if ix.UserID != t.AuthorID && !p.commands.Perms().Allows(ix, deleteSpec) {
-		ix.RespondWarn("Not yours", "Only whoever wrote the message, or a moderator, can take its translation down.")
-		return
+	if !p.commands.Perms().Allows(ix, deleteSpec) {
+		if !p.offered(ctx, ix) {
+			return
+		}
+		if ix.UserID != t.AuthorID {
+			ix.RespondWarn("Not yours", "Only whoever wrote the message, or a moderator, can take its translation down.")
+			return
+		}
 	}
 	if err := p.ops(ix.GuildID).DeleteMessage(core.ID(t.ChannelID), core.ID(t.RepostID)); err != nil && !core.IsUnknownResource(err) {
 		ix.RespondErr("Could not delete it", err)
@@ -259,9 +284,28 @@ func (p *Plugin) handleDelete(ctx context.Context, ix *core.Ix) {
 	ix.RespondOK("Deleted", "That translation is gone.")
 }
 
-// handleOptOut sets the caller's own choice and nobody else's.
+// offered answers ix itself and reports false where this server has not
+// turned the member controls on, or where that can't be read.
+func (p *Plugin) offered(ctx context.Context, ix *core.Ix) bool {
+	cfg, err := p.config(ctx, core.ID(ix.GuildID))
+	if err != nil {
+		ix.RespondErr("Could not read the settings", err)
+		return false
+	}
+	if !cfg.MemberControls {
+		ix.RespondWarn("This server doesn't offer that", "An admin can turn the member controls on at `/dragoman settings`.")
+	}
+	return cfg.MemberControls
+}
+
+// handleOptOut sets the caller's own choice and nobody else's. Refused where
+// it isn't offered rather than kept for later, so nobody believes they are
+// out when they aren't; coming back in always works.
 func (p *Plugin) handleOptOut(ctx context.Context, ix *core.Ix) {
 	on := ix.Args()["enabled"].Bool()
+	if on && !p.offered(ctx, ix) {
+		return
+	}
 	if err := p.store.SetOptOut(ctx, ix.GuildID, ix.UserID, on); err != nil {
 		ix.RespondErr("Could not save that", err)
 		return
@@ -293,6 +337,6 @@ func (p *Plugin) Help() core.Help {
 	return core.Help{
 		Title: "Dragoman",
 		Line:  "puts messages in other languages into english",
-		About: "when somebody writes in another language i read it in context, put it into english and repost it under their name, with the flag of the language it came from. anything harmful in it comes out harmless. `/dragoman delete` takes down a translation of yours, and `/dragoman opt-out` has me leave your messages as you wrote them. admins turn it on at `/dragoman settings`; it runs on ai moderation's key and budget.",
+		About: "when somebody writes in another language i read it in context, put it into english and repost it under their name, with the flag of the language it came from. anything harmful in it comes out harmless. where this server allows it, `/dragoman delete` takes down a translation of yours and `/dragoman opt-out` has me leave your messages as you wrote them. admins turn it on at `/dragoman settings`; it runs on ai moderation's key and budget.",
 	}
 }

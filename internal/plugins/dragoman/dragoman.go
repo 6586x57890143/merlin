@@ -235,7 +235,8 @@ func (p *Plugin) HandleMessage(m discord.Message) {
 		guildID: m.GuildID.String(), channelID: m.ChannelID.String(), messageID: m.ID.String(), authorID: m.Author.ID.String(),
 		content: m.Content, keep: len(m.Attachments)+len(m.StickerItems) > 0, at: p.now(),
 	}
-	if slices.Contains(cfg.ExemptChannelIDs, j.channelID) || slices.Contains(cfg.OptOutUserIDs, j.authorID) ||
+	if slices.Contains(cfg.ExemptChannelIDs, j.channelID) ||
+		(cfg.MemberControls && slices.Contains(cfg.OptOutUserIDs, j.authorID)) ||
 		!candidate(j.content, p.speaking(j)) || !p.gate.PluginEnabled(j.guildID, p.Name()) {
 		return
 	}

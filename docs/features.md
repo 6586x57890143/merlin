@@ -148,9 +148,10 @@ name with the flag of the language it came from. English messages cost nothing:
 merlin tells them apart herself. Anything in a message that breaks a policy you
 enforce comes out harmless, and the original still answers to moderation. It can
 use four fifths of the daily budget at most, so moderation always has the rest.
-What was really written goes to the audit log. Members can take down a
-translation of theirs with `/dragoman delete` or have their messages left alone
-with `/dragoman opt-out`. The `dialects` script changes which English a language
+What was really written goes to the audit log. Mods can take a
+translation down with `/dragoman delete`. If you turn member controls on (they
+are off by default), members can do that to their own and have their messages
+left alone with `/dragoman opt-out`. The `dialects` script changes which English a language
 becomes; off, it is Standard American English for all of them.
 
 **Rapsheets.** Every warning, jail, timeout, kick, ban and AI removal a member

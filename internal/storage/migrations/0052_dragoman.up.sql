@@ -4,7 +4,9 @@ CREATE TABLE dragoman_config (
     guild_id           TEXT    PRIMARY KEY,
     enabled            BOOLEAN NOT NULL DEFAULT FALSE,
     exempt_channel_ids TEXT[]  NOT NULL DEFAULT '{}',
-    opt_out_user_ids   TEXT[]  NOT NULL DEFAULT '{}'
+    opt_out_user_ids   TEXT[]  NOT NULL DEFAULT '{}',
+    -- Whether members may opt out and take down their own translations.
+    member_controls    BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- Whose each repost is, so its author can take it down: a webhook's message

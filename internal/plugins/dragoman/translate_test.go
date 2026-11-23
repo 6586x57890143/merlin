@@ -100,7 +100,7 @@ func TestFlags(t *testing.T) {
 		}
 	}
 	tag, _ := parseSource("nl")
-	if got := marker(tag); got != "\n-# translated from \U0001F1F3\U0001F1F1\n-# edited by merlin" {
+	if got := marker(tag); got != "\n-# translated from \U0001F1F3\U0001F1F1 - edited by merlin" {
 		t.Errorf("marker %q", got)
 	}
 }

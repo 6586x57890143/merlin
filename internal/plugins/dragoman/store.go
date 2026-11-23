@@ -15,8 +15,12 @@ import (
 type Config struct {
 	Enabled          bool
 	ExemptChannelIDs []string
+	// MemberControls is whether members may opt out and take down their own
+	// translations. Off until an admin offers it.
+	MemberControls bool
 	// OptOutUserIDs are members whose messages are left as they wrote them,
-	// each put there by themselves.
+	// each put there by themselves. Kept, and read by nothing, while
+	// MemberControls is off.
 	OptOutUserIDs []string
 }
 
@@ -31,6 +35,7 @@ var errNotFound = errors.New("dragoman: no such translation")
 type Store interface {
 	Config(ctx context.Context, guildID string) (Config, error)
 	SetEnabled(ctx context.Context, guildID string, on bool) error
+	SetMemberControls(ctx context.Context, guildID string, on bool) error
 	SetExempt(ctx context.Context, guildID, channelID string, on bool) error
 	SetOptOut(ctx context.Context, guildID, userID string, on bool) error
 	Record(ctx context.Context, t Translation) error
@@ -46,8 +51,8 @@ func NewPostgresStore(pool *pgxpool.Pool) Store { return &pgStore{pool: pool} }
 
 func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 	var c Config
-	err := s.pool.QueryRow(ctx, `SELECT enabled, exempt_channel_ids, opt_out_user_ids FROM dragoman_config WHERE guild_id = $1`, guildID).
-		Scan(&c.Enabled, &c.ExemptChannelIDs, &c.OptOutUserIDs)
+	err := s.pool.QueryRow(ctx, `SELECT enabled, exempt_channel_ids, opt_out_user_ids, member_controls FROM dragoman_config WHERE guild_id = $1`, guildID).
+		Scan(&c.Enabled, &c.ExemptChannelIDs, &c.OptOutUserIDs, &c.MemberControls)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Config{}, nil
 	}
@@ -61,6 +66,14 @@ func (s *pgStore) SetEnabled(ctx context.Context, guildID string, on bool) error
 	if _, err := s.pool.Exec(ctx, `INSERT INTO dragoman_config (guild_id, enabled) VALUES ($1, $2)
 		ON CONFLICT (guild_id) DO UPDATE SET enabled = EXCLUDED.enabled`, guildID, on); err != nil {
 		return fmt.Errorf("dragoman store: set enabled: %w", err)
+	}
+	return nil
+}
+
+func (s *pgStore) SetMemberControls(ctx context.Context, guildID string, on bool) error {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO dragoman_config (guild_id, member_controls) VALUES ($1, $2)
+		ON CONFLICT (guild_id) DO UPDATE SET member_controls = EXCLUDED.member_controls`, guildID, on); err != nil {
+		return fmt.Errorf("dragoman store: set member controls: %w", err)
 	}
 	return nil
 }

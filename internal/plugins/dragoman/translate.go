@@ -197,8 +197,8 @@ func judge(out, masked string, parts []string) (translation, error) {
 	return t, nil
 }
 
-// marker is what goes under a translation, the footer aimod's rewrites wear.
+// marker is the line under a translation, the footer aimod's rewrites wear.
 // Not configurable: these are words attributed to somebody who typed others.
 func marker(tag language.Tag) string {
-	return "\n-# translated from " + flag(tag) + "\n-# edited by merlin"
+	return "\n-# translated from " + flag(tag) + " - edited by merlin"
 }

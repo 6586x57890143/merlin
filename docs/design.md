@@ -856,6 +856,8 @@ A message in another language is replaced with its English, under its author's n
 
 **The log** carries the original text, which aimod's entries deliberately don't. A translation replaces innocent words with no appeal and nothing else keeps them, so a moderator asked "what did they really say" needs it. A guild that set evidence to 0 asked for no durable copies and gets none here either.
 
+**Member controls** are off by default, as aimod's member opt-out is. While they are off the opt-out list is kept and read by nothing, and opting out is refused rather than stored, so nobody believes they are out when they aren't.
+
 There is no `why` command: the footer already says why.
 
 ### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)

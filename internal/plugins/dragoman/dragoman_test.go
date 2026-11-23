@@ -59,6 +59,13 @@ func toggled(list []string, id string, on bool) []string {
 	return list
 }
 
+func (s *memStore) SetMemberControls(_ context.Context, _ string, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.MemberControls = on
+	return s.err
+}
+
 func (s *memStore) SetExempt(_ context.Context, _, id string, on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,7 +286,7 @@ func TestAMessageIsTranslatedAndReposted(t *testing.T) {
 	want := core.Repost{
 		GuildID: guild, ChannelID: "101", MessageID: "555", AuthorID: author, RoleIDs: []string{"7"}, ReplyTo: "waar ben je",
 		Original: m.Content, Text: "the train's always late <@123456789012345678>",
-		Marker: "\n-# translated from \U0001F1F3\U0001F1F1\n-# edited by merlin",
+		Marker: "\n-# translated from \U0001F1F3\U0001F1F1 - edited by merlin",
 	}
 	if fmt.Sprintf("%+v", got[0]) != fmt.Sprintf("%+v", want) {
 		t.Errorf("got  %+v\nwant %+v", got[0], want)
@@ -315,7 +322,9 @@ func TestWhatIsNeverTranslated(t *testing.T) {
 		"a guild that's off":  func(r *rig, _ *discord.Message) { r.store.cfg.Enabled = false },
 		"a plugin that's off": func(r *rig, _ *discord.Message) { r.gate.off = true },
 		"an exempt channel":   func(r *rig, _ *discord.Message) { r.store.cfg.ExemptChannelIDs = []string{"101"} },
-		"an opted out author": func(r *rig, _ *discord.Message) { r.store.cfg.OptOutUserIDs = []string{author} },
+		"an opted out author": func(r *rig, _ *discord.Message) {
+			r.store.cfg.MemberControls, r.store.cfg.OptOutUserIDs = true, []string{author}
+		},
 		"opted out of aimod":  func(r *rig, _ *discord.Message) { r.engine.optedOut = true },
 		"a paused guild":      func(r *rig, _ *discord.Message) { r.held = true },
 		"unreadable settings": func(r *rig, _ *discord.Message) { r.store.err = errors.New("down") },
@@ -533,9 +542,11 @@ func TestDeleteIsForItsAuthorAndMods(t *testing.T) {
 	link := map[string]any{"name": "message", "type": 3, "value": "https://discord.com/channels/1/2/" + repost}
 	for _, tc := range []struct {
 		user string
+		on   bool
 		want int
-	}{{author, 1}, {other, 0}, {op, 1}} {
+	}{{author, true, 1}, {other, true, 0}, {op, true, 1}, {author, false, 0}, {op, false, 1}} {
 		r := newRig(t)
+		r.store.cfg.MemberControls = tc.on
 		r.store.rows = []Translation{{GuildID: guild, ChannelID: "101", RepostID: repost, AuthorID: author}}
 		ix, w := run(t, tc.user, "delete", link)
 		r.p.handleDelete(t.Context(), ix)
@@ -555,7 +566,7 @@ func TestDeleteIsForItsAuthorAndMods(t *testing.T) {
 		}
 	}
 	r.store.rows = []Translation{{GuildID: guild, ChannelID: "101", RepostID: repost, AuthorID: author}}
-	r.ops.err = errors.New("no")
+	r.store.cfg.MemberControls, r.ops.err = true, errors.New("no")
 	ix, w := run(t, author, "delete", link)
 	r.p.handleDelete(t.Context(), ix)
 	r.store.err = errors.New("down")
@@ -566,8 +577,34 @@ func TestDeleteIsForItsAuthorAndMods(t *testing.T) {
 	}
 }
 
+// Off until an admin offers it: nobody is taken for opted out, nobody can
+// opt out, and coming back in still works.
+func TestMemberControlsAreOffByDefault(t *testing.T) {
+	r := newRig(t)
+	r.store.cfg.OptOutUserIDs = []string{author}
+	r.say(msg(dutch))
+	if len(r.engine.reposts()) != 1 {
+		t.Error("an opt-out counted where the server offers none")
+	}
+	for _, on := range []bool{false, true} {
+		ix, w := run(t, author, "opt-out", map[string]any{"name": "enabled", "type": 5, "value": on})
+		r.p.handleOptOut(t.Context(), ix)
+		if !w.Answered() || len(r.store.cfg.OptOutUserIDs) != 0 {
+			t.Errorf("%v: %v", on, r.store.cfg.OptOutUserIDs)
+		}
+	}
+	r.p.forgetConfig(guild)
+	r.store.err = errors.New("down")
+	ix, w := run(t, author, "opt-out", map[string]any{"name": "enabled", "type": 5, "value": true})
+	r.p.handleOptOut(t.Context(), ix)
+	if !w.Answered() {
+		t.Error("unanswered")
+	}
+}
+
 func TestOptOutSetsTheCaller(t *testing.T) {
 	r := newRig(t)
+	r.store.cfg.MemberControls = true
 	for _, on := range []bool{true, false} {
 		ix, w := run(t, author, "opt-out", map[string]any{"name": "enabled", "type": 5, "value": on})
 		r.p.handleOptOut(t.Context(), ix)
@@ -632,6 +669,14 @@ func TestEveryControlAnswersAndSaves(t *testing.T) {
 	if r.store.cfg.Enabled {
 		t.Error("not off")
 	}
+	click(panelSet+"members:on", r.p.handlePanelSet)
+	if !r.store.cfg.MemberControls {
+		t.Error("member controls not on")
+	}
+	click(panelSet+"members:off", r.p.handlePanelSet)
+	if r.store.cfg.MemberControls {
+		t.Error("member controls not off")
+	}
 	click(panelSet+"gone", r.p.handlePanelSet)
 	click(panelScripts+"on", r.p.handlePanelScripts)
 	if !r.script.on {
@@ -653,7 +698,7 @@ func TestEveryControlAnswersAndSaves(t *testing.T) {
 	same := r.p.panel(t.Context(), ix, "")
 	pick, _ = paneltest.IxComponent(t, op, panelSet+"exempt", 8, &same, "302")
 	r.p.handlePanelSet(t.Context(), pick, panelSet+"exempt")
-	for _, want := range []string{"dragoman.enabled_set|off|on", "dragoman.enabled_set|on|off", "dragoman.script_enabled", "dragoman.script_disabled",
+	for _, want := range []string{"dragoman.enabled_set|off|on", "dragoman.enabled_set|on|off", "dragoman.script_enabled", "dragoman.script_disabled", "dragoman.member_controls_set|off|on",
 		"dragoman.channel_exempted||<#302>", "dragoman.channel_included||<#301>"} {
 		if !strings.Contains(r.audit.all(), want) {
 			t.Errorf("no audit of %s in\n%s", want, r.audit.all())
@@ -662,6 +707,7 @@ func TestEveryControlAnswersAndSaves(t *testing.T) {
 
 	r.store.err, r.script.err = errors.New("down"), errors.New("down")
 	click(panelSet+"on", r.p.handlePanelSet)
+	click(panelSet+"members:on", r.p.handlePanelSet)
 	click(panelScripts+"on", r.p.handlePanelScripts)
 	pick, _ = paneltest.IxComponent(t, op, panelSet+"exempt", 8, &same, "303")
 	r.p.handlePanelSet(t.Context(), pick, panelSet+"exempt")

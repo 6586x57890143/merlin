@@ -231,6 +231,7 @@ CI (`.github/workflows/ci.yml`): vet, lint, race tests, govulncheck, gitleaks, D
 - Budget: `reserve` 0.8 of aimod's cap, 20 a member per 10 minutes, two channels a guild at once, one at a time per channel so order holds.
 - Attachments and stickers keep the original, with the translation beneath.
 - The audit log keeps the original text (`dragoman.translated`), left out where `evidence` is 0. `dragoman_translations` holds IDs only, so an author can take a repost down.
+- **Member controls** (`/dragoman delete` on your own, `/dragoman opt-out`) are off until an admin turns them on; off keeps the opt-out list and reads it nowhere. Mods can always delete.
 - Script **dialects** (`script_dialects.go`): which English a language becomes. Off, unreadable or unlisted is Standard American English.
 
 ### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)

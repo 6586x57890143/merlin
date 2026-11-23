@@ -33,7 +33,7 @@ func TestPostgresStore(t *testing.T) {
 
 	c, err := s.Config(ctx, g)
 	ok(err)
-	if c.Enabled || len(c.ExemptChannelIDs) != 0 || len(c.OptOutUserIDs) != 0 {
+	if c.Enabled || c.MemberControls || len(c.ExemptChannelIDs) != 0 || len(c.OptOutUserIDs) != 0 {
 		t.Fatalf("a guild with no row has %+v", c)
 	}
 	// Each setter makes the row, and leaves the other settings alone.
@@ -42,10 +42,11 @@ func TestPostgresStore(t *testing.T) {
 	ok(s.SetExempt(ctx, g, "c2", true))
 	ok(s.SetOptOut(ctx, g, "u1", true))
 	ok(s.SetEnabled(ctx, g, true))
+	ok(s.SetMemberControls(ctx, g, true))
 	ok(s.SetExempt(ctx, g, "c2", false))
 	c, err = s.Config(ctx, g)
 	ok(err)
-	if !c.Enabled || !slices.Equal(c.ExemptChannelIDs, []string{"c1"}) || !slices.Equal(c.OptOutUserIDs, []string{"u1"}) {
+	if !c.Enabled || !c.MemberControls || !slices.Equal(c.ExemptChannelIDs, []string{"c1"}) || !slices.Equal(c.OptOutUserIDs, []string{"u1"}) {
 		t.Fatalf("config %+v", c)
 	}
 	// Opting in where there is no row is not an opt-out.
@@ -89,7 +90,7 @@ func TestPostgresStore(t *testing.T) {
 	_, e2 := s.Find(dead, g, "r2")
 	_, e3 := s.CountSince(dead, g, now)
 	_, e4 := s.PruneBefore(dead, now)
-	for i, err := range []error{e1, e2, e3, e4, s.SetEnabled(dead, g, true), s.SetExempt(dead, g, "c", true), s.Record(dead, fresh)} {
+	for i, err := range []error{e1, e2, e3, e4, s.SetEnabled(dead, g, true), s.SetMemberControls(dead, g, true), s.SetExempt(dead, g, "c", true), s.Record(dead, fresh)} {
 		if err == nil || errors.Is(err, errNotFound) {
 			t.Errorf("call %d: %v", i, err)
 		}
