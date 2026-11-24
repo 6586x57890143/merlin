@@ -26,6 +26,7 @@ var english = []string{
 	"my gpu is cooked the fps drops r insane", "whos tryna run ranked", "Shrek is kinda hot tbf", "Tell Darius and Alexandra that Nurock is here",
 	"LLMs are probably pretty bad at AAVE", "ts pmo sm", "type shi", "deadass bouta crash out", "bro thinks he's Kendrick", "I'd rather rewatch Evangelion",
 	"playing Elden Ring w Jojo", "NO WAY THAT JUST HAPPENED", "WTF IS THIS SHIT", "lmao the bot translated that wrong", "wassup homies how yall doin",
+	"gracias amigo lol", "danke schön bro", "bon appétit everyone", "hello?? hitler?? heil??", "NHH", "Yeah you do", "la la la", "la vida loca", "por favor", "ja ja ja", "mamma mia", "da baby", "das crazy", "yea das me", "er no", "om", "W take",
 	"o que?", "hoe", "hoes mad", "these hoes ain't loyal", "gaat? what's gaat",
 }
 
@@ -45,6 +46,9 @@ var notEnglish = []string{
 	"yarın birlikte gidiyoruz", "besok kita pergi bersama", "bukas aalis tayo", "mâine plecăm împreună", "holnap együtt megyünk", "zítra jedeme spolu",
 	"sutra idemo zajedno", "ngày mai chúng ta đi cùng nhau", "nesër shkojmë bashkë", "kesho tutaenda pamoja",
 	"KAN JE DAT ECHT NIET",
+	// Short ones, which the second version missed.
+	"jeg er kristian", "JEG ER KLAR", "er du ok", "hvad laver du", "det er sjovt", "j'ai fait caca", "mon pantalon est sale", "du hast recht",
+	"por que", "kom hier heen", "wie geht's", "vad gör du", "gdzie jesteś", "sen nerede", "ano yan", "sker der", "sker der man", "sker der snorre",
 }
 
 func TestEnglishCostsNothing(t *testing.T) {
@@ -59,6 +63,15 @@ func TestOtherLanguagesAreNoticed(t *testing.T) {
 	for _, s := range notEnglish {
 		if gauge(s, "") == none {
 			t.Errorf("%q would be missed", s)
+		}
+	}
+}
+
+// What nothing further down may skip or believe one no about.
+func TestPlainForeignIsStrong(t *testing.T) {
+	for _, s := range []string{"ik heb in mijn broek geplast", "j'ai fais caca dans mon pantalon", "jeg er kristian", "JEG ER KLAR"} {
+		if gauge(s, "") != strong {
+			t.Errorf("%q is %d", s, gauge(s, ""))
 		}
 	}
 }

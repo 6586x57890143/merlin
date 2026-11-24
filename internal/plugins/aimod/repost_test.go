@@ -331,12 +331,12 @@ func (g *gatewayFails) Chat(_ context.Context, _ string, req chatRequest) (strin
 func TestSeamReads(t *testing.T) {
 	p, store, ops := repostPlugin(t)
 	cfg := enforcingConfig()
-	cfg.MemberOptOut, cfg.OptOutUserIDs, cfg.EvidenceHours = true, []string{"u1"}, 6
+	cfg.EvidenceHours = 6
 	store.setConfig(cfg)
 	ops.history = []Line{{AuthorID: "u2", Content: "hoi"}}
 	ctx := context.Background()
-	if !p.OptedOut(ctx, "g1", "u1") || p.OptedOut(ctx, "g1", "u2") || p.EvidenceHours(ctx, "g1") != 6 {
-		t.Error("opt-out or evidence misread")
+	if p.EvidenceHours(ctx, "g1") != 6 {
+		t.Error("evidence misread")
 	}
 	if lines, self := p.Context("g1", "c1", "m1", "u1"); self != "A" || !slices.Equal(lines, []string{"B: hoi"}) {
 		t.Errorf("context %v self %q", lines, self)
@@ -345,7 +345,7 @@ func TestSeamReads(t *testing.T) {
 		t.Errorf("policies %q", got)
 	}
 	store.configErr = errors.New("down")
-	if !p.OptedOut(ctx, "g1", "u2") || p.EvidenceHours(ctx, "g1") != 0 {
-		t.Error("an unreadable config must read as opted out and keep nothing")
+	if p.EvidenceHours(ctx, "g1") != 0 {
+		t.Error("an unreadable config must keep nothing")
 	}
 }

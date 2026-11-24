@@ -2,6 +2,7 @@ package dragoman
 
 import (
 	_ "embed"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -36,7 +37,8 @@ var foreign = []*unicode.RangeTable{
 
 // functionWords are the commonest small words of each language written in
 // Latin letters, less every one that is also an English word, a name, or
-// ordinary chat slang: those say nothing. Two different ones are enough.
+// ordinary chat slang: those say nothing. Two different ones are enough. These
+// were picked by hand; words.txt adds the commonest 300 of each language.
 var functionWords = wordTable(map[string]string{
 	"nl": `het een niet ik jij je dat maar ook zijn heb hebt heeft wat voor naar nog wel geen hoe waarom gewoon
 		deze dit als uit zo mijn jouw wij jullie worden wordt moet echt veel toch weer gaat gaan klopt ja nee
@@ -60,7 +62,7 @@ var functionWords = wordTable(map[string]string{
 	"tr": `bir ve bu için çok değil ama gibi nasıl neden şey daha evet hayır yok sen şimdi`,
 	"id": `yang tidak ini itu saya kamu aku untuk dengan ada apa tapi juga sudah bisa nggak gak kenapa lagi
 		banget mau`,
-	"tl": `ng mga hindi ako ikaw siya naman lang kasi pero bakit ano opo yung niya nila`,
+	"fil": `ng mga hindi ako ikaw siya naman lang kasi pero bakit ano opo yung niya nila`,
 	"ro": `și este sunt pentru că mai cu ce foarte acum asta vreau eu nu dar cum din`,
 	"hu": `nem hogy és egy az csak mert itt vagy ez azt én miért igen jó nagyon most`,
 	"cs": `není jsem že ale tak jak proč jen už jsou bych mám máš něco protože som nie prečo čo jsi`,
@@ -74,7 +76,20 @@ var functionWords = wordTable(map[string]string{
 	"sw": `hii sana nini kuwa hapana yangu kwa ndiyo`,
 	"cy": `mae dw i'n ddim beth sut rydw`,
 	"ga": `tá níl agus bhí conas cad`,
-})
+}, commonWords)
+
+// commonWords is a line for each language: its code and its commonest words,
+// counted in Tatoeba's sentences (tatoeba.org, CC BY 2.0), less English ones
+// (known, or as common in English sentences and tweets) and names.
+//
+//go:embed words.txt
+var commonWords string
+
+// borrowed are phrases English has taken whole, which no list of words can
+// tell from the language they came from.
+var borrowed = regexp.MustCompile(`(?i)\b(c'est la vie|que sera,? sera|hasta la vista|te amo|mi amor|du jour|mon ami|mi casa|su casa|` +
+	`gracias amigo|muchas gracias|buenos? d[ií]as?|buenas noches|merci beaucoup|danke sch(?:ö|oe)n|guten tag|gute nacht|auf wiedersehen|` +
+	`bon app[eé]tit|bon voyage|au revoir|je ne sais quoi|d[eé]j[aà] vu|raison d'être|la la land|la vida loca|por favor|no bueno|ad hoc|per se|et al|et cetera)\b`)
 
 // englishWords outvote the above. The ones that are small words somewhere
 // else too ("is", "in", "was", "of") are left out.
@@ -165,7 +180,11 @@ func unstretch(w string) string {
 }
 
 // wordTable turns the lists inside out: word to the languages it is in.
-func wordTable(lists map[string]string) map[string][]string {
+func wordTable(lists map[string]string, common string) map[string][]string {
+	for line := range strings.Lines(common) {
+		lang, list, _ := strings.Cut(line, " ")
+		lists[lang] += " " + list
+	}
 	out := map[string][]string{}
 	for lang, list := range lists {
 		for w := range set(list) {
@@ -188,6 +207,17 @@ const (
 // gauge is how likely text is worth translating. sticky is the language its
 // author was last confirmed speaking, or "".
 func gauge(text, sticky string) evidence {
+	text = strings.ReplaceAll(text, "\u2019", "'")
+	e := weigh(text, sticky)
+	// Only once there is something to explain away: this is slow, and nearly
+	// every message is English.
+	if e != none && borrowed.MatchString(text) {
+		return weigh(borrowed.ReplaceAllString(text, " "), sticky)
+	}
+	return e
+}
+
+func weigh(text, sticky string) evidence {
 	if strings.ContainsAny(text, "<`@:./") {
 		text = carriers.ReplaceAllString(text, " ")
 	}
@@ -199,7 +229,7 @@ func gauge(text, sticky string) evidence {
 	seen := map[string]bool{}
 	shouting := strings.ToUpper(text) == text
 	first := true
-	for typed := range strings.FieldsFuncSeq(strings.ReplaceAll(text, "\u2019", "'"), func(r rune) bool { return !unicode.IsLetter(r) && r != '\'' }) {
+	for typed := range strings.FieldsFuncSeq(text, func(r rune) bool { return !unicode.IsLetter(r) && r != '\'' }) {
 		w := strings.ToLower(strings.Trim(typed, "'"))
 		if w == "" || seen[w] {
 			continue
@@ -220,6 +250,9 @@ func gauge(text, sticky string) evidence {
 			english++
 			continue
 		}
+		if name {
+			continue
+		}
 		for _, lang := range functionWords[w] {
 			hits[lang]++
 		}
@@ -231,8 +264,10 @@ func gauge(text, sticky string) evidence {
 	switch {
 	case best > english && (best >= 3 || (best == 2 && unknown*2 > words)):
 		return strong
-	// Three words that are not English, out of at most five.
+	// Three words that are not English, out of at most five, or every word
+	// of a short message, one of them common somewhere.
 	case unknown >= 3 && unknown*5 >= words*3,
+		best >= 1 && english == 0 && unknown >= 2 && unknown*3 >= words*2,
 		sticky != "" && (hits[sticky] > english || (unknown >= 2 && unknown*2 > words)),
 		best >= 2 && best > english:
 		return weak

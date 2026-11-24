@@ -3,7 +3,6 @@ package aimod
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -213,14 +212,6 @@ func (p *Plugin) Policies(ctx context.Context, guildID string) string {
 // for its speaker, and the letter authorID got. No IDs and no names.
 func (p *Plugin) Context(guildID, channelID, messageID, authorID string) (lines []string, self string) {
 	return p.recentContext(guildID, candidate{ChannelID: channelID, MessageID: messageID, AuthorID: authorID})
-}
-
-// OptedOut reports whether userID asked not to be read by the filter, where
-// the guild offers that. An unreadable config is a yes: nothing of theirs is
-// sent to a model on a guess.
-func (p *Plugin) OptedOut(ctx context.Context, guildID, userID string) bool {
-	cfg, err := p.store.Config(ctx, guildID)
-	return err != nil || (cfg.MemberOptOut && slices.Contains(cfg.OptOutUserIDs, userID))
 }
 
 // Budget is what the guild has spent on models today and its daily cap. ok is
