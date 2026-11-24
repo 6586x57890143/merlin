@@ -193,20 +193,6 @@ func (p *Plugin) Repost(ctx context.Context, r core.Repost) (string, error) {
 	return id, nil
 }
 
-// Publishable reports whether text is free of anything rung 1 or the guild's
-// word list would stop: for words that will steer what is posted rather than
-// be posted themselves.
-func (p *Plugin) Publishable(ctx context.Context, guildID, text string) bool {
-	cfg, err := p.store.Config(ctx, guildID)
-	if err != nil {
-		return false
-	}
-	_, listed := redactWords(cfg.WordList, text)
-	_, slur := redactSlurs(text)
-	_, _, _, hard := hardHit(text)
-	return !listed && !slur && !hard && looseSlur(text) == ""
-}
-
 // Policies is one line per policy area this guild enforces, for a prompt
 // that has to know what counts as harmful here.
 func (p *Plugin) Policies(ctx context.Context, guildID string) string {

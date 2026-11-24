@@ -300,9 +300,6 @@ func (p *Plugin) setDialect(ctx context.Context, ix *core.Ix, key, raw string) s
 	if err != nil {
 		return "✗ Not saved: " + err.Error() + "."
 	}
-	if !p.engine.Publishable(ctx, ix.GuildID, d) {
-		return "✗ Not saved: that name isn't one I can post under."
-	}
 	m, err := p.dialects(ctx, ix.GuildID)
 	if err != nil {
 		return fmt.Sprintf("✗ Not saved: %v", err)
@@ -365,8 +362,8 @@ func (p *Plugin) noteDialect(ctx context.Context, ix *core.Ix, key, raw string) 
 	if err != nil {
 		return ""
 	}
-	if note == "" || !p.engine.Publishable(ctx, ix.GuildID, note) {
-		return "✗ Not saved: say it without slurs or links."
+	if note == "" {
+		return "✗ Not saved: there was nothing in it."
 	}
 	notes := append(slices.Clone(d.Notes), note)
 	notes = notes[max(0, len(notes)-maxNotes):]
@@ -410,9 +407,6 @@ func (p *Plugin) tryDialect(ctx context.Context, ix *core.Ix, key, raw string) s
 	t, _, err := p.restyle(ctx, job{guildID: ix.GuildID}, translation{masked: masked}, d, "", parts)
 	if err != nil {
 		return "✗ That didn't work: " + clip(err.Error(), 150)
-	}
-	if !p.engine.Publishable(ctx, ix.GuildID, t.masked) {
-		return "✗ It came out as something I wouldn't post."
 	}
 	return "✓ " + strings.Join(strings.Fields(t.text), " ")
 }

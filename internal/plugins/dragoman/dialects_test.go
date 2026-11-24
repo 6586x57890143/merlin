@@ -140,7 +140,7 @@ func TestAAVEComesWritten(t *testing.T) {
 	}
 	g := builtin["african american vernacular english"]
 	n := len(g.Marks)
-	if err := g.validate(func(string) bool { return true }); err != nil || len(g.Marks) != n {
+	if err := g.validate(); err != nil || len(g.Marks) != n {
 		t.Errorf("the built-in guide doesn't hold up: %v, %d marks of %d", err, len(g.Marks), n)
 	}
 }
@@ -164,10 +164,6 @@ func TestAGuideThatCannotBeWritten(t *testing.T) {
 		"never usable":  {func(r *rig) { r.engine.answers["guide"] = []string{"sure!", written(thin, "")} }, "2 usable rules"},
 		"not a dialect": {func(r *rig) { r.engine.answers["guide"] = []string{written(guide{}, "that is a cheese")} }, "that is a cheese"},
 		"no budget":     {func(r *rig) { r.engine.askErr = quiet{} }, "not now"},
-		"a slur in it": {func(r *rig) {
-			r.engine.answers["guide"] = []string{written(patois(1), ""), written(patois(1), "")}
-			r.engine.blocked = "gwaan"
-		}, "slur"},
 	} {
 		r := newRig(t)
 		r.answering(false)
@@ -189,7 +185,6 @@ func TestAGuideThatCannotBeWritten(t *testing.T) {
 		if len(r.engine.reposts()) != 1 || r.engine.asked() != n+1 {
 			t.Errorf("%s: %d calls, posted %+v", what, r.engine.asked()-n, r.engine.reposts())
 		}
-		r.engine.blocked = ""
 		r.answering(false)
 		r.now = r.now.Add(tendRetry + time.Second)
 		r.say(msg(danish))
@@ -200,34 +195,53 @@ func TestAGuideThatCannotBeWritten(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	clean := func(string) bool { return true }
+	// One bad line costs that line.
 	for what, change := range map[string]func(*guide){
-		"too few examples": func(g *guide) { g.Examples = g.Examples[:3] },
-		"an empty rule":    func(g *guide) { g.Rules[0].Rule = " " },
-		"a link":           func(g *guide) { g.Words[0].Dialect = "https://evil.example" },
-		"the n-word":       func(g *guide) { g.Words[0].Dialect = "my nigga" },
-		"a mention":        func(g *guide) { g.Avoid[0] = "ask <@123456789012345678>" },
-		"a token":          func(g *guide) { g.Avoid[0] = tok("1") },
-		"two lines":        func(g *guide) { g.Avoid[0] = "a\nb" },
-		"a long line":      func(g *guide) { g.Avoid[0] = strings.Repeat("a", maxGuideLine+1) },
-		"too long in all": func(g *guide) {
-			for range 40 {
-				g.Words = append(g.Words[:min(len(g.Words), 38)], pair{strings.Repeat("a", 190), strings.Repeat("b", 190)})
-			}
-		},
+		"an empty rule":                func(g *guide) { g.Rules[0].Rule = " " },
+		"a link":                       func(g *guide) { g.Words[0].Dialect = "https://evil.example" },
+		"a link to avoid":              func(g *guide) { g.Avoid[0] = "evil.com" },
+		"a mark that is empty":         func(g *guide) { g.Marks[0] = "" },
+		"a mention":                    func(g *guide) { g.Avoid[0] = "ask <@123456789012345678>" },
+		"a token":                      func(g *guide) { g.Avoid[0] = tok("1") },
+		"two lines":                    func(g *guide) { g.Avoid[0] = "a\nb" },
+		"a long line":                  func(g *guide) { g.Avoid[0] = strings.Repeat("a", maxGuideLine+1) },
 		"an example that does nothing": func(g *guide) { g.Examples[0].Dialect = g.Examples[0].Standard },
-		"marks that mark nothing":      func(g *guide) { g.Marks = []string{"the", "I", "going", "late", "is", "dem"} },
+		"a mark that marks nothing":    func(g *guide) { g.Marks[0] = "the" },
 	} {
 		g := patois(1)
-		if err := g.validate(clean); err != nil {
-			t.Fatal(err)
-		}
+		whole := len(g.Rules) + len(g.Words) + len(g.Avoid) + len(g.Marks) + len(g.Examples)
 		change(&g)
-		if err := g.validate(clean); err == nil {
-			t.Errorf("%s passed", what)
+		if err := g.validate(); err != nil {
+			t.Errorf("%s cost the whole guide: %v", what, err)
+		}
+		if n := len(g.Rules) + len(g.Words) + len(g.Avoid) + len(g.Marks) + len(g.Examples); n != whole-1 {
+			t.Errorf("%s: %d lines of %d left", what, n, whole)
 		}
 	}
+	// Too many is cut, and too long is cut to size.
 	g := patois(1)
+	for range 60 {
+		g.Words = append(g.Words, pair{strings.Repeat("a", 190), strings.Repeat("b", 190)})
+		g.Examples = append(g.Examples, pair{strings.Repeat("c", 190), strings.Repeat("d", 190)})
+	}
+	if err := g.validate(); err != nil || g.runes() > maxGuideRunes || len(g.Examples) > 12 {
+		t.Errorf("%v, %d characters", err, g.runes())
+	}
+	// Too little left is said so, with why.
+	g = patois(1)
+	for i := range 3 {
+		g.Examples[i].Dialect = "evil.com"
+	}
+	if err := g.validate(); err == nil || !strings.Contains(err.Error(), "3 usable examples and needs 5 (left out: 3 had a link, a mention or a token)") {
+		t.Errorf("%v", err)
+	}
+	// Words are the dialect's own business: what is posted is what's checked.
+	g = patois(1)
+	g.Examples[0].Dialect, g.Avoid[0] = "im gwaan inna road", "any slur a filter knows"
+	if err := g.validate(); err != nil || len(g.Examples) != 6 {
+		t.Errorf("%v, %d examples", err, len(g.Examples))
+	}
+	g = patois(1)
 	if !g.marked("Wah gwaan, boss?") || !g.marked("he workin again") || g.marked("what is happening at the dementia clinic") {
 		t.Error("marked")
 	}
@@ -404,11 +418,6 @@ func TestAdminsSteerADialect(t *testing.T) {
 	if n := r.store.langs["da"].Notes; len(n) != maxNotes || n[maxNotes-1] != fmt.Sprint("note ", maxNotes+1) {
 		t.Errorf("notes %v", n)
 	}
-	r.engine.blocked = "badword"
-	if said := form("note:da", map[string]string{"note": "more badword"}); !strings.Contains(said, "Not saved") {
-		t.Errorf("a slur was noted: %s", said)
-	}
-	r.engine.blocked = ""
 
 	if said := press("undo:da"); !strings.Contains(said, "guide before") || r.store.langs["da"].Previous != nil {
 		t.Errorf("undone: %s", said)
@@ -482,10 +491,6 @@ func TestTheDialectPages(t *testing.T) {
 		if !strings.Contains(w.All(), want) {
 			t.Errorf("%q: %s", name, w.All())
 		}
-	}
-	r.engine.blocked = "Nasty"
-	if said := r.pick(t, "da", "Nasty English"); !strings.Contains(said, "Not saved") {
-		t.Errorf("saved: %s", said)
 	}
 	if said := r.pick(t, "en", "Jamaican English"); !strings.Contains(said, "out of date") {
 		t.Errorf("english: %s", said)

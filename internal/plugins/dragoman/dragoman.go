@@ -33,9 +33,6 @@ type Engine interface {
 	Unlike(ctx context.Context, guildID, use, text string) bool
 	Teach(ctx context.Context, guildID, use, text string, worth bool)
 	HasOpenRouter(ctx context.Context, guildID string) bool
-	// Publishable is whether text has nothing in it that moderation would
-	// stop outright.
-	Publishable(ctx context.Context, guildID, text string) bool
 	// Prices is the models a guild may pick, which keep nothing.
 	Prices(ctx context.Context, guildID string) (map[string]core.ModelPrice, error)
 	Context(guildID, channelID, messageID, authorID string) (lines []string, self string)

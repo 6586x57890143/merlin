@@ -55,6 +55,9 @@ const (
 	maxGuideLine  = 200
 	maxGuideRunes = 7000
 	maxDialectLen = 60
+
+	// What a guide can't do without.
+	leastRules, leastMarks, leastExamples = 5, 4, 5
 )
 
 const standardHow = "Write natural, idiomatic Standard American English, in the casual register people type in chat."
@@ -156,54 +159,105 @@ func dropsG(text string) bool {
 // dialect never puts it in anybody's mouth.
 var nWord = regexp.MustCompile(`(?i)\bn+[i1!]+gg`)
 
-// validate holds a guide a model wrote to a guide's shape and tidies what can
-// be tidied. The error is written for the model to act on.
-func (g *guide) validate(clean func(string) bool) error {
+// validate holds a guide a model wrote to a guide's shape. One bad line costs
+// that line; the error is for a guide with too little left, says what was
+// wrong with what went, and is written for the model to act on.
+//
+// No word is checked. A guide is never posted, real dialects are full of
+// words a filter trips on, and what is written with one is held to the rules
+// where it counts: judgeStyle, then aimod.Repost.
+func (g *guide) validate() error {
+	wrong := map[string]int{}
+	bad := func(texts ...string) bool {
+		for _, s := range texts {
+			why := ""
+			switch {
+			case strings.TrimSpace(s) == "":
+				why = "an empty text"
+			case utf8.RuneCountInString(s) > maxGuideLine || strings.ContainsAny(s, "\r\n"):
+				why = fmt.Sprintf("a text of more than one line or %d characters", maxGuideLine)
+			case carriers.MatchString(s) || strings.Contains(s, tokenOpen) || strings.Contains(s, tokenClose):
+				why = "a link, a mention or a token"
+			}
+			if why != "" {
+				wrong[why]++
+				return true
+			}
+		}
+		return false
+	}
+	same := func(p pair) bool {
+		if strings.EqualFold(strings.TrimSpace(p.Standard), strings.TrimSpace(p.Dialect)) {
+			wrong["a pair that is the same in both"]++
+			return true
+		}
+		return false
+	}
+	g.Rules = slices.DeleteFunc(g.Rules, func(r rule) bool { return bad(r.Rule, r.Standard, r.Dialect) })
+	g.Words = slices.DeleteFunc(g.Words, func(p pair) bool { return bad(p.Standard, p.Dialect) || same(p) })
+	g.Examples = slices.DeleteFunc(g.Examples, func(p pair) bool { return bad(p.Standard, p.Dialect) || same(p) })
+	g.Avoid = slices.DeleteFunc(g.Avoid, func(s string) bool { return bad(s) })
 	// A mark that Standard English has too marks nothing.
 	g.Marks = slices.DeleteFunc(g.Marks, func(m string) bool {
 		in := func(s string) bool { return strings.TrimSpace(spaced(m)) == "" || hasPhrase(s, m) }
-		return slices.ContainsFunc(bench, in) || slices.ContainsFunc(g.Examples, func(e pair) bool { return in(e.Standard) })
+		if bad(m) {
+			return true
+		}
+		if slices.ContainsFunc(bench, in) || slices.ContainsFunc(g.Examples, func(e pair) bool { return in(e.Standard) }) {
+			wrong["a mark that Standard English has too"]++
+			return true
+		}
+		return false
 	})
-	for _, c := range []struct {
-		what          string
-		n, least, top int
-	}{{"rules", len(g.Rules), 5, 16}, {"words", len(g.Words), 0, 40}, {"avoid", len(g.Avoid), 0, 8}, {"marks", len(g.Marks), 5, 60}, {"examples", len(g.Examples), 6, 12}} {
-		if c.n < c.least || c.n > c.top {
-			return fmt.Errorf("it has %d usable %s, and needs %d to %d", c.n, c.what, c.least, c.top)
-		}
-	}
-	var all []string
-	for _, r := range g.Rules {
-		all = append(all, r.Rule, r.Standard, r.Dialect)
-	}
-	for _, p := range slices.Concat(g.Words, g.Examples) {
-		all = append(all, p.Standard, p.Dialect)
-	}
-	all = append(all, g.Avoid...)
-	all = append(all, g.Marks...)
-	total := 0
-	for _, s := range all {
-		total += utf8.RuneCountInString(s)
+	g.Rules, g.Words = g.Rules[:min(len(g.Rules), 16)], g.Words[:min(len(g.Words), 30)]
+	g.Avoid, g.Marks = g.Avoid[:min(len(g.Avoid), 8)], g.Marks[:min(len(g.Marks), 60)]
+	g.Examples = g.Examples[:min(len(g.Examples), 12)]
+	// Too long loses its last words, then examples, then rules.
+	for g.runes() > maxGuideRunes {
 		switch {
-		case strings.TrimSpace(s) == "":
-			return errors.New("something in it is empty")
-		case utf8.RuneCountInString(s) > maxGuideLine || strings.ContainsAny(s, "\r\n"):
-			return fmt.Errorf("every text is one line of at most %d characters", maxGuideLine)
-		case carriers.MatchString(s) || strings.Contains(s, tokenOpen) || strings.Contains(s, tokenClose):
-			return errors.New("it has a link, a mention or a token in it")
-		case !clean(s) || nWord.MatchString(s):
-			return errors.New("it has a slur or a banned word in it")
+		case len(g.Words) > 0:
+			g.Words = g.Words[:len(g.Words)-1]
+		case len(g.Examples) > leastExamples:
+			g.Examples = g.Examples[:len(g.Examples)-1]
+		case len(g.Rules) > leastRules:
+			g.Rules = g.Rules[:len(g.Rules)-1]
+		default:
+			return fmt.Errorf("it is too long: at most %d characters in all", maxGuideRunes)
 		}
 	}
-	if total > maxGuideRunes {
-		return fmt.Errorf("it is too long: at most %d characters in all", maxGuideRunes)
-	}
-	for _, e := range g.Examples {
-		if strings.EqualFold(strings.TrimSpace(e.Standard), strings.TrimSpace(e.Dialect)) {
-			return errors.New("an example is the same in both")
+	for _, c := range []struct {
+		what     string
+		n, least int
+	}{{"rules", len(g.Rules), leastRules}, {"marks", len(g.Marks), leastMarks}, {"examples", len(g.Examples), leastExamples}} {
+		if c.n < c.least {
+			return fmt.Errorf("it has %d usable %s and needs %d%s", c.n, c.what, c.least, tally(wrong))
 		}
 	}
 	return nil
+}
+
+// tally is what was left out and why, or "".
+func tally(wrong map[string]int) string {
+	var out []string
+	for why, n := range wrong {
+		out = append(out, fmt.Sprintf("%d had %s", n, why))
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	slices.Sort(out)
+	return " (left out: " + strings.Join(out, ", ") + ")"
+}
+
+func (g guide) runes() int {
+	n := 0
+	for _, r := range g.Rules {
+		n += utf8.RuneCountInString(r.Rule + r.Standard + r.Dialect)
+	}
+	for _, p := range slices.Concat(g.Words, g.Examples) {
+		n += utf8.RuneCountInString(p.Standard + p.Dialect)
+	}
+	return n + utf8.RuneCountInString(strings.Join(slices.Concat(g.Avoid, g.Marks), ""))
 }
 
 func object(props map[string]any) map[string]any {
@@ -236,9 +290,7 @@ const guideShape = `A guide has:
 - marks: 15 to 40 words or short phrases that turn up in most messages in the dialect and never in Standard English, lowercase.
 - examples: 8 to 10 whole chat messages in both: a question, a negative, a complaint, a joke, something formal, something of three words, something about money, something about time. Every one natural from start to end, in the same mood, saying exactly the same thing.
 
-Every text is one line, at most 200 characters, with no links, mentions or slurs. Examples and rules are made up by you.
-
-` + fairPlay
+Every text is one line, at most 200 characters, with no links or mentions. Examples and rules are made up by you. Somebody who reads only Standard English still has to get what the dialect says.`
 
 // writeGuide is one call that has to come back with a guide, and one more to
 // put right whatever was wrong with the first.
@@ -258,7 +310,7 @@ func (p *Plugin) writeGuide(ctx context.Context, guildID, system, user string) (
 			last = errors.New("it is not the JSON asked for")
 		} else if why := strings.TrimSpace(a.Refuse); why != "" {
 			return guide{}, refusedError(clip(strings.Join(strings.Fields(why), " "), 150))
-		} else if last = a.validate(func(s string) bool { return p.engine.Publishable(ctx, guildID, s) }); last == nil {
+		} else if last = a.validate(); last == nil {
 			return a.guide, nil
 		}
 		q.User = user + "\n\nYour last guide was not usable: " + last.Error() + ". Write the whole guide again."
