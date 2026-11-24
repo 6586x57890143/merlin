@@ -175,14 +175,24 @@ func wordTable(lists map[string]string) map[string][]string {
 	return out
 }
 
-// candidate reports whether text might be worth translating. sticky is the
-// language its author was last confirmed speaking, or "".
-func candidate(text, sticky string) bool {
+// evidence is how much there is that a text isn't English. Weak is worth
+// asking about, and worth believing when the answer is no.
+type evidence int
+
+const (
+	none evidence = iota
+	weak
+	strong
+)
+
+// gauge is how likely text is worth translating. sticky is the language its
+// author was last confirmed speaking, or "".
+func gauge(text, sticky string) evidence {
 	if strings.ContainsAny(text, "<`@:./") {
 		text = carriers.ReplaceAllString(text, " ")
 	}
 	if foreignScript(text) {
-		return true
+		return strong
 	}
 	var english, words, unknown int
 	hits := map[string]int{}
@@ -214,18 +224,20 @@ func candidate(text, sticky string) bool {
 			hits[lang]++
 		}
 	}
-	// Three words that are not English, out of at most five.
-	if unknown >= 3 && unknown*5 >= words*3 {
-		return true
-	}
-	if sticky != "" && (hits[sticky] > english || (unknown >= 2 && unknown*2 > words)) {
-		return true
-	}
 	best := 0
 	for _, n := range hits {
 		best = max(best, n)
 	}
-	return best >= 2 && best > english
+	switch {
+	case best > english && (best >= 3 || (best == 2 && unknown*2 > words)):
+		return strong
+	// Three words that are not English, out of at most five.
+	case unknown >= 3 && unknown*5 >= words*3,
+		sticky != "" && (hits[sticky] > english || (unknown >= 2 && unknown*2 > words)),
+		best >= 2 && best > english:
+		return weak
+	}
+	return none
 }
 
 // foreignScript reports whether most of text's letters are in a script

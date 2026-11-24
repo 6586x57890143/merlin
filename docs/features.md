@@ -151,7 +151,8 @@ use four fifths of the daily budget at most, so moderation always has the rest.
 What was really written goes to the audit log. Mods can take a
 translation down with `/dragoman delete`. If you turn member controls on (they
 are off by default), members can do that to their own and have their messages
-left alone with `/dragoman opt-out`. The `dialects` script changes which English a language
+left alone with `/dragoman opt-out`. The panel shows what translation itself cost
+with moderation, and lets you pick a cheaper model that keeps nothing. The `dialects` script changes which English a language
 becomes; off, it is Standard American English for all of them.
 
 **Rapsheets.** Every warning, jail, timeout, kick, ban and AI removal a member

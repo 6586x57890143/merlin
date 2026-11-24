@@ -18,6 +18,9 @@ type Config struct {
 	// MemberControls is whether members may opt out and take down their own
 	// translations. Off until an admin offers it.
 	MemberControls bool
+	// Model is the OpenRouter model translations are made with, or "" for AI
+	// moderation's deep stack.
+	Model string
 	// OptOutUserIDs are members whose messages are left as they wrote them,
 	// each put there by themselves. Kept, and read by nothing, while
 	// MemberControls is off.
@@ -30,6 +33,12 @@ type Translation struct {
 	CreatedAt                                        time.Time
 }
 
+// Usage is one rung's day.
+type Usage struct {
+	Calls int
+	Cost  float64
+}
+
 var errNotFound = errors.New("dragoman: no such translation")
 
 type Store interface {
@@ -38,6 +47,10 @@ type Store interface {
 	SetMemberControls(ctx context.Context, guildID string, on bool) error
 	SetExempt(ctx context.Context, guildID, channelID string, on bool) error
 	SetOptOut(ctx context.Context, guildID, userID string, on bool) error
+	SetModel(ctx context.Context, guildID, model string) error
+	// AddUsage counts one call on a rung, and Usage is a day of them.
+	AddUsage(ctx context.Context, guildID string, day time.Time, rung string, cost float64) error
+	Usage(ctx context.Context, guildID string, day time.Time) (map[string]Usage, error)
 	Record(ctx context.Context, t Translation) error
 	Find(ctx context.Context, guildID, repostID string) (Translation, error)
 	CountSince(ctx context.Context, guildID string, since time.Time) (int, error)
@@ -51,8 +64,8 @@ func NewPostgresStore(pool *pgxpool.Pool) Store { return &pgStore{pool: pool} }
 
 func (s *pgStore) Config(ctx context.Context, guildID string) (Config, error) {
 	var c Config
-	err := s.pool.QueryRow(ctx, `SELECT enabled, exempt_channel_ids, opt_out_user_ids, member_controls FROM dragoman_config WHERE guild_id = $1`, guildID).
-		Scan(&c.Enabled, &c.ExemptChannelIDs, &c.OptOutUserIDs, &c.MemberControls)
+	err := s.pool.QueryRow(ctx, `SELECT enabled, exempt_channel_ids, opt_out_user_ids, member_controls, model FROM dragoman_config WHERE guild_id = $1`, guildID).
+		Scan(&c.Enabled, &c.ExemptChannelIDs, &c.OptOutUserIDs, &c.MemberControls, &c.Model)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Config{}, nil
 	}
@@ -76,6 +89,40 @@ func (s *pgStore) SetMemberControls(ctx context.Context, guildID string, on bool
 		return fmt.Errorf("dragoman store: set member controls: %w", err)
 	}
 	return nil
+}
+
+func (s *pgStore) SetModel(ctx context.Context, guildID, model string) error {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO dragoman_config (guild_id, model) VALUES ($1, $2)
+		ON CONFLICT (guild_id) DO UPDATE SET model = EXCLUDED.model`, guildID, model); err != nil {
+		return fmt.Errorf("dragoman store: set model: %w", err)
+	}
+	return nil
+}
+
+func (s *pgStore) AddUsage(ctx context.Context, guildID string, day time.Time, rung string, cost float64) error {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO dragoman_usage AS u (guild_id, day, rung, calls, cost_usd) VALUES ($1, $2, $3, 1, $4)
+		ON CONFLICT (guild_id, day, rung) DO UPDATE SET calls = u.calls + 1, cost_usd = u.cost_usd + EXCLUDED.cost_usd`,
+		guildID, day, rung, cost); err != nil {
+		return fmt.Errorf("dragoman store: add usage: %w", err)
+	}
+	return nil
+}
+
+func (s *pgStore) Usage(ctx context.Context, guildID string, day time.Time) (map[string]Usage, error) {
+	rows, err := s.pool.Query(ctx, `SELECT rung, calls, cost_usd FROM dragoman_usage WHERE guild_id = $1 AND day = $2`, guildID, day)
+	if err != nil {
+		return nil, fmt.Errorf("dragoman store: usage: %w", err)
+	}
+	out := map[string]Usage{}
+	var name string
+	var u Usage
+	if _, err := pgx.ForEachRow(rows, []any{&name, &u.Calls, &u.Cost}, func() error {
+		out[name] = u
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("dragoman store: usage: %w", err)
+	}
+	return out, nil
 }
 
 func (s *pgStore) SetExempt(ctx context.Context, guildID, channelID string, on bool) error {
@@ -138,5 +185,9 @@ func (s *pgStore) PruneBefore(ctx context.Context, cutoff time.Time) (int64, err
 	if err != nil {
 		return 0, fmt.Errorf("dragoman store: prune: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	used, err := s.pool.Exec(ctx, `DELETE FROM dragoman_usage WHERE day < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("dragoman store: prune usage: %w", err)
+	}
+	return tag.RowsAffected() + used.RowsAffected(), nil
 }

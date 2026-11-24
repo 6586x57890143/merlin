@@ -237,6 +237,8 @@ type Plugin struct {
 	// for the process lifetime. See triage.go.
 	triageMu sync.Mutex
 	triage   map[string]*triageModel
+	prices priceCache
+
 	// triageSample decides whether a message the model would skip is scanned
 	// anyway. Injected so a test can make the decision deterministic, the
 	// same reason internal/voice takes its RNG rather than reaching for the

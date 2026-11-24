@@ -259,10 +259,16 @@ type chatRequest struct {
 	// same reason spec is. Zero means httpTimeout, which is what every
 	// request on the scan path wants and must keep wanting.
 	timeout time.Duration `json:"-"`
+
+	// effort is how hard a model that refuses not to think is asked to, or
+	// "" to leave it at its own default, which is the top one on some. The
+	// moderation passes leave it: their verdict is worth the thinking.
+	effort string `json:"-"`
 }
 
 type reasoningPrefs struct {
-	Enabled bool `json:"enabled"`
+	Enabled *bool  `json:"enabled,omitempty"`
+	Effort  string `json:"effort,omitempty"`
 }
 
 // Reasoning is decided per model stack, by trying and remembering.
@@ -377,16 +383,22 @@ func (e *APIError) Error() string {
 // usage. The usage is returned even on a parse failure upstream, because the
 // call was still billed and the budget has to know.
 func (c *Client) Chat(ctx context.Context, apiKey string, req chatRequest) (string, Usage, error) {
-	if c.ReasoningDisabled(req.spec, req.Models) {
-		req.Reasoning = &reasoningPrefs{Enabled: false}
+	disabled := c.ReasoningDisabled(req.spec, req.Models)
+	if disabled {
+		req.Reasoning = &reasoningPrefs{Enabled: new(bool)}
+	} else if req.effort != "" {
+		req.Reasoning = &reasoningPrefs{Effort: req.effort}
 	}
 	out, usage, err := c.chatOnce(ctx, apiKey, req)
-	if err != nil && req.Reasoning != nil && reasoningRejected(err) {
+	if err != nil && disabled && reasoningRejected(err) {
 		// This endpoint will not have reasoning switched off. Remember it, so
 		// this costs one wasted call per stack per process rather than one
 		// per message, and answer the caller from the retry.
 		c.markReasoningMandatory(req.spec, req.Models)
 		req.Reasoning = nil
+		if req.effort != "" {
+			req.Reasoning = &reasoningPrefs{Effort: req.effort}
+		}
 		out, usage, err = c.chatOnce(ctx, apiKey, req)
 	}
 	if err != nil && transient(err) && !freeRateLimited(err) {

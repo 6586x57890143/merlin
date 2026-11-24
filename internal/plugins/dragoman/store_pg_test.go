@@ -16,7 +16,7 @@ func TestPostgresStore(t *testing.T) {
 	s := NewPostgresStore(pool)
 	const g = "dragoman-test"
 	clear := func() {
-		for _, table := range []string{"dragoman_config", "dragoman_translations"} {
+		for _, table := range []string{"dragoman_config", "dragoman_translations", "dragoman_usage"} {
 			if _, err := pool.Exec(ctx, `DELETE FROM `+table+` WHERE guild_id LIKE $1`, g+"%"); err != nil {
 				t.Fatal(err)
 			}
@@ -44,9 +44,10 @@ func TestPostgresStore(t *testing.T) {
 	ok(s.SetEnabled(ctx, g, true))
 	ok(s.SetMemberControls(ctx, g, true))
 	ok(s.SetExempt(ctx, g, "c2", false))
+	ok(s.SetModel(ctx, g, "a/b"))
 	c, err = s.Config(ctx, g)
 	ok(err)
-	if !c.Enabled || !c.MemberControls || !slices.Equal(c.ExemptChannelIDs, []string{"c1"}) || !slices.Equal(c.OptOutUserIDs, []string{"u1"}) {
+	if !c.Enabled || !c.MemberControls || c.Model != "a/b" || !slices.Equal(c.ExemptChannelIDs, []string{"c1"}) || !slices.Equal(c.OptOutUserIDs, []string{"u1"}) {
 		t.Fatalf("config %+v", c)
 	}
 	// Opting in where there is no row is not an opt-out.
@@ -56,6 +57,14 @@ func TestPostgresStore(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
+	day := now.Truncate(24 * time.Hour)
+	ok(s.AddUsage(ctx, g, day, rungModel, 0.25))
+	ok(s.AddUsage(ctx, g, day, rungModel, 0.5))
+	ok(s.AddUsage(ctx, g, day, rungCareful, 0))
+	ok(s.AddUsage(ctx, g, day.Add(-72*time.Hour), rungModel, 9))
+	if u, err := s.Usage(ctx, g, day); err != nil || len(u) != 2 || u[rungModel] != (Usage{2, 0.75}) || u[rungCareful] != (Usage{1, 0}) {
+		t.Fatalf("usage %+v, %v", u, err)
+	}
 	old := Translation{GuildID: g, ChannelID: "c", RepostID: "r1", AuthorID: "u", Language: "nl", CreatedAt: now.Add(-48 * time.Hour)}
 	fresh := old
 	fresh.RepostID, fresh.CreatedAt = "r2", now
@@ -76,6 +85,9 @@ func TestPostgresStore(t *testing.T) {
 	if _, err := s.PruneBefore(ctx, now.Add(-24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
+	if u, err := s.Usage(ctx, g, day.Add(-72*time.Hour)); err != nil || len(u) != 0 {
+		t.Fatalf("old usage outlived the prune: %+v, %v", u, err)
+	}
 	if _, err := s.Find(ctx, g, "r1"); !errors.Is(err, errNotFound) {
 		t.Fatalf("an old row outlived the prune: %v", err)
 	}
@@ -90,7 +102,8 @@ func TestPostgresStore(t *testing.T) {
 	_, e2 := s.Find(dead, g, "r2")
 	_, e3 := s.CountSince(dead, g, now)
 	_, e4 := s.PruneBefore(dead, now)
-	for i, err := range []error{e1, e2, e3, e4, s.SetEnabled(dead, g, true), s.SetMemberControls(dead, g, true), s.SetExempt(dead, g, "c", true), s.Record(dead, fresh)} {
+	_, e5 := s.Usage(dead, g, day)
+	for i, err := range []error{e1, e2, e3, e4, e5, s.SetModel(dead, g, ""), s.AddUsage(dead, g, day, rungCareful, 0), s.SetEnabled(dead, g, true), s.SetMemberControls(dead, g, true), s.SetExempt(dead, g, "c", true), s.Record(dead, fresh)} {
 		if err == nil || errors.Is(err, errNotFound) {
 			t.Errorf("call %d: %v", i, err)
 		}

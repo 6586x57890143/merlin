@@ -19,6 +19,9 @@ import (
 const (
 	panelSet     = "dragoman:panel:set:"
 	panelScripts = "dragoman:panel:scripts:"
+	formModel    = "dragoman:form:model"
+	modelDefault = "default"
+	modelOther   = "other"
 )
 
 var (
@@ -61,6 +64,7 @@ func (p *Plugin) registerCommands() {
 	p.commands.HandleIx("dragoman", "opt-out", core.PermSpec{Tier: core.TierPublic}, p.handleOptOut)
 	p.commands.HandleComponentIx(p.Name(), panelSet, configureSpec, p.handlePanelSet)
 	p.commands.HandleComponentIx(p.Name(), panelScripts, scriptsSpec, p.handlePanelScripts)
+	p.commands.HandleModalIx(p.Name(), formModel, configureSpec, p.handleModelForm)
 }
 
 func (p *Plugin) handleSettings(ctx context.Context, ix *core.Ix) {
@@ -80,7 +84,7 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 	canSet, canScript := perms.Allows(ix, configureSpec), perms.Allows(ix, scriptsSpec)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Dragoman", Plugin: p.Name(), Note: note,
 		Line:   "Messages in other languages, put into English",
-		Footer: "Runs on AI moderation's key and budget (/aimod settings). What was really written goes to the audit log."}
+		Footer: "Runs on AI moderation's key and budget (/aimod settings): \"all ai\" is both together. What was really written goes to the audit log."}
 	cfg, err := p.config(ctx, core.ID(ix.GuildID))
 	if err != nil {
 		pn.Color = core.ColorError
@@ -94,12 +98,16 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 	} else {
 		rows[0][1] = "unreadable"
 	}
+	rows = append(rows, p.costRows(ctx, ix.GuildID)...)
 	spent, limit, ok := p.engine.Budget(ctx, ix.GuildID)
 	budget := "no key on /aimod settings"
 	if ok {
-		budget = fmt.Sprintf("$%.2f of $%.2f spent, stops at $%.2f", spent, limit, limit*reserve)
+		budget = fmt.Sprintf("$%.2f of $%.2f", spent, limit)
 	}
-	rows = append(rows, [2]string{"budget", budget})
+	rows = append(rows, [2]string{"all ai today", budget})
+	if ok {
+		rows = append(rows, [2]string{"pauses at", fmt.Sprintf("$%.2f all ai", limit*reserve)})
+	}
 	if !p.scanning {
 		rows = append(rows, [2]string{"reading", "no: message content intent is off"})
 	}
@@ -118,6 +126,7 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 	if cfg.MemberControls {
 		members, offered = ui.Button("Turn off", panelSet+"members:off", discord.ButtonStyleDanger, !canSet), "**on**"
 	}
+	named := p.engine.HasOpenRouter(ctx, ix.GuildID)
 	if cfg.Enabled && (!ok || !p.scanning || why != "") {
 		pn.Color = core.ColorWarning
 	}
@@ -135,12 +144,124 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 		ui.Switch("Translation is "+state+"\n-# A message in another language is replaced with its English, under its author's name. Harmful ones are made harmless.", toggle),
 		ui.Text("**Left alone**: these channels are never translated."),
 		ui.Row(ui.ChannelSelectMany(panelSet+"exempt", "Channels left alone", cfg.ExemptChannelIDs, ui.MaxSelectValues, !canSet)),
+		ui.Text("**Model**: an answer that fails a check is asked for again, with more thinking."),
+		ui.Row(p.modelPicker(ctx, ix.GuildID, cfg, !canSet || !named)),
 		ui.Switch("Member controls are "+offered+"\n-# Members can opt out and take down translations of their own messages. Mods can always take one down.", members),
 		ui.Gap(),
 		ui.Text("-# " + scripts.Warning),
 		ui.Switch(fmt.Sprintf("`%s` is %s\n-# %s", scriptDialects, script, dialectsAbout()), sb),
 	}
 	return pn
+}
+
+// costRows is what translation itself has cost today.
+func (p *Plugin) costRows(ctx context.Context, guildID string) [][2]string {
+	used, err := p.store.Usage(ctx, guildID, p.now().Truncate(24*time.Hour))
+	if err != nil {
+		return [][2]string{{"cost today", "unreadable"}}
+	}
+	var calls int
+	var cost float64
+	for name, u := range used {
+		if name != rungSkipped {
+			calls, cost = calls+u.Calls, cost+u.Cost
+		}
+	}
+	rows := [][2]string{{"cost today", fmt.Sprintf("$%.4f", cost)}, {"calls", fmt.Sprintf("%d, %d asked again", calls, used[rungCareful].Calls)}}
+	if n := used[rungSkipped].Calls; n > 0 {
+		rows = append(rows, [2]string{"pre-filter", fmt.Sprintf("%d calls saved", n)})
+	}
+	return rows
+}
+
+// models is what the picker offers: cheap, good at more languages than
+// English, and kept nowhere. What it costs and whether it can still be
+// reached without retention is read live (Engine.Prices).
+var models = []struct{ id, note string }{
+	{"z-ai/glm-5.3-flash", "always thinks a little"},
+	{"google/gemma-4-31b-it", "made for many languages"},
+	{"google/gemma-4-26b-a4b-it", "smaller and quicker Gemma"},
+	{"deepseek/deepseek-v4.1-flash-1017", "strong for its price"},
+	{"qwen/qwen3-235b-a22b-2507", "large, strong at Asian languages"},
+	{"mistralai/mistral-small-2603", "strong at European languages"},
+	{"google/gemini-3.1-flash-lite", "dearest here"},
+}
+
+// perThousand is what a thousand translations cost on a model at pr: about
+// 1500 tokens read and 150 written each, before any thinking.
+func perThousand(pr core.ModelPrice) string {
+	return fmt.Sprintf("about $%.2f per 1,000", (1500*pr.Prompt+150*pr.Completion)/1000)
+}
+
+func (p *Plugin) modelPicker(ctx context.Context, guildID string, cfg Config, disabled bool) discord.StringSelectMenuComponent {
+	// Prices are a nicety here, and not worth the panel being late for.
+	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	prices, err := p.engine.Prices(ctx, guildID)
+	opts := []discord.StringSelectMenuOption{{Label: "AI moderation's deep pass", Value: modelDefault,
+		Description: "Whatever /aimod settings has", Default: cfg.Model == ""}}
+	listed := cfg.Model == ""
+	add := func(id, note string) {
+		about := note
+		if pr, ok := prices[id]; ok {
+			about = perThousand(pr) + ", " + note
+		} else if err == nil {
+			about = "not reachable without retention right now"
+		}
+		opts = append(opts, discord.StringSelectMenuOption{Label: clip(id, 100), Value: id, Description: clip(about, 100), Default: id == cfg.Model})
+		listed = listed || id == cfg.Model
+	}
+	for _, m := range models {
+		add(m.id, m.note)
+	}
+	if !listed {
+		add(cfg.Model, "picked by ID")
+	}
+	opts = append(opts, discord.StringSelectMenuOption{Label: "Another model...", Value: modelOther, Description: "Any OpenRouter model ID with zero data retention"})
+	return ui.StringSelect(panelSet+"model", "Model for translations", opts, false, disabled)
+}
+
+// handleModelForm is the "another model" form.
+func (p *Plugin) handleModelForm(ctx context.Context, ix *core.Ix, _ string) {
+	p.redraw(ctx, ix, p.setModel(ctx, ix, strings.TrimSpace(ix.ModalValues()["model"])))
+}
+
+// setModel takes only a model that can be reached without its provider
+// keeping anything, since every request demands that and any other would
+// never be answered.
+func (p *Plugin) setModel(ctx context.Context, ix *core.Ix, id string) string {
+	cfg, err := p.config(ctx, core.ID(ix.GuildID))
+	if err != nil {
+		return fmt.Sprintf("✗ The settings could not be read: %v", err)
+	}
+	note := "✓ Translations use AI moderation's deep pass."
+	if id == modelDefault {
+		id = ""
+	} else {
+		prices, err := p.engine.Prices(ctx, ix.GuildID)
+		if err != nil {
+			return fmt.Sprintf("✗ Not saved, the models could not be checked: %v", err)
+		}
+		pr, ok := prices[id]
+		if !ok {
+			return "✗ Not saved: no zero data retention endpoint on OpenRouter runs `" + clip(strings.ReplaceAll(id, "`", ""), 80) + "` with structured answers."
+		}
+		note = "✓ Translations use `" + id + "`, " + perThousand(pr) + " before thinking."
+	}
+	if err := p.store.SetModel(ctx, ix.GuildID, id); err != nil {
+		return fmt.Sprintf("✗ Not saved: %v", err)
+	}
+	p.forgetConfig(ix.GuildID)
+	p.setTrouble(ix.GuildID, "")
+	p.record(ctx, ix, "dragoman.model_set", modelName(cfg.Model), modelName(id))
+	return note
+}
+
+func modelName(id string) string {
+	if id == "" {
+		return "AI moderation's deep pass"
+	}
+	return id
 }
 
 // dialectsAbout is what an admin is told the script does.
@@ -168,6 +289,14 @@ func (p *Plugin) handlePanelSet(ctx context.Context, ix *core.Ix, customID strin
 		note = p.setEnabled(ctx, ix, verb == "on")
 	case "members:on", "members:off":
 		note = p.setMemberControls(ctx, ix, verb == "members:on")
+	case "model":
+		if ix.FirstValue() == modelOther {
+			if err := ix.OpenModal(formModel, "Model for translations", ui.Field("model", "OpenRouter model ID", "", "z-ai/glm-5.3-flash", false, true)); err != nil {
+				p.log.Error("dragoman: open model form", "err", err)
+			}
+			return
+		}
+		note = p.setModel(ctx, ix, ix.FirstValue())
 	case "exempt":
 		note = p.setExempt(ctx, ix)
 	default:

@@ -33,6 +33,7 @@ type memStore struct {
 	mu    sync.Mutex
 	cfg   Config
 	rows  []Translation
+	used  map[string]Usage
 	reads int
 	err   error
 }
@@ -64,6 +65,30 @@ func (s *memStore) SetMemberControls(_ context.Context, _ string, on bool) error
 	defer s.mu.Unlock()
 	s.cfg.MemberControls = on
 	return s.err
+}
+
+func (s *memStore) SetModel(_ context.Context, _, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Model = model
+	return s.err
+}
+
+func (s *memStore) AddUsage(_ context.Context, _ string, _ time.Time, rung string, cost float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.used == nil {
+		s.used = map[string]Usage{}
+	}
+	u := s.used[rung]
+	s.used[rung] = Usage{u.Calls + 1, u.Cost + cost}
+	return s.err
+}
+
+func (s *memStore) Usage(context.Context, string, time.Time) (map[string]Usage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.used, s.err
 }
 
 func (s *memStore) SetExempt(_ context.Context, _, id string, on bool) error {
@@ -122,11 +147,17 @@ type fakeEngine struct {
 	prompts  []core.Prompt
 	posted   []core.Repost
 	block    chan struct{}
+	cost     float64
+	outs     []string // answers by call, before out
+	skip     bool
+	taught   []bool
+	orca     bool
+	prices   map[string]core.ModelPrice
 	inAsk    int
 	maxAsk   int
 }
 
-func (e *fakeEngine) Ask(_ context.Context, _ string, q core.Prompt) (string, error) {
+func (e *fakeEngine) Ask(_ context.Context, _ string, q core.Prompt) (core.Answer, error) {
 	e.mu.Lock()
 	e.prompts = append(e.prompts, q)
 	e.inAsk++
@@ -139,10 +170,31 @@ func (e *fakeEngine) Ask(_ context.Context, _ string, q core.Prompt) (string, er
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.inAsk--
-	if q.SchemaName == "dialect" {
-		return e.styled, e.styleErr
+	a := core.Answer{Cost: e.cost}
+	switch {
+	case q.SchemaName == "dialect":
+		a.Text = e.styled
+		return a, e.styleErr
+	case len(e.outs) > 0:
+		a.Text, e.outs = e.outs[0], e.outs[1:]
+		return a, nil
 	}
-	return e.out, e.askErr
+	a.Text = e.out
+	return a, e.askErr
+}
+
+func (e *fakeEngine) Unlike(context.Context, string, string, string) bool { return e.skip }
+func (e *fakeEngine) Teach(_ context.Context, _, _, _ string, worth bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.taught = append(e.taught, worth)
+}
+func (e *fakeEngine) HasOpenRouter(context.Context, string) bool { return !e.orca }
+func (e *fakeEngine) Prices(context.Context, string) (map[string]core.ModelPrice, error) {
+	if e.prices == nil {
+		return nil, errors.New("no prices")
+	}
+	return e.prices, nil
 }
 
 func (e *fakeEngine) Context(string, string, string, string) ([]string, string) {
@@ -411,10 +463,10 @@ func TestTheDialectsScript(t *testing.T) {
 		"another source": {func(r *rig) { r.engine.out = strings.Replace(good, `"nl"`, `"de"`, 1) }, 1, english},
 		// A dialect that can't be had costs the dialect, not the translation.
 		"no answer":   {func(r *rig) { r.engine.styleErr = errors.New("x") }, 2, english},
-		"prose":       {func(r *rig) { r.engine.styled = "sure!" }, 2, english},
-		"empty":       {func(r *rig) { r.engine.styled = `{"text":" "}` }, 2, english},
-		"a link":      {func(r *rig) { r.engine.styled = `{"text":"see evil.com"}` }, 2, english},
-		"much longer": {func(r *rig) { r.engine.styled = `{"text":"` + strings.Repeat("late ", 60) + `"}` }, 2, english},
+		"prose":       {func(r *rig) { r.engine.styled = "sure!" }, 3, english},
+		"empty":       {func(r *rig) { r.engine.styled = `{"text":" "}` }, 3, english},
+		"a link":      {func(r *rig) { r.engine.styled = `{"text":"see evil.com"}` }, 3, english},
+		"much longer": {func(r *rig) { r.engine.styled = `{"text":"` + strings.Repeat("late ", 60) + `"}` }, 3, english},
 	} {
 		r := newRig(t)
 		r.script.on, r.engine.styled = true, `{"text":"`+aave+`"}`
@@ -429,7 +481,7 @@ func TestTheDialectsScript(t *testing.T) {
 		if said := strings.Contains(r.audit.all(), `english="African American Vernacular English"`); said != (tc.text == aave) {
 			t.Errorf("%s: audit %s", name, r.audit.all())
 		}
-		if failed := r.p.trouble[guild] != ""; failed != (tc.calls == 2 && tc.text == english) {
+		if failed := r.p.trouble[guild] != ""; failed != (tc.calls >= 2 && tc.text == english) {
 			t.Errorf("%s: trouble %q", name, r.p.trouble[guild])
 		}
 	}

@@ -87,6 +87,9 @@ func TestLive(t *testing.T) {
 					t.Errorf("still Standard English: %q, %v", a.Text, err)
 				}
 			}
+			if why := doubt(got, masked); why != "" {
+				t.Logf("would be asked again: %s", why)
+			}
 			low := strings.ToLower(got.text)
 			found := len(c.has) == 0
 			for _, w := range c.has {
@@ -105,7 +108,7 @@ func TestLive(t *testing.T) {
 func liveAsk(t *testing.T, base, key, model, system, user, name string, schema map[string]any) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{
-		"model": model, "temperature": 0, "max_tokens": maxTokens,
+		"model": model, "temperature": 0, "max_tokens": maxTokens, "reasoning": map[string]any{"effort": "low"},
 		"messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}},
 		"response_format": map[string]any{"type": "json_schema",
 			"json_schema": map[string]any{"name": name, "strict": true, "schema": schema}},

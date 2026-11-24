@@ -291,8 +291,8 @@ func TestAskReservesAndFallsBack(t *testing.T) {
 	chat := &scriptedChat{out: "{}"}
 	p := completePlugin(t, store, cfg, chat)
 	q := core.Prompt{System: "s", User: "u", SchemaName: "x", Schema: map[string]any{"type": "object"}, Reserve: 0.8}
-	if out, err := p.Ask(context.Background(), "g1", q); err != nil || out != "{}" {
-		t.Fatalf("Ask = %q, %v", out, err)
+	if out, err := p.Ask(context.Background(), "g1", q); err != nil || out.Text != "{}" {
+		t.Fatalf("Ask = %+v, %v", out, err)
 	}
 	if chat.last.ResponseFormat == nil || chat.last.ResponseFormat.JSONSchema.Name != "x" {
 		t.Errorf("request %+v carries no schema", chat.last)
@@ -310,8 +310,8 @@ func TestAskReservesAndFallsBack(t *testing.T) {
 	live, _ := store2.Config(context.Background(), "g1")
 	live.OrcaKeySealed = live.APIKeySealed
 	store2.setConfig(live)
-	if out, err := p2.Ask(context.Background(), "g1", q); err != nil || out != "from openrouter" || fake.calls != 2 {
-		t.Errorf("Ask = %q, %v after %d calls", out, err, fake.calls)
+	if out, err := p2.Ask(context.Background(), "g1", q); err != nil || out.Text != "from openrouter" || fake.calls != 2 {
+		t.Errorf("Ask = %+v, %v after %d calls", out, err, fake.calls)
 	}
 }
 

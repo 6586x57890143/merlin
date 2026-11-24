@@ -26,7 +26,7 @@ const (
 	maxTokens  = 4000
 	askTimeout = 45 * time.Second
 	// maxContext bounds one line of context, not the message itself.
-	maxContext = 400
+	maxContext = 200
 )
 
 // translation is one message in English.
@@ -35,6 +35,9 @@ type translation struct {
 	masked  string // text before its tokens were put back
 	source  language.Tag
 	english variety
+	// confidence is the model's own, and rung what wrote the translation.
+	confidence float64
+	rung       string
 	// policy is the area the original breaks, where text is a harmless
 	// version of it. Empty otherwise.
 	policy string
@@ -65,6 +68,9 @@ var schema = map[string]any{
 // errLeave is a message that stays as it is: English after all, not language,
 // or an answer not good enough to publish under somebody's name.
 var errLeave = errors.New("dragoman: left alone")
+
+// errNotForTranslating is the model saying there is nothing to translate.
+var errNotForTranslating = fmt.Errorf("%w: not for translating", errLeave)
 
 func leave(why string) error { return fmt.Errorf("%w: %s", errLeave, why) }
 
@@ -132,19 +138,34 @@ func (p *Plugin) translate(ctx context.Context, j job) (translation, error) {
 		return translation{}, leave("the text holds a token of ours")
 	}
 	lines, self := p.engine.Context(j.guildID, j.channelID, j.messageID, j.authorID)
-	out, err := p.engine.Ask(ctx, j.guildID, core.Prompt{
+	var t translation
+	var verdict error
+	by, err := p.climb(ctx, j, core.Prompt{
 		System:     systemPrompt(p.engine.Policies(ctx, j.guildID)),
 		User:       userPrompt(masked, j.replyTo, lines, self),
 		SchemaName: "translation", Schema: schema,
 		MaxTokens: maxTokens, Timeout: askTimeout, Reserve: reserve,
+	}, func(out string, last bool) string {
+		t, verdict = judge(out, masked, parts)
+		switch {
+		case last:
+			return ""
+		case verdict == nil:
+			return doubt(t, masked)
+		case errors.Is(verdict, errNotForTranslating) && j.evidence != strong:
+			return "" // nothing here says otherwise
+		}
+		return strings.TrimPrefix(verdict.Error(), "dragoman: ")
 	})
-	if err != nil {
+	// A doubt is not worth losing a publishable translation over, when what
+	// would settle it can't be had.
+	if err != nil && (by == "" || verdict != nil) {
 		return translation{}, err
 	}
-	t, err := judge(out, masked, parts)
-	if err != nil {
-		return t, err
+	if verdict != nil {
+		return t, verdict
 	}
+	t.rung = by
 	v := p.englishFor(ctx, j.guildID, baseOf(t.source))
 	if v == standard {
 		return t, nil
@@ -174,14 +195,14 @@ func judge(out, masked string, parts []string) (translation, error) {
 		return translation{}, fmt.Errorf("dragoman: unreadable answer: %w", err)
 	}
 	if !a.Translate {
-		return translation{}, leave("not for translating")
+		return translation{}, errNotForTranslating
 	}
 	tag, ok := parseSource(a.Source)
 	if !ok {
 		return translation{}, leave(fmt.Sprintf("source %.20q", a.Source))
 	}
 	text := strings.TrimSpace(a.Text)
-	t := translation{source: tag, masked: text, english: standard, policy: strings.TrimSpace(a.Harmful)}
+	t := translation{source: tag, masked: text, english: standard, confidence: a.Confidence, policy: strings.TrimSpace(a.Harmful)}
 	if t.policy != "" && text == "" {
 		return t, leave("harmful with nothing left")
 	}
