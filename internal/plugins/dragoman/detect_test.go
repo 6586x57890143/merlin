@@ -49,7 +49,7 @@ var notEnglish = []string{
 
 func TestEnglishCostsNothing(t *testing.T) {
 	for _, s := range english {
-		if candidate(s, "") {
+		if gauge(s, "") != none {
 			t.Errorf("%q would be sent to a model", s)
 		}
 	}
@@ -57,7 +57,7 @@ func TestEnglishCostsNothing(t *testing.T) {
 
 func TestOtherLanguagesAreNoticed(t *testing.T) {
 	for _, s := range notEnglish {
-		if !candidate(s, "") {
+		if gauge(s, "") == none {
 			t.Errorf("%q would be missed", s)
 		}
 	}
@@ -66,15 +66,15 @@ func TestOtherLanguagesAreNoticed(t *testing.T) {
 // A short answer needs a conversation in that language behind it.
 func TestAMemberMidConversationNeedsLess(t *testing.T) {
 	for _, s := range []string{"ja klopt", "nee", "echt?", "lekker"} {
-		if candidate(s, "") && s != "ja klopt" {
+		if gauge(s, "") != none && s != "ja klopt" {
 			t.Errorf("%q is enough on its own", s)
 		}
-		if !candidate(s, "nl") {
+		if gauge(s, "nl") == none {
 			t.Errorf("%q is missed mid conversation", s)
 		}
 	}
 	for _, s := range []string{"lol", "yeah what about it", "nah the niet guy is here and that's it"} {
-		if candidate(s, "nl") {
+		if gauge(s, "nl") != none {
 			t.Errorf("%q is English whatever came before it", s)
 		}
 	}
@@ -95,6 +95,6 @@ func TestTheWordTablesDoNotOverlap(t *testing.T) {
 
 func BenchmarkCandidateEnglish(b *testing.B) {
 	for b.Loop() {
-		candidate("ngl i think the people who built this really don't know what they want", "")
+		gauge("ngl i think the people who built this really don't know what they want", "")
 	}
 }

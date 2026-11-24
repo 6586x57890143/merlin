@@ -546,18 +546,23 @@ func (p *Plugin) triageLearn(ctx context.Context, cfg Config, text string, flagg
 	if cfg.TriageMode == TriageOff {
 		return
 	}
+	p.triageTeach(ctx, guildIDOf(cfg), text, flagged, triageSaveEvery)
+}
+
+// triageTeach is one example for the model kept under key.
+func (p *Plugin) triageTeach(ctx context.Context, key, text string, flagged bool, saveEvery int64) {
 	feats := triageFeatures(text)
 	if len(feats) == 0 {
 		return
 	}
-	m := p.triageFor(ctx, guildIDOf(cfg))
+	m := p.triageFor(ctx, key)
 	m.Learn(feats, flagged)
 
 	m.mu.Lock()
-	save := m.dirty && m.examples%triageSaveEvery == 0
+	save := m.dirty && m.examples%saveEvery == 0
 	m.mu.Unlock()
 	if save {
-		p.spawn(func(bg context.Context) { p.saveTriage(bg, guildIDOf(cfg)) })
+		p.spawn(func(bg context.Context) { p.saveTriage(bg, key) })
 	}
 }
 

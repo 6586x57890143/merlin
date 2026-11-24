@@ -28,7 +28,14 @@ import (
 // Engine is what dragoman needs of aimod. Satisfied by *aimod.Plugin, wired
 // in cmd/bot/main.go.
 type Engine interface {
-	Ask(ctx context.Context, guildID string, q core.Prompt) (string, error)
+	Ask(ctx context.Context, guildID string, q core.Prompt) (core.Answer, error)
+	// Unlike reports whether text is like what use has been taught isn't
+	// worth a call, and Teach teaches it.
+	Unlike(ctx context.Context, guildID, use, text string) bool
+	Teach(ctx context.Context, guildID, use, text string, worth bool)
+	HasOpenRouter(ctx context.Context, guildID string) bool
+	// Prices is the models a guild may pick, which keep nothing.
+	Prices(ctx context.Context, guildID string) (map[string]core.ModelPrice, error)
 	Context(guildID, channelID, messageID, authorID string) (lines []string, self string)
 	Policies(ctx context.Context, guildID string) string
 	Repost(ctx context.Context, r core.Repost) (string, error)
@@ -70,6 +77,7 @@ type job struct {
 	guildID, channelID, messageID, authorID string
 	roleIDs                                 []string
 	content, replyTo                        string
+	evidence                                evidence
 	keep                                    bool
 	at                                      time.Time
 }
@@ -235,9 +243,10 @@ func (p *Plugin) HandleMessage(m discord.Message) {
 		guildID: m.GuildID.String(), channelID: m.ChannelID.String(), messageID: m.ID.String(), authorID: m.Author.ID.String(),
 		content: m.Content, keep: len(m.Attachments)+len(m.StickerItems) > 0, at: p.now(),
 	}
+	j.evidence = gauge(j.content, p.speaking(j))
 	if slices.Contains(cfg.ExemptChannelIDs, j.channelID) ||
 		(cfg.MemberControls && slices.Contains(cfg.OptOutUserIDs, j.authorID)) ||
-		!candidate(j.content, p.speaking(j)) || !p.gate.PluginEnabled(j.guildID, p.Name()) {
+		j.evidence == none || !p.gate.PluginEnabled(j.guildID, p.Name()) {
 		return
 	}
 	if m.Member != nil {
@@ -364,7 +373,16 @@ func (p *Plugin) run(ctx context.Context, j job) {
 	if p.now().Sub(j.at) > staleAfter || p.held(j.guildID) || p.engine.OptedOut(ctx, j.guildID, j.authorID) {
 		return
 	}
+	// The pre-filter has a say only where the gate was unsure, so it can
+	// never learn its way to skipping plain Dutch.
+	if j.evidence == weak && p.engine.Unlike(ctx, j.guildID, p.Name(), j.content) {
+		p.use(ctx, j.guildID, rungSkipped, 0, nil)
+		return
+	}
 	t, err := p.translate(ctx, j)
+	if err == nil || errors.Is(err, errNotForTranslating) {
+		p.engine.Teach(ctx, j.guildID, p.Name(), j.content, err == nil)
+	}
 	if err != nil && t.policy == "" {
 		p.failed(j, err)
 		return
@@ -407,6 +425,7 @@ func (p *Plugin) auditTranslation(ctx context.Context, j job, t translation, rep
 	if t.english != standard {
 		detail += fmt.Sprintf(" english=%q", t.english.name)
 	}
+	detail += fmt.Sprintf(" rung=%q", t.rung)
 	if t.policy != "" {
 		detail += fmt.Sprintf(" softened=%q", t.policy)
 	}

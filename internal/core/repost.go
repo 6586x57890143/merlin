@@ -16,7 +16,24 @@ type Prompt struct {
 	// Reserve refuses the call once the day's spend reaches this share of
 	// the cap, leaving the rest to moderation. Zero reserves nothing.
 	Reserve float64
+	// Models are OpenRouter model IDs to use in place of the guild's deep
+	// stack, in order. They need an OpenRouter key and are pinned to
+	// endpoints that keep nothing, whichever gateway scans.
+	Models []string
+	// Brief asks a model that can't help thinking to think little. Thinking
+	// is billed, and some default to as much of it as they can.
+	Brief bool
 }
+
+// Answer is what a Prompt came back with and what it cost, in dollars. A
+// failed call's cost is in it too.
+type Answer struct {
+	Text string
+	Cost float64
+}
+
+// ModelPrice is dollars per million tokens.
+type ModelPrice struct{ Prompt, Completion float64 }
 
 // Repost is a member's message to be put back under their own name with
 // different words.

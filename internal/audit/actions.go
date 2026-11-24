@@ -117,6 +117,7 @@ var actions = map[string]meta{
 	"dragoman.translated":          {title: "Dragoman: message translated", color: core.ColorInfo},
 	"dragoman.deleted":             {title: "Dragoman: translation deleted", color: core.ColorInfo},
 	"dragoman.enabled_set":         {title: "Dragoman: translation switched", color: core.ColorWarning},
+	"dragoman.model_set":           {title: "Dragoman: model changed", color: core.ColorInfo},
 	"dragoman.member_controls_set": {title: "Dragoman: member controls switched", color: core.ColorWarning},
 	"dragoman.channel_exempted":    {title: "Dragoman: channel left alone", color: core.ColorInfo},
 	"dragoman.channel_included":    {title: "Dragoman: channel translated again", color: core.ColorInfo},

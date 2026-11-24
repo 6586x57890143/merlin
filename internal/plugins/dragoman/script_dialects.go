@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/6586x57890143/merlin/internal/core"
@@ -25,7 +28,11 @@ const scriptDialects = "dialects"
 
 // variety is one kind of English: its name and what a model is told about
 // writing it.
-type variety struct{ name, how string }
+type variety struct {
+	name, how string
+	// marks is what a text in it nearly always has some of, nil for none.
+	marks *regexp.Regexp
+}
 
 var standard = variety{
 	name: "Standard American English",
@@ -53,6 +60,7 @@ Examples:
 - "You owe me money." becomes "aye you owe me money"
 
 It is a dialect, never a caricature: no mockery, no stereotypes about who is talking or what they like, no swearing the message doesn't have, and never any form of the n-word.`,
+		marks: regexp.MustCompile(`(?i)\b(?:ain'?t|finna|boutta|bout|gon|tryna|ion|y'?all|aye|fr|cuz|fore|em|it's people|(?:i|he|she|it|they|we|you|that) (?:be|been|done|stay))\b`),
 	},
 }
 
@@ -92,15 +100,45 @@ Return JSON with text.`
 // restyle puts t, already in Standard English, into v. An error leaves t as
 // it was, which is still a translation.
 func (p *Plugin) restyle(ctx context.Context, j job, t translation, v variety, original string, parts []string) (translation, error) {
-	out, err := p.engine.Ask(ctx, j.guildID, core.Prompt{
+	var styled translation
+	var verdict error
+	_, err := p.climb(ctx, j, core.Prompt{
 		System:     restylePrompt(v),
 		User:       fmt.Sprintf("It was translated from, for reference only:\n%s\n\nThe message to rewrite:\n%s", original, t.masked),
 		SchemaName: "dialect", Schema: restyleSchema,
 		MaxTokens: maxTokens, Timeout: askTimeout, Reserve: reserve,
+	}, func(out string, last bool) string {
+		styled, verdict = judgeStyle(out, t, v, parts)
+		switch {
+		case last:
+			return ""
+		case verdict != nil:
+			return strings.TrimPrefix(verdict.Error(), "dragoman: ")
+		case strings.EqualFold(styled.masked, t.masked),
+			v.marks != nil && len(strings.Fields(styled.masked)) > 6 && !v.marks.MatchString(styled.masked) && !dropsG(styled.masked):
+			return "it is still Standard English"
+		}
+		return ""
 	})
+	if err == nil {
+		err = verdict
+	}
 	if err != nil {
 		return t, err
 	}
+	return styled, nil
+}
+
+// dropsG reports whether text has a "workin" in it: no word of English until
+// its g is put back.
+func dropsG(text string) bool {
+	return slices.ContainsFunc(strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) }), func(w string) bool {
+		return strings.HasSuffix(w, "in") && !vocabulary[w] && vocabulary[w+"g"]
+	})
+}
+
+// judgeStyle holds a rewrite of t to what judge holds a translation to.
+func judgeStyle(out string, t translation, v variety, parts []string) (translation, error) {
 	var a struct {
 		Text string `json:"text"`
 	}
