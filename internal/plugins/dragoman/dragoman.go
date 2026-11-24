@@ -38,7 +38,6 @@ type Engine interface {
 	Context(guildID, channelID, messageID, authorID string) (lines []string, self string)
 	Policies(ctx context.Context, guildID string) string
 	Repost(ctx context.Context, r core.Repost) (string, error)
-	OptedOut(ctx context.Context, guildID, userID string) bool
 	EvidenceHours(ctx context.Context, guildID string) int
 	Budget(ctx context.Context, guildID string) (spent, limit float64, ok bool)
 }
@@ -386,7 +385,7 @@ func (p *Plugin) runGuarded(j job) {
 
 // run translates and reposts one message.
 func (p *Plugin) run(ctx context.Context, j job) {
-	if p.now().Sub(j.at) > staleAfter || p.held(j.guildID) || p.engine.OptedOut(ctx, j.guildID, j.authorID) {
+	if p.now().Sub(j.at) > staleAfter || p.held(j.guildID) {
 		return
 	}
 	// The pre-filter has a say only where the gate was unsure, so it can
@@ -417,7 +416,7 @@ func (p *Plugin) run(ctx context.Context, j job) {
 	// The message has been replaced: what follows is the record of it, and
 	// is not lost to a context that ran out while it was being posted.
 	ctx = context.WithoutCancel(ctx)
-	p.confirmed(j, baseOf(t.source))
+	p.confirmed(j, languageKey(t.source))
 	if _, has := p.dialectFor(ctx, j.guildID, t.source); has == (t.english != "") {
 		p.setTrouble(j.guildID, "")
 	}
@@ -461,6 +460,9 @@ func (p *Plugin) failed(j job, err error) {
 	log := p.log.With("guild", j.guildID, "channel", j.channelID, "message", j.messageID)
 	var u interface{ Unavailable() bool }
 	switch {
+	case errors.Is(err, errLeave) && j.evidence == strong:
+		// What looks from outside like a miss of the gate's.
+		log.Info("dragoman: left alone, though it looks foreign", "err", err)
 	case errors.Is(err, errLeave), discordguard.Skipped(err):
 		log.Debug("dragoman: left alone", "err", err)
 	case errors.As(err, &u) && u.Unavailable():

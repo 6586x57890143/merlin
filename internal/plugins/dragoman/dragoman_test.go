@@ -231,7 +231,6 @@ type fakeEngine struct {
 	styleErr error
 	askErr   error
 	postErr  error
-	optedOut bool
 	evidence int
 	noKey    bool
 	prompts  []core.Prompt
@@ -305,7 +304,6 @@ func (e *fakeEngine) Repost(_ context.Context, r core.Repost) (string, error) {
 	}
 	return repost, nil
 }
-func (e *fakeEngine) OptedOut(context.Context, string, string) bool { return e.optedOut }
 func (e *fakeEngine) EvidenceHours(context.Context, string) int     { return e.evidence }
 func (e *fakeEngine) Budget(context.Context, string) (float64, float64, bool) {
 	return 0.1, 0.5, !e.noKey
@@ -463,7 +461,6 @@ func TestWhatIsNeverTranslated(t *testing.T) {
 		"an opted out author": func(r *rig, _ *discord.Message) {
 			r.store.cfg.MemberControls, r.store.cfg.OptOutUserIDs = true, []string{author}
 		},
-		"opted out of aimod":  func(r *rig, _ *discord.Message) { r.engine.optedOut = true },
 		"a paused guild":      func(r *rig, _ *discord.Message) { r.held = true },
 		"unreadable settings": func(r *rig, _ *discord.Message) { r.store.err = errors.New("down") },
 		"no content intent":   func(r *rig, _ *discord.Message) { r.p.scanning = false },
