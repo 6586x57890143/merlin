@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -34,6 +35,8 @@ type memStore struct {
 	cfg   Config
 	rows  []Translation
 	used  map[string]Usage
+	langs map[string]Dialect
+	due   map[string]int
 	reads int
 	err   error
 }
@@ -65,6 +68,93 @@ func (s *memStore) SetMemberControls(_ context.Context, _ string, on bool) error
 	defer s.mu.Unlock()
 	s.cfg.MemberControls = on
 	return s.err
+}
+
+func (s *memStore) Dialects(context.Context, string) ([]Dialect, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Collect(maps.Values(s.langs)), s.err
+}
+
+func (s *memStore) Dialect(_ context.Context, _, lang string) (Dialect, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.langs[lang]
+	if s.err == nil && !ok {
+		return d, errStale
+	}
+	return d, s.err
+}
+
+func (s *memStore) SetDialect(_ context.Context, g, lang, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.langs == nil {
+		s.langs, s.due = map[string]Dialect{}, map[string]int{}
+	}
+	s.langs[lang], s.due[lang] = Dialect{GuildID: g, Language: lang, Name: name, Version: s.langs[lang].Version + 1}, 0
+	return s.err
+}
+
+func (s *memStore) RemoveDialect(_ context.Context, _, lang string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.langs, lang)
+	return s.err
+}
+
+func (s *memStore) edit(d Dialect, f func(*Dialect)) (Dialect, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now, ok := s.langs[d.Language]
+	if !ok || now.Version != d.Version || now.Name != d.Name {
+		return d, errStale
+	}
+	f(&now)
+	s.langs[d.Language] = now
+	return now, s.err
+}
+
+func (s *memStore) SaveGuide(_ context.Context, d Dialect, g guide, after int) (Dialect, error) {
+	return s.edit(d, func(d *Dialect) {
+		d.Previous, d.Guide, d.Version, d.Uses, d.Missed, d.Losses, d.Problem = d.Guide, &g, d.Version+1, 0, 0, 0, ""
+		s.due[d.Language] = after
+	})
+}
+
+func (s *memStore) UndoGuide(_ context.Context, d Dialect, after int) error {
+	_, err := s.edit(d, func(d *Dialect) {
+		d.Guide, d.Previous, d.Version = d.Previous, nil, d.Version+1
+		s.due[d.Language] = after
+	})
+	return err
+}
+
+func (s *memStore) DeferReview(_ context.Context, d Dialect, after int) error {
+	_, err := s.edit(d, func(d *Dialect) { d.Losses++; s.due[d.Language] = d.Uses + after })
+	return err
+}
+
+func (s *memStore) SetDialectProblem(_ context.Context, d Dialect, why string) error {
+	_, err := s.edit(d, func(d *Dialect) { d.Problem = why })
+	return err
+}
+
+func (s *memStore) SetDialectNotes(_ context.Context, d Dialect, notes []string) error {
+	_, err := s.edit(d, func(d *Dialect) { d.Notes, d.Losses = notes, 0 })
+	return err
+}
+
+func (s *memStore) CountDialect(_ context.Context, d Dialect, missed bool) (bool, error) {
+	due := false
+	_, err := s.edit(d, func(d *Dialect) {
+		d.Uses++
+		if missed {
+			d.Missed++
+		}
+		due = d.Uses >= s.due[d.Language]
+	})
+	return due, err
 }
 
 func (s *memStore) SetModel(_ context.Context, _, model string) error {
@@ -153,6 +243,8 @@ type fakeEngine struct {
 	taught   []bool
 	orca     bool
 	prices   map[string]core.ModelPrice
+	blocked  string // what Publishable refuses
+	answers  map[string][]string // answers by schema name, in order
 	inAsk    int
 	maxAsk   int
 }
@@ -172,6 +264,10 @@ func (e *fakeEngine) Ask(_ context.Context, _ string, q core.Prompt) (core.Answe
 	e.inAsk--
 	a := core.Answer{Cost: e.cost}
 	switch {
+	case len(e.answers[q.SchemaName]) > 0:
+		a.Text = e.answers[q.SchemaName][0]
+		e.answers[q.SchemaName] = e.answers[q.SchemaName][1:]
+		return a, e.askErr
 	case q.SchemaName == "dialect":
 		a.Text = e.styled
 		return a, e.styleErr
@@ -188,6 +284,9 @@ func (e *fakeEngine) Teach(_ context.Context, _, _, _ string, worth bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.taught = append(e.taught, worth)
+}
+func (e *fakeEngine) Publishable(_ context.Context, _, text string) bool {
+	return e.blocked == "" || !strings.Contains(text, e.blocked)
 }
 func (e *fakeEngine) HasOpenRouter(context.Context, string) bool { return !e.orca }
 func (e *fakeEngine) Prices(context.Context, string) (map[string]core.ModelPrice, error) {
@@ -228,19 +327,6 @@ func (e *fakeEngine) asked() int {
 	return len(e.prompts)
 }
 
-type fakeScripts struct {
-	on  bool
-	err error
-}
-
-func (s *fakeScripts) Enabled(context.Context, string, string) (bool, error) { return s.on, s.err }
-func (s *fakeScripts) SetEnabled(_ context.Context, _, _ string, on bool) error {
-	if s.err == nil {
-		s.on = on
-	}
-	return s.err
-}
-
 type fakeGate struct{ off bool }
 
 func (g *fakeGate) PluginEnabled(string, string) bool { return !g.off }
@@ -279,7 +365,6 @@ type rig struct {
 	p      *Plugin
 	store  *memStore
 	engine *fakeEngine
-	script *fakeScripts
 	gate   *fakeGate
 	ops    *fakeOps
 	audit  *audits
@@ -292,10 +377,10 @@ func newRig(t *testing.T) *rig {
 	r := &rig{
 		store:  &memStore{cfg: Config{Enabled: true}},
 		engine: &fakeEngine{out: good, evidence: 24},
-		script: &fakeScripts{}, gate: &fakeGate{}, ops: &fakeOps{}, audit: &audits{},
+		gate: &fakeGate{}, ops: &fakeOps{}, audit: &audits{},
 		now: time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC),
 	}
-	r.p = New(r.store, r.engine, r.script, r.gate, func(string) Ops { return r.ops }, func(string) bool { return r.held }, true)
+	r.p = New(r.store, r.engine, r.gate, func(string) Ops { return r.ops }, func(string) bool { return r.held }, true)
 	r.p.now = func() time.Time { return r.now }
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := core.NewCommandRouter(core.NewPermissions(nil, noAuth{}, op), nil, log)
@@ -450,44 +535,58 @@ func TestNoEvidenceLogsNoText(t *testing.T) {
 	}
 }
 
-func TestTheDialectsScript(t *testing.T) {
-	const english, aave = "the train's always late", "that train be late every time"
-	for name, tc := range map[string]struct {
+// spoken gives the guild one dialect, guide and all.
+func (r *rig) spoken(lang, name string) {
+	g := builtin["african american vernacular english"]
+	r.store.langs = map[string]Dialect{lang: {GuildID: guild, Language: lang, Name: name, Guide: &g, Version: 1}}
+	r.store.due = map[string]int{lang: 1000}
+}
+
+func TestADialectIsSpoken(t *testing.T) {
+	const english, aave, name = "the train's always late", "that train be late every time", "African American Vernacular English"
+	for what, tc := range map[string]struct {
 		change func(*rig)
 		calls  int
 		text   string
 	}{
-		"on":             {func(*rig) {}, 2, aave},
-		"off":            {func(r *rig) { r.script.on = false }, 1, english},
-		"unreadable":     {func(r *rig) { r.script.err = errors.New("x") }, 1, english},
+		"picked":         {func(*rig) {}, 2, aave},
+		"not picked":     {func(r *rig) { r.store.langs = nil }, 1, english},
 		"another source": {func(r *rig) { r.engine.out = strings.Replace(good, `"nl"`, `"de"`, 1) }, 1, english},
 		// A dialect that can't be had costs the dialect, not the translation.
 		"no answer":   {func(r *rig) { r.engine.styleErr = errors.New("x") }, 2, english},
 		"prose":       {func(r *rig) { r.engine.styled = "sure!" }, 3, english},
 		"empty":       {func(r *rig) { r.engine.styled = `{"text":" "}` }, 3, english},
 		"a link":      {func(r *rig) { r.engine.styled = `{"text":"see evil.com"}` }, 3, english},
+		"a slur":      {func(r *rig) { r.engine.styled = `{"text":"nigga that train be late"}` }, 3, english},
 		"much longer": {func(r *rig) { r.engine.styled = `{"text":"` + strings.Repeat("late ", 60) + `"}` }, 3, english},
 	} {
 		r := newRig(t)
-		r.script.on, r.engine.styled = true, `{"text":"`+aave+`"}`
+		r.spoken("nl", name)
+		r.engine.styled = `{"text":"` + aave + `"}`
 		tc.change(r)
 		r.say(msg(dutch))
 		got := r.engine.reposts()
 		if len(got) != 1 || got[0].Text != tc.text || r.engine.asked() != tc.calls {
-			t.Errorf("%s: %d calls, posted %+v", name, r.engine.asked(), got)
+			t.Errorf("%s: %d calls, posted %+v", what, r.engine.asked(), got)
 		}
 		// The log names the dialect only where it was really written, and
 		// the panel says when it should have been and wasn't.
-		if said := strings.Contains(r.audit.all(), `english="African American Vernacular English"`); said != (tc.text == aave) {
-			t.Errorf("%s: audit %s", name, r.audit.all())
+		if said := strings.Contains(r.audit.all(), `english="`+name+`"`); said != (tc.text == aave) {
+			t.Errorf("%s: audit %s", what, r.audit.all())
 		}
 		if failed := r.p.trouble[guild] != ""; failed != (tc.calls >= 2 && tc.text == english) {
-			t.Errorf("%s: trouble %q", name, r.p.trouble[guild])
+			t.Errorf("%s: trouble %q", what, r.p.trouble[guild])
+		}
+		// Each message counts for the guide, and a first answer that wasn't
+		// good enough counts against it.
+		if d := r.store.langs["nl"]; d.Uses != min(tc.calls-1, 1) || (d.Missed == 1) != (tc.calls >= 2 && tc.text == english) {
+			t.Errorf("%s: uses %d, missed %d", what, d.Uses, d.Missed)
 		}
 	}
 
 	r := newRig(t)
-	r.script.on, r.engine.styled = true, `{"text":"`+aave+` `+tok("1")+`"}`
+	r.spoken("nl", name)
+	r.engine.styled = `{"text":"` + aave + ` ` + tok("1") + `"}`
 	r.engine.out = strings.Replace(good, "always late", "always late "+tok("1"), 1)
 	r.say(msg(dutch + " <@123456789012345678>"))
 	if got := r.engine.reposts(); len(got) != 1 || got[0].Text != aave+" <@123456789012345678>" {
@@ -495,6 +594,15 @@ func TestTheDialectsScript(t *testing.T) {
 	}
 	if q := r.engine.prompts[1]; strings.Contains(q.User, "1234567") || q.Reserve != reserve || !strings.Contains(q.User, "the train's always late") {
 		t.Errorf("dialect prompt %+v", q)
+	}
+
+	// No money says nothing about the guide.
+	r = newRig(t)
+	r.spoken("nl", name)
+	r.engine.styleErr = quiet{}
+	r.say(msg(dutch))
+	if d := r.store.langs["nl"]; d.Uses != 0 || len(r.engine.reposts()) != 1 {
+		t.Errorf("uses %d, posted %+v", d.Uses, r.engine.reposts())
 	}
 }
 
@@ -713,6 +821,7 @@ func TestOptOutSetsTheCaller(t *testing.T) {
 
 func TestThePanelDisablesWhatTheViewerCannotDo(t *testing.T) {
 	r := newRig(t)
+	r.spoken("nl", "Jamaican English")
 	for user, can := range map[string]bool{op: true, other: false} {
 		ix, w := run(t, user, "settings")
 		r.p.handleSettings(t.Context(), ix)
@@ -721,11 +830,11 @@ func TestThePanelDisablesWhatTheViewerCannotDo(t *testing.T) {
 		}
 		pn := r.p.panel(t.Context(), ix, "")
 		for id, b := range paneltest.IxButtons(pn) {
-			if b.Disabled == can {
+			if b.Disabled == can && !strings.HasPrefix(id, panelView) {
 				t.Errorf("%s: %s disabled %v", user, id, b.Disabled)
 			}
 		}
-		if !strings.Contains(paneltest.IxTexts(pn), "Dutch becomes African American Vernacular English") {
+		if !strings.Contains(paneltest.IxTexts(pn), "Dutch becomes Jamaican English") {
 			t.Errorf("panel %q", paneltest.IxTexts(pn))
 		}
 	}
@@ -735,7 +844,7 @@ func TestThePanelDisablesWhatTheViewerCannotDo(t *testing.T) {
 		t.Errorf("panel %q", paneltest.IxTexts(pn))
 	}
 	r.p.forgetConfig(guild)
-	r.store.err, r.script.err = errors.New("down"), errors.New("down")
+	r.store.err = errors.New("down")
 	if pn := r.p.panel(t.Context(), ix, ""); pn.Color != core.ColorError {
 		t.Error("unreadable settings look fine")
 	}
@@ -769,15 +878,6 @@ func TestEveryControlAnswersAndSaves(t *testing.T) {
 		t.Error("member controls not off")
 	}
 	click(panelSet+"gone", r.p.handlePanelSet)
-	click(panelScripts+"on", r.p.handlePanelScripts)
-	if !r.script.on {
-		t.Error("script not on")
-	}
-	click(panelScripts+"off", r.p.handlePanelScripts)
-	if r.script.on {
-		t.Error("script not off")
-	}
-	click(panelScripts+"gone", r.p.handlePanelScripts)
 
 	ix, _ := run(t, op, "settings")
 	pn := r.p.panel(t.Context(), ix, "")
@@ -789,17 +889,16 @@ func TestEveryControlAnswersAndSaves(t *testing.T) {
 	same := r.p.panel(t.Context(), ix, "")
 	pick, _ = paneltest.IxComponent(t, op, panelSet+"exempt", 8, &same, "302")
 	r.p.handlePanelSet(t.Context(), pick, panelSet+"exempt")
-	for _, want := range []string{"dragoman.enabled_set|off|on", "dragoman.enabled_set|on|off", "dragoman.script_enabled", "dragoman.script_disabled", "dragoman.member_controls_set|off|on",
+	for _, want := range []string{"dragoman.enabled_set|off|on", "dragoman.enabled_set|on|off", "dragoman.member_controls_set|off|on",
 		"dragoman.channel_exempted||<#302>", "dragoman.channel_included||<#301>"} {
 		if !strings.Contains(r.audit.all(), want) {
 			t.Errorf("no audit of %s in\n%s", want, r.audit.all())
 		}
 	}
 
-	r.store.err, r.script.err = errors.New("down"), errors.New("down")
+	r.store.err = errors.New("down")
 	click(panelSet+"on", r.p.handlePanelSet)
 	click(panelSet+"members:on", r.p.handlePanelSet)
-	click(panelScripts+"on", r.p.handlePanelScripts)
 	pick, _ = paneltest.IxComponent(t, op, panelSet+"exempt", 8, &same, "303")
 	r.p.handlePanelSet(t.Context(), pick, panelSet+"exempt")
 }

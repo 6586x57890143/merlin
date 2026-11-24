@@ -122,8 +122,11 @@ var actions = map[string]meta{
 	"dragoman.channel_exempted":    {title: "Dragoman: channel left alone", color: core.ColorInfo},
 	"dragoman.channel_included":    {title: "Dragoman: channel translated again", color: core.ColorInfo},
 	"dragoman.optout_changed":      {title: "Dragoman: member opt-out changed", color: core.ColorInfo},
-	"dragoman.script_enabled":      {title: "Script turned on", color: core.ColorWarning},
-	"dragoman.script_disabled":     {title: "Script turned off", color: core.ColorWarning},
+	"dragoman.dialect_set":         {title: "Dragoman: dialect picked", color: core.ColorWarning},
+	"dragoman.dialect_removed":     {title: "Dragoman: dialect removed", color: core.ColorWarning},
+	"dragoman.dialect_note":        {title: "Dragoman: dialect feedback", color: core.ColorInfo},
+	"dragoman.dialect_undone":      {title: "Dragoman: dialect guide undone", color: core.ColorInfo},
+	"dragoman.dialect_improved":    {title: "Dragoman: dialect guide improved", color: core.ColorInfo},
 
 	// internal/plugins/rapsheet. A ban and a kick are the two things here
 	// with no undo on Discord's side, so they read as errors; everything
