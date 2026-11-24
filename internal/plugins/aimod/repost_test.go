@@ -285,19 +285,6 @@ func TestClearingPendingFlagsFollowsTheRepost(t *testing.T) {
 	}
 }
 
-func TestPublishable(t *testing.T) {
-	store := newFakeStore()
-	p := testPlugin(t, store, &scriptedChat{}, newFakeOps(), &fakeAudit{})
-	cfg := enforcingConfig()
-	cfg.WordList = []BannedWord{{Word: "blorp", Replacement: "bloop"}}
-	store.setConfig(cfg)
-	for text, want := range map[string]bool{"Jamaican English": true, "dem late every time": true, "so blorp": false, "nigger": false} {
-		if got := p.Publishable(context.Background(), "g1", text); got != want {
-			t.Errorf("%q publishable %v", text, got)
-		}
-	}
-}
-
 func TestAskReservesAndFallsBack(t *testing.T) {
 	store := newFakeStore()
 	cfg := enforcingConfig()

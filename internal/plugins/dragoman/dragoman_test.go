@@ -243,7 +243,6 @@ type fakeEngine struct {
 	taught   []bool
 	orca     bool
 	prices   map[string]core.ModelPrice
-	blocked  string // what Publishable refuses
 	answers  map[string][]string // answers by schema name, in order
 	inAsk    int
 	maxAsk   int
@@ -284,9 +283,6 @@ func (e *fakeEngine) Teach(_ context.Context, _, _, _ string, worth bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.taught = append(e.taught, worth)
-}
-func (e *fakeEngine) Publishable(_ context.Context, _, text string) bool {
-	return e.blocked == "" || !strings.Contains(text, e.blocked)
 }
 func (e *fakeEngine) HasOpenRouter(context.Context, string) bool { return !e.orca }
 func (e *fakeEngine) Prices(context.Context, string) (map[string]core.ModelPrice, error) {
@@ -377,7 +373,7 @@ func newRig(t *testing.T) *rig {
 	r := &rig{
 		store:  &memStore{cfg: Config{Enabled: true}},
 		engine: &fakeEngine{out: good, evidence: 24},
-		gate: &fakeGate{}, ops: &fakeOps{}, audit: &audits{},
+		gate:   &fakeGate{}, ops: &fakeOps{}, audit: &audits{},
 		now: time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC),
 	}
 	r.p = New(r.store, r.engine, r.gate, func(string) Ops { return r.ops }, func(string) bool { return r.held }, true)
