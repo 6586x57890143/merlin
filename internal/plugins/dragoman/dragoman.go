@@ -22,7 +22,6 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/discordguard"
-	"github.com/6586x57890143/merlin/internal/scripts"
 )
 
 // Engine is what dragoman needs of aimod. Satisfied by *aimod.Plugin, wired
@@ -34,6 +33,9 @@ type Engine interface {
 	Unlike(ctx context.Context, guildID, use, text string) bool
 	Teach(ctx context.Context, guildID, use, text string, worth bool)
 	HasOpenRouter(ctx context.Context, guildID string) bool
+	// Publishable is whether text has nothing in it that moderation would
+	// stop outright.
+	Publishable(ctx context.Context, guildID, text string) bool
 	// Prices is the models a guild may pick, which keep nothing.
 	Prices(ctx context.Context, guildID string) (map[string]core.ModelPrice, error)
 	Context(guildID, channelID, messageID, authorID string) (lines []string, self string)
@@ -91,11 +93,10 @@ type spoke struct {
 
 // Plugin implements core.Plugin.
 type Plugin struct {
-	store   Store
-	engine  Engine
-	scripts scripts.Store
-	gate    Gate
-	ops     func(guildID string) Ops
+	store  Store
+	engine Engine
+	gate   Gate
+	ops    func(guildID string) Ops
 	// held is whether the guild's writes are paused or in dry run: nothing
 	// is paid for that could not be posted.
 	held     func(guildID string) bool
@@ -107,8 +108,9 @@ type Plugin struct {
 	log      *slog.Logger
 	now      func() time.Time
 
-	cfgMu sync.RWMutex
-	cfgs  map[snowflake.ID]Config
+	cfgMu  sync.RWMutex
+	cfgs   map[snowflake.ID]Config
+	spoken map[snowflake.ID]map[string]Dialect // by language, guarded by cfgMu
 
 	mu      sync.Mutex
 	sticky  map[memberKey]spoke
@@ -118,18 +120,30 @@ type Plugin struct {
 	slots   map[string]chan struct{} // guild ID -> guildParallel
 	trouble map[string]string        // guild ID -> why the last one failed
 
+	// Dialects being looked after (improve.go), by guild and language.
+	tending, tendAgain map[string]bool
+	tendAfter          map[string]time.Time
+	rounds             map[string]dayCount // guild ID
+
 	wg      sync.WaitGroup
 	stop    sync.Once
 	stopped chan struct{}
+	// stopping is done when stopped is closed, for what may be cut short.
+	stopping context.Context
+	cut      context.CancelFunc
 }
 
 // New makes the plugin. scanning is whether Discord sends message content;
 // without it the commands register and nothing is translated.
-func New(store Store, engine Engine, sc scripts.Store, gate Gate, ops func(guildID string) Ops, held func(guildID string) bool, scanning bool) *Plugin {
+func New(store Store, engine Engine, gate Gate, ops func(guildID string) Ops, held func(guildID string) bool, scanning bool) *Plugin {
+	stopping, stop := context.WithCancel(context.Background())
 	return &Plugin{
-		store: store, engine: engine, scripts: sc, gate: gate, ops: ops, held: held, scanning: scanning,
+		stopping: stopping, cut: stop,
+		store: store, engine: engine, gate: gate, ops: ops, held: held, scanning: scanning,
 		now:     func() time.Time { return time.Now().UTC() },
 		cfgs:    map[snowflake.ID]Config{},
+		spoken:  map[snowflake.ID]map[string]Dialect{},
+		tending: map[string]bool{}, tendAgain: map[string]bool{}, tendAfter: map[string]time.Time{}, rounds: map[string]dayCount{},
 		sticky:  map[memberKey]spoke{},
 		meter:   map[memberKey][]time.Time{},
 		queues:  map[string][]job{},
@@ -153,7 +167,10 @@ func (p *Plugin) Start(context.Context) error { return nil }
 // Shutdown drops what is waiting and lets a repost under way finish, so a
 // restart never lands between the copy and the delete.
 func (p *Plugin) Shutdown(ctx context.Context) error {
-	p.stop.Do(func() { close(p.stopped) })
+	p.stop.Do(func() {
+		close(p.stopped)
+		p.cut()
+	})
 	done := make(chan struct{})
 	go func() {
 		p.wg.Wait()
@@ -184,6 +201,7 @@ func (p *Plugin) ForgetGuild(guildID string) {
 	}
 	delete(p.slots, guildID)
 	delete(p.trouble, guildID)
+	delete(p.rounds, guildID)
 }
 
 // config is a guild's settings, read once and kept until one of them is
@@ -211,6 +229,7 @@ func (p *Plugin) forgetConfig(guildID string) {
 	p.cfgMu.Lock()
 	defer p.cfgMu.Unlock()
 	delete(p.cfgs, core.ID(guildID))
+	delete(p.spoken, core.ID(guildID))
 }
 
 // HandleMessage is the MessageCreate entry point, after aimod's. It decides
@@ -402,7 +421,7 @@ func (p *Plugin) run(ctx context.Context, j job) {
 	// is not lost to a context that ran out while it was being posted.
 	ctx = context.WithoutCancel(ctx)
 	p.confirmed(j, baseOf(t.source))
-	if t.english == p.englishFor(ctx, j.guildID, baseOf(t.source)) {
+	if _, has := p.dialectFor(ctx, j.guildID, t.source); has == (t.english != "") {
 		p.setTrouble(j.guildID, "")
 	}
 	if err := p.store.Record(ctx, Translation{
@@ -422,8 +441,8 @@ func (p *Plugin) auditTranslation(ctx context.Context, j job, t translation, rep
 		was = "Original"
 	}
 	detail := fmt.Sprintf("user=%s channel=%s language=%q", core.MentionUser(j.authorID), core.MentionChannel(j.channelID), languageName(t.source))
-	if t.english != standard {
-		detail += fmt.Sprintf(" english=%q", t.english.name)
+	if t.english != "" {
+		detail += fmt.Sprintf(" english=%q", t.english)
 	}
 	detail += fmt.Sprintf(" rung=%q", t.rung)
 	if t.policy != "" {

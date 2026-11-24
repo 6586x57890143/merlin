@@ -54,6 +54,7 @@ type Store interface {
 	Record(ctx context.Context, t Translation) error
 	Find(ctx context.Context, guildID, repostID string) (Translation, error)
 	CountSince(ctx context.Context, guildID string, since time.Time) (int, error)
+	DialectStore
 	// PruneBefore is audit.Pruner.
 	PruneBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }

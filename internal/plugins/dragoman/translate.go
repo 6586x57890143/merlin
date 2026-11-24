@@ -34,7 +34,7 @@ type translation struct {
 	text    string
 	masked  string // text before its tokens were put back
 	source  language.Tag
-	english variety
+	english string // the dialect it is in, "" for Standard English
 	// confidence is the model's own, and rung what wrote the translation.
 	confidence float64
 	rung       string
@@ -94,7 +94,7 @@ Set translate to false, and text to "", when the message is English (with or wit
 
 source is the BCP 47 code of the language the message is in ("nl", "de", "ja"). Add a region only where the wording makes it plain ("pt-BR"). confidence is 0.0 to 1.0: how sure you are of both the language and the meaning.
 
-` + standard.how + `
+` + standardHow + `
 
 The harm rule. These are the policies of the server this is posted on:
 ` + policies + `
@@ -166,16 +166,7 @@ func (p *Plugin) translate(ctx context.Context, j job) (translation, error) {
 		return t, verdict
 	}
 	t.rung = by
-	v := p.englishFor(ctx, j.guildID, baseOf(t.source))
-	if v == standard {
-		return t, nil
-	}
-	styled, err := p.restyle(ctx, j, t, v, masked, parts)
-	if err != nil {
-		p.log.Warn("dragoman: posting without the dialect", "guild", j.guildID, "message", j.messageID, "err", err)
-		p.setTrouble(j.guildID, "dialect: "+err.Error())
-	}
-	return styled, nil
+	return p.speak(ctx, j, t, masked, parts), nil
 }
 
 // judge turns the model's reply into a translation of masked, or into the
@@ -202,7 +193,7 @@ func judge(out, masked string, parts []string) (translation, error) {
 		return translation{}, leave(fmt.Sprintf("source %.20q", a.Source))
 	}
 	text := strings.TrimSpace(a.Text)
-	t := translation{source: tag, masked: text, english: standard, confidence: a.Confidence, policy: strings.TrimSpace(a.Harmful)}
+	t := translation{source: tag, masked: text, confidence: a.Confidence, policy: strings.TrimSpace(a.Harmful)}
 	if t.policy != "" && text == "" {
 		return t, leave("harmful with nothing left")
 	}

@@ -16,7 +16,7 @@ func TestPostgresStore(t *testing.T) {
 	s := NewPostgresStore(pool)
 	const g = "dragoman-test"
 	clear := func() {
-		for _, table := range []string{"dragoman_config", "dragoman_translations", "dragoman_usage"} {
+		for _, table := range []string{"dragoman_config", "dragoman_translations", "dragoman_usage", "dragoman_dialects"} {
 			if _, err := pool.Exec(ctx, `DELETE FROM `+table+` WHERE guild_id LIKE $1`, g+"%"); err != nil {
 				t.Fatal(err)
 			}
@@ -95,6 +95,56 @@ func TestPostgresStore(t *testing.T) {
 		t.Fatalf("a fresh row did not: %v", err)
 	}
 
+	// Dialects: a write counts only against the row it was read as.
+	ok(s.SetDialect(ctx, g, "da", "Jamaican English"))
+	d, err := s.Dialect(ctx, g, "da")
+	ok(err)
+	if d.Guide != nil || d.Name != "Jamaican English" || len(d.Notes) != 0 {
+		t.Fatalf("dialect %+v", d)
+	}
+	ok(s.SetDialectProblem(ctx, d, "no"))
+	first := d
+	d, err = s.SaveGuide(ctx, d, patois(1), 2)
+	ok(err)
+	if _, err := s.SaveGuide(ctx, first, patois(9), 2); !errors.Is(err, errStale) {
+		t.Fatalf("a stale guide was saved: %v", err)
+	}
+	for i, want := range []bool{false, true} {
+		if due, err := s.CountDialect(ctx, d, i == 0); err != nil || due != want {
+			t.Fatalf("message %d: due %v, %v", i, due, err)
+		}
+	}
+	if due, err := s.CountDialect(ctx, first, true); err != nil || due {
+		t.Fatalf("a stale count: %v, %v", due, err)
+	}
+	ok(s.DeferReview(ctx, d, 50))
+	ok(s.SetDialectNotes(ctx, d, []string{"lighter"}))
+	if due, err := s.CountDialect(ctx, d, false); err != nil || due {
+		t.Fatalf("due after being put off: %v, %v", due, err)
+	}
+	if d, err = s.Dialect(ctx, g, "da"); err != nil || d.Uses != 3 || d.Missed != 1 || d.Losses != 0 || d.Problem != "" || d.Previous != nil ||
+		!slices.Equal(d.Notes, []string{"lighter"}) || d.Guide.Rules[0] != patois(1).Rules[0] {
+		t.Fatalf("dialect %+v, %v", d, err)
+	}
+	d, err = s.SaveGuide(ctx, d, patois(2), 2)
+	ok(err)
+	if d.Previous == nil || d.Uses != 0 {
+		t.Fatalf("dialect %+v", d)
+	}
+	ok(s.UndoGuide(ctx, d, 100))
+	if d, err = s.Dialect(ctx, g, "da"); err != nil || d.Guide.Rules[0] != patois(1).Rules[0] || d.Previous != nil {
+		t.Fatalf("undone to %+v, %v", d, err)
+	}
+	ok(s.SetDialect(ctx, g, "da", "Scottish English"))
+	ok(s.SetDialect(ctx, g, "nl", "Welsh English"))
+	if all, err := s.Dialects(ctx, g); err != nil || len(all) != 2 || all[0].Guide != nil || all[0].Version <= d.Version || len(all[0].Notes) != 0 {
+		t.Fatalf("dialects %+v, %v", all, err)
+	}
+	ok(s.RemoveDialect(ctx, g, "da"))
+	if _, err := s.Dialect(ctx, g, "da"); !errors.Is(err, errStale) {
+		t.Fatalf("removed: %v", err)
+	}
+
 	// Every read and write reports a database that is not there.
 	dead, cancel := context.WithCancel(ctx)
 	cancel()
@@ -103,8 +153,12 @@ func TestPostgresStore(t *testing.T) {
 	_, e3 := s.CountSince(dead, g, now)
 	_, e4 := s.PruneBefore(dead, now)
 	_, e5 := s.Usage(dead, g, day)
-	for i, err := range []error{e1, e2, e3, e4, e5, s.SetModel(dead, g, ""), s.AddUsage(dead, g, day, rungCareful, 0), s.SetEnabled(dead, g, true), s.SetMemberControls(dead, g, true), s.SetExempt(dead, g, "c", true), s.Record(dead, fresh)} {
-		if err == nil || errors.Is(err, errNotFound) {
+	_, e6 := s.Dialects(dead, g)
+	_, e7 := s.Dialect(dead, g, "nl")
+	_, e8 := s.CountDialect(dead, d, true)
+	_, e9 := s.SaveGuide(dead, d, patois(1), 1)
+	for i, err := range []error{e1, e2, e3, e4, e5, e6, e7, e8, e9, s.SetDialect(dead, g, "nl", "x"), s.RemoveDialect(dead, g, "nl"), s.UndoGuide(dead, d, 1), s.SetModel(dead, g, ""), s.AddUsage(dead, g, day, rungCareful, 0), s.SetEnabled(dead, g, true), s.SetMemberControls(dead, g, true), s.SetExempt(dead, g, "c", true), s.Record(dead, fresh)} {
+		if err == nil || errors.Is(err, errNotFound) || errors.Is(err, errStale) {
 			t.Errorf("call %d: %v", i, err)
 		}
 	}

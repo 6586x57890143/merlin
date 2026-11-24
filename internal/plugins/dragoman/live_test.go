@@ -4,13 +4,15 @@ package dragoman
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/6586x57890143/merlin/internal/core"
 )
 
 // The prompt against a real model: that it translates in context, leaves
@@ -79,7 +81,8 @@ func TestLive(t *testing.T) {
 				t.Errorf("source %v policy %q", got.source, got.policy)
 			}
 			if c.dialects {
-				out := liveAsk(t, base, key, model, restylePrompt(dialects[c.source]), "It was translated from, for reference only:\n"+masked+
+				d := Dialect{Name: "African American Vernacular English"}
+				out := liveAsk(t, base, key, model, restylePrompt(d, builtin[strings.ToLower(d.Name)]), "It was translated from, for reference only:\n"+masked+
 					"\n\nThe message to rewrite:\n"+got.masked, "dialect", restyleSchema)
 				t.Logf("dialect: %s", out)
 				var a struct{ Text string }
@@ -105,10 +108,61 @@ func TestLive(t *testing.T) {
 	}
 }
 
+// liveEngine answers from the real model and is a fake in everything else.
+type liveEngine struct {
+	*fakeEngine
+	t                *testing.T
+	base, key, model string
+}
+
+func (e liveEngine) Ask(_ context.Context, _ string, q core.Prompt) (core.Answer, error) {
+	return core.Answer{Text: liveAsk(e.t, e.base, e.key, e.model, q.System, q.User, q.SchemaName, q.Schema)}, nil
+}
+
+// A guide written from nothing, and a round of improving it, for the dialect
+// in DRAGOMAN_LIVE_DIALECT:
+//
+//	DRAGOMAN_LIVE_DIALECT="Jamaican English" go test ./internal/plugins/dragoman -tags=live -run TestLiveDialect -v
+func TestLiveDialect(t *testing.T) {
+	key, model, name := os.Getenv("DRAGOMAN_LIVE_KEY"), os.Getenv("DRAGOMAN_LIVE_MODEL"), os.Getenv("DRAGOMAN_LIVE_DIALECT")
+	if key == "" || model == "" || name == "" {
+		t.Skip("DRAGOMAN_LIVE_KEY, DRAGOMAN_LIVE_MODEL and DRAGOMAN_LIVE_DIALECT not set")
+	}
+	base := "https://openrouter.ai/api/v1"
+	if strings.HasPrefix(key, "sk-orca-") {
+		base = "https://api.orcarouter.ai/v1"
+	}
+	r := newRig(t)
+	r.p.engine = liveEngine{&fakeEngine{}, t, base, key, model}
+	if err := r.store.SetDialect(t.Context(), guild, "da", name); err != nil {
+		t.Fatal(err)
+	}
+	r.p.tend(guild, "da", true)
+	r.p.wg.Wait()
+	d := r.store.langs["da"]
+	t.Logf("guide %d, problem %q\n%s", d.Version, d.Problem, r.audit.all())
+	if d.Guide == nil {
+		t.Fatal("no guide")
+	}
+	for i, g := range []*guide{d.Previous, d.Guide} {
+		if g == nil {
+			continue
+		}
+		t.Logf("guide:\n%s\nmarks %v", g.how(), g.Marks)
+		out, err := r.p.styleBatch(t.Context(), d, *g, bench[:benchSize])
+		if err != nil {
+			t.Fatal(err)
+		}
+		for n, s := range out {
+			t.Logf("%d: %s\n   %s", i, bench[n], s)
+		}
+	}
+}
+
 func liveAsk(t *testing.T, base, key, model, system, user, name string, schema map[string]any) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{
-		"model": model, "temperature": 0, "max_tokens": maxTokens, "reasoning": map[string]any{"effort": "low"},
+		"model": model, "temperature": 0, "max_tokens": guideTokens, "reasoning": map[string]any{"effort": "low"},
 		"messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}},
 		"response_format": map[string]any{"type": "json_schema",
 			"json_schema": map[string]any{"name": name, "strict": true, "schema": schema}},
@@ -119,7 +173,7 @@ func liveAsk(t *testing.T, base, key, model, system, user, name string, schema m
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: guideTimeout}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

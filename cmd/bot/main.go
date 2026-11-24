@@ -330,7 +330,7 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 
 	// Translation, on aimod's key, budget and repost. Structural like the
 	// rest: neither package imports the other.
-	dragomanPlugin := dragoman.New(dragomanStore, aimodPlugin, scripts.NewPostgresStore(db.Pool), settingsStore,
+	dragomanPlugin := dragoman.New(dragomanStore, aimodPlugin, settingsStore,
 		func(guildID string) dragoman.Ops { return guard.For(guildID) },
 		func(guildID string) bool { return guard.Paused(guildID) || guard.DryRun(guildID) },
 		granted.MessageContent,

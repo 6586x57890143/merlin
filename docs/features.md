@@ -152,8 +152,10 @@ What was really written goes to the audit log. Mods can take a
 translation down with `/dragoman delete`. If you turn member controls on (they
 are off by default), members can do that to their own and have their messages
 left alone with `/dragoman opt-out`. The panel shows what translation itself cost
-with moderation, and lets you pick a cheaper model that keeps nothing. The `dialects` script changes which English a language
-becomes; off, it is Standard American English for all of them.
+with moderation, and lets you pick a cheaper model that keeps nothing. Any language can be given its own
+English on the panel's Dialects page, Danish into Jamaican English say: pick both
+and merlin writes herself a guide to the dialect, keeps improving it, and takes
+notes from your admins. Every other language becomes Standard American English.
 
 **Rapsheets.** Every warning, jail, timeout, kick, ban and AI removal a member
 collects lands on one per-member record with a case number, whoever or whatever

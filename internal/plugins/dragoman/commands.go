@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -13,12 +12,10 @@ import (
 
 	"github.com/6586x57890143/merlin/internal/core"
 	"github.com/6586x57890143/merlin/internal/core/ui"
-	"github.com/6586x57890143/merlin/internal/scripts"
 )
 
 const (
 	panelSet     = "dragoman:panel:set:"
-	panelScripts = "dragoman:panel:scripts:"
 	formModel    = "dragoman:form:model"
 	modelDefault = "default"
 	modelOther   = "other"
@@ -27,7 +24,7 @@ const (
 var (
 	viewSpec      = core.PermSpec{Tier: core.TierMod, Action: "dragoman.read"}
 	configureSpec = core.PermSpec{Tier: core.TierAdmin, Action: "dragoman.configure"}
-	scriptsSpec   = core.PermSpec{Tier: core.TierAdmin, Action: "dragoman.scripts"}
+	dialectsSpec  = core.PermSpec{Tier: core.TierAdmin, Action: "dragoman.dialects"}
 	// deleteSpec is for anyone's translation. Authors may delete their own
 	// where the member controls are on.
 	deleteSpec = core.PermSpec{Tier: core.TierMod, Action: "dragoman.delete"}
@@ -40,7 +37,7 @@ func (p *Plugin) registerCommands() {
 		Options: []discord.ApplicationCommandOption{
 			discord.ApplicationCommandOptionSubCommand{
 				Name:        "settings",
-				Description: "On or off, channels left alone and the dialects script, on one panel",
+				Description: "On or off, channels left alone, model and dialects, on one panel",
 			},
 			discord.ApplicationCommandOptionSubCommand{
 				Name:        "delete",
@@ -63,7 +60,9 @@ func (p *Plugin) registerCommands() {
 	p.commands.HandleIx("dragoman", "delete", core.PermSpec{Tier: core.TierPublic}, p.handleDelete)
 	p.commands.HandleIx("dragoman", "opt-out", core.PermSpec{Tier: core.TierPublic}, p.handleOptOut)
 	p.commands.HandleComponentIx(p.Name(), panelSet, configureSpec, p.handlePanelSet)
-	p.commands.HandleComponentIx(p.Name(), panelScripts, scriptsSpec, p.handlePanelScripts)
+	p.commands.HandleComponentIx(p.Name(), panelView, viewSpec, p.handlePanelView)
+	p.commands.HandleComponentIx(p.Name(), panelDialect, dialectsSpec, p.handlePanelDialect)
+	p.commands.HandleModalIx(p.Name(), formDialect, dialectsSpec, p.handleDialectForm)
 	p.commands.HandleModalIx(p.Name(), formModel, configureSpec, p.handleModelForm)
 }
 
@@ -81,7 +80,7 @@ func (p *Plugin) redraw(ctx context.Context, ix *core.Ix, note string) {
 
 func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel {
 	perms := p.commands.Perms()
-	canSet, canScript := perms.Allows(ix, configureSpec), perms.Allows(ix, scriptsSpec)
+	canSet := perms.Allows(ix, configureSpec)
 	pn := core.Panel{Color: core.ColorInfo, Title: "Dragoman", Plugin: p.Name(), Note: note,
 		Line:   "Messages in other languages, put into English",
 		Footer: "Runs on AI moderation's key and budget (/aimod settings): \"all ai\" is both together. What was really written goes to the audit log."}
@@ -131,13 +130,9 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 		pn.Color = core.ColorWarning
 	}
 
-	on, script := false, "off"
-	if on, err = p.scripts.Enabled(ctx, ix.GuildID, scriptDialects); err != nil {
-		on, script = false, "unreadable (treated as off)"
-	}
-	sb := ui.Button("Turn on", panelScripts+"on", discord.ButtonStyleSecondary, !canScript)
-	if on {
-		sb, script = ui.Button("Turn off", panelScripts+"off", discord.ButtonStyleDanger, !canScript), "**on**"
+	spoken := "The dialects could not be read."
+	if m, err := p.dialects(ctx, ix.GuildID); err == nil {
+		spoken = dialectsLine(m)
 	}
 	pn.Parts = []discord.ContainerSubComponent{
 		ui.Text(core.Readout(rows)),
@@ -147,9 +142,7 @@ func (p *Plugin) panel(ctx context.Context, ix *core.Ix, note string) core.Panel
 		ui.Text("**Model**: an answer that fails a check is asked for again, with more thinking."),
 		ui.Row(p.modelPicker(ctx, ix.GuildID, cfg, !canSet || !named)),
 		ui.Switch("Member controls are "+offered+"\n-# Members can opt out and take down translations of their own messages. Mods can always take one down.", members),
-		ui.Gap(),
-		ui.Text("-# " + scripts.Warning),
-		ui.Switch(fmt.Sprintf("`%s` is %s\n-# %s", scriptDialects, script, dialectsAbout()), sb),
+		ui.Switch("**Dialects**\n-# "+spoken, ui.Button("Dialects", panelView+"dialects", discord.ButtonStyleSecondary, false)),
 	}
 	return pn
 }
@@ -168,6 +161,9 @@ func (p *Plugin) costRows(ctx context.Context, guildID string) [][2]string {
 		}
 	}
 	rows := [][2]string{{"cost today", fmt.Sprintf("$%.4f", cost)}, {"calls", fmt.Sprintf("%d, %d asked again", calls, used[rungCareful].Calls)}}
+	if u := used[rungTend]; u.Calls > 0 {
+		rows = append(rows, [2]string{"of it dialects", fmt.Sprintf("$%.4f on their guides", u.Cost)})
+	}
 	if n := used[rungSkipped].Calls; n > 0 {
 		rows = append(rows, [2]string{"pre-filter", fmt.Sprintf("%d calls saved", n)})
 	}
@@ -264,17 +260,6 @@ func modelName(id string) string {
 	return id
 }
 
-// dialectsAbout is what an admin is told the script does.
-func dialectsAbout() string {
-	var lines []string
-	for base, v := range dialects {
-		tag, _ := parseSource(base)
-		lines = append(lines, languageName(tag)+" becomes "+v.name+".")
-	}
-	slices.Sort(lines)
-	return strings.Join(lines, " ") + " Every other language becomes " + standard.name + "."
-}
-
 func clip(s string, n int) string {
 	if r := []rune(s); len(r) > n {
 		return string(r[:n-3]) + "..."
@@ -355,25 +340,6 @@ func (p *Plugin) setExempt(ctx context.Context, ix *core.Ix) string {
 		return ""
 	}
 	return "✓ Channels updated."
-}
-
-func (p *Plugin) handlePanelScripts(ctx context.Context, ix *core.Ix, customID string) {
-	verb := strings.TrimPrefix(customID, panelScripts)
-	if verb != "on" && verb != "off" {
-		p.redraw(ctx, ix, "✗ That control is out of date; run `/dragoman settings` again.")
-		return
-	}
-	if err := p.scripts.SetEnabled(ctx, ix.GuildID, scriptDialects, verb == "on"); err != nil {
-		p.redraw(ctx, ix, fmt.Sprintf("✗ Not saved: %v", err))
-		return
-	}
-	if verb == "off" {
-		p.record(ctx, ix, "dragoman.script_disabled", "", scriptDialects)
-		p.redraw(ctx, ix, "✓ Script off: every language becomes "+standard.name+".")
-		return
-	}
-	p.record(ctx, ix, "dragoman.script_enabled", "", scriptDialects)
-	p.redraw(ctx, ix, "! Script on: "+scriptDialects+".\n-# "+dialectsAbout())
 }
 
 // messageID is the last ID in a message link, or the ID itself.

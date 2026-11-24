@@ -107,11 +107,13 @@ func TestFlags(t *testing.T) {
 
 func TestPromptSaysWhichEnglish(t *testing.T) {
 	plain := systemPrompt("- threats: no threats\n")
-	if strings.Contains(plain, "Vernacular") || !strings.Contains(plain, standard.how) || !strings.Contains(plain, "- threats: no threats") {
+	if strings.Contains(plain, "Vernacular") || !strings.Contains(plain, standardHow) || !strings.Contains(plain, "- threats: no threats") {
 		t.Error("the plain prompt carries a dialect, or lacks the English or the policies")
 	}
-	if on := restylePrompt(dialects["nl"]); !strings.Contains(on, dialects["nl"].how) || !strings.Contains(on, dialects["nl"].name) {
-		t.Error("the dialect prompt does not say which")
+	d := Dialect{Name: "Jamaican English"}
+	if on := restylePrompt(d, builtin["african american vernacular english"]); !strings.Contains(on, "into Jamaican English") ||
+		!strings.Contains(on, `"You owe me money." becomes "aye you owe me money"`) || !strings.Contains(on, fairPlay) {
+		t.Errorf("dialect prompt %q", on)
 	}
 }
 
