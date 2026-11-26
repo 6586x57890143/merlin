@@ -872,6 +872,10 @@ A message in another language is replaced with its English, under its author's n
 
 There is no `why` command: the footer already says why.
 
+**Code formatting is not code.** Everything in backticks was masked at first, so a message written entirely in a `span` was nothing but a token and was never translated. Members use backticks for the look of it. Now only a block that names its language is code; the rest is translated and the prompt keeps the backticks and leaves commands alone.
+
+**A reply takes its language from what it answers.** A one-word answer ("Zwartjoekel") has no evidence of its own, and the author's own last language was the only hint the gate took. The message it replies to is in hand, so `leaning` reads it, and a reply whose every word is unknown and none English is asked about. English replies to Dutch stay free: one English word rules it out.
+
 **Another bird's messages are translated on its ask.** skua's whispers go out through skua's webhook, which dragoman skips like every bot and webhook message, so they stayed foreign. Reading webhook messages would mean telling a whisper from every other bot's post and editing a message merlin doesn't own. Instead skua asks over cygnet's link with the text and IDs, and edits its own whisper. merlin decides as it would for a message in that channel, so a guild that turned dragoman off, or a member who opted out, is honoured whoever asks.
 
 ### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)

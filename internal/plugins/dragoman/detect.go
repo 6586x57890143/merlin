@@ -269,10 +269,34 @@ func weigh(text, sticky string) evidence {
 	case unknown >= 3 && unknown*5 >= words*3,
 		best >= 1 && english == 0 && unknown >= 2 && unknown*3 >= words*2,
 		sticky != "" && (hits[sticky] > english || (unknown >= 2 && unknown*2 > words)),
+		// Mid conversation, a word no list knows and nothing English: a
+		// one-word answer ("Zwartjoekel") is in the language it answers.
+		sticky != "" && english == 0 && words > 0 && unknown == words,
 		best >= 2 && best > english:
 		return weak
 	}
 	return none
+}
+
+// leaning is the language text looks most like, or "" where it doesn't
+// look foreign: the conversation a reply joins, for gauge's sticky.
+func leaning(text string) string {
+	if gauge(text, "") == none {
+		return ""
+	}
+	hits := map[string]int{}
+	for w := range strings.FieldsFuncSeq(strings.ToLower(carriers.ReplaceAllString(text, " ")), func(r rune) bool { return !unicode.IsLetter(r) && r != '\'' }) {
+		for _, lang := range functionWords[strings.Trim(w, "'")] {
+			hits[lang]++
+		}
+	}
+	best := ""
+	for lang, n := range hits {
+		if n > hits[best] || n == hits[best] && lang < best {
+			best = lang
+		}
+	}
+	return best
 }
 
 // foreignScript reports whether most of text's letters are in a script
