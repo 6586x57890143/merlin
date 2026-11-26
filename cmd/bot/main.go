@@ -374,6 +374,9 @@ func run(log *slog.Logger, level *slog.LevelVar) error {
 		func(guildID string) fleetgrant.MemberOps { return guard.For(guildID) })
 	registry.Register(fleetPlugin)
 	hub.Serve(fleetgrant.Verb, fleetPlugin.Answer)
+	// A bird posting a member's words itself (skua's whispers) may ask for
+	// the translation dragoman would have made; the guild's settings decide.
+	hub.Serve(dragoman.Verb, dragomanPlugin.Answer)
 	// Where cygnet is a member, an attested bird's ask needs no listing.
 	fleetPlugin.Vouch(hub.Here)
 	registry.Register(perf.New(obs.Default))

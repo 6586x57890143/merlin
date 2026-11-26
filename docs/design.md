@@ -872,6 +872,8 @@ A message in another language is replaced with its English, under its author's n
 
 There is no `why` command: the footer already says why.
 
+**Another bird's messages are translated on its ask.** skua's whispers go out through skua's webhook, which dragoman skips like every bot and webhook message, so they stayed foreign. Reading webhook messages would mean telling a whisper from every other bot's post and editing a message merlin doesn't own. Instead skua asks over cygnet's link with the text and IDs, and edits its own whisper. merlin decides as it would for a message in that channel, so a guild that turned dragoman off, or a member who opted out, is honoured whoever asks.
+
 ### The browser lab (`cmd/lab`, `internal/lab`, `web/lab`)
 
 merlin's own packages compiled to WebAssembly, so two of this codebase's

@@ -110,6 +110,33 @@ func (p *Plugin) hintOriginal(cfg Config, r core.Repost) {
 	})
 }
 
+// Publishable is text as merlin would post it in guildID on someone's
+// behalf: the guild's banned words and slurs swapped, or "" where what is
+// left has no harmless version (a token, a phishing link). For a bird that
+// posts a translation itself.
+func (p *Plugin) Publishable(ctx context.Context, guildID, text string) (string, error) {
+	cfg, err := p.store.Config(ctx, guildID)
+	if err != nil {
+		return "", fmt.Errorf("aimod: read config: %w", err)
+	}
+	out, _ := publishable(cfg, text)
+	return out, nil
+}
+
+// publishable is Publishable under cfg, and whether a slur was swapped.
+func publishable(cfg Config, text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if out, hit := redactWords(cfg.WordList, text); hit {
+		text = strings.TrimSpace(out)
+	}
+	text, swapped := redactSlurs(text)
+	// What is left of rung 1 is tokens and phishing links, which have no
+	// harmless version.
+	if _, _, _, hit := hardHit(text); hit {
+		return "", swapped
+	}
+	return text, swapped
+}
 // Repost replaces one message with r.Text under its author's name, and
 // returns the new message's ID. Any error means the original is untouched.
 //
@@ -134,14 +161,8 @@ func (p *Plugin) Repost(ctx context.Context, r core.Repost) (string, error) {
 	if Bucket(r.Policy) == BucketChildSafety || (r.Policy != "" && r.Keep) {
 		return "", errRepostRefused
 	}
-	text := strings.TrimSpace(r.Text)
-	if out, hit := redactWords(cfg.WordList, text); hit {
-		text = strings.TrimSpace(out)
-	}
-	text, swapped := redactSlurs(text)
-	// What is left of rung 1 is tokens and phishing links, which have no
-	// harmless version.
-	if _, _, _, hit := hardHit(text); hit || text == "" || utf8.RuneCountInString(text+r.Marker) > maxContentLen {
+	text, swapped := publishable(cfg, r.Text)
+	if text == "" || utf8.RuneCountInString(text+r.Marker) > maxContentLen {
 		return "", errRepostRefused
 	}
 

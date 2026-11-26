@@ -38,6 +38,8 @@ type Engine interface {
 	Context(guildID, channelID, messageID, authorID string) (lines []string, self string)
 	Policies(ctx context.Context, guildID string) string
 	Repost(ctx context.Context, r core.Repost) (string, error)
+	// Publishable is text as it would be reposted in a guild, or "".
+	Publishable(ctx context.Context, guildID, text string) (string, error)
 	EvidenceHours(ctx context.Context, guildID string) int
 	Budget(ctx context.Context, guildID string) (spent, limit float64, ok bool)
 }

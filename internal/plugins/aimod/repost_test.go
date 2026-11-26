@@ -156,6 +156,21 @@ func TestRepostCleansWhatItPublishes(t *testing.T) {
 	}
 }
 
+// Publishable is the same cleaning for a bird that posts the text itself.
+func TestPublishable(t *testing.T) {
+	p, store, _ := repostPlugin(t)
+	cfg := enforcingConfig()
+	cfg.WordList = []BannedWord{{Word: "work", Replacement: "play"}}
+	store.setConfig(cfg)
+	if got, err := p.Publishable(context.Background(), "g1", " off to work, nigger "); err != nil ||
+		strings.Contains(strings.ToLower(got), "nigger") || !strings.Contains(got, "play") || got != strings.TrimSpace(got) {
+		t.Errorf("%q, %v", got, err)
+	}
+	if got, err := p.Publishable(context.Background(), "g1", "look https://dlscord-nitro.ru/free"); err != nil || got != "" {
+		t.Errorf("phishing: %q, %v", got, err)
+	}
+}
+
 // A softened repost is the rewrite already: a verdict that would rewrite
 // leaves it up, and still counts.
 func TestASoftenedRepostStandsAsTheRewrite(t *testing.T) {
