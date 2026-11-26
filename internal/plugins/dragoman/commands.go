@@ -432,6 +432,6 @@ func (p *Plugin) Help() core.Help {
 	return core.Help{
 		Title: "Dragoman",
 		Line:  "puts messages in other languages into english",
-		About: "when somebody writes in another language i read it in context, put it into english and repost it under their name, with the flag of the language it came from. anything harmful in it comes out harmless. where this server allows it, `/dragoman delete` takes down a translation of yours and `/dragoman opt-out` has me leave your messages as you wrote them. admins turn it on at `/dragoman settings`; it runs on ai moderation's key and budget.",
+		About: "when somebody writes in another language i read it in context, put it into english and repost it under their name, with the flag of the language it came from. anything harmful in it comes out harmless. where this server allows it, `/dragoman delete` takes down a translation of yours and `/dragoman opt-out` has me leave your messages as you wrote them. another bird that posts for somebody, like skua's whispers, can ask me for the same translation. admins turn it on at `/dragoman settings`; it runs on ai moderation's key and budget.",
 	}
 }

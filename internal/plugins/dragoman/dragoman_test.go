@@ -304,6 +304,12 @@ func (e *fakeEngine) Repost(_ context.Context, r core.Repost) (string, error) {
 	}
 	return repost, nil
 }
+func (e *fakeEngine) Publishable(_ context.Context, _, text string) (string, error) {
+	if strings.Contains(text, "token") {
+		return "", nil
+	}
+	return text, nil
+}
 func (e *fakeEngine) EvidenceHours(context.Context, string) int     { return e.evidence }
 func (e *fakeEngine) Budget(context.Context, string) (float64, float64, bool) {
 	return 0.1, 0.5, !e.noKey
