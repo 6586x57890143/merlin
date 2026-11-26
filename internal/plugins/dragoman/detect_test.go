@@ -10,7 +10,7 @@ var english = []string{
 	"hey", "lol", "wat", "wat is this", "lmaooo no way bro", "gg ez", "ngl that was kinda mid",
 	"yo who's on tonight", "im so tired of this game fr fr", "bruh moment", "ok", "idk man", "brb 5 min",
 	"what are you even talking about", "the die was cast", "that was a war in a hat", "sick as hell",
-	"can you send me the link", "https://example.com/niet/het/een", "`het een niet`", "```\nhet een niet ik\n```",
+	"can you send me the link", "https://example.com/niet/het/een", "```go\nhet een niet ik\n```",
 	"<@123456789012345678> <:niet:123456789012345678> nice", "los angeles is hot as hell", "las vegas in july? no thanks",
 	"El Paso or Los Alamos", "I met Van and Ben in Den Haag", "du jour", "c'est la vie", "que sera sera",
 	"voila", "deja vu", "ja rule", "schadenfreude lol", "mañana", "jalapeño", "café", "naïve résumé",
@@ -31,7 +31,7 @@ var english = []string{
 }
 
 var notEnglish = []string{
-	"het is echt niet normaal", "ik ga morgen naar de winkel", "waarom doe je dat", "dat klopt niet", "ja maar hoe dan",
+	"het is echt niet normaal", "`gaat hij in t engels reageren. L reply`", "```\nik ga morgen naar de winkel\n```", "ik ga morgen naar de winkel", "waarom doe je dat", "dat klopt niet", "ja maar hoe dan",
 	"ich weiß nicht was du meinst", "das ist mir egal", "je ne sais pas pourquoi", "c'est pas moi qui ai fait ça",
 	"no sé qué hacer ahora", "pero eso es muy caro", "eu não sei o que você quer", "non so che cosa fare", "nie wiem co to jest",
 	"jag vet inte vad det är", "jeg ved ikke hvad det er", "en tiedä mitä se on, mutta joo", "bu ne demek, çok güzel bir şey",
@@ -76,9 +76,21 @@ func TestPlainForeignIsStrong(t *testing.T) {
 	}
 }
 
+// A reply leans the way of what it answers; English and nothing lean nowhere.
+func TestAReplyLeansLikeWhatItAnswers(t *testing.T) {
+	for text, want := range map[string]string{
+		"`gaat hij in t engels reageren. L reply`": "nl", "ich weiß nicht was du meinst": "de",
+		"lol same": "", "": "",
+	} {
+		if got := leaning(text); got != want {
+			t.Errorf("leaning(%q) = %q, want %q", text, got, want)
+		}
+	}
+}
+
 // A short answer needs a conversation in that language behind it.
 func TestAMemberMidConversationNeedsLess(t *testing.T) {
-	for _, s := range []string{"ja klopt", "nee", "echt?", "lekker"} {
+	for _, s := range []string{"ja klopt", "nee", "echt?", "lekker", "Zwartjoekel"} {
 		if gauge(s, "") != none && s != "ja klopt" {
 			t.Errorf("%q is enough on its own", s)
 		}

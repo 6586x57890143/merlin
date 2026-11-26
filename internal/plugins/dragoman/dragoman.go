@@ -260,7 +260,12 @@ func (p *Plugin) HandleMessage(m discord.Message) {
 		guildID: m.GuildID.String(), channelID: m.ChannelID.String(), messageID: m.ID.String(), authorID: m.Author.ID.String(),
 		content: m.Content, keep: len(m.Attachments)+len(m.StickerItems) > 0, at: p.now(),
 	}
-	j.evidence = gauge(j.content, p.speaking(j))
+	hint := p.speaking(j)
+	// A reply joins the conversation it answers, in that language.
+	if hint == "" && m.ReferencedMessage != nil {
+		hint = leaning(m.ReferencedMessage.Content)
+	}
+	j.evidence = gauge(j.content, hint)
 	if slices.Contains(cfg.ExemptChannelIDs, j.channelID) ||
 		(cfg.MemberControls && slices.Contains(cfg.OptOutUserIDs, j.authorID)) ||
 		j.evidence == none || !p.gate.PluginEnabled(j.guildID, p.Name()) {

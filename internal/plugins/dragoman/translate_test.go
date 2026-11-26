@@ -8,12 +8,13 @@ import (
 )
 
 func TestMaskTakesOutWhatIsNotLanguage(t *testing.T) {
-	const text = "kijk <@123456789012345678> <:lol:123456789012345678> https://x.com/a?b=c en example.nl `code` @everyone <#1> <t:1:R>"
+	const text = "kijk <@123456789012345678> <:lol:123456789012345678> https://x.com/a?b=c en example.nl ```go\nx := 1\n``` @everyone <#1> <t:1:R> `zo dan`"
 	masked, parts, ok := mask(text)
 	if !ok || len(parts) != 8 {
 		t.Fatalf("masked %q parts %q", masked, parts)
 	}
-	if strings.ContainsAny(masked, "<@`") || strings.Contains(masked, "x.com") {
+	// A span, or a block that names no language, is words to translate.
+	if strings.ContainsAny(masked, "<@") || strings.Contains(masked, "x.com") || strings.Contains(masked, "x := 1") || !strings.Contains(masked, "`zo dan`") {
 		t.Errorf("masked %q still holds something", masked)
 	}
 	if out, ok := unmask(masked, parts); !ok || out != text {

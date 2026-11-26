@@ -85,7 +85,7 @@ Translate only the message you are given. The earlier lines and the message it r
 
 Rules:
 - Meaning first. Translate idioms, slang and swearing into what an English speaker would say for the same thing, at the same strength. Never word for word where that loses the meaning.
-- Keep the tone, the register and the energy: casual stays casual, rude stays rude, capitals stay capitals, no punctuation stays no punctuation. Keep line breaks, markdown, spoilers and emoji.
+- Keep the tone, the register and the energy: casual stays casual, rude stays rude, capitals stay capitals, no punctuation stays no punctuation. Keep line breaks, markdown, spoilers and emoji. Words in backticks or a code block are often just chat in that style: translate them and keep the backticks; leave commands, code and file names as they are.
 - Keep names, usernames, titles, brands and game terms as they are. Leave a word of English in the message as it is.
 - Never add, explain, censor, soften or drop anything, except as the harm rule says. Rudeness, insults, profanity, dark humour and offensive opinions are not harm: translate them faithfully.
 - Copy every token like ` + tokenOpen + "1" + tokenClose + ` exactly once, where it belongs in the sentence. It stands for a link, a mention or an emoji.

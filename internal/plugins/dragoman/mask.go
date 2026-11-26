@@ -11,7 +11,11 @@ import (
 // mentions, custom emoji, timestamps. Each goes to the model as a numbered
 // token and comes back as itself, so a translation can neither mangle one
 // nor bring in one the author didn't write, and no ID is ever sent.
-var carriers = regexp.MustCompile("(?is)```.*?```|`[^`\n]+`" +
+//
+// Code is only a block that names its language. Members put whole messages
+// in backticks for the look of it, and an untagged block or `span` is
+// translated like the words around it, backticks kept.
+var carriers = regexp.MustCompile("(?is)```[a-z0-9+#-]+\n.*?```" +
 	`|<(?:@[!&]?|#)\d+>|<a?:\w+:\d+>|<t:-?\d+(?::\w)?>|</[^:>\n]+:\d+>|<id:\w+>|@(?:everyone|here)\b` +
 	`|<?\b[a-z][a-z0-9+.-]*://[^\s>]+>?|\bdiscord(?:app)?\.(?:gg|com)/\S+` +
 	`|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|gg|ru|xyz|link|io|net|org|me|co|uk|nl|de|dev|app|info|top|site|shop|click)\b(?:/\S*)?`)

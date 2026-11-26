@@ -413,6 +413,20 @@ func (r *rig) say(m discord.Message) {
 	r.p.wg.Wait()
 }
 
+// A one-word answer to a Dutch message is asked about; an English one isn't.
+func TestAOneWordReplyFollowsTheConversation(t *testing.T) {
+	for text, want := range map[string]int{"Zwartjoekel": 1, "lol": 0} {
+		r := newRig(t)
+		m := msg(text)
+		m.Type = discord.MessageTypeReply
+		m.ReferencedMessage = &discord.Message{Content: "`gaat hij in t engels reageren. L reply`"}
+		r.say(m)
+		if got := r.engine.asked(); got != want {
+			t.Errorf("%q: %d calls, want %d", text, got, want)
+		}
+	}
+}
+
 func TestAMessageIsTranslatedAndReposted(t *testing.T) {
 	r := newRig(t)
 	m := msg(dutch + " <@123456789012345678>")
